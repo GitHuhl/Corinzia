@@ -33,7 +33,7 @@
           cmakeFlags = [ "-DCORINZIA_BUILD_TESTS=ON" ];
           doCheck = true;
           # Run the LilyPond round-trip and offscreen Qt tests inside the sandbox too.
-          nativeCheckInputs = [ pkgs.lilypond ];
+          nativeCheckInputs = [ pkgs.lilypond pkgs.pipewire ];   # pipewire: private daemon + pw-link for the backend test
           preCheck = ''
             export HOME=$TMPDIR
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond

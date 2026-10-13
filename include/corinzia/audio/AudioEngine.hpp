@@ -40,6 +40,8 @@ public:
 
     // Main thread, before the backend starts calling process().
     void prepare(double sampleRate, std::uint32_t maxFrames);
+    std::uint32_t maxFrames() const noexcept { return maxFrames_; }
+    double sampleRate() const noexcept { return sampleRate_; }
 
     // ---- UI thread API (producer of commands / consumer of telemetry) -------
     bool post(const rt::UiToAudio& m) noexcept { return commands_.tryPush(m); }

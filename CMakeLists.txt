@@ -15,6 +15,7 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(CLAP REQUIRED IMPORTED_TARGET clap>=1.2)
 pkg_check_modules(SQLITE REQUIRED IMPORTED_TARGET sqlite3>=3.45)
+pkg_check_modules(PIPEWIRE IMPORTED_TARGET libpipewire-0.3>=1.0)
 
 # Embed schema/project.sql so the binary can create/migrate .project files.
 file(READ ${CMAKE_SOURCE_DIR}/schema/project.sql CORINZIA_SCHEMA_SQL_TEXT)
@@ -38,6 +39,13 @@ add_library(corinzia_core
 target_include_directories(corinzia_core PUBLIC include)
 target_link_libraries(corinzia_core PUBLIC PkgConfig::CLAP PkgConfig::SQLITE ${CMAKE_DL_LIBS} Threads::Threads)
 target_compile_options(corinzia_core PRIVATE -Wall -Wextra -Wpedantic)
+
+# PipeWire backend (separate library: libpipewire's C headers use GNU extensions).
+if(PIPEWIRE_FOUND)
+    add_library(corinzia_pipewire src/audio/PipeWireBackend.cpp)
+    target_link_libraries(corinzia_pipewire PUBLIC corinzia_core PRIVATE PkgConfig::PIPEWIRE)
+    target_compile_options(corinzia_pipewire PRIVATE -Wall -Wextra)
+endif()
 
 # ------------------------------------------------------------------ ui ----
 if(CORINZIA_BUILD_UI)
@@ -78,6 +86,12 @@ if(CORINZIA_BUILD_TESTS)
     add_dependencies(corinzia_tests corinzia_test_recorder)
     target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
+    if(PIPEWIRE_FOUND)
+        add_executable(corinzia_pw_tests tests/test_pipewire.cpp)
+        target_link_libraries(corinzia_pw_tests PRIVATE corinzia_pipewire PkgConfig::PIPEWIRE)
+        add_test(NAME corinzia_pw_tests
+                 COMMAND bash ${CMAKE_SOURCE_DIR}/tests/run_with_pipewire.sh $<TARGET_FILE:corinzia_pw_tests>)
+    endif()
     if(CORINZIA_BUILD_UI)
         add_executable(corinzia_ui_tests tests/test_ui.cpp)
         target_link_libraries(corinzia_ui_tests PRIVATE corinzia_ui)
@@ -92,6 +106,9 @@ endif()
 # ------------------------------------------------------------- install ----
 include(GNUInstallDirs)
 install(TARGETS corinzia_core ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+if(PIPEWIRE_FOUND)
+    install(TARGETS corinzia_pipewire ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+endif()
 if(CORINZIA_BUILD_UI)
     install(TARGETS corinzia_ui ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
