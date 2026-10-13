@@ -10,9 +10,9 @@
 //     which is what makes mid-movement instrument changes "just work",
 //   * merge ties, apply articulation gate times and dynamics -> velocity,
 //   * convert automation points to sample-positioned breakpoints,
-//   * topologically sort the audio graph and compute the latency of the
-//     longest path (used for cursor compensation; per-node PDC delay lines are
-//     the next step, see docs/ARCHITECTURE.md §3.6).
+//   * topologically sort the audio graph, compute the latency of the longest
+//     path (cursor compensation) and a per-edge PDC delay that aligns every
+//     input of a summing node with its slowest input.
 
 #include "corinzia/model/Model.hpp"
 #include "corinzia/rt/PlaybackSnapshot.hpp"

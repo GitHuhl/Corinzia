@@ -25,6 +25,7 @@ struct Recorded {
 struct RecorderState {
     std::vector<Recorded> events;
     std::vector<clap_event_transport_t> transports;
+    bool midiOnly = false;      // note port advertises only CLAP_NOTE_DIALECT_MIDI
     bool processing = false;
     bool active = false;
     int sounding = 0;
@@ -33,10 +34,14 @@ struct RecorderState {
 inline const clap_plugin_descriptor_t kDesc{CLAP_VERSION, "test.recorder", "Recorder", "corinzia", "", "", "", "1",
                                             "records events", nullptr};
 
-inline const clap_plugin_t* createRecorder(const clap_host_t* host) {
+inline const clap_plugin_descriptor_t kMidiDesc{CLAP_VERSION, "test.recorder.midi", "Recorder (MIDI)", "corinzia",
+                                                "", "", "", "1", "records MIDI-dialect events", nullptr};
+
+inline const clap_plugin_t* createRecorder(const clap_host_t* host, bool midiOnly = false) {
     auto* p = new clap_plugin_t{};
-    p->desc = &kDesc;
+    p->desc = midiOnly ? &kMidiDesc : &kDesc;
     p->plugin_data = new RecorderState;
+    static_cast<RecorderState*>(p->plugin_data)->midiOnly = midiOnly;
     (void)host;
     auto st = [](const clap_plugin_t* pl) { return static_cast<RecorderState*>(pl->plugin_data); };
     p->init = [](const clap_plugin_t*) { return true; };
@@ -72,6 +77,14 @@ inline const clap_plugin_t* createRecorder(const clap_host_t* host) {
             } else if (h->type == CLAP_EVENT_PARAM_VALUE) {
                 auto* e = reinterpret_cast<const clap_event_param_value_t*>(h);
                 r.param = e->param_id; r.value = e->value;
+            } else if (h->type == CLAP_EVENT_MIDI) {
+                auto* e = reinterpret_cast<const clap_event_midi_t*>(h);
+                r.param = e->data[0] & 0xf0u;           // status nibble
+                r.channel = e->data[0] & 0x0f;
+                r.key = e->data[1];
+                r.value = e->data[2];
+                if (r.param == 0x90 && e->data[2] > 0) ++s->sounding;
+                if (r.param == 0x80) --s->sounding;
             } else if (h->type == CLAP_EVENT_PARAM_MOD) {
                 auto* e = reinterpret_cast<const clap_event_param_mod_t*>(h);
                 r.param = e->param_id; r.value = e->amount; r.noteId = e->note_id;
@@ -90,6 +103,17 @@ inline const clap_plugin_t* createRecorder(const clap_host_t* host) {
                 char b[4];
                 return is->read(is, b, 4) == 4 && std::memcmp(b, "CORZ", 4) == 0;
             }};
+        static const clap_plugin_note_ports_t kNotePorts{
+            [](const clap_plugin_t*, bool isInput) -> uint32_t { return isInput ? 1 : 0; },
+            [](const clap_plugin_t* pl, uint32_t, bool, clap_note_port_info_t* info) {
+                const bool midi = static_cast<RecorderState*>(pl->plugin_data)->midiOnly;
+                *info = {};
+                info->supported_dialects = midi ? CLAP_NOTE_DIALECT_MIDI : (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI);
+                info->preferred_dialect = midi ? CLAP_NOTE_DIALECT_MIDI : CLAP_NOTE_DIALECT_CLAP;
+                std::strcpy(info->name, "notes");
+                return true;
+            }};
+        if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0) return &kNotePorts;
         return std::strcmp(id, CLAP_EXT_STATE) == 0 ? &kState : nullptr;
     };
     p->on_main_thread = [](const clap_plugin_t*) {};
@@ -98,10 +122,14 @@ inline const clap_plugin_t* createRecorder(const clap_host_t* host) {
 }
 
 inline const clap_plugin_factory_t kFactory{
-    [](const clap_plugin_factory_t*) -> uint32_t { return 1; },
-    [](const clap_plugin_factory_t*, uint32_t) -> const clap_plugin_descriptor_t* { return &kDesc; },
+    [](const clap_plugin_factory_t*) -> uint32_t { return 2; },
+    [](const clap_plugin_factory_t*, uint32_t i) -> const clap_plugin_descriptor_t* {
+        return i == 0 ? &kDesc : i == 1 ? &kMidiDesc : nullptr;
+    },
     [](const clap_plugin_factory_t*, const clap_host_t* host, const char* id) -> const clap_plugin_t* {
-        return std::strcmp(id, kDesc.id) == 0 ? createRecorder(host) : nullptr;
+        if (std::strcmp(id, kDesc.id) == 0) return createRecorder(host);
+        if (std::strcmp(id, kMidiDesc.id) == 0) return createRecorder(host, true);
+        return nullptr;
     }};
 
 inline const clap_plugin_entry_t kEntry{

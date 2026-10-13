@@ -51,12 +51,19 @@ struct RtNode {
     NodeId id;
     audio::ClapPluginInstance* plugin = nullptr;  // null for pure busses/master
     std::uint32_t latency = 0;                    // reported plugin latency
-    std::uint32_t compensation = 0;               // PDC delay added after this node
     float gain = 1.f;
     bool isMaster = false;
 };
 
-struct RtEdge { std::uint32_t from, to; float gain; };
+// `delay` is plugin delay compensation: it aligns this edge's signal with the
+// slowest input of the same summing node. (fromId, toId) identify the edge
+// across snapshots so its delay line keeps its contents through edits.
+struct RtEdge {
+    std::uint32_t from, to;
+    float gain;
+    std::uint32_t delay = 0;
+    NodeId fromId, toId;
+};
 
 struct Section {                 // one movement on the timeline
     MovementId movement;

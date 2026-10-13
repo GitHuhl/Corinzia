@@ -101,7 +101,8 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
     }
     for (const auto& e : routing.edges) {
         auto a = nodeIndex.find(e.from), b = nodeIndex.find(e.to);
-        if (a != nodeIndex.end() && b != nodeIndex.end()) snap->edges.push_back({a->second, b->second, e.gain});
+        if (a != nodeIndex.end() && b != nodeIndex.end())
+            snap->edges.push_back({a->second, b->second, e.gain, 0, e.from, e.to});
     }
     // Longest-latency path into each node (nodes are in topological order).
     std::vector<std::uint32_t> pathLat(snap->nodes.size(), 0);
@@ -111,8 +112,10 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
         pathLat[i] = in + snap->nodes[i].latency;
         if (snap->nodes[i].isMaster) snap->graphLatency = std::max(snap->graphLatency, pathLat[i]);
     }
-    for (std::uint32_t i = 0; i < snap->nodes.size(); ++i)
-        snap->nodes[i].compensation = snap->graphLatency - std::min(snap->graphLatency, pathLat[i]);
+    // PDC: every input of a summing node is delayed up to its slowest input.
+    std::vector<std::uint32_t> inLat(snap->nodes.size(), 0);
+    for (const auto& e : snap->edges) inLat[e.to] = std::max(inLat[e.to], pathLat[e.from]);
+    for (auto& e : snap->edges) e.delay = inLat[e.to] - pathLat[e.from];
 
     // ---- movements ---------------------------------------------------------
     SamplePos cursor = 0;

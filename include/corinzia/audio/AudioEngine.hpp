@@ -28,6 +28,9 @@ public:
     static constexpr std::uint32_t kMaxActiveNotes = 2048;
     static constexpr std::uint32_t kChannels = 2;
     static constexpr std::uint32_t kAutomationStep = 32;   // control-rate resolution, samples
+    static constexpr std::uint32_t kMaxEdges = 1024;
+    static constexpr std::uint32_t kMaxDelayLines = 64;     // edges that need PDC at the same time
+    static constexpr std::uint32_t kDelayLineSize = 16384;  // power of two; max PDC = size-1 samples
 
     using CommandQueue = rt::SpscQueue<rt::UiToAudio, 1024>;
     using TelemetryQueue = rt::SpscQueue<rt::AudioToUi, 4096>;
@@ -62,6 +65,14 @@ private:
         std::array<float*, kChannels> inPtr{}, outPtr{};
         bool bypassed = false;
     };
+    // PDC delay line, owned by an edge identity (fromId, toId) so its contents
+    // survive snapshot swaps; preallocated, assigned on the RT thread.
+    struct DelayLine {
+        NodeId from, to;
+        std::uint32_t write = 0;
+        std::vector<float> buf;                  // kChannels * kDelayLineSize
+        bool used = false;
+    };
     struct ActiveNote { std::uint32_t node; NodeId nodeId; std::int32_t noteId; std::int16_t port, channel, key; };
 
     void handleCommands() noexcept;
@@ -72,6 +83,7 @@ private:
     void fillTransport(SamplePos pos) noexcept;
     void renderGraph(float* const* out, std::uint32_t frames, SamplePos blockStart) noexcept;
     void forwardOutputEvents(std::uint32_t node, SamplePos blockStart) noexcept;
+    void assignDelayLines() noexcept;
     void addActive(const rt::ScheduledNote& n) noexcept;
     void removeActive(std::int32_t noteId, std::uint32_t node) noexcept;
 
@@ -82,6 +94,8 @@ private:
     rt::PlaybackSnapshot* snap_ = nullptr;      // audio-thread owned
     std::vector<std::unique_ptr<NodeState>> nodes_;
     std::vector<double> lastLaneValue_;
+    std::vector<DelayLine> delayLines_;
+    std::array<std::int16_t, kMaxEdges> edgeLine_{};   // edge index -> delay line, -1 = none
     std::array<ActiveNote, kMaxActiveNotes> active_{};
     std::uint32_t activeCount_ = 0;
 

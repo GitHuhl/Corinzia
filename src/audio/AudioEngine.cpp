@@ -34,6 +34,9 @@ void AudioEngine::prepare(double sampleRate, std::uint32_t maxFrames) {
         nodes_.push_back(std::move(ns));
     }
     lastLaneValue_.assign(kMaxLanes, 0.0);
+    delayLines_.assign(kMaxDelayLines, DelayLine{});
+    for (auto& d : delayLines_) d.buf.assign(std::size_t(kChannels) * kDelayLineSize, 0.f);
+    edgeLine_.fill(-1);
 }
 
 void AudioEngine::collectGarbage(void (*onOther)(const rt::AudioToUi&, void*), void* ctx) {
@@ -191,6 +194,7 @@ void AudioEngine::swapSnapshot(rt::PlaybackSnapshot* next) noexcept {
     activeCount_ = kept;
 
     snap_ = next;
+    assignDelayLines();
     noteCursor_ = snap_ ? snap_->firstNoteAtOrAfter(pos_) : 0;
     automationDirty_ = true;
 
@@ -198,6 +202,41 @@ void AudioEngine::swapSnapshot(rt::PlaybackSnapshot* next) noexcept {
         // Telemetry full: extremely unlikely (4096 slots). Leaking one snapshot
         // is preferable to freeing on the RT thread.
         ++dropped_;
+    }
+}
+
+void AudioEngine::assignDelayLines() noexcept {
+    edgeLine_.fill(-1);
+    for (auto& d : delayLines_) d.used = false;
+    if (!snap_) return;
+    const auto edgeCount = std::min<std::size_t>(snap_->edges.size(), kMaxEdges);
+    // Pass 1: edges that already own a line keep it (no click on edits).
+    for (std::size_t k = 0; k < edgeCount; ++k) {
+        const auto& e = snap_->edges[k];
+        if (e.delay == 0) continue;
+        for (std::size_t l = 0; l < delayLines_.size(); ++l)
+            if (!delayLines_[l].used && delayLines_[l].from == e.fromId && delayLines_[l].to == e.toId) {
+                delayLines_[l].used = true;
+                edgeLine_[k] = std::int16_t(l);
+                break;
+            }
+    }
+    // Pass 2: new delayed edges take a free line, starting from silence.
+    for (std::size_t k = 0; k < edgeCount; ++k) {
+        const auto& e = snap_->edges[k];
+        if (e.delay == 0 || edgeLine_[k] >= 0) continue;
+        for (std::size_t l = 0; l < delayLines_.size(); ++l)
+            if (!delayLines_[l].used) {
+                auto& d = delayLines_[l];
+                d.used = true;
+                d.from = e.fromId;
+                d.to = e.toId;
+                d.write = 0;
+                std::fill(d.buf.begin(), d.buf.end(), 0.f);
+                edgeLine_[k] = std::int16_t(l);
+                break;
+            }
+        if (edgeLine_[k] < 0) ++dropped_;   // pool exhausted: edge plays uncompensated
     }
 }
 
@@ -304,15 +343,34 @@ void AudioEngine::renderGraph(float* const* out, std::uint32_t frames, SamplePos
         NodeState& ns = *nodes_[i];
 
         for (std::uint32_t c = 0; c < kChannels; ++c) std::memset(ns.inPtr[c], 0, sizeof(float) * frames);
-        for (const auto& e : snap_->edges) {
+        const auto edgeCount = std::min<std::size_t>(snap_->edges.size(), kMaxEdges);
+        for (std::size_t k = 0; k < edgeCount; ++k) {
+            const auto& e = snap_->edges[k];
             if (e.to != i || e.from >= n) continue;
             const NodeState& src = *nodes_[e.from];
-            for (std::uint32_t c = 0; c < kChannels; ++c)
-                for (std::uint32_t f = 0; f < frames; ++f) ns.inPtr[c][f] += src.outPtr[c][f] * e.gain;
+            if (edgeLine_[k] < 0) {
+                for (std::uint32_t c = 0; c < kChannels; ++c)
+                    for (std::uint32_t f = 0; f < frames; ++f) ns.inPtr[c][f] += src.outPtr[c][f] * e.gain;
+                continue;
+            }
+            // Delayed edge: write the source into the ring, read `delay` samples behind.
+            DelayLine& d = delayLines_[std::size_t(edgeLine_[k])];
+            constexpr std::uint32_t mask = kDelayLineSize - 1;
+            const std::uint32_t delay = std::min(e.delay, mask);
+            for (std::uint32_t c = 0; c < kChannels; ++c) {
+                float* ring = d.buf.data() + std::size_t(c) * kDelayLineSize;
+                std::uint32_t w = d.write;
+                for (std::uint32_t f = 0; f < frames; ++f, ++w) {
+                    ring[w & mask] = src.outPtr[c][f];
+                    ns.inPtr[c][f] += ring[(w - delay) & mask] * e.gain;
+                }
+            }
+            d.write = (d.write + frames) & mask;
         }
 
         bool rendered = false;
         if (node.plugin && !ns.bypassed) {
+            if (!node.plugin->ports().notePortAcceptsClapDialect) ns.in.convertNotesToMidi();
             ns.in.sortByTime();
             clap_audio_buffer_t inBuf{ns.inPtr.data(), nullptr, kChannels, 0, 0};
             clap_audio_buffer_t outBuf{ns.outPtr.data(), nullptr, kChannels, 0, 0};

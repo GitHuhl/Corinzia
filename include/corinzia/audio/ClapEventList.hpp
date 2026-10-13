@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 
@@ -87,6 +88,27 @@ public:
             header(sizeof(clap_event_note_expression_t), time, CLAP_EVENT_NOTE_EXPRESSION), expr, noteId, port,
             channel, key, value};
         return true;
+    }
+
+    // For plugins whose note port only speaks the MIDI dialect: rewrite
+    // NOTE_ON/OFF in place as CLAP_EVENT_MIDI (same slot, same time/priority).
+    // note_id is lost - per-note modulation needs the CLAP dialect.
+    void convertNotesToMidi() noexcept {
+        for (std::uint32_t i = 0; i < count_; ++i) {
+            auto& s = storage_[order_[i].slot];
+            const auto type = s.header.type;
+            if (s.header.space_id != CLAP_CORE_EVENT_SPACE_ID ||
+                (type != CLAP_EVENT_NOTE_ON && type != CLAP_EVENT_NOTE_OFF))
+                continue;
+            const clap_event_note_t n = s.note;
+            const auto ch = std::uint8_t(n.channel < 0 ? 0 : n.channel & 0x0f);
+            const auto key = std::uint8_t(n.key < 0 ? 0 : n.key & 0x7f);
+            const bool on = type == CLAP_EVENT_NOTE_ON;
+            const auto vel = std::uint8_t(on ? std::clamp(int(std::lround(n.velocity * 127.0)), 1, 127) : 0);
+            s.midi = clap_event_midi_t{header(sizeof(clap_event_midi_t), n.header.time, CLAP_EVENT_MIDI),
+                                       std::uint16_t(n.port_index < 0 ? 0 : n.port_index),
+                                       {std::uint8_t((on ? 0x90 : 0x80) | ch), key, vel}};
+        }
     }
 
     void sortByTime() noexcept {

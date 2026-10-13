@@ -21,11 +21,13 @@ struct Rig {
     std::vector<float> l = std::vector<float>(256), r = std::vector<float>(256);
     std::uint64_t generation = 0;
 
-    Rig() {
+    std::uint32_t latencyA = 0;
+
+    explicit Rig(const char* pluginB = "test.recorder", std::uint32_t latA = 0) : latencyA(latA) {
         audio::ThreadRole::markMainThread();
         ids = fixture::makeProject(project);
         a = audio::ClapPluginInstance::create(lib, "test.recorder", ids.synthA);
-        b = audio::ClapPluginInstance::create(lib, "test.recorder", ids.synthB);
+        b = audio::ClapPluginInstance::create(lib, pluginB, ids.synthB);
         a->activate(48000, 1, 1024);
         b->activate(48000, 1, 1024);
         engine.prepare(48000, 1024);
@@ -39,6 +41,7 @@ struct Rig {
         compile::CompileOptions opt;
         opt.generation = ++generation;
         opt.plugin = [this](NodeId n) { return n == ids.synthA ? a.get() : n == ids.synthB ? b.get() : nullptr; };
+        opt.latency = [this](NodeId n) { return n == ids.synthA ? latencyA : 0u; };
         auto snap = compile::compileSnapshot({project.snapshot(ids.mov)}, compile::RoutingSnapshot::capture(project), opt);
         rt::UiToAudio m{rt::UiToAudio::Type::SwapSnapshot};
         m.snapshot = snap.release();
@@ -188,4 +191,43 @@ TEST(clap_state_roundtrip) {
     std::vector<std::byte> blob;
     CHECK(rig.a->saveState(blob) && blob.size() == 4);
     CHECK(rig.a->loadState(blob));
+}
+
+TEST(engine_pdc_aligns_parallel_paths) {
+    // synthA reports 100 samples of latency; synthB's path to master must be
+    // delayed by the same amount so both arrive together.
+    Rig rig("test.recorder", 100);
+    rt::UiToAudio note{rt::UiToAudio::Type::PreviewNote};
+    note.node = 1;                     // topological order: synthA, synthB, master
+    note.key = 60;
+    note.value = 0.8;
+    rig.engine.post(note);
+    rig.run(256);
+    CHECK(rig.engine.playhead().graphLatencyFrames == 100);
+    CHECK_NEAR(rig.l[99], 0.f, 1e-9);  // still inside the compensation delay
+    CHECK_NEAR(rig.l[100], 0.25f, 1e-6);
+    CHECK_NEAR(rig.r[255], 0.25f, 1e-6);
+    // A re-compiled snapshot keeps the same delay line: no gap, no click.
+    rig.swap();
+    rig.run(256);
+    CHECK_NEAR(rig.l[0], 0.25f, 1e-6);
+    CHECK_NEAR(rig.l[150], 0.25f, 1e-6);
+}
+
+TEST(engine_midi_dialect_fallback) {
+    Rig rig("test.recorder.midi");
+    CHECK(!rig.b->ports().notePortAcceptsClapDialect);
+    rig.post(rt::UiToAudio::Type::Play);
+    rig.run(200000);
+    CHECK(Rig::notes(*rig.b, CLAP_EVENT_NOTE_ON).empty());       // never CLAP notes
+    const auto midi = Rig::notes(*rig.b, CLAP_EVENT_MIDI);
+    CHECK(midi.size() == 6);
+    if (midi.size() == 6) {
+        CHECK(midi[0].param == 0x90 && midi[0].channel == 1 && midi[0].key == 81 && midi[0].sample == 96000);
+        CHECK(midi[0].value == 79);                                  // round(0.62 * 127)
+        CHECK(midi[1].param == 0x80 && midi[1].key == 81 && midi[1].sample == 108000);
+    }
+    CHECK(fixture::recorder(*rig.b)->sounding == 0);
+    // The CLAP-dialect plugin on the same engine is unaffected.
+    CHECK(Rig::notes(*rig.a, CLAP_EVENT_NOTE_ON).size() == 3);
 }
