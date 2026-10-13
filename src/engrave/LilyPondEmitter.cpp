@@ -132,7 +132,18 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
             o << "        \\new Voice { " << (lane.voices.size() > 1 ? kVoiceCmd[vi % 4] : "") << "\n";
             Fraction at{0};
             std::size_t ci = 1;   // next instrument change (changes[0] is the initial one)
+            bool inTuplet = false;
+            auto closeTuplet = [&] {
+                if (inTuplet) o << "          }\n";
+                inTuplet = false;
+            };
             for (const auto& ev : *voice.events) {
+                // Triplet values (e.g. 1/12) are written as their plain value
+                // inside \tuplet 3/2 { } so LilyPond draws the bracket.
+                const Fraction plain = ev.duration * Fraction(3, 2);
+                const bool triplet = lilyDuration(ev.duration).find('*') != std::string::npos &&
+                                     lilyDuration(plain).find('*') == std::string::npos;
+                if (ev.start > at || !triplet) closeTuplet();
                 if (ev.start > at) o << "          s" << lilyDuration(ev.start - at) << "\n";   // exact gaps
                 if (vi == 0)
                     while (ci < lane.changes.size() && lane.changes[ci].at <= ev.start) {
@@ -142,10 +153,14 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                               << "\" <>^\\markup \\italic \"" << escape(it->second->name) << "\"\n";
                         ++ci;
                     }
+                if (triplet && !inTuplet) {
+                    o << "          \\tuplet 3/2 {\n";
+                    inTuplet = true;
+                }
                 const InstrumentId inst = lane.instrumentAt(ev.start);
                 const auto tr = ctx.instrumentTracks.find(inst);
                 const TrackId track = tr != ctx.instrumentTracks.end() ? tr->second : TrackId{};
-                const std::string dur = lilyDuration(ev.duration);
+                const std::string dur = lilyDuration(triplet ? plain : ev.duration);
                 o << "          ";
                 if (ev.kind == model::EventKind::Rest || ev.heads.empty()) {
                     o << tag(ev.id.id, "ev rest", voice.id, track) << "r" << dur;
@@ -167,11 +182,16 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                 o << "\n";
                 at = ev.start + ev.duration;
             }
+            closeTuplet();
             o << "        }\n";
         }
         o << "      >>\n    }\n";
     }
-    o << "  >>\n  \\layout { }\n}\n";
+    // Completion engravers split notes and rests that cross a barline into
+    // tied notes / several rests, so overwrite input never yields bad bars.
+    o << "  >>\n  \\layout {\n    \\context { \\Voice\n"
+         "      \\remove \"Note_heads_engraver\" \\consists \"Completion_heads_engraver\"\n"
+         "      \\remove \"Rest_engraver\" \\consists \"Completion_rest_engraver\" }\n  }\n}\n";
     return o.str();
 }
 

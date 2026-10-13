@@ -35,6 +35,7 @@ add_library(corinzia_core
     src/compile/SnapshotCompiler.cpp
     src/engrave/LilyPondEmitter.cpp
     src/storage/ProjectStore.cpp
+    src/edit/NoteInput.cpp
     ${CMAKE_BINARY_DIR}/generated/SchemaSql.cpp
 )
 target_include_directories(corinzia_core PUBLIC include)
@@ -67,11 +68,11 @@ if(CORINZIA_BUILD_UI AND PIPEWIRE_FOUND)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Qml QuickControls2)
     qt_add_executable(corinzia
         src/app/main.cpp
-        include/corinzia/app/AppController.hpp src/app/AppController.cpp
+        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp
         include/corinzia/app/DemoProject.hpp   src/app/DemoProject.cpp
         include/corinzia/app/DummyBackend.hpp
     )
-    qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml)
+    qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml qml/NotesPanel.qml qml/NoteIcon.qml)
     target_link_libraries(corinzia PRIVATE corinzia_ui corinzia_pipewire Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_compile_options(corinzia PRIVATE -Wall -Wextra)
     install(TARGETS corinzia RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -88,6 +89,7 @@ if(CORINZIA_BUILD_TESTS)
         tests/test_engrave.cpp
         tests/test_storage.cpp
         tests/test_plugins.cpp
+        tests/test_edit.cpp
     )
     target_link_libraries(corinzia_tests PRIVATE corinzia_core)
 

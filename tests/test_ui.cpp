@@ -186,6 +186,31 @@ TEST(score_canvas_click_maps_to_element_and_track) {
     CHECK(!frame.isNull());
 }
 
+TEST(layout_locate_inverts_engraved_heads) {
+    Env env;
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok);
+    if (!r || !r->ok) return;
+    int checked = 0;
+    for (const auto& ev : *env.p.movements[0]->lanes[0].voices[0].events)
+        for (const auto& h : ev.heads) {
+            const auto* e = r->index->find(h.id.id);
+            if (!e) continue;
+            const auto hit = r->anchors->locate(e->page, e->bounds.center());
+            CHECK(hit.valid && hit.lane == 0);
+            CHECK(hit.diatonic == h.pitch.step + 7 * h.pitch.octave);
+            CHECK(std::abs(hit.quarter - ev.start.toQuarters()) < 0.15);
+            ++checked;
+        }
+    CHECK(checked == 7);
+    // The caret sits on the lane's staff, inside the system band.
+    const auto caret = r->anchors->caretAt(0, 4.0);
+    const auto sys = r->anchors->cursorAt(4.0);
+    CHECK(caret.valid && caret.top >= sys.top - 1e-9 && caret.bottom - caret.top <= 6.0 + 1e-9);
+    // Far away from any system: no hit.
+    CHECK(!r->anchors->locate(0, QPointF(5, 160)).valid);
+}
+
 TEST(score_canvas_renders_engraving_pixels) {
     Env env;
     auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));

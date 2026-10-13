@@ -27,8 +27,8 @@ bool ChangeSet::empty() const noexcept {
 
 // ------------------------------------------------------- ReplaceVoiceEvents --
 ReplaceVoiceEvents::ReplaceVoiceEvents(MovementId m, VoiceId v, std::shared_ptr<const EventList> after,
-                                       DirtyRange range, std::string label)
-    : movement_(m), voice_(v), after_(std::move(after)), range_(range), label_(std::move(label)) {}
+                                       DirtyRange range, std::string label, bool mergeable)
+    : movement_(m), voice_(v), after_(std::move(after)), range_(range), label_(std::move(label)), mergeable_(mergeable) {}
 
 ChangeSet ReplaceVoiceEvents::swapIn(Project& p, std::shared_ptr<const EventList> list) {
     ChangeSet cs;
@@ -54,12 +54,56 @@ ChangeSet ReplaceVoiceEvents::revert(Project& p) { return swapIn(p, before_); }
 
 bool ReplaceVoiceEvents::mergeWith(const Command& next) {
     auto* n = dynamic_cast<const ReplaceVoiceEvents*>(&next);
-    if (!n || n->voice_ != voice_ || n->label_ != label_) return false;
+    if (!n || !mergeable_ || !n->mergeable_ || n->voice_ != voice_ || n->label_ != label_) return false;
     after_ = n->after_;                      // keep our original before_
     range_.from = std::min(range_.from, n->range_.from);
     range_.to = std::max(range_.to, n->range_.to);
     return true;
 }
+
+// ----------------------------------------------------------------- AddVoice --
+ChangeSet AddVoice::apply(Project& p) {
+    ChangeSet cs;
+    if (Movement* m = p.movement(movement_))
+        for (auto& lane : m->lanes)
+            if (lane.player == player_) {
+                Voice v;
+                v.id = voice_;
+                v.index = index_;
+                lane.voices.push_back(std::move(v));
+                ++m->revision;
+                p.reindexMovement(*m);
+                cs.movements = {movement_};
+                cs.voices = {voice_};
+            }
+    return cs;
+}
+
+ChangeSet AddVoice::revert(Project& p) {
+    ChangeSet cs;
+    if (Movement* m = p.movement(movement_))
+        for (auto& lane : m->lanes)
+            if (std::erase_if(lane.voices, [&](const Voice& v) { return v.id == voice_; })) {
+                ++m->revision;
+                p.reindexMovement(*m);
+                cs.movements = {movement_};
+            }
+    return cs;
+}
+
+// --------------------------------------------------------- SetMovementLength --
+ChangeSet SetMovementLength::set(Project& p, Fraction len) {
+    ChangeSet cs;
+    if (Movement* m = p.movement(movement_)) {
+        if (!captured_) { before_ = m->length; captured_ = true; }
+        m->length = len;
+        ++m->revision;
+        cs.movements = {movement_};
+    }
+    return cs;
+}
+ChangeSet SetMovementLength::apply(Project& p) { return set(p, after_); }
+ChangeSet SetMovementLength::revert(Project& p) { return set(p, before_); }
 
 // ------------------------------------------------------------- SetTrackGain --
 ChangeSet SetTrackGain::set(Project& p, float db) {

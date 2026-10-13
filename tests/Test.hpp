@@ -20,10 +20,10 @@ struct Reg { Reg(const char* n, std::function<void()> f) { registry().push_back(
     static t::Reg TCAT(reg_, name)(#name, &TCAT(test_, name));        \
     static void TCAT(test_, name)()
 
-#define CHECK(cond)                                                                       \
+#define CHECK(...)                                                                        \
     do {                                                                                  \
-        if (!(cond)) {                                                                    \
-            std::fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);        \
+        if (!(__VA_ARGS__)) {                                                             \
+            std::fprintf(stderr, "  FAIL %s:%d: %s\n", __FILE__, __LINE__, #__VA_ARGS__); \
             ++t::failures();                                                              \
         }                                                                                 \
     } while (0)

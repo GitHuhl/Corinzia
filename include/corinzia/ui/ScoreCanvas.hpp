@@ -31,6 +31,7 @@ class ScoreCanvas : public QQuickItem {
     Q_PROPERTY(qreal zoom READ zoom WRITE setZoom NOTIFY zoomChanged)
     Q_PROPERTY(QPointF pan READ pan WRITE setPan NOTIFY panChanged)
     Q_PROPERTY(QColor paperColor MEMBER paper_ NOTIFY paperColorChanged)
+    Q_PROPERTY(bool inputMode READ inputMode WRITE setInputMode NOTIFY inputModeChanged)
 
 public:
     explicit ScoreCanvas(QQuickItem* parent = nullptr);
@@ -47,6 +48,10 @@ public:
     // Playhead in musical time (quarters from movement start); NaN hides it.
     Q_INVOKABLE void setPlayheadQuarter(double quarter);
     void setSelection(ElementId id);
+    // Note-input caret on one lane's staff; NaN quarter hides it.
+    void setCaret(std::size_t lane, double quarter);
+    bool inputMode() const noexcept { return inputMode_; }
+    void setInputMode(bool on);
 
     // Geometry helpers (item coordinates <-> page/staff-space coordinates).
     struct PagePoint { int page = -1; QPointF pt; };
@@ -62,6 +67,9 @@ signals:
     // Emitted on click: the semantic object and the DAW track it sounds through.
     void elementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
     void emptyClicked(int page, QPointF staffSpacePos);
+    void inputModeChanged();
+    // Input mode: every click is a note-entry request at this page position.
+    void inputClicked(int page, QPointF staffSpacePos, Qt::KeyboardModifiers mods);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -81,6 +89,9 @@ private:
     std::vector<LayoutAnchors::Region> masks_;
     ElementId selection_, hover_;
     double playheadQ_ = std::numeric_limits<double>::quiet_NaN();
+    double caretQ_ = std::numeric_limits<double>::quiet_NaN();
+    std::size_t caretLane_ = 0;
+    bool inputMode_ = false;
     qreal zoom_ = 1.0;
     QPointF pan_;
     QColor paper_ = QColor(255, 255, 250);

@@ -143,14 +143,22 @@ void AudioEngine::handleCommands() noexcept {
                 for (std::uint32_t i = 0; snap_ && i < snap_->nodes.size() && i < kMaxNodes; ++i)
                     if (snap_->nodes[i].id == m->nodeId) nodes_[i]->bypassed = false;
                 break;
-            case T::PreviewNote:
-                if (m->node < kMaxNodes) {
+            case T::PreviewNote: {
+                // Address by NodeId (UI side) or by snapshot index (tests/tools).
+                std::uint32_t node = m->node;
+                if (m->nodeId.valid()) {
+                    node = kMaxNodes;
+                    for (std::uint32_t i = 0; snap_ && i < snap_->nodes.size() && i < kMaxNodes; ++i)
+                        if (snap_->nodes[i].id == m->nodeId) node = i;
+                }
+                if (node < kMaxNodes) {
                     const bool on = m->value >= 0.0;
-                    if (!nodes_[m->node]->in.pushNote(on ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF, 0, -1, m->port,
+                    if (!nodes_[node]->in.pushNote(on ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF, 0, -1, m->port,
                                                       m->channel, m->key, on ? m->value : 0.0))
                         ++dropped_;
                 }
                 break;
+            }
         }
     }
 }

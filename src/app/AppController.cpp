@@ -86,6 +86,10 @@ void AppController::resetProject() {
     undo_ = model::UndoStack{};
     selection_ = {};
     selectionLabel_.clear();
+    inputMode_ = false;
+    caretLane_ = 0;
+    caretPos_ = Fraction{0};
+    voice_ = 1;
 }
 
 void AppController::newDemoProject() {
@@ -220,7 +224,16 @@ bool AppController::selectFirstNote() {
 
 void AppController::onElementClicked(quint64 elementId, quint64, quint64, Qt::KeyboardModifiers) {
     selection_ = ElementId{elementId};
+    // The caret follows the selection, so pressing N continues from there.
+    if (const model::Locator* loc = project_.locate(selection_))
+        if (const model::Movement* m = project_.movement(loc->movement))
+            for (std::size_t li = 0; li < m->lanes.size(); ++li)
+                for (const auto& v : m->lanes[li].voices)
+                    if (v.id == loc->voice)
+                        if (const auto* ev = edit::findEvent(*v.events, selection_))
+                            moveCaretTo(li, v.index, ev->start + ev->duration);
     updateSelectionLabel();
+    syncCaret();
 }
 
 void AppController::transposeSelection(int steps) {
@@ -402,6 +415,8 @@ void AppController::attachCanvas(ui::ScoreCanvas* canvas) {
     canvas_ = canvas;
     if (!canvas) return;
     connect(canvas, &ui::ScoreCanvas::elementClicked, this, &AppController::onElementClicked, Qt::UniqueConnection);
+    connect(canvas, &ui::ScoreCanvas::inputClicked, this, &AppController::placeNoteAt, Qt::UniqueConnection);
+    syncCaret();
     if (auto m = displayedMovement(); m.valid()) {
         requestEngrave(m);
         engraving_.engraveNow(m);

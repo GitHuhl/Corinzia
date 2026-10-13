@@ -13,6 +13,7 @@
 
 #include "corinzia/audio/AudioEngine.hpp"
 #include "corinzia/audio/PluginManager.hpp"
+#include "corinzia/edit/NoteInput.hpp"
 #include "corinzia/model/Commands.hpp"
 #include "corinzia/rt/PlayheadTracker.hpp"
 #include "corinzia/storage/ProjectStore.hpp"
@@ -43,6 +44,15 @@ class AppController : public QObject {
     Q_PROPERTY(QString selectionLabel READ selectionLabel NOTIFY selectionChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(int engraveCount READ engraveCount NOTIFY statusChanged)
+    // ---- note input state (one NOTIFY: the toolbar re-reads everything) ------
+    Q_PROPERTY(bool inputMode READ inputMode WRITE setInputMode NOTIFY inputStateChanged)
+    Q_PROPERTY(int duration READ duration WRITE setDuration NOTIFY inputStateChanged)     // 0=whole .. 6=64th
+    Q_PROPERTY(int dots READ dots WRITE setDots NOTIFY inputStateChanged)
+    Q_PROPERTY(bool triplet READ triplet WRITE setTriplet NOTIFY inputStateChanged)
+    Q_PROPERTY(int accidental READ accidental WRITE setAccidental NOTIFY inputStateChanged)  // 9=key, -1 flat, 0 natural, 1 sharp
+    Q_PROPERTY(bool chordMode READ chordMode WRITE setChordMode NOTIFY inputStateChanged)
+    Q_PROPERTY(int voice READ voice WRITE setVoice NOTIFY inputStateChanged)               // 1..4
+    Q_PROPERTY(QString caretLabel READ caretLabel NOTIFY inputStateChanged)
 
 public:
     struct Options {
@@ -72,6 +82,36 @@ public:
     Q_INVOKABLE void rescanPlugins();
     Q_INVOKABLE bool assignPlugin(int trackIndex, int pluginIndex);
 
+    // ---- note input (Sibelius/Dorico-style; see docs/ARCHITECTURE.md §5.5) ---
+    Q_INVOKABLE void enterNote(int step, bool addToChord = false);   // step 0=C..6=B
+    Q_INVOKABLE void enterRest();
+    Q_INVOKABLE void moveCaret(int direction);                      // ±1 by the current duration
+    Q_INVOKABLE void moveCaretStaff(int direction);                 // ±1 staff
+    Q_INVOKABLE void backspace();                                   // delete the event before the caret
+    Q_INVOKABLE void deleteSelection();
+    Q_INVOKABLE void toggleArticulation(int flag);                  // model::Articulation bit
+    Q_INVOKABLE void setDynamic(int mark);                          // 0=ppp..7=fff, -1 clears
+    Q_INVOKABLE void toggleTie();
+    Q_INVOKABLE void cycleVoice() { setVoice(voice_ % 4 + 1); }
+    void placeNoteAt(int page, QPointF staffSpacePos, Qt::KeyboardModifiers mods);   // mouse entry
+
+    bool inputMode() const noexcept { return inputMode_; }
+    void setInputMode(bool on);
+    int duration() const noexcept { return int(spec_.base); }
+    void setDuration(int d);
+    int dots() const noexcept { return spec_.dots; }
+    void setDots(int d);
+    bool triplet() const noexcept { return spec_.triplet; }
+    void setTriplet(bool t);
+    int accidental() const noexcept { return accidental_; }
+    void setAccidental(int a);
+    bool chordMode() const noexcept { return chordMode_; }
+    void setChordMode(bool c);
+    int voice() const noexcept { return voice_; }
+    void setVoice(int v);
+    QString caretLabel() const;
+    Fraction caretPosition() const noexcept { return caretPos_; }
+
     bool playing() const noexcept { return playing_; }
     bool canUndo() const noexcept { return undo_.canUndo(); }
     bool canRedo() const noexcept { return undo_.canRedo(); }
@@ -97,6 +137,7 @@ signals:
     void selectionChanged();
     void statusChanged();
     void engraved();
+    void inputStateChanged();
 
 private slots:
     void onElementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
@@ -113,6 +154,13 @@ private:
     void setStatus(QString s);
     engrave::EngraveContext engraveContext() const;
     MovementId displayedMovement() const;
+    // Note input helpers (AppControllerInput.cpp).
+    struct VoiceRef { model::Movement* movement; model::PlayerLane* lane; model::Voice* voice; };
+    VoiceRef caretVoice(bool create);
+    void commitVoiceEdit(const VoiceRef& ref, const edit::EditResult& r, const char* label, bool extendLength);
+    void moveCaretTo(std::size_t lane, int voice, Fraction pos);
+    void audition(const model::PlayerLane& lane, Fraction at, const std::vector<model::Pitch>& pitches);
+    void syncCaret();
 
     Options opt_;
     model::Project project_;
@@ -132,6 +180,14 @@ private:
     rt::PlayheadTracker tracker_;
     std::shared_ptr<const std::vector<rt::Section>> sections_;   // tempo maps of the live snapshot
     std::uint64_t compileRequested_ = 0;
+
+    // Note input state.
+    bool inputMode_ = false, chordMode_ = false;
+    edit::DurationSpec spec_;
+    int accidental_ = 9;              // 9 = follow the key signature
+    int voice_ = 1;
+    std::size_t caretLane_ = 0;
+    Fraction caretPos_{0};
 
     ElementId selection_;
     QString selectionLabel_, status_;

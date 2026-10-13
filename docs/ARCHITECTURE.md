@@ -508,6 +508,50 @@ thing. Tested end-to-end with real LilyPond output: every head is found, the
 centre-click resolves to that head, and its track is correct before *and after*
 the Flute→Piccolo change (`score_canvas_click_maps_to_element_and_track`).
 
+### 5.5 Note input
+
+Writing notes follows the Sibelius/Dorico overwrite model and reuses every
+pipeline above. No special rendering path exists for input.
+
+* **Editing core** (`edit/NoteInput.*`, Qt-free, unit-tested): pure functions
+  from an `EventList` to a new COW `EventList`. They cover overwrite insertion
+  (covered events removed, partly covered ones truncated), voice-1 contiguity
+  (remainders and gaps become rests, voices 2–4 may have holes), chords,
+  delete (a chord loses one head, a note becomes a rest), articulation, tie
+  and dynamic changes, triplets via `DurationSpec`, and key-aware spelling
+  with the octave nearest the previous note.
+* **Commands:** each entered item is one `ReplaceVoiceEvents` (non-merging),
+  wrapped in a macro with `AddVoice` (typing into a new voice) and
+  `SetMovementLength` (typing past the final barline adds whole bars). One
+  undo removes exactly one entered item.
+* **Caret:** `(lane, voice, position)`. It follows the selection and is drawn
+  on its lane's staff by `LayoutAnchors::caretAt`.
+* **Mouse entry:** `LayoutAnchors::locate(page, point)` inverts the engraved
+  geometry. The system comes from y; the beat comes from x via the
+  piecewise-linear onset map; the staff and pitch come from the per-lane
+  `y = c₀ + c₁·diatonic` fit. The beat snaps to the current duration grid.
+  Shift-click adds to a chord.
+* **Feedback:** the provisional layer (§5.2) shows the new note on the next
+  frame; the snapshot swap makes it audible; the note is auditioned through its
+  track's plugin (`PreviewNote` by `NodeId`). The definitive engraving follows.
+* **Engraving support:** triplets are emitted as `\tuplet 3/2 { … }`, and the
+  Completion engravers split notes and rests that cross barlines into ties.
+
+| Key | Action | Key | Action |
+|---|---|---|---|
+| N / Esc | input on / off | A–G | note (Shift = add to chord) |
+| 1–7 | 64th … whole | . | dot (cycles double dot) |
+| ; | triplet | R or , | rest |
+| − / = / 0 | flat / sharp / natural for the next note | Q | chord mode |
+| T | tie | V | next voice |
+| [ ' ] \\ | staccato, accent, tenuto, marcato | ←/→ | move caret |
+| ↑/↓ (Ctrl) | transpose selection (octave) | Alt+↑/↓ | previous / next staff |
+| Backspace | delete before the caret | Del | delete selection |
+
+The left **Notes panel** (`qml/NotesPanel.qml`) mirrors all of these with
+drawn duration icons, accidentals, articulations, dynamics and voices. Its
+buttons never take keyboard focus, so typing always reaches the score.
+
 ---
 
 ## 6. Thread synchronization diagram
@@ -617,8 +661,8 @@ python3 -I scripts/validate_schema.py
 nix build                        # sandboxed build + full test suite (incl. LilyPond + offscreen Qt)
 ```
 
-**Verified by tests.** Four ctest suites: core (32 cases, also clean under
-ASan + UBSan), PipeWire end-to-end, Qt/UI (5 cases, pixel-level) and an app
+**Verified by tests.** Four ctest suites: core (39 cases, also clean under
+ASan + UBSan), PipeWire end-to-end, Qt/UI (6 cases, pixel-level) and an app
 smoke run.
 
 | Area | Tests |
@@ -633,7 +677,8 @@ smoke run.
 | Engraving | pitch/duration/tuplet/key/tempo-ramp emission; every head id present in real LilyPond 2.26 SVG output |
 | Storage | full round trip; a one-note edit rewrites exactly one chunk; 1 MiB plugin state skipped when unchanged; worker coalescing; undo journal |
 | Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; page, playhead and provisional sprites verified at pixel level across re-engraves |
-| App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; undo; save to `.project` and reopen; engraved music visible on screen |
+| Note input | overwrite insert/truncate/fill, chords, delete, modify, durations incl. triplets, key-aware nearest-octave spelling; `locate` inverts every engraved head to its staff, beat and pitch; tuplet and barline-completion emission compiled by LilyPond |
+| App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; save to `.project` and reopen; engraved music visible on screen |
 
 **Run the application:** `nix run` (or `corinzia [--no-audio] [file.project]`
 from the dev shell). Space plays or stops; ↑/↓ transpose the selected note
@@ -643,7 +688,7 @@ mixer lets you assign any installed CLAP instrument to a track.
 **Still to do** (next milestones):
 
 1. Plugin GUI embedding (`clap.gui`, X11/Wayland) and the timer/posix-fd host extensions.
-2. Note entry (mouse and keyboard), selection ranges, copy/paste commands; piano roll and timeline views.
+2. Range selection, copy/paste, re-pitching via MIDI keyboard; a hover "ghost note" in input mode; slurs, hairpins and text; piano roll and timeline views.
 3. Zoom-settled re-rasterization; engraving cache read path; multi-movement navigation; transposed parts.
 4. Command serialization for `undo_journal` replay on open; undoable routing edits (plugin assignment).
 5. Note-expression and automation lanes in the UI; automation recording from plugin `ParamChanged`.

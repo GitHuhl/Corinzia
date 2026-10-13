@@ -44,8 +44,10 @@ public:
 // "before" and "after" costs two shared_ptrs, not two copies of the voice.
 class ReplaceVoiceEvents final : public Command {
 public:
+    // `mergeable`: consecutive commands with the same label on the same voice
+    // collapse into one undo step (dragging a pitch); note entry passes false.
     ReplaceVoiceEvents(MovementId m, VoiceId v, std::shared_ptr<const EventList> after,
-                       DirtyRange range, std::string label);
+                       DirtyRange range, std::string label, bool mergeable = true);
     std::string label() const override { return label_; }
     ChangeSet apply(Project& p) override;
     ChangeSet revert(Project& p) override;
@@ -58,6 +60,38 @@ private:
     std::shared_ptr<const EventList> before_, after_;
     DirtyRange range_;
     std::string label_;
+    bool mergeable_ = true;
+};
+
+// Adds an (empty) voice to a player lane, e.g. when input switches to voice 2.
+class AddVoice final : public Command {
+public:
+    AddVoice(MovementId m, PlayerId player, VoiceId voice, std::uint8_t index)
+        : movement_(m), player_(player), voice_(voice), index_(index) {}
+    std::string label() const override { return "Add voice"; }
+    ChangeSet apply(Project& p) override;
+    ChangeSet revert(Project& p) override;
+
+private:
+    MovementId movement_;
+    PlayerId player_;
+    VoiceId voice_;
+    std::uint8_t index_;
+};
+
+// Changes a movement's length (input past the final barline extends it).
+class SetMovementLength final : public Command {
+public:
+    SetMovementLength(MovementId m, Fraction length) : movement_(m), after_(length) {}
+    std::string label() const override { return "Movement length"; }
+    ChangeSet apply(Project& p) override;
+    ChangeSet revert(Project& p) override;
+
+private:
+    ChangeSet set(Project& p, Fraction len);
+    MovementId movement_;
+    Fraction before_{0}, after_;
+    bool captured_ = false;
 };
 
 // Mixer edit: one DAW track's gain. Consecutive moves of the same fader merge.

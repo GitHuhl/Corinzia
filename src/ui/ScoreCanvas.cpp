@@ -16,7 +16,7 @@ enum Slot { PagesSlot = 0, OverlaySlot = 1 };
 // Overlay children, created once and never deleted (unused ones get an empty
 // rect / zero vertices): the software adaptation does not reliably pick up
 // nodes that are deleted and recreated between frames.
-enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild };
+enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild, CaretChild };
 
 // Provisional glyph sprites. Drawn as textured quads rather than custom
 // geometry so they render on every scene-graph backend, including the
@@ -93,6 +93,19 @@ void ScoreCanvas::setPlayheadQuarter(double q) {
     update();
 }
 
+void ScoreCanvas::setCaret(std::size_t lane, double quarter) {
+    caretLane_ = lane;
+    caretQ_ = quarter;
+    update();
+}
+
+void ScoreCanvas::setInputMode(bool on) {
+    if (on == inputMode_) return;
+    inputMode_ = on;
+    emit inputModeChanged();
+    update();
+}
+
 void ScoreCanvas::setSelection(ElementId id) {
     selection_ = id;
     update();
@@ -127,6 +140,12 @@ ScoreCanvas::PagePoint ScoreCanvas::toPage(QPointF itemPos) const {
 void ScoreCanvas::mousePressEvent(QMouseEvent* e) {
     const PagePoint pp = toPage(e->position());
     if (pp.page < 0 || !result_ || !result_->index) return QQuickItem::mousePressEvent(e);
+    forceActiveFocus();
+    if (inputMode_ && e->button() == Qt::LeftButton) {
+        emit inputClicked(pp.page, pp.pt, e->modifiers());
+        e->accept();
+        return;
+    }
     if (const auto* hit = result_->index->hitTest(pp.page, pp.pt)) {
         setSelection(hit->id);
         emit elementClicked(hit->id.value, hit->voice, hit->track, e->modifiers());
@@ -191,6 +210,7 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(255, 170, 0, 70)));   // HoverChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 120, 255, 90)));   // SelectionChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(220, 30, 30, 200)));  // PlayheadChild
+        overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 150, 70, 220)));   // CaretChild
         root->appendChildNode(overlay);
         texturesDirty_ = true;
     }
@@ -284,6 +304,13 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         if (c.valid) playhead = QRectF(c.x - 0.12, c.top + pageY(c.page), 0.24, c.bottom - c.top);
     }
     static_cast<QSGSimpleRectNode*>(overlay->childAtIndex(PlayheadChild))->setRect(playhead);
+
+    QRectF caret;
+    if (result_ && inputMode_ && !std::isnan(caretQ_) && result_->anchors) {
+        const auto c = result_->anchors->caretAt(caretLane_, caretQ_);
+        if (c.valid) caret = QRectF(c.x - 0.9, c.top + pageY(c.page), 0.3, c.bottom - c.top);   // just left of the onset
+    }
+    static_cast<QSGSimpleRectNode*>(overlay->childAtIndex(CaretChild))->setRect(caret);
     return root;
 }
 

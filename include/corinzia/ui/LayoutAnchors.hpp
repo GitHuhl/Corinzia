@@ -34,6 +34,13 @@ public:
     struct Region { int page; QRectF rect; };
     std::vector<Region> staleRegions(Fraction from, Fraction to) const;
 
+    // Input caret: like cursorAt, but limited vertically to one lane's staff.
+    CursorPos caretAt(std::size_t lane, double quarter) const;
+
+    // Mouse note entry: page point -> (lane, musical position, diatonic step).
+    struct Hit { bool valid = false; std::size_t lane = 0; double quarter = 0; int diatonic = 0; };
+    Hit locate(int page, QPointF pt) const;
+
     std::size_t size() const noexcept { return timeline_.size(); }
 
 private:
@@ -44,6 +51,9 @@ private:
     const Point* before(double q) const;     // last point with quarter <  q
     const Point* atOrAfter(double q) const;  // first point with quarter >= q
     qreal xAt(double q, const Point* a, const Point* b) const;
+    // y = c0 + c1 * diatonic, least squares over the lane's heads in `system`.
+    bool fitLane(std::size_t lane, int system, double& c0, double& c1) const;
+    int systemAt(int page, qreal y) const;
 
     std::vector<Point> timeline_;            // one per distinct engraved onset, sorted
     std::vector<HeadSample> heads_;

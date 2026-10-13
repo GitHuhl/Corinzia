@@ -76,3 +76,26 @@ TEST(lily_tempo_ramps_print_rit_not_duplicate_marks) {
     CHECK(count("\\tempo \"rit.\"") == 1);
     CHECK(count("\\tempo 4 = 72") == 1);
 }
+
+TEST(lily_triplets_and_barline_completion) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    auto& m = *p.movements[0];
+    auto evs = std::make_shared<model::EventList>();
+    for (int i = 0; i < 3; ++i) evs->push_back(fixture::ev(p, Fraction(i, 12), Fraction(1, 12), {fixture::head(p, i, 5)}));
+    evs->push_back(fixture::ev(p, Fraction(1, 4), Fraction(1, 2), {fixture::head(p, 4, 4)}));
+    evs->push_back(fixture::ev(p, Fraction(3, 4), Fraction(1, 2), {fixture::head(p, 5, 4)}));   // crosses the barline
+    m.lanes[0].voices[0].events = evs;
+    engrave::EngraveContext ctx;
+    const std::string ly = engrave::emitLilyPond(m, ctx);
+    CHECK(ly.find("\\tuplet 3/2 {") != std::string::npos);
+    CHECK(ly.find("*2/3") == std::string::npos);
+    CHECK(ly.find("Completion_heads_engraver") != std::string::npos);
+    if (const char* lily = std::getenv("CORINZIA_LILYPOND")) {
+        const std::string base = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/corinzia_tuplet";
+        { std::ofstream(base + ".ly") << ly; }
+        const std::string cmd = std::string(lily) + " -dbackend=svg -s -o " + base + " " + base + ".ly";
+        CHECK(std::system(cmd.c_str()) == 0);
+    }
+}

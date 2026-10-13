@@ -91,16 +91,11 @@ std::vector<LayoutAnchors::Glyph> LayoutAnchors::provisional(const model::Moveme
     const int system = ref->system;
 
     for (std::size_t li = 0; li < m.lanes.size(); ++li) {
-        // Least-squares fit y = c0 + c1 * diatonic over this lane's heads in the system.
-        double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
-        for (const auto& h : heads_)
-            if (h.lane == li && h.system == system) {
-                n += 1; sx += h.diatonic; sy += h.y; sxx += double(h.diatonic) * h.diatonic; sxy += h.diatonic * h.y;
-            }
-        double c1 = kStepHeight, c0;
-        if (n >= 2 && (n * sxx - sx * sx) > 1e-9) c1 = (n * sxy - sx * sy) / (n * sxx - sx * sx);
-        if (n >= 1) c0 = (sy - c1 * sx) / n;
-        else c0 = systems_[std::size_t(system)].top + 4.0 - c1 * 34;   // centre B4 in the strip
+        double c0, c1;
+        if (!fitLane(li, system, c0, c1)) {
+            c1 = kStepHeight;
+            c0 = systems_[std::size_t(system)].top + 4.0 - c1 * 34;   // centre B4 in the strip
+        }
 
         for (const auto& v : m.lanes[li].voices)
             for (const auto& ev : *v.events) {
@@ -135,6 +130,97 @@ std::vector<LayoutAnchors::Region> LayoutAnchors::staleRegions(Fraction from, Fr
         out.push_back({p.page, QRectF(QPointF(p.x - 1.5, s.top), QPointF(p.x + 1.5, s.bottom))});
     }
     return out;
+}
+
+bool LayoutAnchors::fitLane(std::size_t lane, int system, double& c0, double& c1) const {
+    double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const auto& h : heads_)
+        if (h.lane == lane && h.system == system) {
+            n += 1; sx += h.diatonic; sy += h.y; sxx += double(h.diatonic) * h.diatonic; sxy += h.diatonic * h.y;
+        }
+    if (n < 1) return false;
+    c1 = (n >= 2 && (n * sxx - sx * sx) > 1e-9) ? (n * sxy - sx * sy) / (n * sxx - sx * sx) : kStepHeight;
+    // A badly conditioned fit (e.g. all heads on one pitch) falls back to the known slope.
+    if (c1 > -0.3 || c1 < -0.7) c1 = kStepHeight;
+    c0 = (sy - c1 * sx) / n;
+    return true;
+}
+
+int LayoutAnchors::systemAt(int page, qreal y) const {
+    int best = -1;
+    qreal bestDist = 1e18;
+    for (std::size_t s = 0; s < systems_.size(); ++s) {
+        if (systems_[s].page != page) continue;
+        const qreal d = y < systems_[s].top ? systems_[s].top - y : y > systems_[s].bottom ? y - systems_[s].bottom : 0;
+        if (d < bestDist) { bestDist = d; best = int(s); }
+    }
+    return bestDist < 6.0 ? best : -1;   // within 6 staff spaces of a system
+}
+
+LayoutAnchors::CursorPos LayoutAnchors::caretAt(std::size_t lane, double quarter) const {
+    CursorPos c = cursorAt(quarter);
+    if (!c.valid) return c;
+    const Point* p = atOrAfter(quarter);
+    if (!p || p->quarter != quarter) p = before(quarter);
+    if (!p) p = atOrAfter(quarter);
+    double c0, c1;
+    if (p && fitLane(lane, p->system, c0, c1)) {
+        // The staff's middle line is the median of the lane's engraved heads'
+        // fitted positions; a staff is 4 spaces tall: draw a 6-space caret.
+        double sum = 0, n = 0;
+        for (const auto& h : heads_)
+            if (h.lane == lane && h.system == p->system) { sum += h.y; ++n; }
+        const double mid = n ? sum / n : c0 + c1 * 34;
+        c.top = mid - 3.0;
+        c.bottom = mid + 3.0;
+    }
+    return c;
+}
+
+LayoutAnchors::Hit LayoutAnchors::locate(int page, QPointF pt) const {
+    Hit hit;
+    const int system = systemAt(page, pt.y());
+    if (system < 0) return hit;
+
+    // x -> quarter: invert the piecewise-linear onset map inside this system.
+    const Point* first = nullptr;
+    const Point* last = nullptr;
+    const Point* left = nullptr;
+    const Point* right = nullptr;
+    for (const auto& p : timeline_) {
+        if (p.system != system) continue;
+        if (!first) first = &p;
+        last = &p;
+        if (p.x <= pt.x()) left = &p;
+        if (p.x > pt.x() && !right) right = &p;
+    }
+    if (!first) return hit;
+    if (left && right && right->x > left->x)
+        hit.quarter = left->quarter + (pt.x() - left->x) / (right->x - left->x) * (right->quarter - left->quarter);
+    else if (!left)
+        hit.quarter = std::max(0.0, first->quarter - (first->x - pt.x()) / kFallbackQuarterWidth);
+    else
+        hit.quarter = last->quarter + (pt.x() - last->x) / kFallbackQuarterWidth;
+
+    // y -> lane: the lane whose engraved heads sit closest; then the pitch.
+    double bestDist = 1e18;
+    std::size_t lanes = 0;
+    for (const auto& h : heads_) lanes = std::max(lanes, h.lane + 1);
+    for (std::size_t li = 0; li < lanes; ++li) {
+        double sum = 0, n = 0;
+        for (const auto& h : heads_)
+            if (h.lane == li && h.system == system) { sum += h.y; ++n; }
+        if (!n) continue;
+        const double d = std::abs(pt.y() - sum / n);
+        double c0, c1;
+        if (d < bestDist && fitLane(li, system, c0, c1)) {
+            bestDist = d;
+            hit.lane = li;
+            hit.diatonic = int(std::lround((pt.y() - c0) / c1));
+            hit.valid = true;
+        }
+    }
+    return hit;
 }
 
 }  // namespace corinzia::ui
