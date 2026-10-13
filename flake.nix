@@ -11,6 +11,14 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # Unwrapped binaries (dev shell, test phase) need the QML import path that
+      # wrapQtAppsHook only adds to installed programs; log to stderr, not journald.
+      qtRuntimeEnv = pkgs: ''
+        export QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}
+        export QT_FORCE_STDERR_LOGGING=1
+        export LANG=C.UTF-8
+      '';
+
       nativeDeps = pkgs: with pkgs; [ cmake ninja pkg-config qt6.wrapQtAppsHook ];
       buildDeps = pkgs: with pkgs; [
         clap                 # CLAP plugin ABI headers
@@ -37,6 +45,7 @@
           preCheck = ''
             export HOME=$TMPDIR
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond
+            ${qtRuntimeEnv pkgs}
           '';
           # Engraving backend is an out-of-process tool resolved at runtime.
           qtWrapperArgs = [ "--prefix PATH : ${pkgs.lilypond}/bin" ];
@@ -50,8 +59,13 @@
           packages = with pkgs; [ lilypond sqlite-interactive python3 gdb clang-tools ];
           shellHook = ''
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond
+            ${qtRuntimeEnv pkgs}
           '';
         };
+      });
+
+      apps = forAll (pkgs: {
+        default = { type = "app"; program = "${self.packages.${pkgs.system}.default}/bin/corinzia"; };
       });
 
       checks = forAll (pkgs: { build = self.packages.${pkgs.system}.default; });

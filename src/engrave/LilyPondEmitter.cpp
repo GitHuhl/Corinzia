@@ -90,13 +90,23 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
     o << "global = {\n";
     Fraction pos{0};
     std::size_t mi = 0, ki = 0, ti = 0;
+    int printedBpm = -1;
     while (pos < m.length) {
         Fraction next = m.length;
         if (mi < m.meter.size() && m.meter[mi].at <= pos)
             o << "  \\time " << m.meter[mi].numerator << "/" << m.meter[mi].denominator << "\n", ++mi;
         if (ki < m.keys.size() && m.keys[ki].at <= pos) o << "  " << lilyKey(m.keys[ki].fifths, m.keys[ki].minor) << "\n", ++ki;
-        if (ti < m.tempo.size() && m.tempo[ti].at <= pos)
-            o << "  \\tempo 4 = " << int(std::lround(m.tempo[ti].quarterBpm)) << "\n", ++ti;
+        if (ti < m.tempo.size() && m.tempo[ti].at <= pos) {
+            // A metronome mark only when the tempo actually changes; the start
+            // of a ramp gets "rit."/"accel." and its arrival the new marking.
+            const auto& t = m.tempo[ti];
+            const int bpm = int(std::lround(t.quarterBpm));
+            if (bpm != printedBpm) o << "  \\tempo 4 = " << bpm << "\n";
+            printedBpm = bpm;
+            if (t.rampToNext && ti + 1 < m.tempo.size() && m.tempo[ti + 1].quarterBpm != t.quarterBpm)
+                o << "  \\tempo \"" << (m.tempo[ti + 1].quarterBpm < t.quarterBpm ? "rit." : "accel.") << "\"\n";
+            ++ti;
+        }
         if (mi < m.meter.size()) next = std::min(next, m.meter[mi].at);
         if (ki < m.keys.size()) next = std::min(next, m.keys[ki].at);
         if (ti < m.tempo.size()) next = std::min(next, m.tempo[ti].at);

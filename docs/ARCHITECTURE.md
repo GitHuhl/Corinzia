@@ -328,16 +328,37 @@ sample ──Section.tempo.quarterAtSample──▶ quarter ──LayoutAnchors:
 system), so the cursor glides across bars with uneven spacing. It is tested
 against the real LilyPond output (`engraving_service_definitive_pass_and_hit_testing`).
 
-### 3.6 Not yet implemented in the engine
+### 3.6 Delay compensation, MIDI fallback, plugin management, backend
 
-* **Per-node PDC delay lines.** `RtNode::compensation` is computed by the
-  compiler, but `renderGraph` does not yet delay shorter paths. Cursor
-  compensation already uses `graphLatency`.
-* **Backends.** The PipeWire/JACK/ALSA adapters are specified here but not in
-  the repository yet. The engine is backend-agnostic and exercised by tests that
-  call `process()` directly.
-* **MIDI-dialect-only plugins:** detected (`notePortAcceptsClapDialect`), but
-  the `CLAP_EVENT_MIDI` translation path is still a TODO.
+* **PDC.** The compiler gives every edge `delay = slowest input of its summing
+  node − this edge's path latency`. The engine applies it with a pool of 64
+  preallocated ring buffers (16384 samples each). Lines are assigned to edges
+  by identity `(fromId, toId)` on each snapshot swap, so an edit never empties
+  a delay line, which would click (`engine_pdc_aligns_parallel_paths`).
+* **MIDI-dialect plugins.** If a plugin's note port lacks
+  `CLAP_NOTE_DIALECT_CLAP`, note events are rewritten in place as
+  `CLAP_EVENT_MIDI` (0x9n/0x8n, velocity ×127). `note_id` is lost, so per-note
+  modulation needs the CLAP dialect (`engine_midi_dialect_fallback`).
+* **`PluginManager`** (`audio/PluginManager.*`) scans `CLAP_PATH`, `~/.clap`,
+  the NixOS profile directories (`~/.nix-profile/lib/clap`,
+  `/etc/profiles/per-user/$USER/lib/clap`, `/run/current-system/sw/lib/clap`),
+  `/usr/lib/clap` and `/usr/local/lib/clap`. It owns the instances and runs
+  the §3.3 handshakes: `request_restart` → bypass → ack → reactivate →
+  unbypass; removal → bypass → ack → graveyard → destroy once a newer snapshot
+  generation is live. Tested against a real `dlopen`ed `.clap` bundle built
+  from the test fixture.
+* **PipeWire backend** (`audio/PipeWireBackend.*`) is a `pw_filter` with
+  declared DSP ports `output_FL/FR`, which patchbays and the session manager
+  can link immediately (a `pw_stream` only gets ports once a session manager
+  configures it). The callback runs on PipeWire's RT data thread. Timing comes
+  from `spa_io_position.clock`; output latency is
+  `max(|clock.delay|, port SPA_PARAM_Latency)`; xruns are counted from
+  `SPA_IO_CLOCK_FLAG_XRUN_RECOVER`. Tested end-to-end against a private
+  headless daemon, also inside the Nix sandbox. JACK clients are covered by
+  `pw-jack`. Without PipeWire, the app falls back to a silent dummy driver
+  thread that keeps transport and playhead real-time.
+* **Not yet:** plugin GUI embedding (`clap.gui` X11/Wayland, timer and
+  posix-fd host extensions); note-expression lanes in the UI.
 
 ---
 
@@ -429,8 +450,16 @@ geometry of the last definitive engraving:
   noteheads in the same system. Clef, staff size and transposition are absorbed
   by the fit (LilyPond: c₁ ≈ −0.5 staff spaces per step). Tested: an A5→C6
   edit lands within 0.3 staff spaces of the engraved C6.
-* Drawn as one `QSGGeometryNode` (triangle-fan noteheads, coloured as provisional)
-  over paper-coloured `QSGSimpleRectNode` masks covering the stale regions.
+* Drawn as textured sprites (one pre-rendered notehead/rest image shared by
+  pooled `QSGSimpleTextureNode`s) over paper-coloured `QSGSimpleRectNode`
+  masks covering the stale regions. Sprites rather than custom geometry,
+  because Qt's software adaptation (used headless and on machines without a
+  GPU) ignores custom `QSGGeometryNode`s.
+* **Scene-graph rule learned the hard way:** the software adaptation visits a
+  node the moment it is appended and keeps what it saw. So every node is fully
+  configured *before* insertion, overlay nodes are persistent (hidden with an
+  empty rect, never deleted per frame), and page textures are swapped in
+  place. Pixel-level tests guard this (`score_canvas_renders_engraving_pixels`).
 
 ### 5.3 Asynchronous definitive pass (`ui/EngravingService`)
 
@@ -588,8 +617,9 @@ python3 -I scripts/validate_schema.py
 nix build                        # sandboxed build + full test suite (incl. LilyPond + offscreen Qt)
 ```
 
-**Verified by tests** (31 test cases; the core suite also runs clean under
-ASan + UBSan):
+**Verified by tests.** Four ctest suites: core (32 cases, also clean under
+ASan + UBSan), PipeWire end-to-end, Qt/UI (5 cases, pixel-level) and an app
+smoke run.
 
 | Area | Tests |
 |---|---|
@@ -597,17 +627,23 @@ ASan + UBSan):
 | Tempo map | constant + ramp segments vs closed form, inverse round trip, bars across meter changes |
 | Playhead | latency subtraction, extrapolation cap, smoothing vs snap |
 | Model | fractions, SVG id round trip, instrument-change resolution, locator → track, undo/redo/merge/macro, COW sharing |
-| Engine + CLAP | in-process recorder plugin: exact note on/off samples, tie merge, gates, dynamics; Flute→Piccolo switches plugin **and** channel at the exact sample; automation lands on breakpoints with ≤32-sample resolution; transport beats/bars/tempo; graph mix to master; edit-during-playback keeps/releases notes correctly; loop and seek; state save/load |
-| Engraving | pitch/duration/tuplet/key emission; every head id present in real LilyPond 2.26 SVG output |
+| Engine + CLAP | in-process recorder plugin: exact note on/off samples, tie merge, gates, dynamics; Flute→Piccolo switches plugin **and** channel at the exact sample; automation lands on breakpoints with ≤32-sample resolution; transport beats/bars/tempo; graph mix to master; PDC alignment across swaps; MIDI-dialect fallback; edit-during-playback keeps/releases notes correctly; loop and seek; state save/load |
+| Plugin manager | scan + `dlopen` of a real `.clap` bundle; restart and removal handshakes through the RT thread |
+| PipeWire | private headless daemon, engine linked to an in-process sink: real-time rate, on-time CLAP events, signal level at the sink |
+| Engraving | pitch/duration/tuplet/key/tempo-ramp emission; every head id present in real LilyPond 2.26 SVG output |
 | Storage | full round trip; a one-note edit rewrites exactly one chunk; 1 MiB plugin state skipped when unchanged; worker coalescing; undo journal |
-| Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; scene-graph frame render |
+| Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; page, playhead and provisional sprites verified at pixel level across re-engraves |
+| App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; undo; save to `.project` and reopen; engraved music visible on screen |
 
-**Specified here but not yet implemented** (the next milestones):
+**Run the application:** `nix run` (or `corinzia [--no-audio] [file.project]`
+from the dev shell). Space plays or stops; ↑/↓ transpose the selected note
+(Ctrl for octaves); Ctrl+Z / Ctrl+Shift+Z undo and redo; Ctrl+wheel zooms. The
+mixer lets you assign any installed CLAP instrument to a track.
 
-1. PipeWire (`pw_filter`) / JACK backends and the RT thread setup (RTKit, `mlockall`).
-2. Application shell: QML main window, inspectors, mixer, piano roll, transport bar.
-3. `PluginManager`: bundle scanning (`$CLAP_PATH`, `~/.clap`, `/usr/lib/clap`), GUI
-   embedding (X11/Wayland via `clap.gui`), timer/posix-fd host support.
-4. Per-node PDC delay lines; CLAP MIDI-dialect fallback; note-expression lanes in the UI.
-5. Zoom-settled re-rasterization; engraving cache read path; transposed parts.
-6. Command serialization for `undo_journal` replay on open.
+**Still to do** (next milestones):
+
+1. Plugin GUI embedding (`clap.gui`, X11/Wayland) and the timer/posix-fd host extensions.
+2. Note entry (mouse and keyboard), selection ranges, copy/paste commands; piano roll and timeline views.
+3. Zoom-settled re-rasterization; engraving cache read path; multi-movement navigation; transposed parts.
+4. Command serialization for `undo_journal` replay on open; undoable routing edits (plugin assignment).
+5. Note-expression and automation lanes in the UI; automation recording from plugin `ParamChanged`.

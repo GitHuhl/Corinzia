@@ -11,6 +11,8 @@
 #include <QSGRendererInterface>
 #include <QTimer>
 
+#include <climits>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 
@@ -182,6 +184,93 @@ TEST(score_canvas_click_maps_to_element_and_track) {
     canvas.showProvisional(edited, Fraction{1}, Fraction{5, 4});
     const QImage frame = window.grabWindow();
     CHECK(!frame.isNull());
+}
+
+TEST(score_canvas_renders_engraving_pixels) {
+    Env env;
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok);
+    if (!r || !r->ok) return;
+    QQuickWindow window;
+    window.resize(800, 600);
+    window.setColor(QColor(128, 128, 128));
+    ui::ScoreCanvas canvas(window.contentItem());
+    canvas.setSize(QSizeF(800, 600));
+    canvas.setZoom(1.0);
+    canvas.setPan(QPointF(10, 10));
+    canvas.setEngraving(r);
+    window.show();
+    const QImage frame = window.grabWindow();
+    int white = 0, ink = 0;
+    QRect whiteBox;
+    for (int y = 0; y < frame.height(); ++y)
+        for (int x = 0; x < frame.width(); ++x) {
+            const int g = qGray(frame.pixel(x, y));
+            if (g > 240) { ++white; whiteBox |= QRect(x, y, 1, 1); }
+            if (g < 80) ++ink;
+        }
+    std::printf("  frame %dx%d white=%d box=(%d,%d %dx%d) ink=%d\n", frame.width(), frame.height(), white, whiteBox.x(),
+                whiteBox.y(), whiteBox.width(), whiteBox.height(), ink);
+    // Page 1 starts at (10,10) and covers the rest of the 800x600 view at 8 px/space.
+    CHECK(whiteBox.left() <= 12 && whiteBox.top() <= 12 && whiteBox.width() > 700);
+    CHECK(ink > 500);
+
+    // A newer engraving replaces the page textures on a live window.
+    ++env.p.movements[0]->revision;
+    auto r2 = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r2 && r2->ok);
+    if (!r2 || !r2->ok) return;
+    canvas.setEngraving(r2);
+    const QImage frame2 = window.grabWindow();
+    int ink2 = 0;
+    for (int y = 0; y < frame2.height(); ++y)
+        for (int x = 0; x < frame2.width(); ++x)
+            if (qGray(frame2.pixel(x, y)) < 80) ++ink2;
+    std::printf("  after re-engrave: ink=%d\n", ink2);
+    CHECK(ink2 > 500);
+
+    // Overlay layer across several frames: the playhead (red) must follow.
+    auto redColumns = [](const QImage& f) {
+        int lo = INT_MAX, hi = -1;
+        for (int y = 0; y < f.height(); y += 2)
+            for (int x = 0; x < f.width(); ++x) {
+                const QColor c = f.pixelColor(x, y);
+                if (c.red() > 150 && c.green() < 90 && c.blue() < 90) { lo = std::min(lo, x); hi = std::max(hi, x); }
+            }
+        return std::pair{lo, hi};
+    };
+    canvas.setPlayheadQuarter(0.0);
+    const auto p0 = redColumns(window.grabWindow());
+    canvas.setPlayheadQuarter(4.0);
+    const auto p1 = redColumns(window.grabWindow());
+    std::printf("  playhead columns q=0: %d..%d, q=4: %d..%d\n", p0.first, p0.second, p1.first, p1.second);
+    CHECK(p0.second >= 0 && p1.second >= 0 && p1.first > p0.second);   // moved right, old one gone
+
+    // Provisional layer: an edit shows blue sprite noteheads plus a paper mask.
+    auto edited = std::make_shared<model::Movement>(*env.p.movements[0]);
+    auto evs = std::make_shared<model::EventList>(*edited->lanes[0].voices[0].events);
+    (*evs)[3].heads[0].pitch = {0, 0, 6};
+    edited->lanes[0].voices[0].events = evs;
+    canvas.setPlayheadQuarter(std::numeric_limits<double>::quiet_NaN());
+    canvas.showProvisional(edited, Fraction{1}, Fraction{5, 4});
+    const QImage frame3 = window.grabWindow();
+    int blue = 0;
+    for (int y = 0; y < frame3.height(); ++y)
+        for (int x = 0; x < frame3.width(); ++x) {
+            const QColor c = frame3.pixelColor(x, y);
+            if (c.blue() > 120 && c.red() < 80) ++blue;
+        }
+    std::printf("  provisional sprite pixels: %d\n", blue);
+    CHECK(blue > 20);
+    canvas.setEngraving(r2);   // definitive result clears the provisional layer
+    int blueAfter = 0;
+    const QImage frame4 = window.grabWindow();
+    for (int y = 0; y < frame4.height(); ++y)
+        for (int x = 0; x < frame4.width(); ++x) {
+            const QColor c = frame4.pixelColor(x, y);
+            if (c.blue() > 120 && c.red() < 80) ++blueAfter;
+        }
+    CHECK(blueAfter == 0);
 }
 
 int main(int argc, char** argv) {

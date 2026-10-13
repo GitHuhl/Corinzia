@@ -61,6 +61,25 @@ bool ReplaceVoiceEvents::mergeWith(const Command& next) {
     return true;
 }
 
+// ------------------------------------------------------------- SetTrackGain --
+ChangeSet SetTrackGain::set(Project& p, float db) {
+    ChangeSet cs;
+    if (Track* t = p.track(track_)) {
+        if (!captured_) { before_ = t->gainDb; captured_ = true; }
+        t->gainDb = db;
+        cs.routingChanged = true;
+    }
+    return cs;
+}
+ChangeSet SetTrackGain::apply(Project& p) { return set(p, after_); }
+ChangeSet SetTrackGain::revert(Project& p) { return set(p, before_); }
+bool SetTrackGain::mergeWith(const Command& next) {
+    auto* n = dynamic_cast<const SetTrackGain*>(&next);
+    if (!n || n->track_ != track_) return false;
+    after_ = n->after_;
+    return true;
+}
+
 // ---------------------------------------------------------------- UndoStack --
 ChangeSet UndoStack::push(std::unique_ptr<Command> cmd, Project& p) {
     ChangeSet cs = cmd->apply(p);

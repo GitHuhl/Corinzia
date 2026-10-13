@@ -13,7 +13,9 @@
 
 #include "corinzia/model/Model.hpp"
 
+#include <memory>
 #include <string>
+#include <vector>
 #include <unordered_map>
 
 namespace corinzia::engrave {
@@ -22,6 +24,9 @@ struct EngraveContext {
     // Display data captured on the UI thread along with the MovementSnapshot.
     std::unordered_map<PlayerId, std::string> playerNames;
     std::unordered_map<InstrumentId, const model::Instrument*> instruments;  // must outlive the call
+    // Optional owner for `instruments` when the context outlives the Project
+    // (background jobs): pointers then point into this copy.
+    std::shared_ptr<const std::vector<model::Instrument>> instrumentStorage;
     std::unordered_map<InstrumentId, TrackId> instrumentTracks;
     std::string paperSize = "a4";
     double staffSizePt = 18.0;

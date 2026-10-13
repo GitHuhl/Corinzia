@@ -1,8 +1,7 @@
 #include "corinzia/ui/ScoreCanvas.hpp"
 
 #include <QQuickWindow>
-#include <QSGFlatColorMaterial>
-#include <QSGGeometryNode>
+#include <QPainter>
 #include <QSGSimpleRectNode>
 #include <QSGSimpleTextureNode>
 #include <QSGTransformNode>
@@ -14,48 +13,36 @@ namespace corinzia::ui {
 namespace {
 // Child slots of the root transform node, in paint order.
 enum Slot { PagesSlot = 0, OverlaySlot = 1 };
+// Overlay children, created once and never deleted (unused ones get an empty
+// rect / zero vertices): the software adaptation does not reliably pick up
+// nodes that are deleted and recreated between frames.
+enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild };
 
-QSGGeometryNode* makeGlyphNode(const std::vector<LayoutAnchors::Glyph>& glyphs, const std::vector<qreal>& pageTops,
-                               QColor color) {
-    constexpr int kSeg = 10;
-    int verts = 0;
-    for (const auto& g : glyphs) verts += g.rest ? 6 : kSeg * 3;
-    auto* geom = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), verts);
-    geom->setDrawingMode(QSGGeometry::DrawTriangles);
-    auto* v = geom->vertexDataAsPoint2D();
-    int k = 0;
-    for (const auto& g : glyphs) {
-        const qreal top = g.page < int(pageTops.size()) ? pageTops[std::size_t(g.page)] : 0;
-        const float cx = float(g.center.x()), cy = float(g.center.y() + top);
-        if (g.rest) {   // placeholder block, 0.8 x 2 spaces
-            const float x0 = cx - 0.4f, x1 = cx + 0.4f, y0 = cy - 1.f, y1 = cy + 1.f;
-            v[k++].set(x0, y0); v[k++].set(x1, y0); v[k++].set(x1, y1);
-            v[k++].set(x0, y0); v[k++].set(x1, y1); v[k++].set(x0, y1);
-            continue;
-        }
-        // Notehead: slightly tilted ellipse 1.3 x 0.95 staff spaces.
-        const float rx = 0.65f, ry = 0.475f, tilt = -0.35f;
-        for (int s = 0; s < kSeg; ++s) {
-            auto pt = [&](int i) {
-                const float a = 2.f * float(M_PI) * float(i) / kSeg;
-                const float x = rx * std::cos(a), y = ry * std::sin(a);
-                return QPointF(cx + x * std::cos(tilt) - y * std::sin(tilt), cy + x * std::sin(tilt) + y * std::cos(tilt));
-            };
-            const QPointF p0 = pt(s), p1 = pt(s + 1);
-            v[k++].set(cx, cy);
-            v[k++].set(float(p0.x()), float(p0.y()));
-            v[k++].set(float(p1.x()), float(p1.y()));
-        }
+// Provisional glyph sprites. Drawn as textured quads rather than custom
+// geometry so they render on every scene-graph backend, including the
+// software adaptation (which ignores custom QSGGeometryNodes).
+QImage glyphImage(bool rest, QColor color) {
+    const QSize px = rest ? QSize(32, 80) : QSize(52, 38);   // 40 px per staff space
+    QImage img(px, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter g(&img);
+    g.setRenderHint(QPainter::Antialiasing);
+    g.setPen(Qt::NoPen);
+    g.setBrush(color);
+    if (rest) {
+        g.drawRoundedRect(QRectF(2, 2, px.width() - 4, px.height() - 4), 6, 6);
+    } else {
+        g.translate(px.width() / 2.0, px.height() / 2.0);
+        g.rotate(-20);
+        g.drawEllipse(QPointF(0, 0), 24, 16);
     }
-    auto* node = new QSGGeometryNode;
-    node->setGeometry(geom);
-    node->setFlag(QSGNode::OwnsGeometry);
-    auto* mat = new QSGFlatColorMaterial;
-    mat->setColor(color);
-    node->setMaterial(mat);
-    node->setFlag(QSGNode::OwnsMaterial);
-    return node;
+    return img;
 }
+constexpr QSizeF kHeadSize{1.3, 0.95}, kRestSize{0.8, 2.0};   // staff spaces
+// Pools are allocated with the tree: the software adaptation only renders
+// nodes present when its render list was first built for a subtree.
+constexpr int kMaskPool = 32, kGlyphPool = 256;
+
 }  // namespace
 
 ScoreCanvas::ScoreCanvas(QQuickItem* parent) : QQuickItem(parent) {
@@ -177,7 +164,34 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     if (!root) {
         root = new QSGTransformNode;
         root->appendChildNode(new QSGNode);   // PagesSlot
-        root->appendChildNode(new QSGNode);   // OverlaySlot
+        auto* overlay = new QSGNode;          // OverlaySlot
+        auto* maskPool = new QSGNode;                                           // MasksChild (pool)
+        for (int i = 0; i < kMaskPool; ++i) maskPool->appendChildNode(new QSGSimpleRectNode(QRectF(), paper_));
+        overlay->appendChildNode(maskPool);
+        // GlyphsChild: [0] head template, [1] rest template (own the textures,
+        // never drawn), [2..] sprite instances sharing those textures.
+        auto* glyphs = new QSGNode;
+        for (bool rest : {false, true}) {
+            auto* tmpl = new QSGSimpleTextureNode;
+            tmpl->setTexture(window()->createTextureFromImage(glyphImage(rest, QColor(20, 70, 160))));
+            tmpl->setOwnsTexture(true);
+            tmpl->setRect(QRectF());
+            glyphs->appendChildNode(tmpl);
+        }
+        const QSGTexture* head = static_cast<QSGSimpleTextureNode*>(glyphs->firstChild())->texture();
+        for (int i = 0; i < kGlyphPool; ++i) {
+            auto* sprite = new QSGSimpleTextureNode;
+            sprite->setOwnsTexture(false);
+            sprite->setTexture(const_cast<QSGTexture*>(head));   // never texture-less (software renderer derefs it)
+            sprite->setFiltering(QSGTexture::Linear);
+            sprite->setRect(QRectF());
+            glyphs->appendChildNode(sprite);
+        }
+        overlay->appendChildNode(glyphs);
+        overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(255, 170, 0, 70)));   // HoverChild
+        overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 120, 255, 90)));   // SelectionChild
+        overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(220, 30, 30, 200)));  // PlayheadChild
+        root->appendChildNode(overlay);
         texturesDirty_ = true;
     }
     QMatrix4x4 m;
@@ -191,44 +205,85 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     // ---- definitive pages (re-uploaded only when a new engraving arrives) ----
     QSGNode* pages = root->childAtIndex(PagesSlot);
     if (texturesDirty_) {
-        while (QSGNode* c = pages->firstChild()) { pages->removeChildNode(c); delete c; }
-        for (int i = 0; result_ && i < int(result_->pages.size()); ++i) {
+        // Existing page nodes are reused (texture swapped in place). New nodes
+        // are fully configured *before* insertion: the software adaptation
+        // visits a node as soon as it is appended and keeps what it sees.
+        const int want = result_ ? int(result_->pages.size()) : 0;
+        while (pages->childCount() > want) {
+            QSGNode* c = pages->lastChild();
+            pages->removeChildNode(c);
+            delete c;
+        }
+        for (int i = 0; i < want; ++i) {
             const auto& pg = result_->pages[std::size_t(i)];
-            auto* tex = new QSGSimpleTextureNode;
-            tex->setTexture(window()->createTextureFromImage(pg.raster));
-            tex->setOwnsTexture(true);
-            tex->setFiltering(QSGTexture::Linear);
-            tex->setRect(QRectF(0, tops[std::size_t(i)], pg.size.width(), pg.size.height()));
-            pages->appendChildNode(tex);
+            QImage img = pg.raster.isNull() ? QImage(1, 1, QImage::Format_ARGB32_Premultiplied) : pg.raster;
+            if (pg.raster.isNull()) img.fill(Qt::white);
+            QSGTexture* fresh = window()->createTextureFromImage(img);
+            const QRectF rect(0, tops[std::size_t(i)], pg.size.width(), pg.size.height());
+            if (i < pages->childCount()) {
+                auto* tex = static_cast<QSGSimpleTextureNode*>(pages->childAtIndex(i));
+                QSGTexture* old = tex->texture();
+                tex->setOwnsTexture(false);             // we delete the previous texture ourselves
+                tex->setTexture(fresh);
+                tex->setOwnsTexture(true);
+                delete old;
+                tex->setRect(rect);
+            } else {
+                auto* tex = new QSGSimpleTextureNode;
+                tex->setTexture(fresh);
+                tex->setOwnsTexture(true);
+                tex->setFiltering(QSGTexture::Linear);
+                tex->setRect(rect);
+                pages->appendChildNode(tex);
+            }
         }
         texturesDirty_ = false;
     }
 
-    // ---- overlay: cheap, rebuilt every update ------------------------------
+    // ---- overlay: persistent nodes, updated in place every frame ------------
     QSGNode* overlay = root->childAtIndex(OverlaySlot);
-    while (QSGNode* c = overlay->firstChild()) { overlay->removeChildNode(c); delete c; }
-    if (result_) {
-        for (const auto& r : masks_)
-            if (r.page < int(tops.size()))
-                overlay->appendChildNode(new QSGSimpleRectNode(r.rect.translated(0, tops[std::size_t(r.page)]), paper_));
-        if (!glyphs_.empty()) overlay->appendChildNode(makeGlyphNode(glyphs_, tops, QColor(20, 70, 160)));
+    auto pageY = [&](int page) { return page < int(tops.size()) ? tops[std::size_t(page)] : 0.0; };
 
-        auto highlight = [&](ElementId id, QColor c) {
-            if (!id.valid() || !result_->index) return;
-            if (const auto* e = result_->index->find(id))
-                overlay->appendChildNode(new QSGSimpleRectNode(
-                    e->bounds.adjusted(-0.2, -0.2, 0.2, 0.2).translated(0, tops[std::size_t(e->page)]), c));
-        };
-        highlight(hover_, QColor(255, 170, 0, 70));
-        highlight(selection_, QColor(0, 120, 255, 90));
-
-        if (!std::isnan(playheadQ_) && result_->anchors) {
-            const auto c = result_->anchors->cursorAt(playheadQ_);
-            if (c.valid && c.page < int(tops.size()))
-                overlay->appendChildNode(new QSGSimpleRectNode(
-                    QRectF(c.x - 0.12, c.top + tops[std::size_t(c.page)], 0.24, c.bottom - c.top), QColor(220, 30, 30, 200)));
-        }
+    QSGNode* masks = overlay->childAtIndex(MasksChild);
+    const int maskCount = result_ ? std::min<int>(int(masks_.size()), masks->childCount()) : 0;
+    for (int i = 0; i < masks->childCount(); ++i) {
+        auto* rn = static_cast<QSGSimpleRectNode*>(masks->childAtIndex(i));
+        rn->setColor(paper_);
+        rn->setRect(i < maskCount ? masks_[std::size_t(i)].rect.translated(0, pageY(masks_[std::size_t(i)].page)) : QRectF());
     }
+
+    QSGNode* glyphs = overlay->childAtIndex(GlyphsChild);
+    const auto* headTex = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(0))->texture();
+    const auto* restTex = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(1))->texture();
+    const int glyphCount = result_ ? std::min<int>(int(glyphs_.size()), glyphs->childCount() - 2) : 0;
+    for (int i = 2; i < glyphs->childCount(); ++i) {
+        auto* sprite = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(i));
+        if (i - 2 >= glyphCount) {
+            sprite->setRect(QRectF());
+            continue;
+        }
+        const auto& gl = glyphs_[std::size_t(i - 2)];
+        const QSizeF sz = gl.rest ? kRestSize : kHeadSize;
+        sprite->setTexture(const_cast<QSGTexture*>(gl.rest ? restTex : headTex));
+        sprite->setRect(QRectF(gl.center.x() - sz.width() / 2, gl.center.y() + pageY(gl.page) - sz.height() / 2,
+                               sz.width(), sz.height()));
+    }
+
+    auto highlight = [&](int child, ElementId id) {
+        QRectF r;
+        if (result_ && id.valid() && result_->index)
+            if (const auto* e = result_->index->find(id)) r = e->bounds.adjusted(-0.2, -0.2, 0.2, 0.2).translated(0, pageY(e->page));
+        static_cast<QSGSimpleRectNode*>(overlay->childAtIndex(child))->setRect(r);
+    };
+    highlight(HoverChild, hover_);
+    highlight(SelectionChild, selection_);
+
+    QRectF playhead;
+    if (result_ && !std::isnan(playheadQ_) && result_->anchors) {
+        const auto c = result_->anchors->cursorAt(playheadQ_);
+        if (c.valid) playhead = QRectF(c.x - 0.12, c.top + pageY(c.page), 0.24, c.bottom - c.top);
+    }
+    static_cast<QSGSimpleRectNode*>(overlay->childAtIndex(PlayheadChild))->setRect(playhead);
     return root;
 }
 

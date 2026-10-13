@@ -7,6 +7,7 @@ project(Corinzia VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+include(GNUInstallDirs)
 
 option(CORINZIA_BUILD_TESTS "Build unit tests" ON)
 option(CORINZIA_BUILD_UI "Build the Qt Quick front-end" ON)
@@ -50,7 +51,7 @@ endif()
 # ------------------------------------------------------------------ ui ----
 if(CORINZIA_BUILD_UI)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Quick Svg)
-    qt_standard_project_setup()
+    qt_standard_project_setup(REQUIRES 6.5)
     qt_add_library(corinzia_ui STATIC
         include/corinzia/ui/EngravingService.hpp src/ui/EngravingService.cpp
         include/corinzia/ui/SvgHitIndex.hpp      src/ui/SvgHitIndex.cpp
@@ -59,6 +60,21 @@ if(CORINZIA_BUILD_UI)
     )
     target_link_libraries(corinzia_ui PUBLIC corinzia_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
     target_compile_options(corinzia_ui PRIVATE -Wall -Wextra)
+endif()
+
+# ----------------------------------------------------------------- app ----
+if(CORINZIA_BUILD_UI AND PIPEWIRE_FOUND)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Qml QuickControls2)
+    qt_add_executable(corinzia
+        src/app/main.cpp
+        include/corinzia/app/AppController.hpp src/app/AppController.cpp
+        include/corinzia/app/DemoProject.hpp   src/app/DemoProject.cpp
+        include/corinzia/app/DummyBackend.hpp
+    )
+    qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml)
+    target_link_libraries(corinzia PRIVATE corinzia_ui corinzia_pipewire Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_compile_options(corinzia PRIVATE -Wall -Wextra)
+    install(TARGETS corinzia RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # --------------------------------------------------------------- tests ----
@@ -97,14 +113,20 @@ if(CORINZIA_BUILD_TESTS)
         target_link_libraries(corinzia_ui_tests PRIVATE corinzia_ui)
         add_test(NAME corinzia_ui_tests COMMAND corinzia_ui_tests)
         set_tests_properties(corinzia_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        if(TARGET corinzia)
+            add_test(NAME corinzia_smoke COMMAND corinzia --no-audio --smoke ${CMAKE_BINARY_DIR}/smoke.png)
+            set_tests_properties(corinzia_smoke PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        endif()
         if(DEFINED ENV{CORINZIA_LILYPOND})
             set_property(TEST corinzia_tests corinzia_ui_tests APPEND PROPERTY ENVIRONMENT "CORINZIA_LILYPOND=$ENV{CORINZIA_LILYPOND}")
+            if(TARGET corinzia)
+                set_property(TEST corinzia_smoke APPEND PROPERTY ENVIRONMENT "CORINZIA_LILYPOND=$ENV{CORINZIA_LILYPOND}")
+            endif()
         endif()
     endif()
 endif()
 
 # ------------------------------------------------------------- install ----
-include(GNUInstallDirs)
 install(TARGETS corinzia_core ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 if(PIPEWIRE_FOUND)
     install(TARGETS corinzia_pipewire ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

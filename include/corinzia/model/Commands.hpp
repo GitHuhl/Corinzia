@@ -60,6 +60,22 @@ private:
     std::string label_;
 };
 
+// Mixer edit: one DAW track's gain. Consecutive moves of the same fader merge.
+class SetTrackGain final : public Command {
+public:
+    SetTrackGain(TrackId track, float gainDb) : track_(track), after_(gainDb) {}
+    std::string label() const override { return "Track gain"; }
+    ChangeSet apply(Project& p) override;
+    ChangeSet revert(Project& p) override;
+    bool mergeWith(const Command& next) override;
+
+private:
+    ChangeSet set(Project& p, float db);
+    TrackId track_;
+    float before_ = 0.f, after_;
+    bool captured_ = false;
+};
+
 class UndoStack {
 public:
     explicit UndoStack(std::size_t limit = 512) : limit_(limit) {}

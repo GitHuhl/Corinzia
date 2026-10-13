@@ -40,7 +40,11 @@ nix build                                     # sandboxed build running the full
 | `schema/` | `project.sql` (embedded into the binary), `example_project.json` |
 | `tests/` | dependency-free test harness, in-process CLAP recorder plugin fixture |
 
-Status: the core engine, CLAP hosting, storage, engraving round trip and canvas
-are implemented and tested. The audio backends (PipeWire/JACK), the QML
-application shell and plugin GUI embedding are still design only, listed in
-§9 of the architecture document.
+Run it with `nix run`, or `./build/corinzia` from the dev shell.
+
+Status: implemented and tested are the core engine with plugin delay
+compensation, CLAP hosting (including the MIDI-dialect fallback and plugin
+scanning and lifecycle), the PipeWire backend, storage, the engraving round
+trip, the canvas and a QML application shell. Plugin GUI embedding and the
+richer editing tools (note entry, piano roll) are next; see §9 of the
+architecture document.

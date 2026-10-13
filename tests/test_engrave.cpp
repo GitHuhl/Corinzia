@@ -58,3 +58,21 @@ TEST(lily_svg_roundtrip_ids) {
     for (const auto& e : *p.movements[0]->lanes[0].voices[0].events)
         for (const auto& h : e.heads) CHECK(svg.str().find("id=\"" + h.id.id.toSvgId() + "\"") != std::string::npos);
 }
+
+TEST(lily_tempo_ramps_print_rit_not_duplicate_marks) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    auto& m = *p.movements[0];
+    m.tempo = {{Fraction{0}, 96.0, false}, {Fraction{1, 2}, 96.0, true}, {Fraction{3, 2}, 72.0, false}};
+    engrave::EngraveContext ctx;
+    const std::string ly = engrave::emitLilyPond(m, ctx);
+    auto count = [&](const std::string& needle) {
+        std::size_t n = 0;
+        for (auto pos = ly.find(needle); pos != std::string::npos; pos = ly.find(needle, pos + 1)) ++n;
+        return n;
+    };
+    CHECK(count("\\tempo 4 = 96") == 1);
+    CHECK(count("\\tempo \"rit.\"") == 1);
+    CHECK(count("\\tempo 4 = 72") == 1);
+}
