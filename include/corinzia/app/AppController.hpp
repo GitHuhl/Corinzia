@@ -17,6 +17,7 @@
 #include "corinzia/model/Commands.hpp"
 #include "corinzia/rt/PlayheadTracker.hpp"
 #include "corinzia/storage/ProjectStore.hpp"
+#include "corinzia/ui/ArrangeView.hpp"
 #include "corinzia/ui/EngravingService.hpp"
 #include "corinzia/ui/ScoreCanvas.hpp"
 
@@ -53,6 +54,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool chordMode READ chordMode WRITE setChordMode NOTIFY inputStateChanged)
     Q_PROPERTY(int voice READ voice WRITE setVoice NOTIFY inputStateChanged)               // 1..4
     Q_PROPERTY(QString caretLabel READ caretLabel NOTIFY inputStateChanged)
+    // ---- DAW tab -------------------------------------------------------------
+    Q_PROPERTY(QVariantList arrangeBars READ arrangeBars NOTIFY arrangeChanged)   // [{bar, quarter}]
 
 public:
     struct Options {
@@ -66,6 +69,8 @@ public:
 
     // ---- QML API --------------------------------------------------------------
     Q_INVOKABLE void attachCanvas(corinzia::ui::ScoreCanvas* canvas);
+    Q_INVOKABLE void attachArrange(corinzia::ui::ArrangeView* view);
+    Q_INVOKABLE void locate(double quarter);      // move the transport (DAW ruler / timeline click)
     Q_INVOKABLE void newDemoProject();
     Q_INVOKABLE bool openProject(const QString& path);
     Q_INVOKABLE bool saveProjectAs(const QString& path);
@@ -110,6 +115,8 @@ public:
     int voice() const noexcept { return voice_; }
     void setVoice(int v);
     QString caretLabel() const;
+    QVariantList arrangeBars() const;
+    static QColor trackColor(std::size_t index);
     Fraction caretPosition() const noexcept { return caretPos_; }
 
     bool playing() const noexcept { return playing_; }
@@ -138,6 +145,7 @@ signals:
     void statusChanged();
     void engraved();
     void inputStateChanged();
+    void arrangeChanged();
 
 private slots:
     void onElementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
@@ -161,6 +169,7 @@ private:
     void moveCaretTo(std::size_t lane, int voice, Fraction pos);
     void audition(const model::PlayerLane& lane, Fraction at, const std::vector<model::Pitch>& pitches);
     void syncCaret();
+    void refreshArrange();
 
     Options opt_;
     model::Project project_;
@@ -174,12 +183,14 @@ private:
 
     ui::EngravingService engraving_;
     QPointer<ui::ScoreCanvas> canvas_;
+    QPointer<ui::ArrangeView> arrange_;
     std::unique_ptr<storage::PersistenceWorker> persistence_;
 
     QTimer pumpTimer_;
     rt::PlayheadTracker tracker_;
     std::shared_ptr<const std::vector<rt::Section>> sections_;   // tempo maps of the live snapshot
     std::uint64_t compileRequested_ = 0;
+    double locatedQ_ = 0.0;                                       // transport start/return position
 
     // Note input state.
     bool inputMode_ = false, chordMode_ = false;

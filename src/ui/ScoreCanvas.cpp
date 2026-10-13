@@ -42,6 +42,10 @@ constexpr QSizeF kHeadSize{1.3, 0.95}, kRestSize{0.8, 2.0};   // staff spaces
 // Pools are allocated with the tree: the software adaptation only renders
 // nodes present when its render list was first built for a subtree.
 constexpr int kMaskPool = 32, kGlyphPool = 256;
+// Sprites [0, kHeadSprites) always show a notehead, the rest always a rest:
+// a node's material is fixed for life (the software adaptation does not pick
+// up material changes on existing nodes, only geometry/rect changes).
+constexpr int kHeadSprites = 192;
 
 }  // namespace
 
@@ -180,6 +184,14 @@ void ScoreCanvas::wheelEvent(QWheelEvent* e) {
 
 QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     auto* root = static_cast<QSGTransformNode*>(old);
+    // More pages than page nodes: rebuild the whole tree rather than inserting
+    // into a live one (the software adaptation mis-transforms nodes inserted
+    // into an already-rendered subtree; see ArrangeView).
+    if (root && texturesDirty_ && result_ &&
+        int(result_->pages.size()) > root->childAtIndex(PagesSlot)->childCount()) {
+        delete root;
+        root = nullptr;
+    }
     if (!root) {
         root = new QSGTransformNode;
         root->appendChildNode(new QSGNode);   // PagesSlot
@@ -197,11 +209,12 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
             tmpl->setRect(QRectF());
             glyphs->appendChildNode(tmpl);
         }
-        const QSGTexture* head = static_cast<QSGSimpleTextureNode*>(glyphs->firstChild())->texture();
+        const QSGTexture* head = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(0))->texture();
+        const QSGTexture* rest = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(1))->texture();
         for (int i = 0; i < kGlyphPool; ++i) {
             auto* sprite = new QSGSimpleTextureNode;
             sprite->setOwnsTexture(false);
-            sprite->setTexture(const_cast<QSGTexture*>(head));   // never texture-less (software renderer derefs it)
+            sprite->setTexture(const_cast<QSGTexture*>(i < kHeadSprites ? head : rest));   // never texture-less (software renderer derefs it)
             sprite->setFiltering(QSGTexture::Linear);
             sprite->setRect(QRectF());
             glyphs->appendChildNode(sprite);
@@ -273,21 +286,20 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     }
 
     QSGNode* glyphs = overlay->childAtIndex(GlyphsChild);
-    const auto* headTex = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(0))->texture();
-    const auto* restTex = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(1))->texture();
-    const int glyphCount = result_ ? std::min<int>(int(glyphs_.size()), glyphs->childCount() - 2) : 0;
-    for (int i = 2; i < glyphs->childCount(); ++i) {
-        auto* sprite = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(i));
-        if (i - 2 >= glyphCount) {
-            sprite->setRect(QRectF());
-            continue;
-        }
-        const auto& gl = glyphs_[std::size_t(i - 2)];
+    int nextHead = 2, nextRest = 2 + kHeadSprites;          // child indices (0,1 are the templates)
+    const int restEnd = glyphs->childCount();
+    std::vector<bool> used(std::size_t(glyphs->childCount()), false);
+    for (const auto& gl : result_ ? glyphs_ : std::vector<LayoutAnchors::Glyph>{}) {
+        int& slot = gl.rest ? nextRest : nextHead;
+        if (slot >= (gl.rest ? restEnd : 2 + kHeadSprites)) continue;   // pool exhausted: skip extra glyphs
+        auto* sprite = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(slot));
         const QSizeF sz = gl.rest ? kRestSize : kHeadSize;
-        sprite->setTexture(const_cast<QSGTexture*>(gl.rest ? restTex : headTex));
         sprite->setRect(QRectF(gl.center.x() - sz.width() / 2, gl.center.y() + pageY(gl.page) - sz.height() / 2,
                                sz.width(), sz.height()));
+        used[std::size_t(slot++)] = true;
     }
+    for (int i = 2; i < glyphs->childCount(); ++i)
+        if (!used[std::size_t(i)]) static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(i))->setRect(QRectF());
 
     auto highlight = [&](int child, ElementId id) {
         QRectF r;

@@ -46,6 +46,10 @@ rest, and the left Notes panel does the same with the mouse. Clicking a staff
 in input mode places a note at that pitch and beat. The full key map is in
 §5.5 of the architecture document.
 
+The notation and DAW sides are separate tabs: **Score** (Ctrl+1) for engraving
+and note input, **Mix** (Ctrl+2) for the arrange view, mixer strips and plugin
+browser. Selection, transport and undo are shared between them.
+
 Status: implemented and tested are the core engine with plugin delay
 compensation, CLAP hosting (including the MIDI-dialect fallback and plugin
 scanning and lifecycle), the PipeWire backend, storage, the engraving round

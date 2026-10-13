@@ -13,6 +13,8 @@ ApplicationWindow {
     Shortcut { sequences: [StandardKey.Undo]; onActivated: App.undo() }
     Shortcut { sequences: [StandardKey.Redo]; onActivated: App.redo() }
     Shortcut { sequence: "Space"; onActivated: App.togglePlay() }
+    Shortcut { sequence: "Ctrl+1"; onActivated: tabs.currentIndex = 0 }
+    Shortcut { sequence: "Ctrl+2"; onActivated: tabs.currentIndex = 1 }
 
     // Score keyboard (Dorico-like). Lives on the canvas so text fields elsewhere
     // keep their keys; panel buttons never take focus.
@@ -52,109 +54,113 @@ ApplicationWindow {
         event.accepted = true
     }
 
-    header: ToolBar {
-        RowLayout {
-            anchors.fill: parent
-            spacing: 6
-            ToolButton { text: App.playing ? "■ Stop" : "▶ Play"; onClicked: App.togglePlay() }
-            ToolSeparator {}
-            ToolButton { text: "Undo"; enabled: App.canUndo; onClicked: App.undo() }
-            ToolButton { text: "Redo"; enabled: App.canRedo; onClicked: App.redo() }
-            ToolSeparator {}
-            ToolButton { text: "▲"; focusPolicy: Qt.NoFocus; ToolTip.text: "Transpose selection up (↑, Ctrl+↑ octave)"; ToolTip.visible: hovered; onClicked: App.transposeSelection(1) }
-            ToolButton { text: "▼"; focusPolicy: Qt.NoFocus; ToolTip.text: "Transpose selection down (↓, Ctrl+↓ octave)"; ToolTip.visible: hovered; onClicked: App.transposeSelection(-1) }
-            ToolSeparator {}
-            ToolButton {
-                text: App.inputMode ? "✎ Input ON" : "✎ Input"
+    header: ColumnLayout {
+        spacing: 0
+        // Shared transport + history: identical in both tabs.
+        ToolBar {
+            Layout.fillWidth: true
+            RowLayout {
+                anchors.fill: parent
+                spacing: 6
+                ToolButton { text: App.playing ? "■ Stop" : "▶ Play"; focusPolicy: Qt.NoFocus; onClicked: App.togglePlay() }
+                ToolButton { text: "⏮"; focusPolicy: Qt.NoFocus; ToolTip.text: "Go to start"; ToolTip.visible: hovered; onClicked: App.locate(0) }
+                ToolSeparator {}
+                ToolButton { text: "Undo"; focusPolicy: Qt.NoFocus; enabled: App.canUndo; onClicked: App.undo() }
+                ToolButton { text: "Redo"; focusPolicy: Qt.NoFocus; enabled: App.canRedo; onClicked: App.redo() }
+                ToolSeparator {}
+                // Score-only tools
+                RowLayout {
+                    visible: tabs.currentIndex === 0
+                    spacing: 6
+                    ToolButton { text: "▲"; focusPolicy: Qt.NoFocus; ToolTip.text: "Transpose selection up (↑, Ctrl+↑ octave)"; ToolTip.visible: hovered; onClicked: App.transposeSelection(1) }
+                    ToolButton { text: "▼"; focusPolicy: Qt.NoFocus; ToolTip.text: "Transpose selection down (↓, Ctrl+↓ octave)"; ToolTip.visible: hovered; onClicked: App.transposeSelection(-1) }
+                    ToolSeparator {}
+                    ToolButton {
+                        text: App.inputMode ? "✎ Input ON" : "✎ Input"
+                        focusPolicy: Qt.NoFocus
+                        checkable: true
+                        checked: App.inputMode
+                        onToggled: App.inputMode = checked
+                        ToolTip.text: "Note input (N). Letters A–G enter notes, 1–7 durations, R rest, Esc exits"
+                        ToolTip.visible: hovered
+                    }
+                    ToolSeparator {}
+                    Label { text: "Zoom" }
+                    Slider {
+                        id: zoomSlider
+                        from: 0.5; to: 4; value: 1.2
+                        focusPolicy: Qt.NoFocus
+                        Layout.preferredWidth: 160
+                        onMoved: score.zoom = value
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+        TabBar {
+            id: tabs
+            objectName: "tabs"
+            Layout.fillWidth: true
+            focusPolicy: Qt.NoFocus
+            component ModeTab: TabButton {
+                id: tb
                 focusPolicy: Qt.NoFocus
-                checkable: true
-                checked: App.inputMode
-                onToggled: App.inputMode = checked
-                ToolTip.text: "Note input (N). Letters A–G enter notes, 1–7 durations, R rest, Esc exits"
-                ToolTip.visible: hovered
+                width: implicitWidth + 32
+                font.bold: checked
+                contentItem: Label {
+                    text: tb.text
+                    font: tb.font
+                    color: tb.checked ? "#1d2430" : "#4a5260"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    color: tb.checked ? "white" : (tb.hovered ? "#e6e9ee" : "#d9dce2")
+                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 3; color: "#2f6fb5"; visible: tb.checked }
+                }
             }
-            ToolSeparator {}
-            Label { text: "Zoom" }
-            Slider {
-                id: zoomSlider
-                from: 0.5; to: 4; value: 1.2
-                Layout.preferredWidth: 160
-                onMoved: score.zoom = value
+            ModeTab { text: "Score  (Ctrl+1)" }
+            ModeTab { text: "Mix  (Ctrl+2)" }
+            onCurrentIndexChanged: {
+                // Keyboard follows the visible tab; leaving the score ends note input.
+                if (currentIndex === 0) score.forceActiveFocus()
+                else { App.inputMode = false; mixView.arrange.forceActiveFocus() }
             }
-            Item { Layout.fillWidth: true }
         }
     }
 
-    SplitView {
+    StackLayout {
         anchors.fill: parent
+        currentIndex: tabs.currentIndex
 
-        NotesPanel {
-            objectName: "notesPanel"
-            SplitView.preferredWidth: 128
-            SplitView.minimumWidth: 110
-        }
-
-        Rectangle {
-            SplitView.fillWidth: true
-            color: "#d9d6cf"
-            clip: true
-            ScoreCanvas {
-                id: score
-                objectName: "score"
-                anchors.fill: parent
-                zoom: zoomSlider.value
-                pan: Qt.point(24, 24)
-                onZoomChanged: zoomSlider.value = zoom
-                focus: true
-                Keys.onPressed: (event) => window.handleScoreKey(event)
+        // ------------------------------------------------------- Score tab --
+        SplitView {
+            NotesPanel {
+                objectName: "notesPanel"
+                SplitView.preferredWidth: 128
+                SplitView.minimumWidth: 110
             }
-        }
-
-        Pane {
-            SplitView.preferredWidth: 340
-            ScrollView {
-                anchors.fill: parent
-                ColumnLayout {
-                    width: 300
-                    spacing: 10
-                    Label { text: "Mixer"; font.bold: true; font.pixelSize: 16 }
-                    Repeater {
-                        model: App.tracks
-                        delegate: Frame {
-                            required property var modelData
-                            required property int index
-                            Layout.fillWidth: true
-                            ColumnLayout {
-                                anchors.fill: parent
-                                Label { text: modelData.name + "  ·  " + modelData.plugin; elide: Text.ElideRight; Layout.fillWidth: true }
-                                RowLayout {
-                                    Slider {
-                                        from: -60; to: 6; value: modelData.gainDb
-                                        Layout.fillWidth: true
-                                        onMoved: App.setTrackGain(index, value)
-                                    }
-                                    Label { text: modelData.gainDb.toFixed(1) + " dB"; Layout.preferredWidth: 60 }
-                                }
-                                ComboBox {
-                                    Layout.fillWidth: true
-                                    model: App.plugins
-                                    textRole: "name"
-                                    displayText: App.plugins.length ? "Assign CLAP instrument…" : "No CLAP plugins found"
-                                    enabled: App.plugins.length > 0
-                                    onActivated: (i) => App.assignPlugin(index, i)
-                                }
-                            }
-                        }
-                    }
-                    Button { text: "Rescan plugins"; onClicked: App.rescanPlugins() }
-                    Label {
-                        text: App.plugins.length + " CLAP plugin(s) in CLAP_PATH, ~/.clap, Nix profiles, /usr/lib/clap"
-                        wrapMode: Text.Wrap
-                        Layout.fillWidth: true
-                        opacity: 0.7
-                    }
+            Rectangle {
+                SplitView.fillWidth: true
+                color: "#d9d6cf"
+                clip: true
+                ScoreCanvas {
+                    id: score
+                    objectName: "score"
+                    anchors.fill: parent
+                    zoom: zoomSlider.value
+                    pan: Qt.point(24, 24)
+                    onZoomChanged: zoomSlider.value = zoom
+                    focus: true
+                    Keys.onPressed: (event) => window.handleScoreKey(event)
                 }
             }
+        }
+
+        // --------------------------------------------------------- Mix tab --
+        MixView {
+            id: mixView
+            objectName: "mixView"
         }
     }
 

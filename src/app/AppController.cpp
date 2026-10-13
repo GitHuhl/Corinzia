@@ -99,6 +99,7 @@ void AppController::newDemoProject() {
     for (const auto& m : project_.movements) cs.movements.push_back(m->id);
     cs.routingChanged = true;
     fanOut(cs);
+    refreshArrange();
     emit projectChanged();
     emit selectionChanged();
 }
@@ -125,6 +126,7 @@ bool AppController::openProject(const QString& path) {
     cs.routingChanged = true;
     requestCompile();
     for (auto m : cs.movements) requestEngrave(m);
+    refreshArrange();
     emit projectChanged();
     emit tracksChanged();
     emit historyChanged();
@@ -178,11 +180,11 @@ void AppController::play() {
 void AppController::stop() {
     if (!playing_) return;
     engine_.post({rt::UiToAudio::Type::Stop});
-    rt::UiToAudio seek{rt::UiToAudio::Type::Seek};
-    seek.a = 0;
-    engine_.post(seek);
+    // Return to where playback was started from (the located position), like a DAW.
+    locate(locatedQ_);
     playing_ = false;
     if (canvas_) canvas_->setPlayheadQuarter(std::numeric_limits<double>::quiet_NaN());
+    if (arrange_) arrange_->setPlayheadQuarter(locatedQ_);
     emit transportChanged();
 }
 
@@ -204,6 +206,7 @@ void AppController::fanOut(const model::ChangeSet& cs) {
     // 4. autosave (coalesced, own thread)
     enqueueSave(cs, false);
     if (cs.routingChanged) emit tracksChanged();
+    if (!cs.movements.empty() || cs.routingChanged) refreshArrange();
     updateSelectionLabel();
     emit historyChanged();
 }
@@ -260,6 +263,7 @@ void AppController::transposeSelection(int steps) {
 }
 
 void AppController::updateSelectionLabel() {
+    if (arrange_) arrange_->setSelection(selection_);
     QString label;
     if (const model::Locator* loc = project_.locate(selection_); loc && loc->kind == model::Locator::Kind::NoteHead)
         if (const model::Movement* m = project_.movement(loc->movement))
@@ -285,9 +289,12 @@ void AppController::updateSelectionLabel() {
 // ------------------------------------------------------------------- mixer --
 QVariantList AppController::tracks() const {
     QVariantList out;
-    for (const auto& t : project_.tracks) {
+    for (std::size_t i = 0; i < project_.tracks.size(); ++i) {
+        const auto& t = project_.tracks[i];
         const model::AudioNode* n = project_.node(t->instrumentNode);
         out.push_back(QVariantMap{{QStringLiteral("name"), QString::fromStdString(t->name)},
+                                  {QStringLiteral("color"), trackColor(i)},
+                                  {QStringLiteral("channel"), int(t->midiChannel) + 1},
                                   {QStringLiteral("gainDb"), t->gainDb},
                                   {QStringLiteral("plugin"), n ? QString::fromStdString(n->name) : QStringLiteral("—")}});
     }
@@ -440,7 +447,7 @@ void AppController::pump() {
         this);
     plugins_.pump();
 
-    if (!canvas_ || !playing_ || !sections_) return;
+    if ((!canvas_ && !arrange_) || !playing_ || !sections_) return;
     const rt::PlayheadState ps = engine_.playhead();
     const double sample = tracker_.update(ps, monotonicNs());
     for (const auto& sec : *sections_) {
@@ -449,7 +456,9 @@ void AppController::pump() {
             stop();
             return;
         }
-        canvas_->setPlayheadQuarter(sample < double(sec.start) ? 0.0 : sec.tempo.quarterAtSample(sample - double(sec.start)));
+        const double q = sample < double(sec.start) ? 0.0 : sec.tempo.quarterAtSample(sample - double(sec.start));
+        if (canvas_) canvas_->setPlayheadQuarter(q);
+        if (arrange_) arrange_->setPlayheadQuarter(q);
     }
 }
 

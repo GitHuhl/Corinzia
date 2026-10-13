@@ -3,6 +3,7 @@
 //   corinzia [--no-audio] [project.project]
 //   corinzia --smoke out.png      headless end-to-end check (used by ctest)
 #include "corinzia/app/AppController.hpp"
+#include "corinzia/ui/ArrangeView.hpp"
 #include "corinzia/ui/ScoreCanvas.hpp"
 
 #include <QCommandLineParser>
@@ -156,6 +157,76 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
     key(Qt::Key_Escape);
     check(!app.inputMode(), "Esc leaves note input");
 
+    // ---- Mix (DAW) tab --------------------------------------------------------
+    QQuickItem* tabs = findItem(window->contentItem(), QStringLiteral("tabs"));
+    if (!tabs) tabs = findItem(window->contentItem()->parentItem() ? window->contentItem()->parentItem() : window->contentItem(),
+                               QStringLiteral("tabs"));
+    key(Qt::Key_2, Qt::ControlModifier);
+    check(tabs && tabs->property("currentIndex").toInt() == 1, "Ctrl+2 shows the Mix tab");
+    auto* arrange = qobject_cast<corinzia::ui::ArrangeView*>(findItem(window->contentItem(), QStringLiteral("arrange")));
+    check(arrange && arrange->isVisible() && !canvas->isVisible(), "arrange view visible, score hidden");
+    if (arrange) {
+        int heads = 0;
+        for (const auto& lane : app.project().movements.front()->lanes)
+            for (const auto& v : lane.voices)
+                for (const auto& ev : *v.events) heads += int(ev.heads.size());
+        check(arrange->blockCount() == heads && arrange->trackCount() == 3, "one arrange block per note head, three tracks");
+        bool picc = false;
+        for (const auto& b : arrange->content().blocks) picc |= (b.track == 1 && b.startQ >= 16.0);
+        check(picc, "doubling: bars 5-8 of Flute 1 sit on the Piccolo track");
+        if (std::getenv("CORINZIA_SMOKE_DEBUG"))
+            for (std::size_t i = 0; i < arrange->content().blocks.size(); ++i) {
+                const auto& b = arrange->content().blocks[i];
+                if (b.startQ >= 24 && b.startQ < 28) {
+                    const QRectF r = arrange->blockRect(i);
+                    std::printf("  block track %d q %.2f len %.2f key %d y %.1f\n", b.track, b.startQ, b.lengthQ, b.key, r.y());
+                }
+            }
+
+        waitFor([] { return false; }, 100);
+        const QImage mixFrame = window->grabWindow();
+        int blue = 0;
+        for (int y = 0; y < mixFrame.height(); ++y)
+            for (int x = 0; x < mixFrame.width(); ++x) {
+                const QColor c = mixFrame.pixelColor(x, y);
+                if (std::abs(c.red() - 47) < 12 && std::abs(c.green() - 111) < 12 && std::abs(c.blue() - 181) < 12) ++blue;
+            }
+        check(blue > 100, "arrange blocks drawn on screen");
+        QString mixPng = png;
+        mixPng.replace(QStringLiteral(".png"), QStringLiteral("-mix.png"));
+        mixFrame.save(mixPng);
+
+        // Click a clarinet block -> shared selection.
+        std::size_t clarBlock = 0;
+        for (std::size_t i = 0; i < arrange->content().blocks.size(); ++i)
+            if (arrange->content().blocks[i].track == 2) { clarBlock = i; break; }
+        const QPointF bp = arrange->mapToScene(arrange->blockRect(clarBlock).center());
+        QMouseEvent bpress(QEvent::MouseButtonPress, bp, bp, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &bpress);
+        QMouseEvent brelease(QEvent::MouseButtonRelease, bp, bp, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &brelease);
+        check(app.selection() == arrange->content().blocks[clarBlock].element &&
+                  app.selectionLabel().contains(QStringLiteral("Clarinet")),
+              "clicking an arrange block selects that note (shared with the score)");
+
+        // Click empty timeline below the lanes -> transport locates there.
+        const double q = 6.5;
+        const QPointF tp = arrange->mapToScene(QPointF(arrange->xForQuarter(q), 3 * arrange->laneHeight() + 20));
+        QMouseEvent tpress(QEvent::MouseButtonPress, tp, tp, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &tpress);
+        QMouseEvent trelease(QEvent::MouseButtonRelease, tp, tp, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &trelease);
+        const double expected = q * 60.0 / 96.0 * 48000.0;
+        check(waitFor([&] { return std::abs(double(app.engine().playhead().blockStartSample) - expected) < 300; }, 2000),
+              "timeline click locates the transport (sample-exact via the tempo map)");
+        check(findItem(window->contentItem(), QStringLiteral("strip2")) != nullptr, "mixer strips present");
+    }
+    key(Qt::Key_1, Qt::ControlModifier);
+    check(tabs && tabs->property("currentIndex").toInt() == 0 && canvas->hasActiveFocus(), "Ctrl+1 returns to the score with keyboard focus");
+    key(Qt::Key_N, Qt::NoModifier, QStringLiteral("n"));
+    check(app.inputMode(), "score keys work again after switching back");
+    key(Qt::Key_Escape);
+
     const QString file = QDir::temp().filePath(QStringLiteral("corinzia-smoke.project"));
     check(app.saveProjectAs(file), "saved to SQLite project");
     const int engravedBeforeOpen = app.engraveCount();
@@ -212,6 +283,7 @@ int main(int argc, char** argv) {
     if (!args.positionalArguments().isEmpty()) app.openProject(args.positionalArguments().front());
 
     qmlRegisterType<corinzia::ui::ScoreCanvas>("Corinzia.Core", 1, 0, "ScoreCanvas");
+    qmlRegisterType<corinzia::ui::ArrangeView>("Corinzia.Core", 1, 0, "ArrangeView");
     qmlRegisterSingletonInstance("Corinzia.Core", 1, 0, "App", &app);
 
     QQmlApplicationEngine engine;

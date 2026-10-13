@@ -58,6 +58,7 @@ if(CORINZIA_BUILD_UI)
         include/corinzia/ui/SvgHitIndex.hpp      src/ui/SvgHitIndex.cpp
         include/corinzia/ui/LayoutAnchors.hpp    src/ui/LayoutAnchors.cpp
         include/corinzia/ui/ScoreCanvas.hpp      src/ui/ScoreCanvas.cpp
+        include/corinzia/ui/ArrangeView.hpp      src/ui/ArrangeView.cpp
     )
     target_link_libraries(corinzia_ui PUBLIC corinzia_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
     target_compile_options(corinzia_ui PRIVATE -Wall -Wextra)
@@ -68,11 +69,12 @@ if(CORINZIA_BUILD_UI AND PIPEWIRE_FOUND)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Qml QuickControls2)
     qt_add_executable(corinzia
         src/app/main.cpp
-        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp
+        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp src/app/AppControllerDaw.cpp
         include/corinzia/app/DemoProject.hpp   src/app/DemoProject.cpp
         include/corinzia/app/DummyBackend.hpp
     )
-    qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml qml/NotesPanel.qml qml/NoteIcon.qml)
+    qt_policy(SET QTP0004 NEW)
+    qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml qml/NotesPanel.qml qml/NoteIcon.qml qml/MixView.qml)
     target_link_libraries(corinzia PRIVATE corinzia_ui corinzia_pipewire Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_compile_options(corinzia PRIVATE -Wall -Wextra)
     install(TARGETS corinzia RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

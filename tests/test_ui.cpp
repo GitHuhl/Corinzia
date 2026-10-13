@@ -2,6 +2,7 @@
 #include "Fixture.hpp"
 #include "Test.hpp"
 
+#include "corinzia/ui/ArrangeView.hpp"
 #include "corinzia/ui/EngravingService.hpp"
 #include "corinzia/ui/ScoreCanvas.hpp"
 
@@ -296,6 +297,113 @@ TEST(score_canvas_renders_engraving_pixels) {
             if (c.blue() > 120 && c.red() < 80) ++blueAfter;
         }
     CHECK(blueAfter == 0);
+}
+
+TEST(arrange_view_pixels_track_content_growth_and_scroll) {
+    // Offset inside the window on purpose: a node that loses the item's
+    // transform shows up at the wrong place.
+    QQuickWindow window;
+    window.resize(700, 420);
+    window.setColor(Qt::white);
+    ui::ArrangeView view(window.contentItem());
+    view.setPosition(QPointF(50, 40));
+    view.setSize(QSizeF(600, 360));
+    view.setLaneHeight(60);
+    const QColor colors[5] = {QColor(47, 111, 181), QColor(214, 120, 34), QColor(46, 150, 90), QColor(176, 60, 140),
+                              QColor(120, 100, 200)};
+    auto content = [&](int tracks, int blocks, bool swapped) {
+        ui::ArrangeContent c;
+        for (int t = 0; t < tracks; ++t) c.tracks.push_back({QString("T%1").arg(t), colors[t], 60, 72});
+        for (int i = 0; i < blocks; ++i) {
+            const int track = swapped ? (tracks - 1 - i % tracks) : i % tracks;
+            c.blocks.push_back({track, i * 0.5, 0.4, 60 + (i * 5) % 13, ElementId{std::uint64_t(i + 1)}});
+        }
+        c.barQuarters = {0, 4, 8, 12, 16, 20, 24};
+        c.lengthQ = 24;
+        return c;
+    };
+    window.show();
+    int wrong = 0, checked = 0;
+    auto verify = [&](const char* phase) {
+        const QImage f = window.grabWindow();
+        int bad = 0;
+        for (std::size_t i = 0; i < view.content().blocks.size(); ++i) {
+            const QRectF r = view.blockRect(i);
+            if (r.left() < 2 || r.right() > view.width() - 2) continue;   // partly culled / clipped
+            const QPoint p = view.mapToScene(r.center()).toPoint();
+            const QColor want = colors[view.content().blocks[i].track];
+            const QColor got = f.pixelColor(p);
+            ++checked;
+            if (std::abs(got.red() - want.red()) > 10 || std::abs(got.green() - want.green()) > 10 ||
+                std::abs(got.blue() - want.blue()) > 10)
+                ++bad;
+        }
+        // Nothing may be drawn outside the item (clip + transform intact).
+        int outside = 0;
+        for (int y = 0; y < f.height(); ++y)
+            for (int x = 0; x < f.width(); ++x) {
+                const QPointF local = view.mapFromScene(QPointF(x, y));
+                if (local.x() >= 0 && local.y() >= 0 && local.x() < view.width() && local.y() < view.height()) continue;
+                if (f.pixelColor(x, y) != QColor(Qt::white)) ++outside;
+            }
+        std::printf("  %-22s wrong blocks %d, pixels outside item %d\n", phase, bad, outside);
+        wrong += bad + (outside > 0 ? 1 : 0);
+    };
+    view.setContent(content(3, 9, false));
+    verify("initial");
+    view.setContent(content(3, 9, true));
+    verify("tracks swapped");
+    view.setContent(content(5, 60, false));      // more tracks and blocks: tree must grow
+    verify("grown");
+    view.setScrollX(120);
+    verify("scrolled");
+    view.setContent(content(2, 4, false));       // shrink: surplus nodes hidden
+    verify("shrunk");
+    CHECK(wrong == 0 && checked > 50);
+}
+
+TEST(score_canvas_grows_from_one_to_two_pages) {
+    Env env;
+    auto r1 = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r1 && r1->ok && r1->pages.size() == 1);
+    // ~100 bars of eighths: LilyPond needs a second page.
+    auto& m = *env.p.movements[0];
+    auto evs = std::make_shared<model::EventList>();
+    for (int i = 0; i < 800; ++i) evs->push_back(fixture::ev(env.p, Fraction(i, 8), Fraction(1, 8), {fixture::head(env.p, i % 7, 5)}));
+    m.lanes[0].voices[0].events = evs;
+    m.length = Fraction(100);
+    ++m.revision;
+    auto r2 = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r2 && r2->ok && r2->pages.size() >= 2);
+    if (!r1 || !r2 || r2->pages.size() < 2) return;
+
+    QQuickWindow window;
+    window.resize(700, 900);
+    window.setColor(QColor(128, 128, 128));
+    ui::ScoreCanvas canvas(window.contentItem());
+    canvas.setPosition(QPointF(40, 30));     // offset: transform errors become visible
+    canvas.setSize(QSizeF(640, 860));
+    canvas.setZoom(0.4);
+    canvas.setPan(QPointF(10, 10));
+    canvas.setEngraving(r1);
+    window.show();
+    (void)window.grabWindow();               // render the 1-page tree first
+    canvas.setEngraving(r2);
+    const QImage f = window.grabWindow();
+    auto inkIn = [&](int page) {
+        const QRectF pr = canvas.pageRectInItem(page).intersected(QRectF(0, 0, canvas.width(), canvas.height()));
+        int ink = 0;
+        for (int y = int(pr.top()); y < int(pr.bottom()); y += 2)
+            for (int x = int(pr.left()); x < int(pr.right()); x += 2)
+                if (qGray(f.pixel(canvas.mapToScene(QPointF(x, y)).toPoint())) < 80) ++ink;
+        return ink;
+    };
+    const int ink1 = inkIn(0), ink2 = inkIn(1);
+    int outside = 0;   // pixels left of / above the canvas must stay window grey
+    for (int y = 0; y < 30; ++y)
+        for (int x = 0; x < f.width(); ++x) if (f.pixelColor(x, y) != QColor(128, 128, 128)) ++outside;
+    std::printf("  pages %zu, ink page1 %d page2 %d, stray pixels %d\n", r2->pages.size(), ink1, ink2, outside);
+    CHECK(ink1 > 300 && ink2 > 300 && outside == 0);
 }
 
 int main(int argc, char** argv) {

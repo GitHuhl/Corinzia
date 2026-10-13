@@ -552,6 +552,42 @@ The left **Notes panel** (`qml/NotesPanel.qml`) mirrors all of these with
 drawn duration icons, accidentals, articulations, dynamics and voices. Its
 buttons never take keyboard focus, so typing always reaches the score.
 
+### 5.6 Two workspaces: Score and Mix
+
+The notation and DAW sides are separate tabs over one project. Both share the
+model, undo stack, selection, transport and playhead. Ctrl+1 and Ctrl+2
+switch; the shared transport toolbar sits above the tabs.
+
+* **Score** (`ScoreCanvas` + `NotesPanel`): engraved notation, note input, the
+  §5.2 provisional layer and point-and-click.
+* **Mix** (`qml/MixView.qml`):
+  * an **arrange view** (`ui/ArrangeView`): one lane per DAW track, a bar
+    ruler (click to locate), note blocks scaled by pitch within each lane,
+    the shared selection and the playhead. Ctrl+wheel zooms, wheel scrolls;
+  * **mixer strips** (fader through the undoable `SetTrackGain`, CLAP
+    instrument assignment);
+  * the **plugin browser** (scan results, rescan).
+
+  Blocks are placed by the same rule as playback: each note goes on the track
+  that sounds it at its onset, so a Flute→Piccolo doubling shows up on the
+  Piccolo lane. Clicking a block selects the note in both tabs. Clicking empty
+  timeline locates the transport sample-exactly through the tempo map, and
+  Stop returns there, as in a DAW.
+* Keyboard focus follows the visible tab. Leaving the score ends note input.
+
+**Scene-graph rule** (software adaptation, verified by tests that fail without
+it): inserting nodes into an already-rendered subtree can leave them without
+the item's transform or clip, so they draw at window coordinates. Both views
+therefore:
+1. pool nodes per colour or material, fixed for each node's lifetime;
+2. change only rects and textures per frame;
+3. rebuild the whole tree, fully built before returning it, when it has to
+   grow (more pages, a new track colour, a pool overflow; capacities double).
+
+`arrange_view_pixels_track_content_growth_and_scroll` and
+`score_canvas_grows_from_one_to_two_pages` check this at pixel level with the
+item offset inside the window.
+
 ---
 
 ## 6. Thread synchronization diagram
@@ -662,7 +698,7 @@ nix build                        # sandboxed build + full test suite (incl. Lily
 ```
 
 **Verified by tests.** Four ctest suites: core (39 cases, also clean under
-ASan + UBSan), PipeWire end-to-end, Qt/UI (6 cases, pixel-level) and an app
+ASan + UBSan), PipeWire end-to-end, Qt/UI (8 cases, pixel-level) and an app
 smoke run.
 
 | Area | Tests |
@@ -678,7 +714,8 @@ smoke run.
 | Storage | full round trip; a one-note edit rewrites exactly one chunk; 1 MiB plugin state skipped when unchanged; worker coalescing; undo journal |
 | Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; page, playhead and provisional sprites verified at pixel level across re-engraves |
 | Note input | overwrite insert/truncate/fill, chords, delete, modify, durations incl. triplets, key-aware nearest-octave spelling; `locate` inverts every engraved head to its staff, beat and pitch; tuplet and barline-completion emission compiled by LilyPond |
-| App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; save to `.project` and reopen; engraved music visible on screen |
+| Mix tab | arrange blocks keep colour/position/clip through swaps, growth, scroll and shrink; score canvas growing 1 → 2 pages |
+| App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; **Ctrl+2** Mix tab: one arrange block per note head, doubling on the Piccolo lane, blocks drawn, clicking a block selects the note, clicking the timeline locates the transport sample-exactly; **Ctrl+1** back with score keys working; save to `.project` and reopen; engraved music visible on screen |
 
 **Run the application:** `nix run` (or `corinzia [--no-audio] [file.project]`
 from the dev shell). Space plays or stops; ↑/↓ transpose the selected note
