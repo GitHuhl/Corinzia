@@ -103,3 +103,56 @@ TEST(edit_modify_and_lookup) {
     const model::NoteHead* h = nullptr;
     CHECK(findEvent(v, v[1].heads[0].id.id, &h) == &v[1] && h == &v[1].heads[0]);
 }
+
+namespace {
+model::EventList twoBars(Ids& ids) {   // c4 d4 e4 f4 | g2 a2
+    model::EventList v;
+    int i = 0;
+    for (int step : {0, 1, 2, 3}) v.push_back(makeEvent(ids.fn, Fraction(i++, 4), {1, 4}, {{std::int8_t(step), 0, 4}}));
+    v.push_back(makeEvent(ids.fn, {1}, {1, 2}, {{4, 0, 4}}));
+    v.push_back(makeEvent(ids.fn, {3, 2}, {1, 2}, {{5, 0, 4}}));
+    return v;
+}
+}  // namespace
+
+TEST(edit_range_erase_slice_paste) {
+    Ids ids;
+    auto v = twoBars(ids);
+    // Erase beats 2-3 of bar 1: two notes -> one half rest... as per-gap rests.
+    auto e = eraseRange(v, {1, 4}, {3, 4}, true, ids.fn);
+    CHECK(contiguous(*e.events) && e.events->size() == 5);
+    CHECK((*e.events)[1].kind == model::EventKind::Rest && (*e.events)[1].duration == Fraction(1, 2));
+    // Erase across a long note: g2 starts inside, its overhang becomes a rest.
+    auto e2 = eraseRange(v, {3, 4}, {5, 4}, true, ids.fn);
+    CHECK(contiguous(*e2.events));
+    CHECK(voiceEnd(*e2.events) == Fraction(2));
+    // Slice bar 1 beats 3-4 and paste it over bar 2's start: fresh ids, same pitches.
+    auto clip = sliceRange(v, {1, 2}, {1});
+    CHECK(clip.size() == 2 && clip[0].start == Fraction(0) && clip[1].start == Fraction(1, 4));
+    auto p = pasteEvents(v, clip, {1}, {1, 2}, true, ids.fn);
+    CHECK(contiguous(*p.events));
+    const auto* pasted = eventAt(*p.events, {1});
+    CHECK(pasted && pasted->heads[0].pitch.step == 2 && pasted->id != clip[0].id && pasted->heads[0].id != clip[0].heads[0].id);
+    CHECK(eventAt(*p.events, {3, 2})->heads[0].pitch.step == 5);   // a2 untouched
+    // A clip with holes (voice 2 material) pasted into voice 1 gets rests.
+    model::EventList holey;
+    holey.push_back(makeEvent(ids.fn, {1, 4}, {1, 4}, {{6, 0, 4}}));
+    auto p2 = pasteEvents(v, holey, {0}, {1, 2}, true, ids.fn);
+    CHECK(contiguous(*p2.events) && (*p2.events)[0].kind == model::EventKind::Rest);
+}
+
+TEST(edit_range_transpose_apply_and_spans) {
+    Ids ids;
+    auto v = twoBars(ids);
+    auto t = transposeRange(v, {0}, {1}, 2);
+    CHECK(t && (*t->events)[0].heads[0].pitch.step == 2 && (*t->events)[4].heads[0].pitch.step == 4);   // bar 2 untouched
+    auto a = applyToRange(v, {0}, {1, 2}, [](model::MusicEvent& e) { e.articulations |= model::ArtStaccato; });
+    CHECK(a && ((*a->events)[1].articulations & model::ArtStaccato) && !((*a->events)[2].articulations & model::ArtStaccato));
+    auto s = markSpan(v, {0}, {1}, model::SlurStart, model::SlurEnd);
+    CHECK(s && ((*s->events)[0].spans & model::SlurStart) && ((*s->events)[3].spans & model::SlurEnd));
+    CHECK(!markSpan(v, {0}, {1, 4}, model::SlurStart, model::SlurEnd));   // one note: no slur
+    auto h = markSpan(*s->events, {0}, {2}, model::CrescStart, model::HairpinEnd);
+    auto d = markSpan(*h->events, {0}, {2}, model::DimStart, model::HairpinEnd);   // replaces the cresc
+    CHECK(d && ((*d->events)[0].spans & model::DimStart) && !((*d->events)[0].spans & model::CrescStart));
+    CHECK(((*d->events)[0].spans & model::SlurStart));   // other families untouched
+}

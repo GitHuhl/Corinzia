@@ -161,6 +161,49 @@ Pane {
                 }
             }
 
+            SectionLabel { text: "Lines" }
+            RowLayout {
+                spacing: 2
+                PanelButton {
+                    objectName: "slurButton"
+                    tip: "Slur over the selection, or from the selected note to the next (S)"
+                    onClicked: App.addSlur()
+                    contentItem: Label { text: "⌒"; font.pixelSize: 20; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                PanelButton {
+                    tip: "Crescendo hairpin (H)"
+                    onClicked: App.addHairpin(true)
+                    contentItem: Label { text: "<"; font.pixelSize: 20; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; transform: Scale { xScale: 1.6; origin.x: 17 } }
+                }
+                PanelButton {
+                    tip: "Diminuendo hairpin (Shift+H)"
+                    onClicked: App.addHairpin(false)
+                    contentItem: Label { text: ">"; font.pixelSize: 20; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; transform: Scale { xScale: 1.6; origin.x: 17 } }
+                }
+            }
+
+            SectionLabel { text: "Selection" }
+            GridLayout {
+                columns: 2
+                columnSpacing: 2
+                rowSpacing: 2
+                Repeater {
+                    model: [ { t: "Copy", k: "Ctrl+C", f: () => App.copySelection(), e: () => App.hasRange },
+                             { t: "Paste", k: "Ctrl+V", f: () => App.paste(), e: () => App.canPaste },
+                             { t: "Repeat", k: "R", f: () => App.repeatSelection(), e: () => App.hasRange },
+                             { t: "All", k: "Ctrl+A", f: () => App.selectAll(), e: () => true } ]
+                    delegate: PanelButton {
+                        required property var modelData
+                        objectName: "sel" + modelData.t
+                        implicitWidth: 52
+                        enabled: modelData.e()
+                        tip: modelData.t + " (" + modelData.k + "). Drag on empty paper to marquee-select; Shift+click extends."
+                        onClicked: modelData.f()
+                        contentItem: Label { text: modelData.t; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; opacity: parent.enabled ? 1 : 0.4 }
+                    }
+                }
+            }
+
             SectionLabel { text: "Voice (V)" }
             RowLayout {
                 spacing: 2

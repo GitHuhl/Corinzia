@@ -552,6 +552,53 @@ The left **Notes panel** (`qml/NotesPanel.qml`) mirrors all of these with
 drawn duration icons, accidentals, articulations, dynamics and voices. Its
 buttons never take keyboard focus, so typing always reaches the score.
 
+### 5.5a Selection, clipboard, slurs and hairpins
+
+* **Selection model:** a single element (click) or a **passage** (lanes
+  `[a, b]` × beats `[from, to)`). A passage comes from a **marquee** (drag on
+  empty paper; the band selects every engraved element it touches and the
+  union of their staves and spans becomes the passage), from **Shift+click**
+  (extends from the current selection), or from **Ctrl+A**. The highlight is
+  one rectangle per system (`LayoutAnchors::rangeRects`).
+* **Passage operations** (pure `edit::` functions, one undo step each):
+  `eraseRange` (Delete; voice 1 refills with rests), `sliceRange` +
+  `pasteEvents` (Ctrl+C/X/V with fresh ids, extending the movement when
+  needed; pasting at a selected note puts it *at* that note), repeat (R),
+  `transposeRange` (↑/↓), articulations (added unless every note already has
+  them, then removed) and dynamics (first note per staff).
+* **Spanners** are start/stop marks on events (`SpanMark`), as in LilyPond and
+  MusicXML, so copy/paste, undo, chunked storage and engraving carry them for
+  free. S adds a slur; H / Shift+H add a crescendo / diminuendo. Playback:
+  `compile::expressiveShape` ramps velocity over a hairpin towards the next
+  written dynamic (or ±2 steps) and plays slurred notes legato.
+
+### 5.5b Zoom quality and score views
+
+* **Vector-sharp zoom** (`ui/VectorTiles`): visible 512 px tiles are
+  rasterized on a worker thread straight from the engraving's SVG vectors, at
+  the exact device scale. While zooming, the previous image is scaled
+  (instant); crisp tiles replace it as soon as they are ready. Tested
+  pixel-exact against direct vector rendering at 4×.
+* `normalizeSvgText` fixes LilyPond's tiny text font sizes, at which FreeType
+  silently dropped glyphs when zoomed in.
+* **Page | Panorama** toggle (Score toolbar): Page is the printed layout;
+  Panorama engraves the movement as one endless system
+  (`ly:one-line-auto-height-breaking`, staff names kept) and the wheel scrolls
+  through time.
+
+### 5.5c Gap analysis vs Sibelius / Dorico / MuseScore (roadmap)
+
+| Area | Have | Missing (in priority order) |
+|---|---|---|
+| Input | step entry (keys, mouse, panel), chords, rests, dots, triplets, accidentals, ties, voices 1–4, overwrite | insert mode; MIDI-keyboard step input and real-time recording; re-input pitches over rhythms; grace notes; general tuplets (5:4, 7:8 …); hover ghost note; percussion & tab input |
+| Selection & editing | click, Shift+click, marquee, select all; copy/cut/paste/repeat/delete/transpose passages; undo of everything | filters (select only voice 2 / only dynamics); multi-selection of non-contiguous items; drag notes with the mouse; respell/enharmonic; transpose by interval with accidental spelling; swap voices; explode/reduce |
+| Notation items | articulations, dynamics, slurs, crescendo/diminuendo hairpins, ties, tempo + rit./accel., key/time from model | text (expression, technique, staff/system text), rehearsal marks, lyrics, chord symbols, ornaments (trills, mordents, turns), tremolos, arpeggios, glissandi, pedal, octave lines (8va), fingering, breath marks / caesuras |
+| Structure | multi-movement, instrument changes, key/time/tempo maps | UI for clef/key/time/tempo changes; pickup bars; barline types; repeats, voltas, D.C./D.S./Coda (with playback); insert/delete bars; multi-bar rests |
+| Instruments | players with doublings, transposition data | add/remove/reorder players; grand staff (piano), divisi, percussion kits, unpitched staves; transposed vs concert-pitch toggle; staff-type changes |
+| Layout & parts | Page and Panorama views, LilyPond engraving | system/page breaks, staff spacing, beam & stem overrides, cue notes, part extraction (layouts), house styles, condensing |
+| I/O | own SQLite project | MusicXML import/export, MIDI import/export, PDF/SVG/PNG export, audio export, printing |
+| Playback | dynamics, hairpins, slurs (legato), articulations gate/accent, PDC, CLAP | expression maps / key switches per articulation, swing, repeats in playback, humanize, mixer automation from notation |
+
 ### 5.6 Two workspaces: Score and Mix
 
 The notation and DAW sides are separate tabs over one project. Both share the
@@ -697,8 +744,8 @@ python3 -I scripts/validate_schema.py
 nix build                        # sandboxed build + full test suite (incl. LilyPond + offscreen Qt)
 ```
 
-**Verified by tests.** Four ctest suites: core (39 cases, also clean under
-ASan + UBSan), PipeWire end-to-end, Qt/UI (8 cases, pixel-level) and an app
+**Verified by tests.** Four ctest suites: core (44 cases, also clean under
+ASan + UBSan), PipeWire end-to-end, Qt/UI (10 cases, pixel-level) and an app
 smoke run.
 
 | Area | Tests |
@@ -714,6 +761,8 @@ smoke run.
 | Storage | full round trip; a one-note edit rewrites exactly one chunk; 1 MiB plugin state skipped when unchanged; worker coalescing; undo journal |
 | Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; page, playhead and provisional sprites verified at pixel level across re-engraves |
 | Note input | overwrite insert/truncate/fill, chords, delete, modify, durations incl. triplets, key-aware nearest-octave spelling; `locate` inverts every engraved head to its staff, beat and pitch; tuplet and barline-completion emission compiled by LilyPond |
+| Selection & spanners | eraseRange/slice/paste/applyToRange/transposeRange/markSpan; hairpin velocity ramps and slur legato; spans survive save/load and compile in LilyPond without warnings; smoke: real marquee drag (band + highlight pixels), Ctrl+C/V at a note, R, undo identity, Shift+click passage, S/H, ↑, Ctrl+A + Delete + undo, Esc |
+| Zoom & views | canvas pixel-exact vs direct SVG rendering at 4×; text present at every zoom; Page/Panorama engrave, names, mouse entry in panorama |
 | Mix tab | arrange blocks keep colour/position/clip through swaps, growth, scroll and shrink; score canvas growing 1 → 2 pages |
 | App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; **Ctrl+2** Mix tab: one arrange block per note head, doubling on the Piccolo lane, blocks drawn, clicking a block selects the note, clicking the timeline locates the transport sample-exactly; **Ctrl+1** back with score keys working; save to `.project` and reopen; engraved music visible on screen |
 

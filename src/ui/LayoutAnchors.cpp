@@ -223,4 +223,39 @@ LayoutAnchors::Hit LayoutAnchors::locate(int page, QPointF pt) const {
     return hit;
 }
 
+std::vector<LayoutAnchors::Region> LayoutAnchors::rangeRects(std::size_t laneFrom, std::size_t laneTo, double fromQ,
+                                                             double toQ) const {
+    std::vector<Region> out;
+    for (std::size_t sys = 0; sys < systems_.size(); ++sys) {
+        const Point* first = nullptr;
+        const Point* last = nullptr;
+        const Point* after = nullptr;   // first onset at/after the range end in this system
+        for (const auto& p : timeline_) {
+            if (p.system != int(sys)) continue;
+            if (p.quarter >= fromQ && p.quarter < toQ) {
+                if (!first) first = &p;
+                last = &p;
+            } else if (p.quarter >= toQ && !after) {
+                after = &p;
+            }
+        }
+        if (!first) continue;
+        const System& s = systems_[sys];
+        double top = 1e18, bottom = -1e18;
+        for (std::size_t lane = laneFrom; lane <= laneTo; ++lane) {
+            double sum = 0, n = 0;
+            for (const auto& h : heads_)
+                if (h.lane == lane && h.system == int(sys)) { sum += h.y; ++n; }
+            if (!n) continue;
+            top = std::min(top, sum / n - 3.0);
+            bottom = std::max(bottom, sum / n + 3.0);
+        }
+        if (top > bottom) { top = s.top; bottom = s.bottom; }
+        const double left = first->x - 1.2;
+        const double right = after ? after->x - 1.2 : std::max(last->x + 2.0, s.right + 2.0);
+        out.push_back({s.page, QRectF(QPointF(left, top), QPointF(right, bottom))});
+    }
+    return out;
+}
+
 }  // namespace corinzia::ui

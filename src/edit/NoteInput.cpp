@@ -201,4 +201,128 @@ Fraction voiceEnd(const EventList& list) {
     return end;
 }
 
+// -------------------------------------------------------------- ranges --
+EditResult eraseRange(const EventList& list, Fraction from, Fraction to, bool fill, IdAlloc& ids) {
+    // Pass 1: cut. Events crossing `from` keep their head part; events starting
+    // inside go, and their overhang past `to` becomes a rest (voice 1).
+    auto out = std::make_shared<EventList>();
+    for (const auto& e : list) {
+        const Fraction end = e.start + e.duration;
+        if (e.start >= to || end <= from) {
+            out->push_back(e);
+            continue;
+        }
+        if (e.start < from) {
+            MusicEvent kept = e;
+            kept.duration = from - e.start;
+            for (auto& h : kept.heads) h.tieToNext = false;
+            out->push_back(std::move(kept));
+        }
+        if (end > to && fill) out->push_back(restOf(ids, to, end - to));
+    }
+    sortEvents(*out);
+    // Pass 2 (voice 1): one rest per gap inside the range, up to the old end.
+    if (fill) {
+        const Fraction limit = std::min(to, voiceEnd(list));
+        Fraction cur = from;
+        EventList gaps;
+        for (const auto& e : *out) {
+            if (e.start + e.duration <= from) continue;
+            if (e.start >= limit) break;
+            if (e.start > cur) gaps.push_back(restOf(ids, cur, e.start - cur));
+            cur = std::max(cur, e.start + e.duration);
+        }
+        if (cur < limit) gaps.push_back(restOf(ids, cur, limit - cur));
+        for (auto& g : gaps) out->push_back(std::move(g));
+        sortEvents(*out);
+    }
+    return {std::move(out), {}, from, to, from};
+}
+
+EventList sliceRange(const EventList& list, Fraction from, Fraction to) {
+    EventList out;
+    for (const auto& e : list) {
+        if (e.start < from || e.start >= to) continue;
+        MusicEvent c = e;
+        c.start = e.start - from;
+        if (e.start + e.duration > to) {
+            c.duration = to - e.start;
+            for (auto& h : c.heads) h.tieToNext = false;
+        }
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+EditResult pasteEvents(const EventList& list, const EventList& clip, Fraction at, Fraction length, bool fill, IdAlloc& ids) {
+    EditResult r = eraseRange(list, at, at + length, fill, ids);
+    auto out = std::make_shared<EventList>();
+    for (const auto& e : *r.events)                        // drop the fill rests inside the pasted span
+        if (!(e.kind == EventKind::Rest && e.start >= at && e.start < at + length)) out->push_back(e);
+    ElementId first;
+    for (const auto& c : clip) {
+        MusicEvent e = c;
+        e.id = {ids()};
+        e.start = at + c.start;
+        for (auto& h : e.heads) h.id = {ids()};
+        if (!first.valid()) first = e.heads.empty() ? e.id.id : e.heads.front().id.id;
+        out->push_back(std::move(e));
+    }
+    if (fill) {   // voice 1: anything the clip leaves empty (e.g. pasted from voice 2) becomes rest
+        sortEvents(*out);
+        Fraction cur = at;
+        EventList extra;
+        for (const auto& e : *out) {
+            if (e.start >= at + length) break;
+            if (e.start + e.duration <= at) continue;
+            if (e.start > cur) extra.push_back(restOf(ids, cur, e.start - cur));
+            cur = std::max(cur, e.start + e.duration);
+        }
+        if (cur < at + length) extra.push_back(restOf(ids, cur, at + length - cur));
+        for (auto& e : extra) out->push_back(std::move(e));
+    }
+    sortEvents(*out);
+    return {std::move(out), first, at, at + length, at + length};
+}
+
+std::optional<EditResult> applyToRange(const EventList& list, Fraction from, Fraction to,
+                                       const std::function<void(MusicEvent&)>& fn) {
+    auto out = std::make_shared<EventList>(list);
+    ElementId first;
+    for (auto& e : *out)
+        if (e.start >= from && e.start < to) {
+            fn(e);
+            if (!first.valid()) first = e.heads.empty() ? e.id.id : e.heads.front().id.id;
+        }
+    if (!first.valid()) return std::nullopt;
+    return EditResult{std::move(out), first, from, to, to};
+}
+
+std::optional<EditResult> transposeRange(const EventList& list, Fraction from, Fraction to, int steps) {
+    return applyToRange(list, from, to, [steps](MusicEvent& e) {
+        for (auto& h : e.heads) h.pitch = fromDiatonic(diatonic(h.pitch) + steps, h.pitch.alter);
+    });
+}
+
+std::optional<EditResult> markSpan(const EventList& list, Fraction from, Fraction to, std::uint8_t startMark,
+                                   std::uint8_t endMark) {
+    const std::uint8_t family = std::uint8_t(startMark | endMark |
+                                             ((startMark & (model::CrescStart | model::DimStart)) ? model::CrescStart | model::DimStart : 0));
+    auto out = std::make_shared<EventList>(list);
+    MusicEvent* first = nullptr;
+    MusicEvent* last = nullptr;
+    for (auto& e : *out)
+        if (e.start >= from && e.start < to && !e.heads.empty()) {
+            if (!first) first = &e;
+            last = &e;
+        }
+    if (!first || first == last) return std::nullopt;
+    for (auto& e : *out)
+        if (e.start >= first->start && e.start <= last->start) e.spans &= std::uint8_t(~family);
+    first->spans |= startMark;
+    last->spans |= endMark;
+    return EditResult{std::move(out), first->heads.front().id.id, first->start, last->start + last->duration,
+                      last->start + last->duration};
+}
+
 }  // namespace corinzia::edit

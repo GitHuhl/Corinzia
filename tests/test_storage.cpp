@@ -45,6 +45,13 @@ TEST(storage_roundtrip) {
     model::Project p;
     auto ids = fixture::makeProject(p);
     addLateEvents(p, ids);
+    {   // spanner marks must survive the round trip
+        auto& voice = p.movements[0]->lanes[0].voices[0];
+        auto evs = std::make_shared<model::EventList>(*voice.events);
+        (*evs)[0].spans = model::SlurStart | model::CrescStart;
+        (*evs)[2].spans = model::SlurEnd | model::HairpinEnd;
+        voice.events = evs;
+    }
     p.graph.nodes[0].stateChunk = std::make_shared<const std::vector<std::byte>>(
         std::vector<std::byte>{std::byte{1}, std::byte{2}, std::byte{3}});
 
@@ -82,6 +89,7 @@ TEST(storage_roundtrip) {
     for (std::size_t i = 0; i < std::min(ea.size(), eb.size()); ++i) {
         CHECK(ea[i].id == eb[i].id && ea[i].start == eb[i].start && ea[i].duration == eb[i].duration);
         CHECK(ea[i].kind == eb[i].kind && ea[i].articulations == eb[i].articulations && ea[i].dynamicMark == eb[i].dynamicMark);
+        CHECK(ea[i].spans == eb[i].spans);
         CHECK(ea[i].heads.size() == eb[i].heads.size());
         for (std::size_t h = 0; h < std::min(ea[i].heads.size(), eb[i].heads.size()); ++h)
             CHECK(ea[i].heads[h].id == eb[i].heads[h].id &&

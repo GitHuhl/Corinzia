@@ -79,6 +79,42 @@ std::vector<std::size_t> topoOrder(const RoutingSnapshot& r) {
 
 }  // namespace
 
+std::vector<EventShape> expressiveShape(const model::EventList& evs) {
+    std::vector<EventShape> out(evs.size());
+    // Pass 1: terraced dynamics and slurs.
+    std::optional<std::uint8_t> dyn;
+    std::vector<int> level(evs.size());
+    bool slur = false;
+    for (std::size_t i = 0; i < evs.size(); ++i) {
+        if (evs[i].dynamicMark) dyn = evs[i].dynamicMark;
+        level[i] = dyn ? *dyn : 4;
+        out[i].velocity = velocityForDynamic(dyn);
+        if (evs[i].spans & model::SlurStart) slur = true;
+        out[i].legato = slur && !(evs[i].spans & model::SlurEnd);
+        if (evs[i].spans & model::SlurEnd) slur = false;
+    }
+    // Pass 2: hairpins ramp from the start note's level to the target level.
+    for (std::size_t i = 0; i < evs.size(); ++i) {
+        const bool cresc = evs[i].spans & model::CrescStart, dim = evs[i].spans & model::DimStart;
+        if (!cresc && !dim) continue;
+        std::size_t j = i + 1;
+        while (j < evs.size() && !(evs[j].spans & model::HairpinEnd) && !evs[j].dynamicMark) ++j;
+        if (j >= evs.size()) j = evs.size() - 1;
+        int target = std::clamp(level[i] + (cresc ? 2 : -2), 0, 7);
+        for (std::size_t k = j; k < evs.size(); ++k)   // the next written dynamic wins
+            if (evs[k].dynamicMark) { target = *evs[k].dynamicMark; break; }
+        const float v0 = velocityForDynamic(std::uint8_t(level[i])), v1 = velocityForDynamic(std::uint8_t(target));
+        const double t0 = evs[i].start.toDouble(), t1 = evs[j].start.toDouble();
+        for (std::size_t k = i; k <= j; ++k) {
+            const double f = t1 > t0 ? (evs[k].start.toDouble() - t0) / (t1 - t0) : 1.0;
+            out[k].velocity = float(v0 + (v1 - v0) * f);
+        }
+        // After the hairpin the reached level holds until the next dynamic.
+        for (std::size_t k = j + 1; k < evs.size() && !evs[k].dynamicMark; ++k) out[k].velocity = v1;
+    }
+    return out;
+}
+
 std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::MovementSnapshot>& movements,
                                                       const RoutingSnapshot& routing, const CompileOptions& opt) {
     auto snap = std::make_unique<rt::PlaybackSnapshot>();
@@ -131,10 +167,9 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
             for (const auto& voice : lane.voices) {
                 const auto& evs = *voice.events;
                 std::unordered_set<std::uint64_t> consumed;   // tie continuations
-                std::optional<std::uint8_t> dyn;
+                const auto shape = expressiveShape(evs);
                 for (std::size_t ei = 0; ei < evs.size(); ++ei) {
                     const auto& ev = evs[ei];
-                    if (ev.dynamicMark) dyn = ev.dynamicMark;
                     if (ev.kind == model::EventKind::Rest) continue;
                     auto route = routing.instrumentRoutes.find(lane.instrumentAt(ev.start));
                     if (route == routing.instrumentRoutes.end()) continue;
@@ -160,9 +195,11 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
                         }
                         const SamplePos on = toSample(ev.start);
                         const SamplePos fullOff = toSample(end);
-                        const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * gateFactor(lastArt)));
+                        // Slurred notes are legato unless explicitly articulated short.
+                        const double gate = (shape[ei].legato && !(lastArt & model::ArtStaccato)) ? 1.0 : gateFactor(lastArt);
+                        const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * gate));
                         const float vel = h.velocity ? h.velocity / 127.f
-                                                     : velocityForDynamic(dyn) *
+                                                     : shape[ei].velocity *
                                                            ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
                         const auto noteId = std::int32_t(h.id.id.value & 0x7fffffff);
                         const auto key = std::int16_t(h.pitch.midiKey());

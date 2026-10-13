@@ -4,6 +4,7 @@
 #include "corinzia/app/DummyBackend.hpp"
 #include "corinzia/audio/PipeWireBackend.hpp"
 #include "corinzia/compile/SnapshotCompiler.hpp"
+#include "corinzia/rt/TempoMap.hpp"
 
 #include <QFile>
 #include <QMetaObject>
@@ -87,6 +88,7 @@ void AppController::resetProject() {
     selection_ = {};
     selectionLabel_.clear();
     inputMode_ = false;
+    range_ = {};
     caretLane_ = 0;
     caretPos_ = Fraction{0};
     voice_ = 1;
@@ -225,7 +227,15 @@ bool AppController::selectFirstNote() {
     return false;
 }
 
-void AppController::onElementClicked(quint64 elementId, quint64, quint64, Qt::KeyboardModifiers) {
+void AppController::onElementClicked(quint64 elementId, quint64, quint64, Qt::KeyboardModifiers mods) {
+    if (mods & Qt::ShiftModifier) {   // shift-click extends to a passage selection
+        selectElements({ElementId{elementId}}, true);
+        return;
+    }
+    if (range_.active) {
+        range_.active = false;
+        syncRange();
+    }
     selection_ = ElementId{elementId};
     // The caret follows the selection, so pressing N continues from there.
     if (const model::Locator* loc = project_.locate(selection_))
@@ -240,6 +250,13 @@ void AppController::onElementClicked(quint64 elementId, quint64, quint64, Qt::Ke
 }
 
 void AppController::transposeSelection(int steps) {
+    if (range_.active) {
+        const Range r = range_;
+        editRangeVoices("Transpose", [r, steps](const model::EventList& evs, const model::Voice&) {
+            return edit::transposeRange(evs, r.from, r.to, steps);
+        });
+        return;
+    }
     const model::Locator* loc = project_.locate(selection_);
     if (!loc || loc->kind != model::Locator::Kind::NoteHead) return;
     model::Movement* m = project_.movement(loc->movement);
@@ -263,6 +280,29 @@ void AppController::transposeSelection(int steps) {
 }
 
 void AppController::updateSelectionLabel() {
+    if (range_.active) {
+        const model::Movement* m = project_.movement(displayedMovement());
+        rt::TempoMap tm;
+        std::vector<rt::TempoMap::Meter> meters;
+        if (m) for (const auto& me : m->meter) meters.push_back({me.at.toQuarters(), 0, me.numerator, me.denominator});
+        tm.buildMeters(meters);
+        const int b0 = tm.barAt(range_.from.toQuarters()).bar;
+        const int b1 = tm.barAt(std::max(range_.from.toQuarters(), range_.to.toQuarters() - 1e-6)).bar;
+        auto name = [&](std::size_t li) {
+            const model::Player* pl = m && li < m->lanes.size() ? project_.player(m->lanes[li].player) : nullptr;
+            return pl ? QString::fromStdString(pl->name) : QString();
+        };
+        const QString staves = range_.laneFrom == range_.laneTo ? name(range_.laneFrom)
+                                                                : name(range_.laneFrom) + QStringLiteral(" – ") + name(range_.laneTo);
+        const QString label = (b0 == b1 ? QStringLiteral("Bar %1").arg(b0) : QStringLiteral("Bars %1–%2").arg(b0).arg(b1)) +
+                              QStringLiteral(" · ") + staves + QStringLiteral(" · passage selected");
+        if (label != selectionLabel_) {
+            selectionLabel_ = label;
+            emit selectionChanged();
+        }
+        if (arrange_) arrange_->setSelection({});
+        return;
+    }
     if (arrange_) arrange_->setSelection(selection_);
     QString label;
     if (const model::Locator* loc = project_.locate(selection_); loc && loc->kind == model::Locator::Kind::NoteHead)
@@ -424,6 +464,8 @@ void AppController::attachCanvas(ui::ScoreCanvas* canvas) {
     if (!canvas) return;
     connect(canvas, &ui::ScoreCanvas::elementClicked, this, &AppController::onElementClicked, Qt::UniqueConnection);
     connect(canvas, &ui::ScoreCanvas::inputClicked, this, &AppController::placeNoteAt, Qt::UniqueConnection);
+    connect(canvas, &ui::ScoreCanvas::marqueeSelected, this, &AppController::onMarqueeSelected, Qt::UniqueConnection);
+    connect(canvas, &ui::ScoreCanvas::emptyClicked, this, &AppController::clearSelection, Qt::UniqueConnection);
     syncCaret();
     if (auto m = displayedMovement(); m.valid()) {
         requestEngrave(m);

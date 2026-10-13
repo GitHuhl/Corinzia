@@ -47,6 +47,12 @@ struct CompileOptions {
 std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::MovementSnapshot>& movements,
                                                       const RoutingSnapshot& routing, const CompileOptions& opt);
 
+// Per-event playback shaping of one voice: velocity from dynamics with
+// hairpins interpolated over time (towards the next dynamic, or ±2 steps if
+// there is none), and legato inside slurs (all but the slur's last note).
+struct EventShape { float velocity; bool legato; };
+std::vector<EventShape> expressiveShape(const model::EventList& events);
+
 // Exposed for unit tests / the engraver's MIDI-preview path.
 double gateFactor(std::uint16_t articulations) noexcept;
 float velocityForDynamic(std::optional<std::uint8_t> mark) noexcept;

@@ -70,7 +70,7 @@ if(CORINZIA_BUILD_UI AND PIPEWIRE_FOUND)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Qml QuickControls2)
     qt_add_executable(corinzia
         src/app/main.cpp
-        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp src/app/AppControllerDaw.cpp
+        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp src/app/AppControllerDaw.cpp src/app/AppControllerRange.cpp
         include/corinzia/app/DemoProject.hpp   src/app/DemoProject.cpp
         include/corinzia/app/DummyBackend.hpp
     )

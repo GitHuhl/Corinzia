@@ -122,6 +122,7 @@ std::string eventsToJson(const model::EventList& evs, std::size_t begin, std::si
         o += "{\"id\":" + std::to_string(e.id.id.value) + ",\"k\":\"" + k + "\",\"s\":" + jfrac(e.start) +
              ",\"d\":" + jfrac(e.duration) + ",\"a\":" + std::to_string(e.articulations);
         if (e.dynamicMark) o += ",\"dyn\":" + std::to_string(*e.dynamicMark);
+        if (e.spans) o += ",\"sp\":" + std::to_string(e.spans);
         o += ",\"h\":" + jarray(e.heads, [](const model::NoteHead& h) {
                  return "{\"id\":" + std::to_string(h.id.id.value) + ",\"p\":[" + std::to_string(h.pitch.step) + "," +
                         std::to_string(h.pitch.alter) + "," + std::to_string(h.pitch.octave) +
@@ -497,7 +498,7 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
     Stmt sv(db_, "SELECT id, voice_index FROM voice WHERE movement_id = ? AND player_id = ? ORDER BY voice_index");
     Stmt se(db_, "SELECT e.value->>'id', e.value->>'k', e.value->>'$.s[0]', e.value->>'$.s[1]', e.value->>'$.d[0]', "
                  "e.value->>'$.d[1]', e.value->>'a', e.value->>'dyn', h.value->>'id', h.value->>'$.p[0]', "
-                 "h.value->>'$.p[1]', h.value->>'$.p[2]', h.value->>'t', h.value->>'v' "
+                 "h.value->>'$.p[1]', h.value->>'$.p[2]', h.value->>'t', h.value->>'v', e.value->>'sp' "
                  "FROM voice_chunk c, json_each(c.events) e LEFT JOIN json_each(e.value, '$.h') h "
                  "WHERE c.voice_id = ? ORDER BY c.chunk_index, e.key, h.key");
     Stmt sa(db_, "SELECT id, name, node_id, clap_param_id, mode, note_id FROM automation_lane WHERE movement_id = ? ORDER BY id");
@@ -553,6 +554,7 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
                         e.duration = Fraction(se.i64(4), se.i64(5));
                         e.articulations = std::uint16_t(se.i64(6));
                         if (!se.isNull(7)) e.dynamicMark = std::uint8_t(se.i64(7));
+                        if (!se.isNull(14)) e.spans = std::uint8_t(se.i64(14));
                         evs->push_back(std::move(e));
                     }
                     if (!se.isNull(8))

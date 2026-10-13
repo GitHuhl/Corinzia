@@ -24,14 +24,27 @@ ApplicationWindow {
         const ctrl = event.modifiers & Qt.ControlModifier
         const alt = event.modifiers & Qt.AltModifier
         const letters = { [Qt.Key_C]: 0, [Qt.Key_D]: 1, [Qt.Key_E]: 2, [Qt.Key_F]: 3, [Qt.Key_G]: 4, [Qt.Key_A]: 5, [Qt.Key_B]: 6 }
-        if (ctrl && k !== Qt.Key_Up && k !== Qt.Key_Down) return
+        if (ctrl) {
+            if (k === Qt.Key_C) App.copySelection()
+            else if (k === Qt.Key_X) App.cutSelection()
+            else if (k === Qt.Key_V) App.paste()
+            else if (k === Qt.Key_A) App.selectAll()
+            else if (k === Qt.Key_Up) App.transposeSelection(7)
+            else if (k === Qt.Key_Down) App.transposeSelection(-7)
+            else return
+            event.accepted = true
+            return
+        }
         if (k === Qt.Key_N) App.inputMode = !App.inputMode
-        else if (k === Qt.Key_Escape) App.inputMode = false
+        else if (k === Qt.Key_Escape) { if (App.inputMode) App.inputMode = false; else App.clearSelection() }
         else if (App.inputMode && letters[k] !== undefined) App.enterNote(letters[k], shift)
         else if (k >= Qt.Key_1 && k <= Qt.Key_7) App.duration = 7 - (k - Qt.Key_0)
         else if (k === Qt.Key_Period) App.dots = (App.dots + 1) % 3
         else if (k === Qt.Key_Semicolon) App.triplet = !App.triplet
         else if (App.inputMode && (k === Qt.Key_R || k === Qt.Key_Comma)) App.enterRest()
+        else if (k === Qt.Key_R) App.repeatSelection()
+        else if (k === Qt.Key_S) App.addSlur()
+        else if (k === Qt.Key_H) App.addHairpin(!shift)
         else if (k === Qt.Key_Q) App.chordMode = !App.chordMode
         else if (k === Qt.Key_T) App.toggleTie()
         else if (k === Qt.Key_V) App.cycleVoice()
@@ -46,8 +59,8 @@ ApplicationWindow {
         else if (k === Qt.Key_Right) App.moveCaret(1)
         else if (k === Qt.Key_Up && alt) App.moveCaretStaff(-1)
         else if (k === Qt.Key_Down && alt) App.moveCaretStaff(1)
-        else if (k === Qt.Key_Up) App.transposeSelection(ctrl ? 7 : 1)
-        else if (k === Qt.Key_Down) App.transposeSelection(ctrl ? -7 : -1)
+        else if (k === Qt.Key_Up) App.transposeSelection(1)
+        else if (k === Qt.Key_Down) App.transposeSelection(-1)
         else if (k === Qt.Key_Backspace) App.inputMode ? App.backspace() : App.deleteSelection()
         else if (k === Qt.Key_Delete) App.deleteSelection()
         else return

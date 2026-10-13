@@ -56,6 +56,9 @@ public:
     void setSelection(ElementId id);
     // Note-input caret on one lane's staff; NaN quarter hides it.
     void setCaret(std::size_t lane, double quarter);
+    // Range selection highlight (lanes inclusive, quarters half-open); clearRange hides it.
+    void setRange(std::size_t laneFrom, std::size_t laneTo, double fromQ, double toQ);
+    void clearRange();
     bool inputMode() const noexcept { return inputMode_; }
     bool panorama() const noexcept { return panorama_; }
     void setPanorama(bool on) { if (on != panorama_) { panorama_ = on; emit panoramaChanged(); } }
@@ -84,11 +87,15 @@ signals:
     void tilesReady();   // all visible tiles at the current zoom are rendered
     // Input mode: every click is a note-entry request at this page position.
     void inputClicked(int page, QPointF staffSpacePos, Qt::KeyboardModifiers mods);
+    // Rubber-band selection finished: every engraved element the band touched.
+    void marqueeSelected(QVariantList elementIds, Qt::KeyboardModifiers mods);
 
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
     void mousePressEvent(QMouseEvent* e) override;
     void hoverMoveEvent(QHoverEvent* e) override;
+    void mouseMoveEvent(QMouseEvent* e) override;
+    void mouseReleaseEvent(QMouseEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
 
@@ -112,6 +119,12 @@ private:
     std::size_t caretLane_ = 0;
     bool inputMode_ = false;
     bool panorama_ = false;
+    // Range highlight + marquee (item coordinates while dragging).
+    bool rangeActive_ = false;
+    std::size_t rangeLaneFrom_ = 0, rangeLaneTo_ = 0;
+    double rangeFromQ_ = 0, rangeToQ_ = 0;
+    bool marqueeActive_ = false;
+    QPointF marqueeStart_, marqueeEnd_;
     qreal zoom_ = 1.0;
     QPointF pan_;
     QColor paper_ = QColor(255, 255, 250);

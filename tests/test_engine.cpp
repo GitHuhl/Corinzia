@@ -231,3 +231,29 @@ TEST(engine_midi_dialect_fallback) {
     // The CLAP-dialect plugin on the same engine is unaffected.
     CHECK(Rig::notes(*rig.a, CLAP_EVENT_NOTE_ON).size() == 3);
 }
+
+TEST(compile_hairpins_and_slurs_shape_playback) {
+    model::Project p;
+    fixture::makeProject(p);
+    model::EventList v;
+    for (int i = 0; i < 5; ++i) v.push_back(fixture::ev(p, Fraction(i, 4), {1, 4}, {fixture::head(p, i, 4)}));
+    v[0].dynamicMark = 2;             // p
+    v[0].spans = model::CrescStart | model::SlurStart;
+    v[3].spans = model::SlurEnd;
+    v[4].dynamicMark = 5;             // f, ends the hairpin
+    const auto shape = compile::expressiveShape(v);
+    CHECK_NEAR(shape[0].velocity, compile::velocityForDynamic(2), 1e-6);
+    CHECK_NEAR(shape[4].velocity, compile::velocityForDynamic(5), 1e-6);
+    CHECK(shape[1].velocity > shape[0].velocity && shape[2].velocity > shape[1].velocity && shape[3].velocity > shape[2].velocity);
+    CHECK_NEAR(shape[2].velocity, (compile::velocityForDynamic(2) + compile::velocityForDynamic(5)) / 2, 1e-5);   // linear in time
+    CHECK(shape[0].legato && shape[2].legato && !shape[3].legato && !shape[4].legato);
+    // Diminuendo with no target dynamic: two steps down, then holds.
+    model::EventList d = v;
+    for (auto& e : d) { e.spans = 0; e.dynamicMark.reset(); }
+    d[0].dynamicMark = 5;
+    d[0].spans = model::DimStart;
+    d[2].spans = model::HairpinEnd;
+    const auto ds = compile::expressiveShape(d);
+    CHECK_NEAR(ds[2].velocity, compile::velocityForDynamic(3), 1e-6);
+    CHECK_NEAR(ds[4].velocity, compile::velocityForDynamic(3), 1e-6);
+}

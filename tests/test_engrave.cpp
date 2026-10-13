@@ -110,3 +110,28 @@ TEST(lily_panorama_uses_one_line_breaking) {
     const std::string ly = engrave::emitLilyPond(*p.movements[0], ctx);
     CHECK(ly.find("ly:one-line-auto-height-breaking") != std::string::npos && ly.find("set-paper-size") == std::string::npos);
 }
+
+TEST(lily_slurs_and_hairpins_compile) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    auto& m = *p.movements[0];
+    auto evs = std::make_shared<model::EventList>(*m.lanes[0].voices[0].events);
+    (*evs)[1].spans = model::SlurStart | model::CrescStart;
+    (*evs)[2].spans = model::SlurEnd | model::HairpinEnd;
+    (*evs)[3].spans = model::DimStart;
+    (*evs)[5].spans = model::HairpinEnd;   // has a dynamic (f): ends the hairpin itself
+    m.lanes[0].voices[0].events = evs;
+    engrave::EngraveContext ctx;
+    const std::string ly = engrave::emitLilyPond(m, ctx);
+    CHECK(ly.find("(\\<") != std::string::npos && ly.find("\\!)") != std::string::npos && ly.find("\\>") != std::string::npos);
+    if (const char* lily = std::getenv("CORINZIA_LILYPOND")) {
+        const std::string base = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/corinzia_spans";
+        { std::ofstream(base + ".ly") << ly; }
+        const std::string cmd = std::string(lily) + " -dbackend=svg -s -o " + base + " " + base + ".ly 2>" + base + ".err";
+        CHECK(std::system(cmd.c_str()) == 0);
+        std::stringstream err;
+        err << std::ifstream(base + ".err").rdbuf();
+        CHECK(err.str().find("warning") == std::string::npos);   // no unterminated/unmatched spanners
+    }
+}

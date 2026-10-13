@@ -137,9 +137,12 @@ AppController::VoiceRef AppController::caretVoice(bool create) {
     return ref;
 }
 
+void AppController::extendMovementTo(model::Movement& m, Fraction end) {
+    if (end > m.length) push(std::make_unique<model::SetMovementLength>(m.id, roundUpToBar(m, end)));
+}
+
 void AppController::commitVoiceEdit(const VoiceRef& ref, const edit::EditResult& r, const char* label, bool extendLength) {
-    if (extendLength && r.to > ref.movement->length)
-        push(std::make_unique<model::SetMovementLength>(ref.movement->id, roundUpToBar(*ref.movement, r.to)));
+    if (extendLength) extendMovementTo(*ref.movement, r.to);
     push(std::make_unique<model::ReplaceVoiceEvents>(ref.movement->id, ref.voice->id, r.events,
                                                      model::DirtyRange{ref.movement->id, r.from, r.to}, label,
                                                      /*mergeable=*/false));
@@ -317,6 +320,14 @@ SelectionVoice voiceOf(model::Project& p, ElementId sel) {
 }  // namespace
 
 void AppController::deleteSelection() {
+    if (range_.active) {
+        const Range r = range_;
+        auto ids = edit::IdAlloc([this] { return project_.allocateId(); });
+        editRangeVoices("Delete", [r, &ids](const model::EventList& evs, const model::Voice& v) {
+            return std::optional<edit::EditResult>(edit::eraseRange(evs, r.from, r.to, v.index == 1, ids));
+        });
+        return;
+    }
     auto sv = voiceOf(project_, selection_);
     if (!sv.v) return;
     auto ids = edit::IdAlloc([this] { return project_.allocateId(); });
@@ -330,6 +341,28 @@ void AppController::deleteSelection() {
 }
 
 void AppController::toggleArticulation(int flag) {
+    if (range_.active) {
+        // Sibelius rule: if every note in the passage already has it, remove it; else add it.
+        const Range r = range_;
+        bool all = true, any = false;
+        const model::Movement* m = project_.movement(displayedMovement());
+        for (std::size_t li = r.laneFrom; m && li <= r.laneTo; ++li)
+            for (const auto& v : m->lanes[li].voices)
+                for (const auto& e : *v.events)
+                    if (e.start >= r.from && e.start < r.to && !e.heads.empty()) {
+                        any = true;
+                        all &= (e.articulations & flag) != 0;
+                    }
+        if (!any) return;
+        const bool set = !all;
+        editRangeVoices("Articulation", [r, flag, set](const model::EventList& evs, const model::Voice&) {
+            return edit::applyToRange(evs, r.from, r.to, [flag, set](model::MusicEvent& e) {
+                if (e.heads.empty()) return;
+                e.articulations = set ? std::uint16_t(e.articulations | flag) : std::uint16_t(e.articulations & ~flag);
+            });
+        });
+        return;
+    }
     auto sv = voiceOf(project_, selection_);
     if (!sv.v) return;
     if (auto r = edit::modifyEvent(*sv.v->events, selection_,
@@ -339,6 +372,20 @@ void AppController::toggleArticulation(int flag) {
 }
 
 void AppController::setDynamic(int mark) {
+    if (range_.active) {   // the dynamic goes on the first note of the passage on each staff
+        const Range r = range_;
+        editRangeVoices("Dynamic", [r, mark](const model::EventList& evs, const model::Voice& v) -> std::optional<edit::EditResult> {
+            if (v.index != 1) return std::nullopt;
+            for (const auto& e : evs)
+                if (e.start >= r.from && e.start < r.to && !e.heads.empty())
+                    return edit::modifyEvent(evs, e.id.id, [mark](model::MusicEvent& x, model::NoteHead*) {
+                        if (mark < 0) x.dynamicMark.reset();
+                        else x.dynamicMark = std::uint8_t(std::min(mark, 7));
+                    });
+            return std::nullopt;
+        });
+        return;
+    }
     auto sv = voiceOf(project_, selection_);
     if (!sv.v) return;
     if (auto r = edit::modifyEvent(*sv.v->events, selection_, [mark](model::MusicEvent& e, model::NoteHead*) {

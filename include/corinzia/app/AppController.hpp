@@ -56,6 +56,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString caretLabel READ caretLabel NOTIFY inputStateChanged)
     // Score view: "page" (paginated) or "panorama" (one endless system).
     Q_PROPERTY(QString viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged)
+    Q_PROPERTY(bool hasRange READ hasRange NOTIFY selectionChanged)
+    Q_PROPERTY(bool canPaste READ canPaste NOTIFY selectionChanged)
     // ---- DAW tab -------------------------------------------------------------
     Q_PROPERTY(QVariantList arrangeBars READ arrangeBars NOTIFY arrangeChanged)   // [{bar, quarter}]
 
@@ -101,6 +103,21 @@ public:
     Q_INVOKABLE void toggleTie();
     Q_INVOKABLE void cycleVoice() { setVoice(voice_ % 4 + 1); }
     void placeNoteAt(int page, QPointF staffSpacePos, Qt::KeyboardModifiers mods);   // mouse entry
+
+    // ---- range selection & clipboard (AppControllerRange.cpp) ----------------
+    Q_INVOKABLE void selectAll();
+    Q_INVOKABLE void clearSelection();
+    Q_INVOKABLE void copySelection();
+    Q_INVOKABLE void cutSelection();
+    Q_INVOKABLE void paste();
+    Q_INVOKABLE void repeatSelection();                    // R: duplicate right after itself
+    Q_INVOKABLE void addSlur();                            // S
+    Q_INVOKABLE void addHairpin(bool crescendo);           // H / Shift+H
+    void selectElements(const std::vector<ElementId>& ids, bool extend);   // marquee / shift-click
+    bool hasRange() const noexcept { return range_.active; }
+    bool canPaste() const noexcept { return clip_.valid; }
+    struct Range { bool active = false; std::size_t laneFrom = 0, laneTo = 0; Fraction from{0}, to{0}; };
+    const Range& range() const noexcept { return range_; }
 
     bool inputMode() const noexcept { return inputMode_; }
     void setInputMode(bool on);
@@ -154,6 +171,7 @@ signals:
 
 private slots:
     void onElementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
+    void onMarqueeSelected(QVariantList ids, Qt::KeyboardModifiers mods);
     void pump();
 
 private:
@@ -174,6 +192,14 @@ private:
     void moveCaretTo(std::size_t lane, int voice, Fraction pos);
     void audition(const model::PlayerLane& lane, Fraction at, const std::vector<model::Pitch>& pitches);
     void syncCaret();
+    void extendMovementTo(model::Movement& m, Fraction end);   // whole bars, undoable
+    // Range helpers.
+    void setRange(std::size_t laneFrom, std::size_t laneTo, Fraction from, Fraction to);
+    void syncRange();
+    std::optional<std::size_t> laneOf(ElementId id) const;
+    // Runs `fn` on every voice of the range's lanes inside one undo macro.
+    void editRangeVoices(const char* label,
+                         const std::function<std::optional<edit::EditResult>(const model::EventList&, const model::Voice&)>& fn);
     void refreshArrange();
 
     Options opt_;
@@ -203,6 +229,12 @@ private:
     int accidental_ = 9;              // 9 = follow the key signature
     int voice_ = 1;
     std::size_t caretLane_ = 0;
+    Range range_;
+    struct Clip {
+        bool valid = false;
+        Fraction length{0};
+        std::vector<std::vector<std::pair<int, model::EventList>>> lanes;   // per lane: (voice index, events)
+    } clip_;
     Fraction caretPos_{0};
 
     ElementId selection_;

@@ -65,6 +65,26 @@ std::optional<EditResult> deleteElement(const model::EventList& list, ElementId 
 std::optional<EditResult> modifyEvent(const model::EventList& list, ElementId element,
                                       const std::function<void(model::MusicEvent&, model::NoteHead*)>& fn);
 
+// ------------------------------------------------------------ range edits --
+// [from, to) of one voice. Events *starting* inside the range belong to it.
+
+// Removes the range (truncating events that cross `from`); voice-1 policy fills rests.
+EditResult eraseRange(const model::EventList& list, Fraction from, Fraction to, bool fillWithRests, IdAlloc& ids);
+// Copy of the range, shifted to start at 0 and cut at `to` (ids kept; paste re-ids).
+model::EventList sliceRange(const model::EventList& list, Fraction from, Fraction to);
+// Overwrites [at, at + length) with `clip` (fresh ids), e.g. paste / repeat.
+EditResult pasteEvents(const model::EventList& list, const model::EventList& clip, Fraction at, Fraction length,
+                       bool fillWithRests, IdAlloc& ids);
+// Applies `fn` to every event starting in the range; nullopt if none.
+std::optional<EditResult> applyToRange(const model::EventList& list, Fraction from, Fraction to,
+                                       const std::function<void(model::MusicEvent&)>& fn);
+// Diatonic transposition of every head in the range (accidentals kept).
+std::optional<EditResult> transposeRange(const model::EventList& list, Fraction from, Fraction to, int steps);
+// Marks a spanner from the first to the last *note* starting in the range
+// (needs two different notes). Removes any spanner of the same family there.
+std::optional<EditResult> markSpan(const model::EventList& list, Fraction from, Fraction to, std::uint8_t startMark,
+                                   std::uint8_t endMark);
+
 // Lookup helpers.
 const model::MusicEvent* findEvent(const model::EventList& list, ElementId element, const model::NoteHead** head = nullptr);
 const model::MusicEvent* eventAt(const model::EventList& list, Fraction pos);   // event sounding at pos

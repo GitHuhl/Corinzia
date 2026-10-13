@@ -3,6 +3,7 @@
 //   corinzia [--no-audio] [project.project]
 //   corinzia --smoke out.png      headless end-to-end check (used by ctest)
 #include "corinzia/app/AppController.hpp"
+#include "corinzia/edit/NoteInput.hpp"
 #include "corinzia/ui/ArrangeView.hpp"
 #include "corinzia/ui/ScoreCanvas.hpp"
 
@@ -157,6 +158,138 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
     check(half && app.duration() == 1, "notes panel button selects half notes");
     key(Qt::Key_Escape);
     check(!app.inputMode(), "Esc leaves note input");
+
+    // ---- Range selection: marquee, clipboard, repeat, spanners -------------
+    {
+        waitFor([&] { return canvas->tilesSettled(); }, 3000);
+        const auto* e = canvas->engraving();
+        const auto& mv = *app.project().movements.front();
+        // Marquee over the clarinet's bars 1-2 (both voices), from empty paper.
+        QRectF box;
+        for (const auto& v : mv.lanes[1].voices)
+            for (const auto& ev : *v.events)
+                if (ev.start < corinzia::Fraction{2})
+                    for (const auto& h : ev.heads)
+                        if (const auto* en = e->index->find(h.id.id)) box |= en->bounds;
+        const QRectF page = canvas->pageRectInItem(0);
+        const qreal sc = page.width() / e->pages[0].size.width();
+        auto toScene = [&](QPointF staff) { return canvas->mapToScene(page.topLeft() + staff * sc); };
+        const QPointF a = toScene(QPointF(box.left() - 0.6, box.bottom() + 1.2));   // below-left: empty paper
+        const QPointF b = toScene(QPointF(box.right() + 0.3, box.top() - 0.3));
+        auto mouse = [&](QEvent::Type t, QPointF p, Qt::MouseButtons buttons, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            QMouseEvent ev(t, p, p, Qt::LeftButton, buttons, mods);
+            QCoreApplication::sendEvent(window, &ev);
+        };
+        mouse(QEvent::MouseButtonPress, a, Qt::LeftButton);
+        mouse(QEvent::MouseMove, (a + b) / 2, Qt::LeftButton);
+        const QImage dragging = window->grabWindow();
+        mouse(QEvent::MouseMove, b, Qt::LeftButton);
+        mouse(QEvent::MouseButtonRelease, b, Qt::NoButton);
+        const auto& r = app.range();
+        check(app.hasRange() && r.laneFrom == 1 && r.laneTo == 1 && r.from == corinzia::Fraction{0} && r.to == corinzia::Fraction{2},
+              "marquee over clarinet bars 1-2 selects that passage");
+        int bandPixels = 0;
+        for (int y = int(std::min(a.y(), b.y())); y < int(std::max(a.y(), b.y())); y += 3)
+            for (int x = int(a.x()) + 4; x < int(b.x()) - 4; x += 3) {
+                const QColor c = dragging.pixelColor(x, y);
+                if (c.blue() > c.red() + 8 && c.blue() > 200) ++bandPixels;   // translucent blue band over white paper
+            }
+        check(bandPixels > 50, "rubber band drawn while dragging");
+        const QImage selected = window->grabWindow();
+        int hl = 0;
+        const QPointF mid = (a + b) / 2;
+        for (int x = int(a.x()) + 4; x < int(b.x()) - 4; x += 2) {
+            const QColor c = selected.pixelColor(x, int(mid.y()));
+            if (c.blue() > c.red() + 8) ++hl;
+        }
+        check(hl > 20, "passage highlight drawn over the selection");
+        check(app.selectionLabel().contains(QStringLiteral("Bars 1–2")), "selection label names the bars");
+
+        // Copy, select a note in bar 5, paste there.
+        key(Qt::Key_C, Qt::ControlModifier);
+        check(app.canPaste(), "Ctrl+C filled the clipboard");
+        const auto clar = [&](int voice) -> const corinzia::model::EventList& {
+            for (const auto& v : app.project().movements.front()->lanes[1].voices) if (v.index == voice) return *v.events;
+            return *app.project().movements.front()->lanes[1].voices[0].events;
+        };
+        const auto bar1 = clar(1);
+        const auto* bar5note = corinzia::edit::eventAt(clar(1), corinzia::Fraction{4});
+        const corinzia::ElementId bar5Original = bar5note->id.id;   // the demo repeats every 2 bars: compare identity
+        if (const auto* en = e->index->find(bar5note->heads[0].id.id)) {
+            const QPointF p = toScene(en->bounds.center());
+            mouse(QEvent::MouseButtonPress, p, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, p, Qt::NoButton);
+        }
+        key(Qt::Key_V, Qt::ControlModifier);
+        auto samePitches = [&](corinzia::Fraction at, corinzia::Fraction src) {
+            const auto* x = corinzia::edit::eventAt(clar(1), at);
+            const auto* y = corinzia::edit::eventAt(bar1, src);
+            return x && y && x->heads.size() == y->heads.size() && !x->heads.empty() &&
+                   x->heads[0].pitch.midiKey() == y->heads[0].pitch.midiKey() && x->start - at == y->start - src;
+        };
+        check(samePitches(corinzia::Fraction{4}, corinzia::Fraction{0}) && samePitches(corinzia::Fraction{5}, corinzia::Fraction{1}) &&
+                  corinzia::edit::eventAt(clar(1), corinzia::Fraction{4})->id.id != bar5Original,
+              "Ctrl+V pasted bars 1-2 at the selected bar-5 note (both bars, fresh notes)");
+        check(app.hasRange() && app.range().from == corinzia::Fraction{4}, "pasted passage is selected");
+        key(Qt::Key_R, Qt::NoModifier, QStringLiteral("r"));
+        check(samePitches(corinzia::Fraction{6}, corinzia::Fraction{0}), "R repeats the passage right after itself");
+        app.undo();
+        app.undo();
+        check(corinzia::edit::eventAt(clar(1), corinzia::Fraction{4})->id.id == bar5Original,
+              "two undos remove repeat and paste (original bar 5 back)");
+
+        // Shift-click passage on the flute bar 2, then slur + hairpin.
+        const auto& fl = *app.project().movements.front()->lanes[0].voices[0].events;
+        const corinzia::model::MusicEvent* f0 = corinzia::edit::eventAt(fl, corinzia::Fraction{1});
+        const corinzia::model::MusicEvent* f1 = corinzia::edit::eventAt(fl, corinzia::Fraction{3, 2});
+        const auto* e0 = f0 && !f0->heads.empty() ? e->index->find(f0->heads[0].id.id) : nullptr;
+        const auto* e1 = f1 && !f1->heads.empty() ? e->index->find(f1->heads[0].id.id) : nullptr;
+        if (e0 && e1) {
+            const QPointF p0 = toScene(e0->bounds.center()), p1 = toScene(e1->bounds.center());
+            mouse(QEvent::MouseButtonPress, p0, Qt::LeftButton);
+            mouse(QEvent::MouseButtonRelease, p0, Qt::NoButton);
+            mouse(QEvent::MouseButtonPress, p1, Qt::LeftButton, Qt::ShiftModifier);
+            mouse(QEvent::MouseButtonRelease, p1, Qt::NoButton, Qt::ShiftModifier);
+        }
+        check(app.hasRange() && app.range().laneFrom == 0 && app.range().from == corinzia::Fraction{1}, "shift-click extends to a passage");
+        const int beforeSpan = app.engraveCount();
+        key(Qt::Key_S, Qt::NoModifier, QStringLiteral("s"));
+        key(Qt::Key_H, Qt::NoModifier, QStringLiteral("h"));
+        {
+            const auto& f = *app.project().movements.front()->lanes[0].voices[0].events;
+            const auto* s0 = corinzia::edit::eventAt(f, corinzia::Fraction{1});
+            const auto* s1 = corinzia::edit::eventAt(f, corinzia::Fraction{3, 2});
+            check(s0 && s1 && (s0->spans & corinzia::model::SlurStart) && (s1->spans & corinzia::model::SlurEnd) &&
+                      (s0->spans & corinzia::model::CrescStart) && (s1->spans & corinzia::model::HairpinEnd),
+                  "S and H add slur and crescendo over the passage");
+        }
+        check(waitFor([&] { return app.engraveCount() > beforeSpan; }, 60000), "slur + hairpin engraved");
+        waitFor([&] { return canvas->tilesSettled(); }, 3000);
+        waitFor([] { return false; }, 150);
+        QString spansPng = png;
+        spansPng.replace(QStringLiteral(".png"), QStringLiteral("-selection.png"));
+        window->grabWindow().save(spansPng);
+        // Transpose the passage.
+        const int keyBefore = corinzia::edit::eventAt(*app.project().movements.front()->lanes[0].voices[0].events, corinzia::Fraction{1})->heads[0].pitch.midiKey();
+        key(Qt::Key_Up);
+        const int keyAfter = corinzia::edit::eventAt(*app.project().movements.front()->lanes[0].voices[0].events, corinzia::Fraction{1})->heads[0].pitch.midiKey();
+        check(keyAfter > keyBefore, "↑ transposes the whole passage");
+        app.undo();
+        // Select all + delete, then undo.
+        key(Qt::Key_A, Qt::ControlModifier);
+        check(app.hasRange() && app.range().laneFrom == 0 && app.range().laneTo == 1 && app.range().to == app.project().movements.front()->length,
+              "Ctrl+A selects the whole movement");
+        key(Qt::Key_Delete);
+        bool allRests = true;
+        for (const auto& ev : *app.project().movements.front()->lanes[0].voices[0].events) allRests &= ev.heads.empty();
+        check(allRests, "Delete clears the passage (voice 1 becomes rests)");
+        app.undo();
+        check(!app.project().movements.front()->lanes[0].voices[0].events->front().heads.empty(), "undo restores the deleted music");
+        key(Qt::Key_Escape);
+        check(!app.hasRange(), "Esc clears the selection");
+        app.undo();   // remove slur + hairpin again so later checks see the original flute
+        app.undo();
+    }
 
     // ---- Page / Panorama view ------------------------------------------------
     auto clickItem = [&](const char* name) {

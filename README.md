@@ -46,6 +46,12 @@ rest, and the left Notes panel does the same with the mouse. Clicking a staff
 in input mode places a note at that pitch and beat. The full key map is in
 §5.5 of the architecture document.
 
+Select passages by dragging a marquee on empty paper, Shift+clicking or
+pressing Ctrl+A. Then Ctrl+C/X/V, R (repeat), Delete, ↑/↓, S (slur) and
+H/Shift+H (hairpins) work on the whole passage. **Page | Panorama** switches
+between the printed layout and one endless system. Zoom stays vector-sharp at
+any level.
+
 The notation and DAW sides are separate tabs: **Score** (Ctrl+1) for engraving
 and note input, **Mix** (Ctrl+2) for the arrange view, mixer strips and plugin
 browser. Selection, transport and undo are shared between them.

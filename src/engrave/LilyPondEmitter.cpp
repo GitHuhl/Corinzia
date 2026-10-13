@@ -183,6 +183,13 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                 }
                 o << articulations(ev.articulations);
                 if (ev.dynamicMark) o << "\\" << dynamicName(*ev.dynamicMark);
+                // Spanner marks (LilyPond post-events): a hairpin end comes
+                // before a new start on the same note; slurs close/open likewise.
+                if ((ev.spans & model::HairpinEnd) && !ev.dynamicMark) o << "\\!";
+                if (ev.spans & model::SlurEnd) o << ")";
+                if (ev.spans & model::SlurStart) o << "(";
+                if (ev.spans & model::CrescStart) o << "\\<";
+                if (ev.spans & model::DimStart) o << "\\>";
                 o << "\n";
                 at = ev.start + ev.duration;
             }

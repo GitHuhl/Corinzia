@@ -16,7 +16,9 @@ enum Slot { PagesSlot = 0, TilesSlot = 1, OverlaySlot = 2 };
 // Overlay children, created once and never deleted (unused ones get an empty
 // rect / zero vertices): the software adaptation does not reliably pick up
 // nodes that are deleted and recreated between frames.
-enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild, CaretChild };
+enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild, CaretChild, RangeChild,
+                    MarqueeChild };
+constexpr int kRangePool = 24;   // one highlight rect per system the range touches
 
 // Provisional glyph sprites. Drawn as textured quads rather than custom
 // geometry so they render on every scene-graph backend, including the
@@ -189,6 +191,52 @@ void ScoreCanvas::setCaret(std::size_t lane, double quarter) {
     update();
 }
 
+void ScoreCanvas::setRange(std::size_t laneFrom, std::size_t laneTo, double fromQ, double toQ) {
+    rangeActive_ = true;
+    rangeLaneFrom_ = std::min(laneFrom, laneTo);
+    rangeLaneTo_ = std::max(laneFrom, laneTo);
+    rangeFromQ_ = fromQ;
+    rangeToQ_ = toQ;
+    update();
+}
+
+void ScoreCanvas::clearRange() {
+    rangeActive_ = false;
+    update();
+}
+
+void ScoreCanvas::mouseMoveEvent(QMouseEvent* e) {
+    if (!marqueeActive_) return QQuickItem::mouseMoveEvent(e);
+    marqueeEnd_ = e->position();
+    update();
+    e->accept();
+}
+
+void ScoreCanvas::mouseReleaseEvent(QMouseEvent* e) {
+    if (!marqueeActive_) return QQuickItem::mouseReleaseEvent(e);
+    marqueeActive_ = false;
+    setKeepMouseGrab(false);
+    const QRectF band = QRectF(marqueeStart_, e->position()).normalized();
+    update();
+    e->accept();
+    if (band.width() < 4 && band.height() < 4) {   // a plain click on empty paper
+        const PagePoint pp = toPage(e->position());
+        emit emptyClicked(pp.page, pp.pt);
+        return;
+    }
+    // Every engraved element whose bounds touch the band, on every page it covers.
+    QVariantList ids;
+    if (result_ && result_->index) {
+        const qreal s = pageScale();
+        for (const auto& entry : result_->index->entries()) {
+            const QRectF pageItem = pageRectInItem(entry.page);
+            const QRectF bounds(pageItem.topLeft() + entry.bounds.topLeft() * s, entry.bounds.size() * s);
+            if (bounds.intersects(band)) ids.push_back(QVariant::fromValue<quint64>(entry.id.value));
+        }
+    }
+    emit marqueeSelected(ids, e->modifiers());
+}
+
 void ScoreCanvas::setInputMode(bool on) {
     if (on == inputMode_) return;
     inputMode_ = on;
@@ -228,19 +276,27 @@ ScoreCanvas::PagePoint ScoreCanvas::toPage(QPointF itemPos) const {
 }
 
 void ScoreCanvas::mousePressEvent(QMouseEvent* e) {
-    const PagePoint pp = toPage(e->position());
-    if (pp.page < 0 || !result_ || !result_->index) return QQuickItem::mousePressEvent(e);
+    if (!result_ || !result_->index) return QQuickItem::mousePressEvent(e);
     forceActiveFocus();
-    if (inputMode_ && e->button() == Qt::LeftButton) {
+    const PagePoint pp = toPage(e->position());
+    if (inputMode_ && e->button() == Qt::LeftButton && pp.page >= 0) {
         emit inputClicked(pp.page, pp.pt, e->modifiers());
         e->accept();
         return;
     }
-    if (const auto* hit = result_->index->hitTest(pp.page, pp.pt)) {
-        setSelection(hit->id);
-        emit elementClicked(hit->id.value, hit->voice, hit->track, e->modifiers());
-    } else {
-        emit emptyClicked(pp.page, pp.pt);
+    if (pp.page >= 0)
+        if (const auto* hit = result_->index->hitTest(pp.page, pp.pt)) {
+            setSelection(hit->id);
+            emit elementClicked(hit->id.value, hit->voice, hit->track, e->modifiers());
+            e->accept();
+            return;
+        }
+    // Empty paper (or the desk around it): start a marquee; a release without
+    // dragging counts as a click on empty space (clears the selection).
+    if (e->button() == Qt::LeftButton) {
+        marqueeActive_ = true;
+        marqueeStart_ = marqueeEnd_ = e->position();
+        setKeepMouseGrab(true);
     }
     e->accept();
 }
@@ -333,6 +389,13 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 120, 255, 90)));   // SelectionChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(220, 30, 30, 200)));  // PlayheadChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 150, 70, 220)));   // CaretChild
+        auto* rangePool = new QSGNode;                                                        // RangeChild
+        for (int i = 0; i < kRangePool; ++i) rangePool->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 110, 230, 45)));
+        overlay->appendChildNode(rangePool);
+        auto* marquee = new QSGNode;                                                          // MarqueeChild: fill + 4 edges
+        marquee->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 110, 230, 30)));
+        for (int i = 0; i < 4; ++i) marquee->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 90, 200, 200)));
+        overlay->appendChildNode(marquee);
         root->appendChildNode(overlay);
         texturesDirty_ = true;
     }
@@ -463,6 +526,30 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         if (c.valid) caret = QRectF(c.x - 0.9, c.top + pageY(c.page), 0.3, c.bottom - c.top);   // just left of the onset
     }
     static_cast<QSGSimpleRectNode*>(overlay->childAtIndex(CaretChild))->setRect(caret);
+
+    // Range highlight: per-system rectangles from the engraved geometry.
+    QSGNode* rangePool = overlay->childAtIndex(RangeChild);
+    std::vector<LayoutAnchors::Region> regions;
+    if (result_ && rangeActive_ && result_->anchors)
+        regions = result_->anchors->rangeRects(rangeLaneFrom_, rangeLaneTo_, rangeFromQ_, rangeToQ_);
+    for (int i = 0; i < rangePool->childCount(); ++i)
+        static_cast<QSGSimpleRectNode*>(rangePool->childAtIndex(i))
+            ->setRect(i < int(regions.size()) ? regions[std::size_t(i)].rect.translated(0, pageY(regions[std::size_t(i)].page))
+                                              : QRectF());
+
+    // Marquee: item-space drag rectangle mapped into the root's staff space.
+    QSGNode* marquee = overlay->childAtIndex(MarqueeChild);
+    QRectF band;
+    if (marqueeActive_) {
+        const QRectF item = QRectF(marqueeStart_, marqueeEnd_).normalized();
+        band = QRectF((item.topLeft() - pan_) / pageScale(), item.size() / pageScale());
+    }
+    const double edge = 1.0 / pageScale();   // one device-independent pixel
+    static_cast<QSGSimpleRectNode*>(marquee->childAtIndex(0))->setRect(band);
+    static_cast<QSGSimpleRectNode*>(marquee->childAtIndex(1))->setRect(band.isEmpty() ? QRectF() : QRectF(band.left(), band.top(), band.width(), edge));
+    static_cast<QSGSimpleRectNode*>(marquee->childAtIndex(2))->setRect(band.isEmpty() ? QRectF() : QRectF(band.left(), band.bottom() - edge, band.width(), edge));
+    static_cast<QSGSimpleRectNode*>(marquee->childAtIndex(3))->setRect(band.isEmpty() ? QRectF() : QRectF(band.left(), band.top(), edge, band.height()));
+    static_cast<QSGSimpleRectNode*>(marquee->childAtIndex(4))->setRect(band.isEmpty() ? QRectF() : QRectF(band.right() - edge, band.top(), edge, band.height()));
     return root;
 }
 

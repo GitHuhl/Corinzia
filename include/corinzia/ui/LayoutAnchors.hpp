@@ -41,6 +41,10 @@ public:
     struct Hit { bool valid = false; std::size_t lane = 0; double quarter = 0; int diatonic = 0; };
     Hit locate(int page, QPointF pt) const;
 
+    // Range selection highlight: one rectangle per system the range touches,
+    // spanning the staves of lanes [laneFrom, laneTo] and the beats [from, to).
+    std::vector<Region> rangeRects(std::size_t laneFrom, std::size_t laneTo, double fromQ, double toQ) const;
+
     std::size_t size() const noexcept { return timeline_.size(); }
 
 private:

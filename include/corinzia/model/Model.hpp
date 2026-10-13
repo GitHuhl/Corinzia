@@ -55,6 +55,13 @@ enum Articulation : std::uint16_t {
     ArtMarcato = 1 << 3, ArtFermata = 1 << 4,
 };
 
+// Spanners as start/stop marks on events (as in LilyPond and MusicXML): they
+// travel with the music through copy/paste, undo, chunked storage.
+enum SpanMark : std::uint8_t {
+    SpanNone = 0, SlurStart = 1 << 0, SlurEnd = 1 << 1,
+    CrescStart = 1 << 2, DimStart = 1 << 3, HairpinEnd = 1 << 4,
+};
+
 struct MusicEvent {
     EventId id;
     EventKind kind = EventKind::Note;
@@ -63,6 +70,7 @@ struct MusicEvent {
     std::vector<NoteHead> heads;    // empty for rests, 1 for notes, N for chords
     std::uint16_t articulations = ArtNone;
     std::optional<std::uint8_t> dynamicMark;  // e.g. index into pp..ff table
+    std::uint8_t spans = SpanNone;            // SpanMark bits
 };
 
 using EventList = std::vector<MusicEvent>;    // sorted by start, no overlaps per voice
