@@ -562,6 +562,16 @@ TEST(svg_text_renders_at_every_zoom) {
     CHECK(lo > 0 && hi / lo < 1.5);   // text present at every zoom, same visual weight
 }
 
+TEST(svg_text_keeps_lilypond_spaces) {
+    const QByteArray in = "<g><text font-family=\"serif\" font-size=\"2.2000\"><tspan> (</tspan></text>"
+                          "<text font-size=\"2.2\"><tspan>= 132)</tspan></text></g>";
+    const QString out = QString::fromUtf8(ui::normalizeSvgText(in));
+    // " (" at font-size 2.2 (220 after scaling): moved by one space (0.278 em), space dropped.
+    CHECK(out.contains(QStringLiteral("font-size=\"220.00\" x=\"61.16\"><tspan>(</tspan>")));
+    CHECK(out.contains(QStringLiteral("<tspan>= 132)</tspan>")));   // inner spaces untouched
+    CHECK(out.contains(QStringLiteral("scale(0.01)")));
+}
+
 TEST(provisional_edit_keeps_staves_and_draws_ledgers) {
     Env env;
     // Second staff (Clarinet) so we can check that the staff underneath stays intact.

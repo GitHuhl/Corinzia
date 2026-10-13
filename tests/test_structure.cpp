@@ -146,3 +146,45 @@ TEST(structure_insert_delete_events) {
     auto del2 = deleteSpan(v, Fraction{1}, Fraction{3});
     CHECK(del2.size() == 2 && del2[1].duration == Fraction(1, 2));
 }
+
+TEST(structure_remove_items_by_id) {
+    Ids ids;
+    auto h = header();
+    setBarline(h, Fraction{1}, BarlineKind::Final, ids.fn);
+    toggleRehearsalMark(h, Fraction{1}, ids.fn);
+    addText(h, PlayerId{1}, Fraction{0}, "dolce", model::TextKind::Expression, ids.fn);
+    const ElementId text = h.lanes[0].texts[0].id.id, mark = h.rehearsal[0].id.id;
+    CHECK(describeItem(h, mark) == std::string("Rehearsal mark"));
+    CHECK(removeItem(h, text) == std::string("Expression \"dolce\""));
+    CHECK(h.lanes[0].texts.empty() && h.rehearsal.size() == 1 && h.barlines.size() == 1);
+    CHECK(!removeItem(h, text));
+    CHECK(removeItem(h, h.barlines[0].id.id) == std::string("Final barline") && h.barlines.empty());
+}
+
+TEST(structure_text_items_follow_their_bars) {
+    Ids ids;
+    auto h = header();
+    addText(h, PlayerId{1}, Fraction{0}, "dolce", model::TextKind::Expression, ids.fn);
+    addText(h, PlayerId{1}, Fraction{1}, "pizz.", model::TextKind::Technique, ids.fn);
+    addText(h, PlayerId{1}, Fraction{1}, "sul pont.", model::TextKind::Technique, ids.fn);
+    setBarline(h, Fraction{1}, BarlineKind::RepeatStart, ids.fn);
+    insertSpan(h, Fraction{0}, Fraction{1});   // a bar before bar 1: everything in it moves
+    CHECK(h.lanes[0].texts[0].at == Fraction{1} && h.lanes[0].texts[1].at == Fraction{2});
+    CHECK(h.barlines[0].at == Fraction{2});
+    CHECK(h.keys[0].at == Fraction{0});
+    deleteSpan(h, Fraction{1}, Fraction{2});   // the old bar 1 and its text go; both texts of old bar 2 stay
+    CHECK(h.lanes[0].texts.size() == 2 && h.lanes[0].texts[0].at == Fraction{1} && h.lanes[0].texts[1].at == Fraction{1});
+}
+
+TEST(structure_delete_bars_keeps_barlines_between_bars) {
+    Ids ids;
+    auto h = header();   // 8 bars of 4/4
+    setBarline(h, Fraction{2}, BarlineKind::RepeatEnd, ids.fn);   // end of bar 2
+    setBarline(h, Fraction{3}, BarlineKind::Double, ids.fn);      // inside the cut
+    setBarline(h, Fraction{8}, BarlineKind::Final, ids.fn);
+    deleteSpan(h, Fraction{2}, Fraction{4});   // bars 3-4
+    CHECK(h.barlines.size() == 2 && h.barlines[0].at == Fraction{2} && h.barlines[0].kind == BarlineKind::RepeatEnd);
+    CHECK(h.barlines[1].at == Fraction{6} && h.barlines[1].kind == BarlineKind::Final);
+    deleteSpan(h, Fraction{5}, Fraction{6});   // the last bar: the final barline moves back
+    CHECK(h.length == Fraction{5} && h.barlines.back().at == Fraction{5} && h.barlines.back().kind == BarlineKind::Final);
+}

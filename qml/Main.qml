@@ -29,11 +29,20 @@ ApplicationWindow {
             else if (k === Qt.Key_X) App.cutSelection()
             else if (k === Qt.Key_V) App.paste()
             else if (k === Qt.Key_A) App.selectAll()
+            else if (k === Qt.Key_B) App.insertBars(1)
+            else if (k === Qt.Key_Backspace && shift) App.deleteBars()
             else if (k === Qt.Key_Up) App.transposeSelection(7)
             else if (k === Qt.Key_Down) App.transposeSelection(-7)
             else return
             event.accepted = true
             return
+        }
+        // Popovers (Dorico letters). Shift+A/B/C double as chord notes in input mode.
+        if (shift && !alt) {
+            const pops = { [Qt.Key_K]: "key", [Qt.Key_M]: "time", [Qt.Key_T]: "tempo", [Qt.Key_X]: "expression", [Qt.Key_P]: "technique" }
+            if (!App.inputMode) { pops[Qt.Key_C] = "clef"; pops[Qt.Key_B] = "barline" }
+            if (pops[k] !== undefined) { popover.open(pops[k]); event.accepted = true; return }
+            if (!App.inputMode && k === Qt.Key_A) { App.applyPopover("rehearsal", ""); event.accepted = true; return }
         }
         if (k === Qt.Key_N) App.inputMode = !App.inputMode
         else if (k === Qt.Key_Escape) { if (App.inputMode) App.inputMode = false; else App.clearSelection() }
@@ -192,6 +201,19 @@ ApplicationWindow {
                     focus: true
                     Keys.onPressed: (event) => window.handleScoreKey(event)
                 }
+                Popover {
+                    id: popover
+                    objectName: "popover"
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    y: 16
+                    onClosed: score.forceActiveFocus()
+                }
+            }
+            StructurePanel {
+                objectName: "structurePanel"
+                SplitView.preferredWidth: 150
+                SplitView.minimumWidth: 130
+                onOpenPopover: (kind) => popover.open(kind)
             }
         }
 

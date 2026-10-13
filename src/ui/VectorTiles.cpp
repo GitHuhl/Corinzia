@@ -37,7 +37,26 @@ QByteArray normalizeSvgText(const QByteArray& svg) {
         last = m.capturedEnd();
     }
     out += QStringView(s).mid(last);
-    return out.toUtf8();
+    // LilyPond places text runs like "Allegro" + " (" + "♩" + " = 132)" and
+    // relies on a run's leading spaces, which Qt SVG strips (it simplifies
+    // text; xml:space="preserve" changes its font fallback). Each run is
+    // positioned absolutely, so only leading spaces matter: drop them and move
+    // the run by their advance (0.278 em in LilyPond's serif text fonts).
+    static const QRegularExpression lead(
+        QStringLiteral("(<text [^>]*font-size=\"([0-9.]+)\"[^>]*)>(\\s*)<tspan>( +)"));
+    QString fixed;
+    fixed.reserve(out.size());
+    last = 0;
+    for (auto it = lead.globalMatch(out); it.hasNext();) {
+        const auto m = it.next();
+        if (m.captured(1).contains(QStringLiteral(" x="))) continue;
+        fixed += QStringView(out).mid(last, m.capturedStart() - last);
+        const double dx = double(m.capturedLength(4)) * 0.278 * m.captured(2).toDouble();
+        fixed += QStringLiteral("%1 x=\"%2\">%3<tspan>").arg(m.captured(1)).arg(dx, 0, 'f', 2).arg(m.captured(3));
+        last = m.capturedEnd();
+    }
+    fixed += QStringView(out).mid(last);
+    return fixed.toUtf8();
 }
 
 TileRenderer::TileRenderer() { qRegisterMetaType<TileKey>(); }

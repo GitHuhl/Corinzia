@@ -328,6 +328,7 @@ void AppController::deleteSelection() {
         });
         return;
     }
+    if (deleteStructureItem()) return;   // a clicked barline, mark, clef or text
     auto sv = voiceOf(project_, selection_);
     if (!sv.v) return;
     auto ids = edit::IdAlloc([this] { return project_.allocateId(); });

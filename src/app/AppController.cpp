@@ -1,4 +1,5 @@
 #include "corinzia/app/AppController.hpp"
+#include "corinzia/edit/Structure.hpp"
 
 #include "corinzia/app/DemoProject.hpp"
 #include "corinzia/app/DummyBackend.hpp"
@@ -320,6 +321,10 @@ void AppController::updateSelectionLabel() {
                                             QStringLiteral(" · track ") +
                                             (track ? QString::fromStdString(track->name) : QStringLiteral("—"));
                                 }
+    if (label.isEmpty() && selection_.valid())   // a barline, mark, clef or text
+        if (const model::Movement* m = project_.movement(displayedMovement()))
+            if (const auto what = edit::describeItem(model::captureHeader(*m), selection_))
+                label = QString::fromStdString(*what) + QStringLiteral(" · Delete removes it");
     if (label != selectionLabel_) {
         selectionLabel_ = label;
         emit selectionChanged();

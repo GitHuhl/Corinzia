@@ -344,6 +344,120 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
               "page view is paginated again (A4 portrait)");
     }
 
+    // ---- Score structure: popovers, Structure panel, insert/delete bars -------
+    {
+        namespace cz = corinzia;
+        canvas->forceActiveFocus();
+        auto mov = [&]() -> const cz::model::Movement& { return *app.project().movements.front(); };
+        const cz::model::MusicEvent* bar3 = cz::edit::eventAt(flute(), cz::Fraction{2});
+        check(bar3 != nullptr, "flute has music in bar 3");
+        if (!bar3) return 1;
+        const corinzia::ElementId bar3Id = bar3->id.id;
+        app.selectElements({bar3->heads.empty() ? bar3->id.id : bar3->heads[0].id.id}, false);
+        QQuickItem* pop = findItem(window->contentItem(), QStringLiteral("popover"));
+        auto type = [&](const QString& s) { for (QChar c : s) key(0, Qt::NoModifier, QString(c)); };
+
+        key(Qt::Key_K, Qt::ShiftModifier, QStringLiteral("K"));
+        check(pop && pop->isVisible(), "Shift+K opens the key popover");
+        type(QStringLiteral("Eb"));
+        key(Qt::Key_Return);
+        check(pop && !pop->isVisible() && mov().keys.size() == 2 && mov().keys[1].at == cz::Fraction{2} &&
+                  mov().keys[1].fifths == -3 && !mov().keys[1].minor,
+              "key popover: \"Eb\" puts E-flat major at bar 3");
+        check(canvas->hasActiveFocus(), "focus returns to the score after the popover");
+
+        key(Qt::Key_M, Qt::ShiftModifier, QStringLiteral("M"));
+        type(QStringLiteral("3/5"));
+        key(Qt::Key_Return);
+        QQuickItem* err = findItem(window->contentItem(), QStringLiteral("popoverError"));
+        check(pop && pop->isVisible() && err && !err->property("text").toString().isEmpty() && mov().meter.size() == 1,
+              "a bad time signature keeps the popover open with a hint");
+        key(Qt::Key_Escape);
+        check(pop && !pop->isVisible() && mov().meter.size() == 1, "Esc cancels the popover");
+
+        key(Qt::Key_T, Qt::ShiftModifier, QStringLiteral("T"));
+        type(QStringLiteral("Allegro 132"));
+        key(Qt::Key_Return);
+        const auto tempoAt = [&](cz::Fraction at) -> const cz::model::TempoEvent* {
+            for (const auto& t : mov().tempo) if (t.at == at) return &t;
+            return nullptr;
+        };
+        check(tempoAt(cz::Fraction{2}) && tempoAt(cz::Fraction{2})->text == "Allegro" &&
+                  tempoAt(cz::Fraction{2})->quarterBpm == 132.0,
+              "tempo popover: \"Allegro 132\"");
+
+        key(Qt::Key_X, Qt::ShiftModifier, QStringLiteral("X"));
+        type(QStringLiteral("dolce"));
+        key(Qt::Key_Return);
+        check(mov().lanes[0].texts.size() == 1 && mov().lanes[0].texts[0].text == "dolce" &&
+                  mov().lanes[0].texts[0].at == cz::Fraction{2},
+              "expression popover: \"dolce\" under the flute at bar 3");
+
+        check(clickItem("rehearsalButton") && mov().rehearsal.size() == 1 && mov().rehearsal[0].at == cz::Fraction{2},
+              "Structure panel: rehearsal mark at bar 3");
+        key(Qt::Key_B, Qt::ShiftModifier, QStringLiteral("B"));
+        type(QStringLiteral(":|"));
+        key(Qt::Key_Return);
+        check(mov().barlines.size() == 1 && mov().barlines[0].at == cz::Fraction{2} &&
+                  mov().barlines[0].kind == cz::model::BarlineKind::RepeatEnd,
+              "barline popover: end repeat before bar 3");
+
+        const int beforeStruct = app.engraveCount();
+        check(waitFor([&] { return app.engraveCount() > beforeStruct && canvas->engraving() &&
+                                   canvas->engraving()->source->revision == mov().revision; }, 60000),
+              "structure engraved");
+        const corinzia::ElementId textId = mov().lanes[0].texts[0].id.id;
+        const auto* textEntry = canvas->engraving() ? canvas->engraving()->index->find(textId) : nullptr;
+        check(textEntry && canvas->engraving()->index->find(mov().rehearsal[0].id.id),
+              "text and rehearsal mark are clickable objects in the engraving");
+        waitFor([&] { return canvas->tilesSettled(); }, 3000);
+        waitFor([] { return false; }, 150);
+        QString structPng = png;
+        structPng.replace(QStringLiteral(".png"), QStringLiteral("-structure.png"));
+        window->grabWindow().save(structPng);
+
+        // Click the text in the score, Delete removes it, undo brings it back.
+        if (textEntry) {
+            const QRectF page = canvas->pageRectInItem(textEntry->page);
+            const QPointF p = canvas->mapToScene(page.topLeft() + textEntry->bounds.center() * (page.width() / canvas->engraving()->pages[std::size_t(textEntry->page)].size.width()));
+            QMouseEvent press(QEvent::MouseButtonPress, p, p, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, p, p, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &release);
+            if (app.selection() != textId)
+                std::printf("  text bounds (%.2f,%.2f %.2fx%.2f) page %d; clicked at (%.0f,%.0f) selected '%s'\n",
+                            textEntry->bounds.x(), textEntry->bounds.y(), textEntry->bounds.width(), textEntry->bounds.height(),
+                            textEntry->page, p.x(), p.y(), qPrintable(app.selectionLabel()));
+            check(app.selection() == textId && app.selectionLabel().contains(QStringLiteral("dolce")),
+                  "clicking the text selects it");
+            key(Qt::Key_Delete);
+            check(mov().lanes[0].texts.empty(), "Delete removes the selected text");
+            app.undo();
+            check(mov().lanes[0].texts.size() == 1, "undo restores it");
+        }
+
+        // Insert / delete bars (one undo step each, music and structure move together).
+        app.selectElements({bar3Id}, false);
+        const cz::Fraction len = mov().length;
+        key(Qt::Key_B, Qt::ControlModifier);
+        const cz::model::MusicEvent* moved = cz::edit::eventAt(flute(), cz::Fraction{3});
+        check(mov().length == len + cz::Fraction{1} && moved && moved->id.id == bar3Id &&
+                  mov().rehearsal[0].at == cz::Fraction{3} && mov().keys[1].at == cz::Fraction{3} &&
+                  mov().barlines[0].at == cz::Fraction{2},
+              "Ctrl+B inserts a bar before bar 3 (music, key, mark and text move; the repeat stays)");
+        app.undo();
+        check(mov().length == len && cz::edit::eventAt(flute(), cz::Fraction{2})->id.id == bar3Id,
+              "undo removes the inserted bar in one step");
+        app.selectElements({bar3Id}, false);
+        check(clickItem("deleteBarsButton") && mov().length == len - cz::Fraction{1} && mov().rehearsal.empty() &&
+                  mov().keys.size() == 1 && mov().barlines.size() == 1,
+              "Delete bars removes bar 3 with its key, mark and text");
+        app.undo();
+        check(mov().length == len && mov().rehearsal.size() == 1 && mov().keys.size() == 2 && mov().lanes[0].texts.size() == 1,
+              "undo restores the deleted bar");
+        key(Qt::Key_Escape);
+    }
+
     // ---- Mix (DAW) tab --------------------------------------------------------
     QQuickItem* tabs = findItem(window->contentItem(), QStringLiteral("tabs"));
     if (!tabs) tabs = findItem(window->contentItem()->parentItem() ? window->contentItem()->parentItem() : window->contentItem(),
@@ -419,6 +533,12 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
     const int engravedBeforeOpen = app.engraveCount();
     check(app.openProject(file), "reopened project");
     check(waitFor([&] { return app.engraveCount() > engravedBeforeOpen; }, 60000), "reopened project engraved");
+    {
+        const auto& m = *app.project().movements.front();
+        check(m.keys.size() == 2 && m.rehearsal.size() == 1 && m.barlines.size() == 1 && m.lanes[0].texts.size() == 1 &&
+                  m.lanes[0].texts[0].text == "dolce" && m.tempo.size() >= 2,
+              "key, tempo, barline, rehearsal mark and text survive save/reopen");
+    }
 
     waitFor([] { return false; }, 200);
     const QImage frame = window->grabWindow();

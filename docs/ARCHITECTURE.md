@@ -586,18 +586,56 @@ buttons never take keyboard focus, so typing always reaches the score.
   (`ly:one-line-auto-height-breaking`, staff names kept) and the wheel scrolls
   through time.
 
-### 5.5c Gap analysis vs Sibelius / Dorico / MuseScore (roadmap)
+### 5.5c Score structure and text
+
+* **Model.** A movement's non-voice content is its *header*: tempo (with
+  optional words, "Allegro"), meter and key maps; special barlines (double,
+  final, start/end/both repeats); lettered rehearsal marks; per-staff clef
+  changes and text (expression: italic, below; technique: above). It is edited
+  as one undoable unit (`EditMovementHeader`) and stored in the
+  `movement.notation` JSONB column (schema v2, migrated in place from v1).
+* **Popovers** (Dorico letters, `qml/Popover.qml`): Shift+K key ("Eb", "f#" =
+  F♯ minor, "a minor"), Shift+M time ("6/8", "C", "C|"), Shift+C clef,
+  Shift+B barline ("||", "|.", "|:", ":|", ":|:"), Shift+T tempo ("Allegro",
+  "Andante 84", "q=96"), Shift+X expression, Shift+P technique, Shift+A
+  rehearsal mark. In note input Shift+A/B/C stay chord notes, so use the
+  Structure panel for those. Parsing is pure and tested (`edit/Structure`);
+  text it doesn't understand keeps the popover open with a hint. Position:
+  passage start, else the selected note, else the caret. Key, time and marks
+  snap to the bar; barlines to the nearest bar line.
+* **Structure panel** (right of the score): the same actions as buttons, and
+  **insert/delete bars** (Ctrl+B inserts a bar before the current one;
+  Ctrl+Shift+Backspace deletes the selected bars). Music, maps, marks, clefs
+  and text move together in one undo step. A barline at the cut ends the
+  previous bar and stays.
+* **Point-and-click**: barlines aside, structure items carry their ElementId
+  into the SVG. Click one and press Delete to remove it.
+* **Engraving**: `\bar`, `\mark \default`, `\tempo "Allegro" 4 = 132`, clefs and
+  text go in a spacer voice per staff. Qt SVG strips the leading spaces in
+  LilyPond's text runs, so `normalizeSvgText` shifts those runs by the space's
+  width instead ("Allegro (♩ = 132)").
+* **Playback**: `compile::playbackOrder` unrolls repeats into written spans.
+  Each Section's tempo/meter maps run over performed time, and
+  `Section::writtenQuarter` / `performedQuarter` map the playhead back into the
+  score and seek to the first pass.
+* **Provisional layer and mouse entry** work in clef-relative ("treble
+  equivalent") steps. One fit per system therefore spans a mid-system clef
+  change; the tests fail if the shift is disabled.
+* Known gaps: no voltas or D.C./D.S. yet; insert/delete bars does not move
+  automation points.
+
+### 5.5d Gap analysis vs Sibelius / Dorico / MuseScore (roadmap)
 
 | Area | Have | Missing (in priority order) |
 |---|---|---|
 | Input | step entry (keys, mouse, panel), chords, rests, dots, triplets, accidentals, ties, voices 1–4, overwrite | insert mode; MIDI-keyboard step input and real-time recording; re-input pitches over rhythms; grace notes; general tuplets (5:4, 7:8 …); hover ghost note; percussion & tab input |
 | Selection & editing | click, Shift+click, marquee, select all; copy/cut/paste/repeat/delete/transpose passages; undo of everything | filters (select only voice 2 / only dynamics); multi-selection of non-contiguous items; drag notes with the mouse; respell/enharmonic; transpose by interval with accidental spelling; swap voices; explode/reduce |
-| Notation items | articulations, dynamics, slurs, crescendo/diminuendo hairpins, ties, tempo + rit./accel., key/time from model | text (expression, technique, staff/system text), rehearsal marks, lyrics, chord symbols, ornaments (trills, mordents, turns), tremolos, arpeggios, glissandi, pedal, octave lines (8va), fingering, breath marks / caesuras |
-| Structure | multi-movement, instrument changes, key/time/tempo maps | UI for clef/key/time/tempo changes; pickup bars; barline types; repeats, voltas, D.C./D.S./Coda (with playback); insert/delete bars; multi-bar rests |
+| Notation items | articulations, dynamics, slurs, crescendo/diminuendo hairpins, ties, tempo words + metronome + rit./accel., expression and technique text, rehearsal marks | lyrics, chord symbols, ornaments (trills, mordents, turns), tremolos, arpeggios, glissandi, pedal, octave lines (8va), fingering, breath marks / caesuras |
+| Structure | multi-movement, instrument changes, key/time/tempo/clef changes via popovers and the panel, barline types, repeats (played back), insert/delete bars | pickup bars; voltas, D.C./D.S./Coda; multi-bar rests; system text |
 | Instruments | players with doublings, transposition data | add/remove/reorder players; grand staff (piano), divisi, percussion kits, unpitched staves; transposed vs concert-pitch toggle; staff-type changes |
 | Layout & parts | Page and Panorama views, LilyPond engraving | system/page breaks, staff spacing, beam & stem overrides, cue notes, part extraction (layouts), house styles, condensing |
 | I/O | own SQLite project | MusicXML import/export, MIDI import/export, PDF/SVG/PNG export, audio export, printing |
-| Playback | dynamics, hairpins, slurs (legato), articulations gate/accent, PDC, CLAP | expression maps / key switches per articulation, swing, repeats in playback, humanize, mixer automation from notation |
+| Playback | dynamics, hairpins, slurs (legato), articulations gate/accent, PDC, CLAP | expression maps / key switches per articulation, swing, voltas and jumps in playback, humanize, mixer automation from notation |
 
 ### 5.6 Two workspaces: Score and Mix
 
@@ -744,8 +782,8 @@ python3 -I scripts/validate_schema.py
 nix build                        # sandboxed build + full test suite (incl. LilyPond + offscreen Qt)
 ```
 
-**Verified by tests.** Four ctest suites: core (44 cases, also clean under
-ASan + UBSan), PipeWire end-to-end, Qt/UI (10 cases, pixel-level) and an app
+**Verified by tests.** Four ctest suites: core (57 cases, also clean under
+ASan + UBSan), PipeWire end-to-end, Qt/UI (14 cases, pixel-level) and an app
 smoke run.
 
 | Area | Tests |
@@ -762,6 +800,7 @@ smoke run.
 | Qt | real engraving through the service; click → head → correct track; cursor x at and between onsets; provisional y within 0.3 spaces; stale-revision dropping; page, playhead and provisional sprites verified at pixel level across re-engraves |
 | Note input | overwrite insert/truncate/fill, chords, delete, modify, durations incl. triplets, key-aware nearest-octave spelling; `locate` inverts every engraved head to its staff, beat and pitch; tuplet and barline-completion emission compiled by LilyPond |
 | Selection & spanners | eraseRange/slice/paste/applyToRange/transposeRange/markSpan; hairpin velocity ramps and slur legato; spans survive save/load and compile in LilyPond without warnings; smoke: real marquee drag (band + highlight pixels), Ctrl+C/V at a note, R, undo identity, Shift+click passage, S/H, ↑, Ctrl+A + Delete + undo, Esc |
+| Structure & text | popover parsers (keys incl. minor and Unicode accidentals, meters, clefs, barlines, tempo words); bar positions across meter changes; header edits; insert/delete bars for voices and header (maps keep their entry at 0, text follows its bar, barlines between bars survive); repeat unrolling with exact note samples and playhead mapping; LilyPond compiles barlines, marks, tempo words, clefs and text without warnings, with clickable ids; v1→v2 file migration; provisional notes and mouse entry after a mid-system clef change; smoke: Shift+K/M/T/X/B popovers incl. an invalid entry and Esc, panel rehearsal mark, click text + Delete + undo, Ctrl+B and Delete bars + undo, survives save/reopen |
 | Zoom & views | canvas pixel-exact vs direct SVG rendering at 4×; text present at every zoom; Page/Panorama engrave, names, mouse entry in panorama |
 | Mix tab | arrange blocks keep colour/position/clip through swaps, growth, scroll and shrink; score canvas growing 1 → 2 pages |
 | App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; **Ctrl+2** Mix tab: one arrange block per note head, doubling on the Piccolo lane, blocks drawn, clicking a block selects the note, clicking the timeline locates the transport sample-exactly; **Ctrl+1** back with score keys working; save to `.project` and reopen; engraved music visible on screen |
@@ -774,7 +813,7 @@ mixer lets you assign any installed CLAP instrument to a track.
 **Still to do** (next milestones):
 
 1. Plugin GUI embedding (`clap.gui`, X11/Wayland) and the timer/posix-fd host extensions.
-2. Range selection, copy/paste, re-pitching via MIDI keyboard; a hover "ghost note" in input mode; slurs, hairpins and text; piano roll and timeline views.
+2. MIDI-keyboard input, a hover "ghost note" in input mode, lyrics and chord symbols, voltas/D.S./Coda; piano roll view.
 3. Zoom-settled re-rasterization; engraving cache read path; multi-movement navigation; transposed parts.
 4. Command serialization for `undo_journal` replay on open; undoable routing edits (plugin assignment).
 5. Note-expression and automation lanes in the UI; automation recording from plugin `ParamChanged`.

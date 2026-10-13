@@ -119,6 +119,15 @@ public:
     struct Range { bool active = false; std::size_t laneFrom = 0, laneTo = 0; Fraction from{0}, to{0}; };
     const Range& range() const noexcept { return range_; }
 
+    // ---- score structure (AppControllerStructure.cpp) ------------------------
+    // Popover kinds: key, time, clef, barline, tempo, expression, technique,
+    // rehearsal. Acts at the passage start / selected note / caret. Returns
+    // false (and explains in `status`) when the text is not understood.
+    Q_INVOKABLE bool applyPopover(const QString& kind, const QString& text);
+    Q_INVOKABLE QString popoverPosition();          // "Bar 3", shown in the popover
+    Q_INVOKABLE void insertBars(int count);         // before the bar at the selection/caret
+    Q_INVOKABLE void deleteBars();                  // the selected bars, or the caret's bar
+
     bool inputMode() const noexcept { return inputMode_; }
     void setInputMode(bool on);
     int duration() const noexcept { return int(spec_.base); }
@@ -201,6 +210,9 @@ private:
     void editRangeVoices(const char* label,
                          const std::function<std::optional<edit::EditResult>(const model::EventList&, const model::Voice&)>& fn);
     void refreshArrange();
+    struct StructureTarget { model::Movement* movement = nullptr; std::size_t lane = 0; Fraction at{0}; };
+    StructureTarget structureTarget();
+    bool deleteStructureItem();
 
     Options opt_;
     model::Project project_;

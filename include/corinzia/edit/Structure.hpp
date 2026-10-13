@@ -41,15 +41,24 @@ void setBarline(model::MovementHeader& h, Fraction at, model::BarlineKind kind, 
 void toggleRehearsalMark(model::MovementHeader& h, Fraction at, IdAlloc& ids);
 void setClef(model::MovementHeader& h, PlayerId lane, Fraction at, const std::string& clef, IdAlloc& ids);
 void addText(model::MovementHeader& h, PlayerId lane, Fraction at, const std::string& text, model::TextKind kind, IdAlloc& ids);
+// Removes the barline, rehearsal mark, clef change or text with this id.
+// Returns a description ("Rehearsal mark", "Text \"dolce\"", …) or nullopt.
+std::optional<std::string> removeItem(model::MovementHeader& h, ElementId id);
+// Describes the item with this id without changing anything.
+std::optional<std::string> describeItem(const model::MovementHeader& h, ElementId id);
 
 // ------------------------------------------------------ insert / delete --
 // Voice content: events at/after `at` move right by `length`.
 model::EventList insertSpan(const model::EventList& list, Fraction at, Fraction length);
 // Removes [from, to) (truncating an event that crosses `from`) and closes the gap.
 model::EventList deleteSpan(const model::EventList& list, Fraction from, Fraction to);
-// Header: every item at/after `at` moves; the movement grows by `length`.
+// Header: items at/after `at` move and the movement grows by `length`. Map
+// entries at 0 (initial tempo/meter/key/instrument) stay; a barline at `at`
+// ends the previous bar and stays (unless it is a start repeat).
 void insertSpan(model::MovementHeader& h, Fraction at, Fraction length);
-// Header: items inside [from, to) go (except those at 0), later ones move left.
+// Header: items inside [from, to) go (map entries at 0 stay; one shifted onto
+// `from` replaces the one there), later ones move left. Barlines strictly
+// inside go; the one at `to` replaces the one at `from`.
 void deleteSpan(model::MovementHeader& h, Fraction from, Fraction to);
 
 }  // namespace corinzia::edit

@@ -41,18 +41,23 @@ void replaceAt(std::vector<T>& v, Fraction at, T item) {
     std::sort(v.begin(), v.end(), [](const T& a, const T& b) { return a.at < b.at; });
 }
 
+// Maps (tempo, meter, key, instrument changes) always keep their entry at 0
+// and hold one entry per position; marks and text are plain items.
+enum class Kind { Map, Items };
+
 template <class T>
-void shiftItems(std::vector<T>& v, Fraction at, Fraction delta) {
+void shiftItems(std::vector<T>& v, Fraction at, Fraction delta, Kind kind) {
     for (auto& x : v)
-        if (x.at >= at && x.at > Fraction{0}) x.at = x.at + delta;
+        if (x.at >= at && (kind == Kind::Items || x.at > Fraction{0})) x.at = x.at + delta;
 }
 template <class T>
-void deleteItems(std::vector<T>& v, Fraction from, Fraction to) {
-    std::erase_if(v, [&](const T& x) { return x.at >= from && x.at < to && x.at > Fraction{0}; });
+void deleteItems(std::vector<T>& v, Fraction from, Fraction to, Kind kind) {
+    std::erase_if(v, [&](const T& x) { return x.at >= from && x.at < to && (kind == Kind::Items || x.at > Fraction{0}); });
     for (auto& x : v)
         if (x.at >= to) x.at = x.at - (to - from);
-    // An item shifted onto `from` supersedes one kept there (e.g. the initial key).
     std::stable_sort(v.begin(), v.end(), [](const T& a, const T& b) { return a.at < b.at; });
+    if (kind == Kind::Items) return;
+    // An entry shifted onto `from` supersedes the one kept there (e.g. the initial key).
     std::vector<T> out;
     for (auto& x : v) {
         if (!out.empty() && out.back().at == x.at && x.at == from) out.back() = std::move(x);
@@ -218,6 +223,31 @@ void addText(MovementHeader& h, PlayerId lane, Fraction at, const std::string& t
         }
 }
 
+std::optional<std::string> describeItem(const MovementHeader& h, ElementId id) {
+    static const char* kBar[] = {"Double barline", "Final barline", "Start repeat", "End repeat", "End/start repeat"};
+    for (const auto& b : h.barlines) if (b.id.id == id) return std::string(kBar[int(b.kind)]);
+    for (const auto& r : h.rehearsal) if (r.id.id == id) return std::string("Rehearsal mark");
+    for (const auto& l : h.lanes) {
+        for (const auto& c : l.clefs) if (c.id.id == id) return "Clef " + c.clef;
+        for (const auto& t : l.texts)
+            if (t.id.id == id) return std::string(t.kind == model::TextKind::Expression ? "Expression" : "Technique") + " \"" + t.text + "\"";
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> removeItem(MovementHeader& h, ElementId id) {
+    auto what = describeItem(h, id);
+    if (!what) return std::nullopt;
+    auto match = [&](const auto& x) { return x.id.id == id; };
+    std::erase_if(h.barlines, match);
+    std::erase_if(h.rehearsal, match);
+    for (auto& l : h.lanes) {
+        std::erase_if(l.clefs, match);
+        std::erase_if(l.texts, match);
+    }
+    return what;
+}
+
 // ------------------------------------------------------ insert / delete --
 model::EventList insertSpan(const model::EventList& list, Fraction at, Fraction length) {
     model::EventList out = list;
@@ -249,29 +279,43 @@ model::EventList deleteSpan(const model::EventList& list, Fraction from, Fractio
 }
 
 void insertSpan(MovementHeader& h, Fraction at, Fraction length) {
-    shiftItems(h.tempo, at, length);
-    shiftItems(h.meter, at, length);
-    shiftItems(h.keys, at, length);
-    shiftItems(h.barlines, at, length);
-    shiftItems(h.rehearsal, at, length);
+    shiftItems(h.tempo, at, length, Kind::Map);
+    shiftItems(h.meter, at, length, Kind::Map);
+    shiftItems(h.keys, at, length, Kind::Map);
+    // A barline at `at` closes the bar before the insertion point and stays;
+    // a start repeat there belongs to the bar that moves.
+    for (auto& b : h.barlines)
+        if (b.at > at || (b.at == at && b.kind == BarlineKind::RepeatStart)) b.at = b.at + length;
+    shiftItems(h.rehearsal, at, length, Kind::Items);
     for (auto& l : h.lanes) {
-        shiftItems(l.changes, at, length);
-        shiftItems(l.clefs, at, length);
-        shiftItems(l.texts, at, length);
+        shiftItems(l.changes, at, length, Kind::Map);
+        shiftItems(l.clefs, at, length, Kind::Items);
+        shiftItems(l.texts, at, length, Kind::Items);
     }
     h.length = h.length + length;
 }
 
 void deleteSpan(MovementHeader& h, Fraction from, Fraction to) {
-    deleteItems(h.tempo, from, to);
-    deleteItems(h.meter, from, to);
-    deleteItems(h.keys, from, to);
-    deleteItems(h.barlines, from, to);
-    deleteItems(h.rehearsal, from, to);
+    deleteItems(h.tempo, from, to, Kind::Map);
+    deleteItems(h.meter, from, to, Kind::Map);
+    deleteItems(h.keys, from, to, Kind::Map);
+    // A barline sits *between* bars: the one at `from` ends the bar before the
+    // cut and stays; one at `to` (e.g. the final barline) closes the gap and
+    // supersedes it; those strictly inside go.
+    std::erase_if(h.barlines, [&](const model::BarlineMark& b) { return b.at > from && b.at < to; });
+    for (auto& b : h.barlines)
+        if (b.at >= to) b.at = b.at - (to - from);
+    std::stable_sort(h.barlines.begin(), h.barlines.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+    for (std::size_t i = 0; i + 1 < h.barlines.size(); ++i)
+        if (h.barlines[i].at == from && h.barlines[i + 1].at == from) {   // the moved one comes second
+            h.barlines.erase(h.barlines.begin() + std::ptrdiff_t(i));
+            break;
+        }
+    deleteItems(h.rehearsal, from, to, Kind::Items);
     for (auto& l : h.lanes) {
-        deleteItems(l.changes, from, to);
-        deleteItems(l.clefs, from, to);
-        deleteItems(l.texts, from, to);
+        deleteItems(l.changes, from, to, Kind::Map);
+        deleteItems(l.clefs, from, to, Kind::Items);
+        deleteItems(l.texts, from, to, Kind::Items);
     }
     h.length = h.length - (to - from);
 }

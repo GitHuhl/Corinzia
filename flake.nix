@@ -44,6 +44,9 @@
           nativeCheckInputs = [ pkgs.lilypond pkgs.pipewire ];   # pipewire: private daemon + pw-link for the backend test
           preCheck = ''
             export HOME=$TMPDIR
+            # The sandbox has no fontconfig setup: without one LilyPond cannot
+            # load even its own text fonts (titles, tempo marks, text vanish).
+            export FONTCONFIG_FILE=${pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; }}
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond
             ${qtRuntimeEnv pkgs}
           '';
