@@ -14,7 +14,8 @@
 --    reopen and can be scoped to a single movement.
 
 PRAGMA application_id = 1129271898;   -- 'CORZ'
-PRAGMA user_version   = 1;            -- schema version, bumped by migrations
+-- user_version (schema version) is managed by ProjectStore::open, which
+-- creates/migrates: v1 -> v2 adds movement.notation.
 PRAGMA journal_mode   = WAL;
 PRAGMA foreign_keys   = ON;
 
@@ -107,7 +108,10 @@ CREATE TABLE IF NOT EXISTS movement (
     revision    INTEGER NOT NULL DEFAULT 0,
     tempo       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"bpm":120,"ramp":false}]
     meter       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"num":4,"den":4}]
-    keys        BLOB    NOT NULL                      -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
+    keys        BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
+    -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}],
+    --        "clefs":[{"id","p":player,"at","c":"bass"}], "texts":[{"id","p","at","t":"dolce","k":"x"|"t"}]}
+    notation    BLOB
 );
 
 CREATE TABLE IF NOT EXISTS player_lane (

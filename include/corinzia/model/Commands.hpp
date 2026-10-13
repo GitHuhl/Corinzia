@@ -79,6 +79,24 @@ private:
     std::uint8_t index_;
 };
 
+// Replaces a movement's header (key/time/tempo maps, barlines, rehearsal
+// marks, per-staff clefs, texts and instrument changes) in one undo step.
+class EditMovementHeader final : public Command {
+public:
+    EditMovementHeader(MovementId m, MovementHeader after, std::string label)
+        : movement_(m), after_(std::move(after)), label_(std::move(label)) {}
+    std::string label() const override { return label_; }
+    ChangeSet apply(Project& p) override;
+    ChangeSet revert(Project& p) override;
+
+private:
+    ChangeSet set(Project& p, const MovementHeader& h);
+    MovementId movement_;
+    MovementHeader before_, after_;
+    bool captured_ = false;
+    std::string label_;
+};
+
 // Changes a movement's length (input past the final barline extends it).
 class SetMovementLength final : public Command {
 public:

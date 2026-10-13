@@ -91,6 +91,23 @@ ChangeSet AddVoice::revert(Project& p) {
     return cs;
 }
 
+// -------------------------------------------------------- EditMovementHeader --
+ChangeSet EditMovementHeader::set(Project& p, const MovementHeader& h) {
+    ChangeSet cs;
+    if (Movement* m = p.movement(movement_)) {
+        if (!captured_) { before_ = captureHeader(*m); captured_ = true; }
+        applyHeader(*m, h);
+        ++m->revision;
+        p.reindexMovement(*m);
+        cs.movements = {movement_};
+        cs.ranges = {{movement_, Fraction{0}, m->length}};
+        cs.metaChanged = true;
+    }
+    return cs;
+}
+ChangeSet EditMovementHeader::apply(Project& p) { return set(p, after_); }
+ChangeSet EditMovementHeader::revert(Project& p) { return set(p, before_); }
+
 // --------------------------------------------------------- SetMovementLength --
 ChangeSet SetMovementLength::set(Project& p, Fraction len) {
     ChangeSet cs;

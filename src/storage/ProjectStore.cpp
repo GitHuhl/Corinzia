@@ -62,6 +62,20 @@ private:
 };
 
 // ------------------------------------------------------- JSON writing --
+std::string jstr(const std::string& s) {
+    std::string o = "\"";
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"': o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n"; break;
+            default:
+                if (c < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+                else o.push_back(char(c));
+        }
+    }
+    return o + "\"";
+}
 std::string jnum(double v) { char b[32]; std::snprintf(b, sizeof b, "%.17g", v); return b; }
 std::string jfrac(Fraction f) { return "[" + std::to_string(f.num) + "," + std::to_string(f.den) + "]"; }
 
@@ -161,6 +175,14 @@ std::unique_ptr<ProjectStore> ProjectStore::open(const std::string& path, std::s
     // NORMAL is durable across application crashes in WAL mode (only an OS
     // crash/power loss can drop the last commit) and keeps autosave cheap.
     if (!s->exec(kSchemaSql, error) || !s->exec("PRAGMA synchronous = NORMAL;", error)) return nullptr;
+    // Migrations. v2: movement.notation (structure marks, clefs, texts).
+    bool hasNotation = false;
+    {
+        Stmt c(db, "SELECT 1 FROM pragma_table_info('movement') WHERE name = 'notation'");
+        hasNotation = c.step();
+    }
+    if (!hasNotation && !s->exec("ALTER TABLE movement ADD COLUMN notation BLOB;", error)) return nullptr;
+    if (!s->exec("PRAGMA user_version = 2;", error)) return nullptr;
     return s;
 }
 
@@ -291,20 +313,41 @@ bool ProjectStore::saveMovement(const model::Movement& m, const std::vector<Voic
     const auto mid = m.id.id.value;
     {
         const auto tempo = jarray(m.tempo, [](const model::TempoEvent& t) {
-            return "{\"at\":" + jfrac(t.at) + ",\"bpm\":" + jnum(t.quarterBpm) + ",\"ramp\":" + (t.rampToNext ? "true" : "false") + "}";
+            return "{\"at\":" + jfrac(t.at) + ",\"bpm\":" + jnum(t.quarterBpm) + ",\"ramp\":" + (t.rampToNext ? "true" : "false") +
+                   (t.text.empty() ? std::string() : ",\"text\":" + jstr(t.text)) + "}";
         });
+        static const char* kBar[] = {"||", "|.", ".|:", ":|.", ":|.|:"};
+        std::string notation = "{\"barlines\":" + jarray(m.barlines, [](const model::BarlineMark& b) {
+            return "{\"id\":" + std::to_string(b.id.id.value) + ",\"at\":" + jfrac(b.at) + ",\"k\":" + jstr(kBar[int(b.kind)]) + "}";
+        });
+        notation += ",\"marks\":" + jarray(m.rehearsal, [](const model::RehearsalMark& r) {
+            return "{\"id\":" + std::to_string(r.id.id.value) + ",\"at\":" + jfrac(r.at) + "}";
+        });
+        std::vector<std::string> clefs, texts;
+        for (const auto& l : m.lanes) {
+            for (const auto& c : l.clefs)
+                clefs.push_back("{\"id\":" + std::to_string(c.id.id.value) + ",\"p\":" + std::to_string(l.player.id.value) +
+                                ",\"at\":" + jfrac(c.at) + ",\"c\":" + jstr(c.clef) + "}");
+            for (const auto& t : l.texts)
+                texts.push_back("{\"id\":" + std::to_string(t.id.id.value) + ",\"p\":" + std::to_string(l.player.id.value) +
+                                ",\"at\":" + jfrac(t.at) + ",\"t\":" + jstr(t.text) + ",\"k\":\"" +
+                                (t.kind == model::TextKind::Technique ? "t" : "x") + "\"}");
+        }
+        notation += ",\"clefs\":" + jarray(clefs, [](const std::string& x) { return x; });
+        notation += ",\"texts\":" + jarray(texts, [](const std::string& x) { return x; }) + "}";
         const auto meter = jarray(m.meter, [](const model::MeterEvent& t) {
             return "{\"at\":" + jfrac(t.at) + ",\"num\":" + std::to_string(t.numerator) + ",\"den\":" + std::to_string(t.denominator) + "}";
         });
         const auto keys = jarray(m.keys, [](const model::KeyEvent& k) {
             return "{\"at\":" + jfrac(k.at) + ",\"fifths\":" + std::to_string(k.fifths) + ",\"minor\":" + (k.minor ? "true" : "false") + "}";
         });
-        Stmt s(db_, "INSERT INTO movement(id, ordinal, title, length_num, length_den, revision, tempo, meter, keys) "
-                    "VALUES (?,?,?,?,?,?,jsonb(?),jsonb(?),jsonb(?)) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, "
+        Stmt s(db_, "INSERT INTO movement(id, ordinal, title, length_num, length_den, revision, tempo, meter, keys, notation) "
+                    "VALUES (?,?,?,?,?,?,jsonb(?),jsonb(?),jsonb(?),jsonb(?)) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, "
                     "title=excluded.title, length_num=excluded.length_num, length_den=excluded.length_den, "
-                    "revision=excluded.revision, tempo=excluded.tempo, meter=excluded.meter, keys=excluded.keys");
+                    "revision=excluded.revision, tempo=excluded.tempo, meter=excluded.meter, keys=excluded.keys, "
+                    "notation=excluded.notation");
         ok = ok && s.bind(1, mid).bind(2, m.ordinal).bind(3, m.title).bind(4, m.length.num).bind(5, m.length.den)
-                       .bind(6, m.revision).bind(7, tempo).bind(8, meter).bind(9, keys).run();
+                       .bind(6, m.revision).bind(7, tempo).bind(8, meter).bind(9, keys).bind(10, notation).run();
     }
 
     std::vector<PlayerId> lanePlayers;
@@ -486,7 +529,7 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
     // Movements: JSONB is decoded by SQLite itself (json_each / ->>), so the
     // C++ side never needs its own JSON parser.
     Stmt sm(db_, "SELECT id, ordinal, title, length_num, length_den, revision FROM movement ORDER BY ordinal");
-    Stmt st(db_, "SELECT j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'bpm', j.value->>'ramp' "
+    Stmt st(db_, "SELECT j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'bpm', j.value->>'ramp', j.value->>'text' "
                  "FROM movement m, json_each(m.tempo) j WHERE m.id = ? ORDER BY j.key");
     Stmt sme(db_, "SELECT j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'num', j.value->>'den' "
                   "FROM movement m, json_each(m.meter) j WHERE m.id = ? ORDER BY j.key");
@@ -518,7 +561,7 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
 
         m->tempo.clear();
         st.bind(1, mid);
-        while (st.step()) m->tempo.push_back({Fraction(st.i64(0), st.i64(1)), st.f64(2), st.i64(3) != 0});
+        while (st.step()) m->tempo.push_back({Fraction(st.i64(0), st.i64(1)), st.f64(2), st.i64(3) != 0, st.text(4)});
         st.reset();
         m->meter.clear();
         sme.bind(1, mid);
@@ -571,6 +614,38 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
             m->lanes.push_back(std::move(lane));
         }
         sl.reset();
+
+        // Structure marks, clefs and texts (movement.notation; NULL in v1 files).
+        {
+            Stmt nb(db_, "SELECT j.value->>'id', j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'k' "
+                         "FROM movement m, json_each(m.notation, '$.barlines') j WHERE m.id = ? ORDER BY j.key");
+            nb.bind(1, mid);
+            static const char* kBar[] = {"||", "|.", ".|:", ":|.", ":|.|:"};
+            while (nb.step()) {
+                model::BarlineMark b{{eid(nb, 0)}, Fraction(nb.i64(1), nb.i64(2)), model::BarlineKind::Double};
+                for (int k = 0; k < 5; ++k) if (nb.text(3) == kBar[k]) b.kind = model::BarlineKind(k);
+                m->barlines.push_back(b);
+            }
+            Stmt nm(db_, "SELECT j.value->>'id', j.value->>'$.at[0]', j.value->>'$.at[1]' "
+                         "FROM movement m, json_each(m.notation, '$.marks') j WHERE m.id = ? ORDER BY j.key");
+            nm.bind(1, mid);
+            while (nm.step()) m->rehearsal.push_back({{eid(nm, 0)}, Fraction(nm.i64(1), nm.i64(2))});
+            Stmt nc(db_, "SELECT j.value->>'id', j.value->>'p', j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'c' "
+                         "FROM movement m, json_each(m.notation, '$.clefs') j WHERE m.id = ? ORDER BY j.key");
+            nc.bind(1, mid);
+            while (nc.step())
+                for (auto& l : m->lanes)
+                    if (l.player.id.value == std::uint64_t(nc.i64(1)))
+                        l.clefs.push_back({{eid(nc, 0)}, Fraction(nc.i64(2), nc.i64(3)), nc.text(4)});
+            Stmt nt(db_, "SELECT j.value->>'id', j.value->>'p', j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'t', j.value->>'k' "
+                         "FROM movement m, json_each(m.notation, '$.texts') j WHERE m.id = ? ORDER BY j.key");
+            nt.bind(1, mid);
+            while (nt.step())
+                for (auto& l : m->lanes)
+                    if (l.player.id.value == std::uint64_t(nt.i64(1)))
+                        l.texts.push_back({{eid(nt, 0)}, Fraction(nt.i64(2), nt.i64(3)), nt.text(4),
+                                           nt.text(5) == "t" ? model::TextKind::Technique : model::TextKind::Expression});
+        }
 
         sa.bind(1, mid);
         while (sa.step()) {

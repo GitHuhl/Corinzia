@@ -36,6 +36,7 @@ add_library(corinzia_core
     src/engrave/LilyPondEmitter.cpp
     src/storage/ProjectStore.cpp
     src/edit/NoteInput.cpp
+    src/edit/Structure.cpp
     ${CMAKE_BINARY_DIR}/generated/SchemaSql.cpp
 )
 target_include_directories(corinzia_core PUBLIC include)
@@ -93,6 +94,7 @@ if(CORINZIA_BUILD_TESTS)
         tests/test_storage.cpp
         tests/test_plugins.cpp
         tests/test_edit.cpp
+        tests/test_structure.cpp
     )
     target_link_libraries(corinzia_tests PRIVATE corinzia_core)
 
@@ -105,7 +107,8 @@ if(CORINZIA_BUILD_TESTS)
         CXX_VISIBILITY_PRESET hidden
         LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test-plugins)
     add_dependencies(corinzia_tests corinzia_test_recorder)
-    target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins")
+    target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins"
+                                                      CORINZIA_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
     if(PIPEWIRE_FOUND)
         add_executable(corinzia_pw_tests tests/test_pipewire.cpp)

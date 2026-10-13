@@ -113,9 +113,17 @@ struct AutomationLane {
 };
 
 // --------------------------------------------------------------- time maps --
-struct TempoEvent { Fraction at; double quarterBpm = 120.0; bool rampToNext = false; };
+struct TempoEvent { Fraction at; double quarterBpm = 120.0; bool rampToNext = false; std::string text{}; };   // text: "Allegro"
 struct MeterEvent { Fraction at; int numerator = 4; int denominator = 4; };
 struct KeyEvent   { Fraction at; int fifths = 0; bool minor = false; };
+
+// ------------------------------------------------------ structure & text --
+enum class BarlineKind : std::uint8_t { Double, Final, RepeatStart, RepeatEnd, RepeatBoth };
+struct BarlineMark { EventId id; Fraction at; BarlineKind kind = BarlineKind::Double; };
+struct RehearsalMark { EventId id; Fraction at; };                     // lettered A, B, C … automatically
+struct ClefChange { EventId id; Fraction at; std::string clef; };       // per staff: "treble", "bass", "alto" …
+enum class TextKind : std::uint8_t { Expression, Technique };          // below italic ("dolce") / above ("pizz.")
+struct TextItem { EventId id; Fraction at; std::string text; TextKind kind = TextKind::Expression; };
 
 // ------------------------------------------------------------ players/DAW --
 struct Instrument {
@@ -178,6 +186,8 @@ struct InstrumentChange { EventId id; Fraction at; InstrumentId instrument; };
 struct PlayerLane {
     PlayerId player;
     std::vector<InstrumentChange> changes;   // sorted; changes[0].at == 0
+    std::vector<ClefChange> clefs;           // mid-movement clef changes (the initial clef is the instrument's)
+    std::vector<TextItem> texts;
     std::vector<Voice> voices;               // 1..4
 
     // Active instrument at a musical position (binary search over changes).
@@ -191,6 +201,8 @@ struct Movement {
     std::vector<TempoEvent> tempo{{Fraction{0}, 120.0, false}};
     std::vector<MeterEvent> meter{{Fraction{0}, 4, 4}};
     std::vector<KeyEvent> keys{{Fraction{0}, 0, false}};
+    std::vector<BarlineMark> barlines;       // special barlines (double, final, repeats) at bar positions
+    std::vector<RehearsalMark> rehearsal;
     std::vector<PlayerLane> lanes;
     std::vector<AutomationLane> automation;
     Fraction length{1};               // total duration in whole notes
@@ -199,6 +211,21 @@ struct Movement {
     // used to discard stale engraving / playback compilation results.
     std::uint64_t revision = 0;
 };
+
+// Everything about a movement that is not voice content: maps, structure
+// marks and per-staff items. Edited as one undoable unit (EditMovementHeader).
+struct LaneHeader { PlayerId player; std::vector<InstrumentChange> changes; std::vector<ClefChange> clefs; std::vector<TextItem> texts; };
+struct MovementHeader {
+    std::vector<TempoEvent> tempo;
+    std::vector<MeterEvent> meter;
+    std::vector<KeyEvent> keys;
+    std::vector<BarlineMark> barlines;
+    std::vector<RehearsalMark> rehearsal;
+    Fraction length{1};
+    std::vector<LaneHeader> lanes;
+};
+MovementHeader captureHeader(const Movement& m);
+void applyHeader(Movement& m, const MovementHeader& h);
 
 // Immutable view handed to worker threads (engraver, snapshot compiler, saver).
 struct MovementSnapshot {

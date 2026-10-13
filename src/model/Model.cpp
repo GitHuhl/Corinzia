@@ -66,4 +66,26 @@ MovementSnapshot Project::snapshot(MovementId id) const {
     return {};
 }
 
+MovementHeader captureHeader(const Movement& m) {
+    MovementHeader h{m.tempo, m.meter, m.keys, m.barlines, m.rehearsal, m.length, {}};
+    for (const auto& l : m.lanes) h.lanes.push_back({l.player, l.changes, l.clefs, l.texts});
+    return h;
+}
+
+void applyHeader(Movement& m, const MovementHeader& h) {
+    m.tempo = h.tempo;
+    m.meter = h.meter;
+    m.keys = h.keys;
+    m.barlines = h.barlines;
+    m.rehearsal = h.rehearsal;
+    m.length = h.length;
+    for (auto& l : m.lanes)
+        for (const auto& lh : h.lanes)
+            if (lh.player == l.player) {
+                l.changes = lh.changes;
+                l.clefs = lh.clefs;
+                l.texts = lh.texts;
+            }
+}
+
 }  // namespace corinzia::model

@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 
 using namespace corinzia;
 
@@ -45,6 +47,15 @@ TEST(storage_roundtrip) {
     model::Project p;
     auto ids = fixture::makeProject(p);
     addLateEvents(p, ids);
+    {   // structure marks, clefs, texts and tempo text survive the round trip
+        auto& mv = *p.movements[0];
+        mv.tempo[0].text = "Allegro";
+        mv.barlines.push_back({{p.allocateId()}, Fraction{1}, model::BarlineKind::RepeatEnd});
+        mv.rehearsal.push_back({{p.allocateId()}, Fraction{1}});
+        mv.lanes[0].clefs.push_back({{p.allocateId()}, Fraction{1}, "bass"});
+        mv.lanes[0].texts.push_back({{p.allocateId()}, Fraction{1, 2}, "dolce \"quasi\" niente", model::TextKind::Expression});
+        mv.lanes[0].texts.push_back({{p.allocateId()}, Fraction{1}, "pizz.", model::TextKind::Technique});
+    }
     {   // spanner marks must survive the round trip
         auto& voice = p.movements[0]->lanes[0].voices[0];
         auto evs = std::make_shared<model::EventList>(*voice.events);
@@ -97,6 +108,12 @@ TEST(storage_roundtrip) {
                   ea[i].heads[h].tieToNext == eb[i].heads[h].tieToNext);
     }
     CHECK(b.automation.size() == 1 && b.automation[0].points->size() == 2);
+    CHECK(b.tempo[0].text == "Allegro");
+    CHECK(b.barlines.size() == 1 && b.barlines[0].kind == model::BarlineKind::RepeatEnd && b.barlines[0].at == Fraction{1});
+    CHECK(b.rehearsal.size() == 1 && b.rehearsal[0].id == a.rehearsal[0].id);
+    CHECK(b.lanes[0].clefs.size() == 1 && b.lanes[0].clefs[0].clef == "bass");
+    CHECK(b.lanes[0].texts.size() == 2 && b.lanes[0].texts[0].text == "dolce \"quasi\" niente" &&
+          b.lanes[0].texts[1].kind == model::TextKind::Technique);
     CHECK(b.automation[0].target.clapParamId == 7);
     // Point-and-click index is rebuilt on load.
     CHECK(q.locate(eb[2].heads[1].id.id) != nullptr);
@@ -187,4 +204,38 @@ TEST(storage_undo_journal) {
                             R"({"op":"replaceVoice","voice":12})"));
     CHECK(store->appendUndo(std::nullopt, "Add player", "{}", "{}"));
     CHECK(store->countRows("undo_journal") == 2);
+}
+
+TEST(storage_migrates_v1_files) {
+    // A genuine v1 file: the schema as released in the first version (no
+    // movement.notation), with one movement row written by v1 code.
+    const auto path = tempPath("v1.project");
+    {
+        std::ifstream in(CORINZIA_TEST_DATA_DIR "/schema_v1.sql");
+        std::stringstream sql;
+        sql << in.rdbuf();
+        sqlite3* db = nullptr;
+        CHECK(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, sql.str().c_str(), nullptr, nullptr, nullptr) == SQLITE_OK);
+        CHECK(sqlite3_exec(db,
+                           "INSERT INTO project(id, title, next_id) VALUES (1, 'old', 100);"
+                           "INSERT INTO movement(id, ordinal, title, length_num, length_den, tempo, meter, keys) "
+                           "VALUES (7, 0, 'I', 1, 1, jsonb('[{\"at\":[0,1],\"bpm\":100,\"ramp\":false}]'), "
+                           "jsonb('[{\"at\":[0,1],\"num\":4,\"den\":4}]'), jsonb('[{\"at\":[0,1],\"fifths\":0,\"minor\":false}]'));",
+                           nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(db);
+    }
+    auto store = storage::ProjectStore::open(path);
+    CHECK(store != nullptr);
+    if (!store) return;
+    sqlite3_stmt* s = nullptr;
+    sqlite3_prepare_v2(store->handle(), "SELECT count(*) FROM pragma_table_info('movement') WHERE name = 'notation'", -1, &s, nullptr);
+    CHECK(sqlite3_step(s) == SQLITE_ROW && sqlite3_column_int(s, 0) == 1);
+    sqlite3_finalize(s);
+    sqlite3_prepare_v2(store->handle(), "PRAGMA user_version", -1, &s, nullptr);
+    CHECK(sqlite3_step(s) == SQLITE_ROW && sqlite3_column_int(s, 0) == 2);
+    sqlite3_finalize(s);
+    model::Project q;
+    CHECK(store->load(q) && q.movements.size() == 1 && q.movements[0]->tempo[0].quarterBpm == 100.0 &&
+          q.movements[0]->barlines.empty());
 }
