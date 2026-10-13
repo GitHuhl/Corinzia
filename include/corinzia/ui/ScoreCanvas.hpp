@@ -113,6 +113,9 @@ private:
     std::shared_ptr<const EngraveResult> result_;
     std::vector<LayoutAnchors::Glyph> glyphs_;
     std::vector<LayoutAnchors::Region> masks_;
+    std::vector<LayoutAnchors::Region> staffLines_, stems_, ledgers_;
+    bool provActive_ = false;
+    Fraction provFrom_{0}, provTo_{0};
     ElementId selection_, hover_;
     double playheadQ_ = std::numeric_limits<double>::quiet_NaN();
     double caretQ_ = std::numeric_limits<double>::quiet_NaN();
@@ -127,7 +130,7 @@ private:
     QPointF marqueeStart_, marqueeEnd_;
     qreal zoom_ = 1.0;
     QPointF pan_;
-    QColor paper_ = QColor(255, 255, 250);
+    QColor paper_ = QColor(255, 255, 255);   // must equal the engraved page white: masks are invisible
     bool texturesDirty_ = false;
 
     // Vector tiles (GUI-thread state).

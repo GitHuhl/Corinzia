@@ -2,6 +2,7 @@
 
 #include <QQuickWindow>
 #include <QPainter>
+#include <QPainterPath>
 #include <QSGSimpleRectNode>
 #include <QSGSimpleTextureNode>
 #include <QSGTransformNode>
@@ -16,15 +17,19 @@ enum Slot { PagesSlot = 0, TilesSlot = 1, OverlaySlot = 2 };
 // Overlay children, created once and never deleted (unused ones get an empty
 // rect / zero vertices): the software adaptation does not reliably pick up
 // nodes that are deleted and recreated between frames.
-enum OverlayChild { MasksChild = 0, GlyphsChild, HoverChild, SelectionChild, PlayheadChild, CaretChild, RangeChild,
-                    MarqueeChild };
+enum OverlayChild { MasksChild = 0, InkChild, GlyphsChild, ProvLinesChild, HoverChild, SelectionChild, PlayheadChild,
+                    CaretChild, RangeChild, MarqueeChild };
+constexpr int kInkPool = 160, kProvLinePool = 192;   // staff-line redraws; stems + ledger lines
+constexpr int kHollowSprites = 64;
 constexpr int kRangePool = 24;   // one highlight rect per system the range touches
 
 // Provisional glyph sprites. Drawn as textured quads rather than custom
 // geometry so they render on every scene-graph backend, including the
 // software adaptation (which ignores custom QSGGeometryNodes).
-QImage glyphImage(bool rest, QColor color) {
-    const QSize px = rest ? QSize(32, 80) : QSize(52, 38);   // 40 px per staff space
+enum class GlyphKind { Filled, Hollow, Rest };
+QImage glyphImage(GlyphKind kind, QColor color) {
+    const bool rest = kind == GlyphKind::Rest;
+    const QSize px = rest ? QSize(64, 160) : QSize(104, 76);   // 80 px per staff space: sharp when zoomed
     QImage img(px, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::transparent);
     QPainter g(&img);
@@ -32,11 +37,19 @@ QImage glyphImage(bool rest, QColor color) {
     g.setPen(Qt::NoPen);
     g.setBrush(color);
     if (rest) {
-        g.drawRoundedRect(QRectF(2, 2, px.width() - 4, px.height() - 4), 6, 6);
+        g.drawRoundedRect(QRectF(4, 4, px.width() - 8, px.height() - 8), 12, 12);
     } else {
         g.translate(px.width() / 2.0, px.height() / 2.0);
         g.rotate(-20);
-        g.drawEllipse(QPointF(0, 0), 24, 16);
+        if (kind == GlyphKind::Hollow) {   // half/whole notehead: outline with a slanted opening
+            QPainterPath ring;
+            ring.addEllipse(QPointF(0, 0), 48, 32);
+            QPainterPath hole;
+            hole.addEllipse(QPointF(0, 0), 36, 16);
+            g.drawPath(ring.subtracted(hole));
+        } else {
+            g.drawEllipse(QPointF(0, 0), 48, 32);
+        }
     }
     return img;
 }
@@ -159,6 +172,10 @@ void ScoreCanvas::setEngraving(std::shared_ptr<const EngraveResult> result) {
     result_ = std::move(result);
     glyphs_.clear();   // the definitive layer now reflects the edit
     masks_.clear();
+    staffLines_.clear();
+    stems_.clear();
+    ledgers_.clear();
+    provActive_ = false;
     texturesDirty_ = true;
     ++engravingSerial_;
     tileCache_.clear();
@@ -168,15 +185,22 @@ void ScoreCanvas::setEngraving(std::shared_ptr<const EngraveResult> result) {
 }
 
 void ScoreCanvas::showProvisional(std::shared_ptr<const model::Movement> edited, Fraction from, Fraction to) {
-    if (!result_ || !result_->anchors || !edited) return;
-    masks_ = result_->anchors->staleRegions(from, to);
-    auto glyphs = result_->anchors->provisional(*edited, from, to);
-    // Keep provisional glyphs from earlier edits outside this range (several
-    // quick edits can land before the next definitive pass).
-    std::erase_if(glyphs_, [&](const LayoutAnchors::Glyph& g) {
-        return std::any_of(glyphs.begin(), glyphs.end(), [&](const auto& n) { return n.id == g.id; });
-    });
-    glyphs_.insert(glyphs_.end(), glyphs.begin(), glyphs.end());
+    if (!result_ || !result_->anchors || !result_->index || !result_->source || !edited) return;
+    // Several quick edits can land before the next definitive pass: the scene
+    // always covers everything edited since that engraving.
+    if (provActive_) {
+        from = std::min(from, provFrom_);
+        to = std::max(to, provTo_);
+    }
+    provActive_ = true;
+    provFrom_ = from;
+    provTo_ = to;
+    auto scene = result_->anchors->provisionalScene(*result_->index, *result_->source, *edited, from, to);
+    glyphs_ = std::move(scene.glyphs);
+    masks_ = std::move(scene.masks);
+    staffLines_ = std::move(scene.staffLines);
+    stems_ = std::move(scene.stems);
+    ledgers_ = std::move(scene.ledgers);
     update();
 }
 
@@ -364,27 +388,37 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
         auto* maskPool = new QSGNode;                                           // MasksChild (pool)
         for (int i = 0; i < kMaskPool; ++i) maskPool->appendChildNode(new QSGSimpleRectNode(QRectF(), paper_));
         overlay->appendChildNode(maskPool);
-        // GlyphsChild: [0] head template, [1] rest template (own the textures,
-        // never drawn), [2..] sprite instances sharing those textures.
+        auto* inkPool = new QSGNode;                                            // InkChild: staff lines over masks
+        for (int i = 0; i < kInkPool; ++i) inkPool->appendChildNode(new QSGSimpleRectNode(QRectF(), Qt::black));
+        overlay->appendChildNode(inkPool);
+        // GlyphsChild: [0] filled, [1] rest, [2] hollow template (own the
+        // textures, never drawn), then sprites: kHeadSprites filled,
+        // kHollowSprites hollow, the remainder rests. A sprite's texture is
+        // fixed for life (see the software-adaptation rules above).
         auto* glyphs = new QSGNode;
-        for (bool rest : {false, true}) {
+        for (GlyphKind k : {GlyphKind::Filled, GlyphKind::Rest, GlyphKind::Hollow}) {
             auto* tmpl = new QSGSimpleTextureNode;
-            tmpl->setTexture(window()->createTextureFromImage(glyphImage(rest, QColor(20, 70, 160))));
+            tmpl->setTexture(window()->createTextureFromImage(glyphImage(k, QColor(20, 70, 160))));
             tmpl->setOwnsTexture(true);
             tmpl->setRect(QRectF());
             glyphs->appendChildNode(tmpl);
         }
         const QSGTexture* head = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(0))->texture();
         const QSGTexture* rest = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(1))->texture();
-        for (int i = 0; i < kGlyphPool; ++i) {
+        const QSGTexture* hollow = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(2))->texture();
+        for (int i = 0; i < kGlyphPool + kHollowSprites; ++i) {
             auto* sprite = new QSGSimpleTextureNode;
             sprite->setOwnsTexture(false);
-            sprite->setTexture(const_cast<QSGTexture*>(i < kHeadSprites ? head : rest));   // never texture-less (software renderer derefs it)
+            const QSGTexture* t = i < kHeadSprites ? head : i < kHeadSprites + kHollowSprites ? hollow : rest;
+            sprite->setTexture(const_cast<QSGTexture*>(t));   // never texture-less (software renderer derefs it)
             sprite->setFiltering(QSGTexture::Linear);
             sprite->setRect(QRectF());
             glyphs->appendChildNode(sprite);
         }
         overlay->appendChildNode(glyphs);
+        auto* provLines = new QSGNode;                                          // ProvLinesChild: stems + ledgers
+        for (int i = 0; i < kProvLinePool; ++i) provLines->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(20, 70, 160)));
+        overlay->appendChildNode(provLines);
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(255, 170, 0, 70)));   // HoverChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(0, 120, 255, 90)));   // SelectionChild
         overlay->appendChildNode(new QSGSimpleRectNode(QRectF(), QColor(220, 30, 30, 200)));  // PlayheadChild
@@ -489,20 +523,35 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     }
 
     QSGNode* glyphs = overlay->childAtIndex(GlyphsChild);
-    int nextHead = 2, nextRest = 2 + kHeadSprites;          // child indices (0,1 are the templates)
-    const int restEnd = glyphs->childCount();
+    constexpr int kFirst = 3;                                    // children 0..2 are the templates
+    int nextHead = kFirst, nextHollow = kFirst + kHeadSprites, nextRest = kFirst + kHeadSprites + kHollowSprites;
+    const int headEnd = kFirst + kHeadSprites, hollowEnd = headEnd + kHollowSprites, restEnd = glyphs->childCount();
     std::vector<bool> used(std::size_t(glyphs->childCount()), false);
     for (const auto& gl : result_ ? glyphs_ : std::vector<LayoutAnchors::Glyph>{}) {
-        int& slot = gl.rest ? nextRest : nextHead;
-        if (slot >= (gl.rest ? restEnd : 2 + kHeadSprites)) continue;   // pool exhausted: skip extra glyphs
+        int& slot = gl.rest ? nextRest : gl.hollow ? nextHollow : nextHead;
+        const int end = gl.rest ? restEnd : gl.hollow ? hollowEnd : headEnd;
+        if (slot >= end) continue;   // pool exhausted: skip extra glyphs
         auto* sprite = static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(slot));
         const QSizeF sz = gl.rest ? kRestSize : kHeadSize;
         sprite->setRect(QRectF(gl.center.x() - sz.width() / 2, gl.center.y() + pageY(gl.page) - sz.height() / 2,
                                sz.width(), sz.height()));
         used[std::size_t(slot++)] = true;
     }
-    for (int i = 2; i < glyphs->childCount(); ++i)
+    for (int i = kFirst; i < glyphs->childCount(); ++i)
         if (!used[std::size_t(i)]) static_cast<QSGSimpleTextureNode*>(glyphs->childAtIndex(i))->setRect(QRectF());
+
+    // Staff lines redrawn over the masks, then provisional stems + ledger lines.
+    auto fillPool = [&](QSGNode* pool, const std::vector<std::vector<LayoutAnchors::Region>*>& sets) {
+        int i = 0;
+        for (const auto* set : sets)
+            for (const auto& r : *set)
+                if (i < pool->childCount())
+                    static_cast<QSGSimpleRectNode*>(pool->childAtIndex(i++))->setRect(r.rect.translated(0, pageY(r.page)));
+        for (; i < pool->childCount(); ++i) static_cast<QSGSimpleRectNode*>(pool->childAtIndex(i))->setRect(QRectF());
+    };
+    std::vector<LayoutAnchors::Region> none;
+    fillPool(overlay->childAtIndex(InkChild), {result_ ? &staffLines_ : &none});
+    fillPool(overlay->childAtIndex(ProvLinesChild), {result_ ? &stems_ : &none, result_ ? &ledgers_ : &none});
 
     auto highlight = [&](int child, ElementId id) {
         QRectF r;

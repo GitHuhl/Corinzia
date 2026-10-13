@@ -193,6 +193,21 @@ TEST(score_canvas_click_maps_to_element_and_track) {
     CHECK(!frame.isNull());
 }
 
+TEST(svg_index_parses_staff_lines) {
+    Env env;
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok);
+    if (!r || !r->ok) return;
+    const auto& st = r->index->staves();
+    CHECK(st.size() == 1);   // fixture: one lane, one system
+    if (st.empty()) return;
+    CHECK(st[0].lane == 0 && st[0].lineYs.size() == 5 && st[0].right > st[0].left + 20);
+    for (std::size_t i = 1; i < st[0].lineYs.size(); ++i) CHECK(std::abs(st[0].lineYs[i] - st[0].lineYs[i - 1] - 1.0) < 1e-3);
+    // B4 (middle line in treble) sits on lineYs[2]: the C4 head is one space below the bottom line.
+    const auto* c4 = r->index->find((*env.p.movements[0]->lanes[0].voices[0].events)[0].heads[0].id.id);
+    CHECK(c4 && std::abs(c4->bounds.center().y() - (st[0].lineYs[4] + 1.0)) < 0.1);
+}
+
 TEST(layout_locate_inverts_engraved_heads) {
     Env env;
     auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
@@ -518,6 +533,113 @@ TEST(svg_text_renders_at_every_zoom) {
         hi = std::max(hi, d);
     }
     CHECK(lo > 0 && hi / lo < 1.5);   // text present at every zoom, same visual weight
+}
+
+TEST(provisional_edit_keeps_staves_and_draws_ledgers) {
+    Env env;
+    // Second staff (Clarinet) so we can check that the staff underneath stays intact.
+    auto& m = *env.p.movements[0];
+    auto pl = std::make_unique<model::Player>();
+    pl->id = {env.p.allocateId()};
+    pl->name = "Clarinet";
+    pl->instruments.push_back(std::make_unique<model::Instrument>(
+        model::Instrument{{env.p.allocateId()}, pl->id, "Clarinet", "Cl.", 0, "treble", env.ids.t2}));
+    model::PlayerLane lane2;
+    lane2.player = pl->id;
+    lane2.changes = {{{env.p.allocateId()}, Fraction{0}, pl->instruments[0]->id}};
+    model::Voice v2;
+    v2.id = {env.p.allocateId()};
+    auto ev2 = std::make_shared<model::EventList>();
+    for (int i = 0; i < 4; ++i) ev2->push_back(fixture::ev(env.p, Fraction(i, 2), Fraction(1, 2), {fixture::head(env.p, 2 + i % 3, 4)}));
+    v2.events = ev2;
+    lane2.voices.push_back(v2);
+    m.lanes.push_back(std::move(lane2));
+    env.p.players.push_back(std::move(pl));
+    env.p.reindexMovement(m);
+
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok && r->index->staves().size() == 2);
+    if (!r || !r->ok || r->index->staves().size() != 2) return;
+
+    QQuickWindow window;
+    window.resize(900, 600);
+    window.setColor(QColor(128, 128, 128));
+    ui::ScoreCanvas canvas(window.contentItem());
+    canvas.setPosition(QPointF(20, 20));
+    canvas.setSize(QSizeF(860, 560));
+    canvas.setZoom(1.5);   // 12 px per staff space
+    canvas.setPan(QPointF(-150, -60));
+    canvas.setEngraving(r);
+    window.show();
+    QEventLoop loop;
+    QObject::connect(&canvas, &ui::ScoreCanvas::tilesReady, &loop, &QEventLoop::quit);
+    QTimer::singleShot(4000, &loop, &QEventLoop::quit);
+    if (!canvas.tilesSettled()) loop.exec();
+    const QImage before = window.grabWindow();
+
+    // Edit: the first note C4 (ledger line below) becomes C6 (two ledger lines above).
+    auto edited = std::make_shared<model::Movement>(m);
+    auto evs = std::make_shared<model::EventList>(*m.lanes[0].voices[0].events);
+    (*evs)[0].heads[0].pitch = {0, 0, 6};
+    (*evs)[0].heads[0].tieToNext = false;
+    edited->lanes[0].voices[0].events = evs;
+    const auto scene = r->anchors->provisionalScene(*r->index, *r->source, *edited, Fraction{0}, Fraction{1, 4});
+    CHECK(scene.editedLanes.size() == 1 && scene.editedLanes[0] == 0);   // the clarinet is untouched
+    CHECK(scene.ledgers.size() == 2);                                    // C6 in treble: 2 ledger lines
+    CHECK(scene.stems.size() == 1 && scene.masks.size() == 1 && scene.staffLines.size() >= 4);
+    canvas.showProvisional(edited, Fraction{0}, Fraction{1, 4});
+    const QImage after = window.grabWindow();
+
+    const qreal s = 1.5 * 8.0;
+    const QRectF pageItem = canvas.pageRectInItem(0);
+    auto toScene = [&](QPointF staff) { return canvas.mapToScene(pageItem.topLeft() + staff * s); };
+    const auto& flute = r->index->staves()[0].lane == 0 ? r->index->staves()[0] : r->index->staves()[1];
+    const auto& clar = r->index->staves()[0].lane == 1 ? r->index->staves()[0] : r->index->staves()[1];
+
+    // (a) staff underneath: every pixel of the clarinet staff band is unchanged.
+    int clarDiff = 0;
+    // The clarinet's half of the system: from halfway between the staves down.
+    const qreal halfway = (flute.lineYs.back() + clar.lineYs.front()) / 2;
+    const QRectF clarBand(toScene(QPointF(clar.left - 4, halfway + 0.05)), toScene(QPointF(clar.right, clar.lineYs.back() + 3)));
+    for (int y = int(clarBand.top()); y < int(clarBand.bottom()); ++y)
+        for (int x = int(clarBand.left()); x < int(clarBand.right()); ++x)
+            if (before.pixel(x, y) != after.pixel(x, y)) ++clarDiff;
+    // (b) edited staff: its lines are still drawn through the mask.
+    const QRectF mask = scene.masks[0].rect;
+    int lineMisses = 0;
+    for (qreal ly : flute.lineYs)
+        for (qreal sx = mask.left() + 0.2; sx < mask.right() - 0.2; sx += 0.25) {
+            const QPoint p = toScene(QPointF(sx, ly)).toPoint();
+            if (qGray(after.pixel(p)) > 140) ++lineMisses;
+        }
+    // (c) ledger lines + stem of the provisional note are drawn (provisional blue).
+    int blueAbove = 0;
+    for (int y = int(toScene(QPointF(0, flute.lineYs.front() - 4.5)).y()); y < int(toScene(QPointF(0, flute.lineYs.front())).y()); ++y)
+        for (int x = int(toScene(QPointF(mask.left() - 1, 0)).x()); x < int(toScene(QPointF(mask.right() + 1, 0)).x()); ++x) {
+            const QColor c = after.pixelColor(x, y);
+            if (c.blue() > 110 && c.red() < 90) ++blueAbove;
+        }
+    // (d) no tinted box: nothing on the page is off-white paper.
+    int offWhite = 0;
+    for (int y = 0; y < after.height(); ++y)
+        for (int x = 0; x < after.width(); ++x)
+            if (after.pixelColor(x, y) == QColor(255, 255, 250)) ++offWhite;
+    std::printf("  clarinet pixels changed %d, staff-line misses %d, provisional pixels above staff %d, off-white %d\n",
+                clarDiff, lineMisses, blueAbove, offWhite);
+    CHECK(clarDiff == 0);
+    CHECK(lineMisses == 0);
+    CHECK(blueAbove > 60);
+    CHECK(offWhite == 0);
+    // (e) the old note's tie arc (C4 tied to the next C4) is covered: no ink
+    // left in the gap between the masked note and the next onset, below the staff.
+    int tieInk = 0;
+    const QRectF& mk = scene.masks[0].rect;
+    for (qreal sy = flute.lineYs.back() + 1.3; sy < flute.lineYs.back() + 2.6; sy += 0.1)
+        for (qreal sx = mk.right() - 1.6; sx < mk.right() - 0.2; sx += 0.1)
+            if (qGray(after.pixel(toScene(QPointF(sx, sy)).toPoint())) < 120) ++tieInk;
+    std::printf("  stale tie ink below staff: %d\n", tieInk);
+    CHECK(tieInk == 0);
+    after.save(QDir::temp().filePath(QStringLiteral("corinzia-provisional.png")));
 }
 
 int main(int argc, char** argv) {

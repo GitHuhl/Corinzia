@@ -120,7 +120,8 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
     o << "}\n\n";
 
     o << "\\score {\n  \\header { piece = \"" << escape(m.title) << "\" }\n  <<\n";
-    for (const auto& lane : m.lanes) {
+    for (std::size_t laneIndex = 0; laneIndex < m.lanes.size(); ++laneIndex) {
+        const auto& lane = m.lanes[laneIndex];
         const auto pn = ctx.playerNames.find(lane.player);
         const model::Instrument* firstInst = nullptr;
         if (!lane.changes.empty())
@@ -128,7 +129,8 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                 firstInst = it->second;
         o << "    \\new Staff \\with { instrumentName = \""
           << escape(firstInst ? firstInst->engraverName : (pn != ctx.playerNames.end() ? pn->second : ""))
-          << "\" } {\n      \\clef " << (firstInst ? firstInst->clef : "treble") << "\n      << \\global\n";
+          << "\"\n      \\override StaffSymbol.output-attributes = #'((class . \"staff ln-" << laneIndex << "\"))"
+          << " } {\n      \\clef " << (firstInst ? firstInst->clef : "treble") << "\n      << \\global\n";
 
         for (std::size_t vi = 0; vi < lane.voices.size(); ++vi) {
             const auto& voice = lane.voices[vi];

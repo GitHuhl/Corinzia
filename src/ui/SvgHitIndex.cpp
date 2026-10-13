@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QSvgRenderer>
+#include <QRegularExpression>
 #include <QXmlStreamReader>
 
 #include <cmath>
@@ -30,6 +31,38 @@ void SvgHitIndex::addPage(int page, const QByteArray& svg) {
     while (!xml.atEnd()) {
         if (xml.readNext() != QXmlStreamReader::StartElement || xml.name() != QLatin1String("g")) continue;
         const auto attrs = xml.attributes();
+        const QString cls = attrs.value(QLatin1String("class")).toString();
+        if (cls.startsWith(QLatin1String("staff "))) {   // StaffSymbol: <g translate><line/></g> x5
+            Staff st;
+            st.page = page;
+            for (auto c : QStringView(cls).split(u' ', Qt::SkipEmptyParts))
+                if (c.startsWith(u"ln-")) st.lane = std::size_t(c.mid(3).toUInt());
+            static const QRegularExpression tr(QStringLiteral("translate\\(\\s*([-0-9.]+)[ ,]+([-0-9.]+)\\s*\\)"));
+            int depth = 1;
+            qreal tx = 0, ty = 0;
+            st.left = 1e9;
+            st.right = -1e9;
+            while (depth > 0 && !xml.atEnd()) {
+                const auto t = xml.readNext();
+                if (t == QXmlStreamReader::EndElement) { --depth; continue; }
+                if (t != QXmlStreamReader::StartElement) continue;
+                ++depth;
+                const auto a = xml.attributes();
+                if (xml.name() == QLatin1String("g")) {
+                    const auto m = tr.match(a.value(QLatin1String("transform")).toString());
+                    if (m.hasMatch()) { tx = m.captured(1).toDouble(); ty = m.captured(2).toDouble(); }
+                } else if (xml.name() == QLatin1String("line")) {
+                    const qreal y = ty + a.value(QLatin1String("y1")).toDouble();
+                    st.lineYs.push_back(y);
+                    st.left = std::min(st.left, tx + a.value(QLatin1String("x1")).toDouble());
+                    st.right = std::max(st.right, tx + a.value(QLatin1String("x2")).toDouble());
+                    if (a.hasAttribute(QLatin1String("stroke-width"))) st.thickness = a.value(QLatin1String("stroke-width")).toDouble();
+                }
+            }
+            std::sort(st.lineYs.begin(), st.lineYs.end());
+            if (st.lineYs.size() >= 2) staves_.push_back(std::move(st));
+            continue;
+        }
         const QString idStr = attrs.value(QLatin1String("id")).toString();
         if (!idStr.startsWith(QLatin1String("e-"))) continue;
         const ElementId id = ElementId::fromSvgId(idStr.toStdString());

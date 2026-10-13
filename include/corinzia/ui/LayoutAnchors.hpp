@@ -28,11 +28,25 @@ public:
     struct CursorPos { bool valid = false; int page = 0; qreal x = 0, top = 0, bottom = 0; };
     CursorPos cursorAt(double quarter) const;
 
-    struct Glyph { ElementId id; int page; QPointF center; bool rest; };
+    struct Glyph { ElementId id; int page; QPointF center; bool rest; bool hollow = false; };
     std::vector<Glyph> provisional(const model::Movement& edited, Fraction from, Fraction to) const;
 
     struct Region { int page; QRectF rect; };
     std::vector<Region> staleRegions(Fraction from, Fraction to) const;
+
+    // Everything the instant-feedback layer draws for an edit in [from, to):
+    // only staves whose music changed are touched; masks cover just the old
+    // notes (heads, stems) on that staff, staff lines are redrawn over them,
+    // and provisional notes get stems and ledger lines.
+    struct ProvisionalScene {
+        std::vector<Glyph> glyphs;
+        std::vector<Region> masks;        // page white
+        std::vector<Region> staffLines;   // redrawn lines inside masks (ink)
+        std::vector<Region> stems, ledgers;   // provisional colour
+        std::vector<std::size_t> editedLanes;
+    };
+    ProvisionalScene provisionalScene(const SvgHitIndex& index, const model::Movement& engraved,
+                                      const model::Movement& edited, Fraction from, Fraction to) const;
 
     // Input caret: like cursorAt, but limited vertically to one lane's staff.
     CursorPos caretAt(std::size_t lane, double quarter) const;
@@ -62,6 +76,9 @@ private:
     std::vector<Point> timeline_;            // one per distinct engraved onset, sorted
     std::vector<HeadSample> heads_;
     std::vector<System> systems_;
+    struct StaffGeo { std::size_t lane; int system; int page; std::vector<qreal> ys; qreal left, right, thickness; };
+    std::vector<StaffGeo> staves_;
+    const StaffGeo* staffOf(std::size_t lane, int system) const;
 };
 
 }  // namespace corinzia::ui

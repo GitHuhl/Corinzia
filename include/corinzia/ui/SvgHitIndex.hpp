@@ -36,6 +36,17 @@ public:
     // Parses one SVG page. Thread-safe w.r.t. other instances (no shared state).
     void addPage(int page, const QByteArray& svg);
 
+    // Staff geometry per system, parsed from the tagged StaffSymbol groups
+    // (class "staff ln-<lane>"): exact line positions for redraws/ledgers.
+    struct Staff {
+        int page = 0;
+        std::size_t lane = 0;
+        std::vector<qreal> lineYs;   // top to bottom, staff spaces
+        qreal left = 0, right = 0;
+        qreal thickness = 0.1;
+    };
+    const std::vector<Staff>& staves() const noexcept { return staves_; }
+
     const Entry* find(ElementId id) const;
     // Smallest entry containing `pt` (inflated by `tolerance`) on `page`.
     const Entry* hitTest(int page, QPointF pt, qreal tolerance = 0.25) const;
@@ -53,6 +64,7 @@ private:
     }
 
     std::vector<Entry> entries_;
+    std::vector<Staff> staves_;
     std::unordered_map<ElementId, std::size_t> byId_;
     std::unordered_map<CellKey, std::vector<std::size_t>> grid_;
     std::vector<QSizeF> pageSizes_;
