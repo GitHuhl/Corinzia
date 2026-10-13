@@ -257,3 +257,41 @@ TEST(compile_hairpins_and_slurs_shape_playback) {
     CHECK_NEAR(ds[2].velocity, compile::velocityForDynamic(3), 1e-6);
     CHECK_NEAR(ds[4].velocity, compile::velocityForDynamic(3), 1e-6);
 }
+
+TEST(compile_unrolls_repeats) {
+    model::Project p;
+    auto ids = fixture::makeProject(p);
+    auto* m = p.movement(ids.mov);
+    using K = model::BarlineKind;
+    // No repeats: one identity span.
+    auto order = compile::playbackOrder(*m);
+    CHECK(order.size() == 1 && order[0].first == Fraction{0} && order[0].second == Fraction{2});
+    // ":|" at bar 2 with no start repeat -> bars 1,1,2.
+    m->barlines = {{{p.allocateId()}, Fraction{1}, K::RepeatEnd}};
+    order = compile::playbackOrder(*m);
+    CHECK(order.size() == 2 && order[0] == std::pair{Fraction{0}, Fraction{1}} && order[1] == std::pair{Fraction{0}, Fraction{2}});
+    // "|:" bar 2 ":|" at the end -> bars 1,2,2.
+    m->barlines = {{{p.allocateId()}, Fraction{1}, K::RepeatStart}, {{p.allocateId()}, Fraction{2}, K::RepeatEnd}};
+    order = compile::playbackOrder(*m);
+    CHECK(order.size() == 2 && order[0] == std::pair{Fraction{0}, Fraction{2}} && order[1] == std::pair{Fraction{1}, Fraction{2}});
+
+    compile::CompileOptions opt;
+    auto snap = compile::compileSnapshot({p.snapshot(ids.mov)}, compile::RoutingSnapshot::capture(p), opt);
+    const auto& sec = snap->sections.front();
+    // 3 bars at 120 bpm = 12 quarters = 288000 samples.
+    CHECK(sec.end - sec.start == 288000);
+    // Bar 2 is played twice: the a'' staccato note-on at q4 and again at q8.
+    int aOn = 0;
+    for (const auto& n : snap->notes)
+        if (n.edge == rt::NoteEdge::On && n.key == 81) {
+            CHECK(n.at == sec.start + 4 * 24000 || n.at == sec.start + 8 * 24000);
+            ++aOn;
+        }
+    CHECK(aOn == 2);
+    // The playhead maps performed time back into the written bar.
+    CHECK_NEAR(sec.writtenQuarter(9.0), 5.0, 1e-9);
+    CHECK_NEAR(sec.performedQuarter(5.0), 5.0, 1e-9);
+    CHECK_NEAR(sec.writtenQuarter(3.0), 3.0, 1e-9);
+    // Automation is repeated only for points inside the repeated bar (none here).
+    CHECK(snap->automation.size() == 1 && snap->automation[0].points.size() == 2);
+}

@@ -515,7 +515,7 @@ void AppController::pump() {
             stop();
             return;
         }
-        const double q = sample < double(sec.start) ? 0.0 : sec.tempo.quarterAtSample(sample - double(sec.start));
+        const double q = sample < double(sec.start) ? 0.0 : sec.writtenQuarter(sec.tempo.quarterAtSample(sample - double(sec.start)));
         if (canvas_) canvas_->setPlayheadQuarter(q);
         if (arrange_) arrange_->setPlayheadQuarter(q);
     }

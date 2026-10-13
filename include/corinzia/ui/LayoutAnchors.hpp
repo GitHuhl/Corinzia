@@ -23,7 +23,9 @@ namespace corinzia::ui {
 
 class LayoutAnchors {
 public:
-    void build(const SvgHitIndex& index, const model::Movement& movement);
+    // `initialClefs`: each lane's starting clef (its instrument's); missing
+    // lanes count as treble. Mid-movement clef changes come from the lanes.
+    void build(const SvgHitIndex& index, const model::Movement& movement, std::vector<std::string> initialClefs = {});
 
     struct CursorPos { bool valid = false; int page = 0; qreal x = 0, top = 0, bottom = 0; };
     CursorPos cursorAt(double quarter) const;
@@ -72,6 +74,12 @@ private:
     // y = c0 + c1 * diatonic, least squares over the lane's heads in `system`.
     bool fitLane(std::size_t lane, int system, double& c0, double& c1) const;
     int systemAt(int page, qreal y) const;
+    // Heads are fitted in treble-equivalent steps: pitch step + this shift
+    // (0 in treble, +12 in bass ...), so one fit spans a mid-system clef change.
+    // Uses the engraved clefs: provisional glyphs must agree with the staff drawn.
+    int clefShift(std::size_t lane, Fraction pos) const;
+    std::vector<std::string> initialClefs_;
+    std::vector<model::PlayerLane> laneClefs_;   // only .clefs is filled
 
     std::vector<Point> timeline_;            // one per distinct engraved onset, sorted
     std::vector<HeadSample> heads_;

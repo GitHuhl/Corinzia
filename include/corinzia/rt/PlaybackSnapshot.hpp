@@ -13,6 +13,7 @@
 #include "corinzia/core/Types.hpp"
 #include "corinzia/rt/TempoMap.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -68,8 +69,25 @@ struct RtEdge {
 struct Section {                 // one movement on the timeline
     MovementId movement;
     SamplePos start, end;
-    TempoMap tempo;              // movement-local (quarter 0 = movement start)
+    TempoMap tempo;              // movement-local, in *performed* quarters (repeats unrolled)
     double startQuarterGlobal;   // for continuous song_pos_beats across movements
+    // Playback order: written spans laid end to end in performed time. One
+    // identity span when the movement has no repeats.
+    struct Span { double performedQ, writtenQ, lengthQ; };
+    std::vector<Span> spans;
+
+    // Performed -> written quarter (the playhead in the score).
+    double writtenQuarter(double performedQ) const noexcept {
+        for (auto it = spans.rbegin(); it != spans.rend(); ++it)
+            if (performedQ >= it->performedQ) return it->writtenQ + std::min(performedQ - it->performedQ, it->lengthQ);
+        return performedQ;
+    }
+    // Written -> performed quarter, first pass through that point (seek).
+    double performedQuarter(double writtenQ) const noexcept {
+        for (const auto& sp : spans)
+            if (writtenQ >= sp.writtenQ && writtenQ < sp.writtenQ + sp.lengthQ) return sp.performedQ + (writtenQ - sp.writtenQ);
+        return spans.empty() ? writtenQ : spans.back().performedQ + spans.back().lengthQ;
+    }
 };
 
 struct PlaybackSnapshot {

@@ -81,7 +81,7 @@ void AppController::locate(double quarter) {
     for (const auto& sec : *sections_) {
         if (sec.movement != displayedMovement()) continue;
         rt::UiToAudio seek{rt::UiToAudio::Type::Seek};
-        seek.a = sec.start + SamplePos(std::llround(sec.tempo.samplesAt(std::max(0.0, quarter))));
+        seek.a = sec.start + SamplePos(std::llround(sec.tempo.samplesAt(sec.performedQuarter(std::max(0.0, quarter)))));
         engine_.post(seek);
         if (arrange_) arrange_->setPlayheadQuarter(quarter);
         if (canvas_) canvas_->setPlayheadQuarter(quarter);

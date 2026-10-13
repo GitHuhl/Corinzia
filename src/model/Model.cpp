@@ -10,6 +10,22 @@ InstrumentId PlayerLane::instrumentAt(Fraction pos) const {
     return it == changes.begin() ? InstrumentId{} : std::prev(it)->instrument;
 }
 
+const std::string& PlayerLane::clefAt(Fraction pos, const std::string& initial) const {
+    const std::string* c = &initial;
+    for (const auto& ch : clefs)
+        if (ch.at <= pos) c = &ch.clef;
+    return *c;
+}
+
+int clefMiddleLine(const std::string& clef) {
+    if (clef == "bass") return 1 + 7 * 3;         // D3
+    if (clef == "bass_8") return 1 + 7 * 2;       // D2
+    if (clef == "alto" || clef == "percussion") return 0 + 7 * 4;   // C4
+    if (clef == "tenor") return 5 + 7 * 3;        // A3
+    if (clef == "treble_8") return 6 + 7 * 3;     // B3
+    return 6 + 7 * 4;                             // treble: B4
+}
+
 Movement* Project::movement(MovementId id) {
     for (auto& m : movements) if (m->id == id) return m.get();
     return nullptr;

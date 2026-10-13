@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <vector>
 
 namespace corinzia::engrave {
 
@@ -37,6 +38,40 @@ std::string articulations(std::uint16_t a) {
     if (a & model::ArtMarcato) s += "-^";
     if (a & model::ArtFermata) s += "\\fermata";
     return s;
+}
+
+// Clef changes and staff text in a spacer voice running alongside the music:
+// clefs are Staff properties and text attaches to the spacer at its position.
+void emitStaffItems(std::ostringstream& o, const model::PlayerLane& lane, Fraction length) {
+    if (lane.clefs.empty() && lane.texts.empty()) return;
+    struct Item { Fraction at; int order; std::string text; };
+    std::vector<Item> items;
+    for (const auto& c : lane.clefs)
+        if (c.at < length) items.push_back({c.at, 0, "\\clef \"" + escape(c.clef) + "\""});
+    for (const auto& t : lane.texts) {
+        if (t.at >= length) continue;
+        const bool below = t.kind == model::TextKind::Expression;
+        // A tweaked post-event: "-\tweak …" then the direction on the markup.
+        std::string attr = "-\\tweak output-attributes #'((id . \"" + t.id.id.toSvgId() + "\") (class . \"text\")) ";
+        items.push_back({t.at, 1, attr + (below ? "_" : "^") + "\\markup " +
+                                      (below ? "\\italic " : "") + "\"" + escape(t.text) + "\""});
+    }
+    std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+        return a.at != b.at ? a.at < b.at : a.order < b.order;
+    });
+    o << "        { ";
+    Fraction at{0};
+    for (std::size_t i = 0; i < items.size();) {
+        if (items[i].at > at) o << "s" << lilyDuration(items[i].at - at) << " ";
+        at = items[i].at;
+        std::string post;
+        for (; i < items.size() && items[i].at == at; ++i) {
+            if (items[i].order == 0) o << items[i].text << " ";
+            else post += items[i].text;
+        }
+        if (!post.empty()) o << "<>" << post << " ";
+    }
+    o << "}\n";
 }
 
 }  // namespace
@@ -90,22 +125,42 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                        : "\\paper { #(set-paper-size \"" + ctx.paperSize + "\") }\n")
       << "\\header { tagline = ##f }\n\n";
 
-    // Global context: meter / key / tempo, as spacer music shared by every staff.
+    // Global context: meter / key / tempo / barlines / rehearsal marks, as
+    // spacer music shared by every staff.
     o << "global = {\n";
     Fraction pos{0};
-    std::size_t mi = 0, ki = 0, ti = 0;
+    std::size_t mi = 0, ki = 0, ti = 0, bi = 0, ri = 0;
+    std::vector<model::BarlineMark> bars = m.barlines;
+    std::sort(bars.begin(), bars.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+    std::vector<model::RehearsalMark> marks = m.rehearsal;
+    std::sort(marks.begin(), marks.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+    static const char* kBar[] = {"||", "|.", ".|:", ":|.", ":|.|:"};
+    auto emitBarlines = [&] {
+        while (bi < bars.size() && bars[bi].at <= pos) {
+            if (bars[bi].at == pos) o << "  \\bar \"" << kBar[int(bars[bi].kind)] << "\"\n";
+            ++bi;
+        }
+    };
     int printedBpm = -1;
     while (pos < m.length) {
         Fraction next = m.length;
+        emitBarlines();
+        while (ri < marks.size() && marks[ri].at <= pos) {
+            if (marks[ri].at == pos)
+                o << "  \\tweak output-attributes #'((id . \"" << marks[ri].id.id.toSvgId() << "\") (class . \"mark\")) "
+                  << "\\mark \\default\n";
+            ++ri;
+        }
         if (mi < m.meter.size() && m.meter[mi].at <= pos)
             o << "  \\time " << m.meter[mi].numerator << "/" << m.meter[mi].denominator << "\n", ++mi;
         if (ki < m.keys.size() && m.keys[ki].at <= pos) o << "  " << lilyKey(m.keys[ki].fifths, m.keys[ki].minor) << "\n", ++ki;
         if (ti < m.tempo.size() && m.tempo[ti].at <= pos) {
-            // A metronome mark only when the tempo actually changes; the start
-            // of a ramp gets "rit."/"accel." and its arrival the new marking.
+            // A metronome mark only when the tempo actually changes (or has a
+            // word); the start of a ramp gets "rit."/"accel.".
             const auto& t = m.tempo[ti];
             const int bpm = int(std::lround(t.quarterBpm));
-            if (bpm != printedBpm) o << "  \\tempo 4 = " << bpm << "\n";
+            if (!t.text.empty()) o << "  \\tempo \"" << escape(t.text) << "\" 4 = " << bpm << "\n";
+            else if (bpm != printedBpm) o << "  \\tempo 4 = " << bpm << "\n";
             printedBpm = bpm;
             if (t.rampToNext && ti + 1 < m.tempo.size() && m.tempo[ti + 1].quarterBpm != t.quarterBpm)
                 o << "  \\tempo \"" << (m.tempo[ti + 1].quarterBpm < t.quarterBpm ? "rit." : "accel.") << "\"\n";
@@ -114,9 +169,13 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
         if (mi < m.meter.size()) next = std::min(next, m.meter[mi].at);
         if (ki < m.keys.size()) next = std::min(next, m.keys[ki].at);
         if (ti < m.tempo.size()) next = std::min(next, m.tempo[ti].at);
+        if (bi < bars.size()) next = std::min(next, std::max(bars[bi].at, pos));
+        if (ri < marks.size()) next = std::min(next, std::max(marks[ri].at, pos));
         if (next > pos) o << "  s" << lilyDuration(next - pos) << "\n";
+        else if (next == pos && next < m.length) next = m.length;   // safety: never loop
         pos = next;
     }
+    emitBarlines();   // the final barline sits at the movement's end
     o << "}\n\n";
 
     o << "\\score {\n  \\header { piece = \"" << escape(m.title) << "\" }\n  <<\n";
@@ -131,6 +190,7 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
           << escape(firstInst ? firstInst->engraverName : (pn != ctx.playerNames.end() ? pn->second : ""))
           << "\"\n      \\override StaffSymbol.output-attributes = #'((class . \"staff ln-" << laneIndex << "\"))"
           << " } {\n      \\clef " << (firstInst ? firstInst->clef : "treble") << "\n      << \\global\n";
+        emitStaffItems(o, lane, m.length);
 
         for (std::size_t vi = 0; vi < lane.voices.size(); ++vi) {
             const auto& voice = lane.voices[vi];

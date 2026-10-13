@@ -53,6 +53,12 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
 struct EventShape { float velocity; bool legato; };
 std::vector<EventShape> expressiveShape(const model::EventList& events);
 
+// Playback order of a movement's written music: repeat barlines unrolled
+// (each repeated passage is played twice; an end repeat with no start repeat
+// goes back to the beginning or to the previous end repeat). Returns written
+// [from, to) spans in performed order.
+std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m);
+
 // Exposed for unit tests / the engraver's MIDI-preview path.
 double gateFactor(std::uint16_t articulations) noexcept;
 float velocityForDynamic(std::optional<std::uint8_t> mark) noexcept;

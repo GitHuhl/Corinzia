@@ -128,6 +128,33 @@ TEST(provisional_layout_tracks_engraved_geometry) {
     CHECK(masks.size() == 1 && masks[0].rect.contains(a5));
 }
 
+TEST(provisional_layout_follows_clef_changes) {
+    Env env;
+    // Bass clef from bar 2 on: bar 1 (treble) and bar 2 (bass) share one system,
+    // so the fit must work in clef-relative steps.
+    auto& m = *env.p.movements[0];
+    m.lanes[0].clefs = {{{env.p.allocateId()}, Fraction{1}, "bass"}};
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok);
+    if (!r || !r->ok) return;
+    auto edited = std::make_shared<model::Movement>(m);
+    auto evs = std::make_shared<model::EventList>(*edited->lanes[0].voices[0].events);
+    (*evs)[3].heads[0].pitch = {0, 0, 6};   // A5 -> C6 under the bass clef
+    (*evs)[1].heads[0].pitch = {2, 0, 4};   // C4 -> E4 under the treble clef
+    edited->lanes[0].voices[0].events = evs;
+    const auto c6 = r->index->find((*evs)[5].heads[0].id.id)->bounds.center();
+    const auto e4 = r->index->find((*evs)[2].heads[0].id.id)->bounds.center();   // chord <e' g'>
+    auto g = r->anchors->provisional(*edited, Fraction{1}, Fraction{5, 4});
+    CHECK(g.size() == 1 && std::abs(g[0].center.y() - c6.y()) < 0.3);
+    g = r->anchors->provisional(*edited, Fraction{1, 4}, Fraction{1, 2});
+    CHECK(g.size() == 1 && std::abs(g[0].center.y() - e4.y()) < 0.3);
+    // Mouse entry inverts it: the engraved C6 head reads back as C6 (diatonic 42).
+    const auto hit = r->anchors->locate(r->index->find((*evs)[5].heads[0].id.id)->page, c6);
+    CHECK(hit.valid && hit.lane == 0 && hit.diatonic == 42);
+    const auto hit2 = r->anchors->locate(r->index->find((*evs)[2].heads[0].id.id)->page, e4);
+    CHECK(hit2.valid && hit2.diatonic == 2 + 28);
+}
+
 TEST(engraving_service_drops_stale_revisions) {
     Env env;
     auto ctx = contextFor(env.p);

@@ -135,3 +135,38 @@ TEST(lily_slurs_and_hairpins_compile) {
         CHECK(err.str().find("warning") == std::string::npos);   // no unterminated/unmatched spanners
     }
 }
+
+TEST(lily_structure_and_text_compile) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    auto& m = *p.movements[0];
+    using K = model::BarlineKind;
+    m.tempo[0].text = "Allegro \"vivo\"";
+    m.barlines = {{{p.allocateId()}, Fraction{1}, K::RepeatEnd}, {{p.allocateId()}, m.length, K::Final}};
+    const ElementId markId = p.allocateId(), textId = p.allocateId();
+    m.rehearsal = {{{markId}, Fraction{1}}};
+    m.lanes[0].clefs = {{{p.allocateId()}, Fraction(3, 2), "bass"}};
+    m.lanes[0].texts = {{{textId}, Fraction{0}, "dolce", model::TextKind::Expression},
+                        {{p.allocateId()}, Fraction(1, 2), "pizz.", model::TextKind::Technique}};
+    engrave::EngraveContext ctx;
+    const std::string ly = engrave::emitLilyPond(m, ctx);
+    CHECK(ly.find("\\tempo \"Allegro \\\"vivo\\\"\" 4 = 120") != std::string::npos);
+    CHECK(ly.find("\\bar \":|.\"") != std::string::npos && ly.find("\\bar \"|.\"") != std::string::npos);
+    CHECK(ly.find("\\mark \\default") != std::string::npos);
+    CHECK(ly.find("\\clef \"bass\"") != std::string::npos);
+    CHECK(ly.find("\\italic \"dolce\"") != std::string::npos && ly.find("^\\markup \"pizz.\"") != std::string::npos);
+    if (const char* lily = std::getenv("CORINZIA_LILYPOND")) {
+        const std::string base = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/corinzia_structure";
+        { std::ofstream(base + ".ly") << ly; }
+        const std::string cmd = std::string(lily) + " -dbackend=svg -s -o " + base + " " + base + ".ly 2>" + base + ".err";
+        CHECK(std::system(cmd.c_str()) == 0);
+        std::stringstream err, svg;
+        err << std::ifstream(base + ".err").rdbuf();
+        CHECK(err.str().find("warning") == std::string::npos);
+        if (err.str().find("warning") != std::string::npos) std::printf("%s\n", err.str().c_str());
+        svg << std::ifstream(base + ".svg").rdbuf();
+        CHECK(svg.str().find(markId.toSvgId()) != std::string::npos);   // clickable mark and text
+        CHECK(svg.str().find(textId.toSvgId()) != std::string::npos);
+    }
+}

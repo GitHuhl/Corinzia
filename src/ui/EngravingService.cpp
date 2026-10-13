@@ -144,7 +144,12 @@ std::shared_ptr<EngraveResult> EngravingService::runJob(QString lilypond, model:
         r->pages.push_back(std::move(pg));
     }
     auto anchors = std::make_shared<LayoutAnchors>();
-    anchors->build(*index, *snap.movement);
+    std::vector<std::string> clefs;   // each lane's starting clef, from its first instrument
+    for (const auto& lane : snap.movement->lanes) {
+        auto it = lane.changes.empty() ? ctx.instruments.end() : ctx.instruments.find(lane.changes.front().instrument);
+        clefs.push_back(it != ctx.instruments.end() ? it->second->clef : "treble");
+    }
+    anchors->build(*index, *snap.movement, std::move(clefs));
     r->index = std::move(index);
     r->anchors = std::move(anchors);
     r->compileMs = clock.elapsed();

@@ -39,13 +39,27 @@ float velocityForDynamic(std::optional<std::uint8_t> mark) noexcept {
 
 namespace {
 
-rt::TempoMap buildTempo(const model::Movement& m, double sr) {
+// Tempo and meter maps over performed time: each span starts with the tempo
+// and meter in force at its written start, then carries the changes inside it.
+rt::TempoMap buildTempo(const model::Movement& m, const std::vector<std::pair<Fraction, Fraction>>& order, double sr) {
     rt::TempoMap tm;
     std::vector<rt::TempoMap::TempoPoint> pts;
-    for (const auto& t : m.tempo) pts.push_back({t.at.toQuarters(), t.quarterBpm, t.rampToNext});
-    tm.build(pts, sr);
     std::vector<rt::TempoMap::Meter> meters;
-    for (const auto& me : m.meter) meters.push_back({me.at.toQuarters(), 0, me.numerator, me.denominator});
+    double performed = 0.0;
+    for (const auto& [a, b] : order) {
+        const model::TempoEvent* t0 = &m.tempo.front();
+        for (const auto& t : m.tempo) if (t.at <= a) t0 = &t;
+        pts.push_back({performed, t0->quarterBpm, t0->rampToNext && t0->at == a});
+        for (const auto& t : m.tempo)
+            if (t.at > a && t.at < b) pts.push_back({performed + (t.at - a).toQuarters(), t.quarterBpm, t.rampToNext});
+        const model::MeterEvent* m0 = &m.meter.front();
+        for (const auto& me : m.meter) if (me.at <= a) m0 = &me;
+        meters.push_back({performed, 0, m0->numerator, m0->denominator});
+        for (const auto& me : m.meter)
+            if (me.at > a && me.at < b) meters.push_back({performed + (me.at - a).toQuarters(), 0, me.numerator, me.denominator});
+        performed += (b - a).toQuarters();
+    }
+    tm.build(pts, sr);
     tm.buildMeters(meters);
     return tm;
 }
@@ -78,6 +92,33 @@ std::vector<std::size_t> topoOrder(const RoutingSnapshot& r) {
 }
 
 }  // namespace
+
+std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m) {
+    std::vector<model::BarlineMark> bars = m.barlines;
+    std::sort(bars.begin(), bars.end(), [](const auto& x, const auto& y) { return x.at < y.at; });
+    std::vector<std::pair<Fraction, Fraction>> out;
+    Fraction pos{0}, repeatFrom{0};
+    for (const auto& b : bars) {
+        if (b.at > m.length) break;
+        using K = model::BarlineKind;
+        if (b.kind == K::RepeatStart) {
+            repeatFrom = b.at;
+        } else if ((b.kind == K::RepeatEnd || b.kind == K::RepeatBoth) && b.at > repeatFrom) {
+            if (b.at > pos) out.push_back({pos, b.at});
+            out.push_back({repeatFrom, b.at});
+            pos = repeatFrom = b.at;
+        }
+    }
+    if (m.length > pos) out.push_back({pos, m.length});
+    if (out.empty()) out.push_back({Fraction{0}, m.length});
+    // Join spans that continue each other (e.g. a start repeat with no end).
+    std::vector<std::pair<Fraction, Fraction>> merged;
+    for (const auto& sp : out) {
+        if (!merged.empty() && merged.back().second == sp.first) merged.back().second = sp.second;
+        else merged.push_back(sp);
+    }
+    return merged;
+}
 
 std::vector<EventShape> expressiveShape(const model::EventList& evs) {
     std::vector<EventShape> out(evs.size());
@@ -159,72 +200,97 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
     for (const auto& ms : movements) {
         if (!ms.movement) continue;
         const model::Movement& m = *ms.movement;
-        rt::Section sec{m.id, cursor, 0, buildTempo(m, opt.sampleRate), globalQuarter};
-        sec.end = cursor + SamplePos(std::llround(sec.tempo.samplesAt(m.length.toQuarters())));
-        auto toSample = [&](Fraction f) { return sec.start + SamplePos(std::llround(sec.tempo.samplesAt(f.toQuarters()))); };
+        const auto order = playbackOrder(m);
+        rt::Section sec{m.id, cursor, 0, buildTempo(m, order, opt.sampleRate), globalQuarter, {}};
+        double performed = 0.0;
+        for (const auto& [a, b] : order) {
+            sec.spans.push_back({performed, a.toQuarters(), (b - a).toQuarters()});
+            performed += (b - a).toQuarters();
+        }
+        sec.end = cursor + SamplePos(std::llround(sec.tempo.samplesAt(performed)));
+        // One RT lane per automation lane; every pass appends its breakpoints.
+        std::vector<long> autoIndex(m.automation.size(), -1);
+        for (std::size_t li = 0; li < m.automation.size(); ++li) {
+            const auto& lane = m.automation[li];
+            auto ni = nodeIndex.find(lane.target.node);
+            if (ni == nodeIndex.end() || lane.points->empty()) continue;
+            autoIndex[li] = long(snap->automation.size());
+            snap->automation.push_back({ni->second, lane.target.clapParamId, nullptr,
+                                        lane.target.mode == model::AutomationMode::Modulation, lane.target.noteId, {}});
+        }
 
-        for (const auto& lane : m.lanes) {
-            for (const auto& voice : lane.voices) {
-                const auto& evs = *voice.events;
-                std::unordered_set<std::uint64_t> consumed;   // tie continuations
-                const auto shape = expressiveShape(evs);
-                for (std::size_t ei = 0; ei < evs.size(); ++ei) {
-                    const auto& ev = evs[ei];
-                    if (ev.kind == model::EventKind::Rest) continue;
-                    auto route = routing.instrumentRoutes.find(lane.instrumentAt(ev.start));
-                    if (route == routing.instrumentRoutes.end()) continue;
-                    auto ni = nodeIndex.find(route->second.node);
-                    if (ni == nodeIndex.end()) continue;
+        for (std::size_t si = 0; si < order.size(); ++si) {
+            const auto& span = sec.spans[si];
+            const auto [a, b] = order[si];
+            // Written position inside this pass -> timeline sample.
+            auto toSample = [&](Fraction f) {
+                return sec.start + SamplePos(std::llround(sec.tempo.samplesAt(span.performedQ + (f - a).toQuarters())));
+            };
 
-                    for (const auto& h : ev.heads) {
-                        if (consumed.count(h.id.id.value)) continue;
-                        // Follow the tie chain to find the true sounding end.
-                        Fraction end = ev.start + ev.duration;
-                        std::uint16_t lastArt = ev.articulations;
-                        bool tied = h.tieToNext;
-                        for (std::size_t k = ei + 1; tied && k < evs.size(); ++k) {
-                            tied = false;
-                            for (const auto& h2 : evs[k].heads)
-                                if (h2.pitch.midiKey() == h.pitch.midiKey()) {
-                                    consumed.insert(h2.id.id.value);
-                                    end = evs[k].start + evs[k].duration;
-                                    lastArt = evs[k].articulations;
-                                    tied = h2.tieToNext;
-                                    break;
-                                }
+            for (const auto& lane : m.lanes) {
+                for (const auto& voice : lane.voices) {
+                    const auto& evs = *voice.events;
+                    std::unordered_set<std::uint64_t> consumed;   // tie continuations
+                    const auto shape = expressiveShape(evs);
+                    for (std::size_t ei = 0; ei < evs.size(); ++ei) {
+                        const auto& ev = evs[ei];
+                        if (ev.kind == model::EventKind::Rest || ev.start < a || ev.start >= b) continue;
+                        auto route = routing.instrumentRoutes.find(lane.instrumentAt(ev.start));
+                        if (route == routing.instrumentRoutes.end()) continue;
+                        auto ni = nodeIndex.find(route->second.node);
+                        if (ni == nodeIndex.end()) continue;
+
+                        for (const auto& h : ev.heads) {
+                            if (consumed.count(h.id.id.value)) continue;
+                            // Follow the tie chain to find the true sounding end
+                            // (cut at the end of this pass: a repeat jumps away).
+                            Fraction end = ev.start + ev.duration;
+                            std::uint16_t lastArt = ev.articulations;
+                            bool tied = h.tieToNext;
+                            for (std::size_t k = ei + 1; tied && k < evs.size() && evs[k].start < b; ++k) {
+                                tied = false;
+                                for (const auto& h2 : evs[k].heads)
+                                    if (h2.pitch.midiKey() == h.pitch.midiKey()) {
+                                        consumed.insert(h2.id.id.value);
+                                        end = evs[k].start + evs[k].duration;
+                                        lastArt = evs[k].articulations;
+                                        tied = h2.tieToNext;
+                                        break;
+                                    }
+                            }
+                            end = std::min(end, b);
+                            const SamplePos on = toSample(ev.start);
+                            const SamplePos fullOff = toSample(end);
+                            // Slurred notes are legato unless explicitly articulated short.
+                            const double gate = (shape[ei].legato && !(lastArt & model::ArtStaccato)) ? 1.0 : gateFactor(lastArt);
+                            const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * gate));
+                            const float vel = h.velocity ? h.velocity / 127.f
+                                                         : shape[ei].velocity *
+                                                               ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
+                            const auto noteId = std::int32_t(h.id.id.value & 0x7fffffff);
+                            const auto key = std::int16_t(h.pitch.midiKey());
+                            const auto& rtr = route->second;
+                            snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, key, rt::NoteEdge::On,
+                                                   std::min(vel, 1.f), h.id.id});
+                            snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, key,
+                                                   rt::NoteEdge::Off, 0.f, h.id.id});
                         }
-                        const SamplePos on = toSample(ev.start);
-                        const SamplePos fullOff = toSample(end);
-                        // Slurred notes are legato unless explicitly articulated short.
-                        const double gate = (shape[ei].legato && !(lastArt & model::ArtStaccato)) ? 1.0 : gateFactor(lastArt);
-                        const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * gate));
-                        const float vel = h.velocity ? h.velocity / 127.f
-                                                     : shape[ei].velocity *
-                                                           ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
-                        const auto noteId = std::int32_t(h.id.id.value & 0x7fffffff);
-                        const auto key = std::int16_t(h.pitch.midiKey());
-                        const auto& rtr = route->second;
-                        snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, key, rt::NoteEdge::On,
-                                               std::min(vel, 1.f), h.id.id});
-                        snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, key,
-                                               rt::NoteEdge::Off, 0.f, h.id.id});
                     }
                 }
             }
-        }
 
-        for (const auto& lane : m.automation) {
-            auto ni = nodeIndex.find(lane.target.node);
-            if (ni == nodeIndex.end() || lane.points->empty()) continue;
-            rt::RtAutomationLane rl{ni->second, lane.target.clapParamId, nullptr,
-                                    lane.target.mode == model::AutomationMode::Modulation, lane.target.noteId, {}};
-            for (const auto& p : *lane.points)
-                rl.points.push_back({toSample(p.at), p.value, rt::Curve(static_cast<std::uint8_t>(p.shapeToNext))});
-            snap->automation.push_back(std::move(rl));
+            for (std::size_t li = 0; li < m.automation.size(); ++li) {
+                const auto& lane = m.automation[li];
+                if (autoIndex[li] < 0) continue;
+                auto* rl = &snap->automation[std::size_t(autoIndex[li])];
+                for (const auto& p : *lane.points)
+                    if (p.at >= a && p.at < b)
+                        rl->points.push_back({toSample(p.at), p.value, rt::Curve(static_cast<std::uint8_t>(p.shapeToNext))});
+            }
         }
 
         snap->sections.push_back(std::move(sec));
-        globalQuarter += m.length.toQuarters();
+        globalQuarter += performed;
         cursor = snap->sections.back().end + SamplePos(std::llround(opt.gapBetweenMovementsSec * opt.sampleRate));
     }
 

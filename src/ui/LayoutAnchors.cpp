@@ -11,7 +11,17 @@ constexpr qreal kStepHeight = -0.5;            // staff spaces per diatonic step
 int diatonic(const model::Pitch& p) { return p.step + 7 * p.octave; }
 }  // namespace
 
-void LayoutAnchors::build(const SvgHitIndex& index, const model::Movement& m) {
+int LayoutAnchors::clefShift(std::size_t lane, Fraction pos) const {
+    static const std::string kTreble = "treble";
+    const std::string& initial = lane < initialClefs_.size() ? initialClefs_[lane] : kTreble;
+    const std::string& clef = lane < laneClefs_.size() ? laneClefs_[lane].clefAt(pos, initial) : initial;
+    return model::clefMiddleLine(kTreble) - model::clefMiddleLine(clef);
+}
+
+void LayoutAnchors::build(const SvgHitIndex& index, const model::Movement& m, std::vector<std::string> initialClefs) {
+    initialClefs_ = std::move(initialClefs);
+    laneClefs_.assign(m.lanes.size(), {});
+    for (std::size_t li = 0; li < m.lanes.size(); ++li) laneClefs_[li].clefs = m.lanes[li].clefs;
     timeline_.clear();
     heads_.clear();
     systems_.clear();
@@ -28,7 +38,7 @@ void LayoutAnchors::build(const SvgHitIndex& index, const model::Movement& m) {
                     continue;
                 }
                 for (const auto& h : ev.heads)
-                    if (auto* e = index.find(h.id.id)) raw.push_back({q, e->page, e->bounds, li, diatonic(h.pitch), true});
+                    if (auto* e = index.find(h.id.id)) raw.push_back({q, e->page, e->bounds, li, diatonic(h.pitch) + clefShift(li, ev.start), true});
             }
     std::sort(raw.begin(), raw.end(), [](const Raw& a, const Raw& b) { return a.q < b.q; });
 
@@ -124,7 +134,8 @@ std::vector<LayoutAnchors::Glyph> LayoutAnchors::provisional(const model::Moveme
                     out.push_back({ev.id.id, ref->page, {x, c0 + c1 * 34}, true});
                     continue;
                 }
-                for (const auto& h : ev.heads) out.push_back({h.id.id, ref->page, {x, c0 + c1 * diatonic(h.pitch)}, false});
+                for (const auto& h : ev.heads)
+                    out.push_back({h.id.id, ref->page, {x, c0 + c1 * (diatonic(h.pitch) + clefShift(li, ev.start))}, false});
             }
     }
     return out;
@@ -231,7 +242,10 @@ LayoutAnchors::Hit LayoutAnchors::locate(int page, QPointF pt) const {
         if (d < bestDist && fitLane(li, system, c0, c1)) {
             bestDist = d;
             hit.lane = li;
-            hit.diatonic = int(std::lround((pt.y() - c0) / c1));
+            // Back from treble-equivalent steps to the pitch under this clef
+            // (positions on a 1/960-crotchet grid are exact enough here).
+            const Fraction at(std::int64_t(std::llround(std::max(0.0, hit.quarter) * 960.0)), 3840);
+            hit.diatonic = int(std::lround((pt.y() - c0) / c1)) - clefShift(li, at);
             hit.valid = true;
         }
     }
@@ -399,7 +413,7 @@ LayoutAnchors::ProvisionalScene LayoutAnchors::provisionalScene(const SvgHitInde
                 qreal yMin = 1e9, yMax = -1e9;
                 const bool hollow = ev.duration >= Fraction(1, 2);
                 for (const auto& h : ev.heads) {
-                    const qreal y = c0 + c1 * (h.pitch.step + 7 * h.pitch.octave);
+                    const qreal y = c0 + c1 * (diatonic(h.pitch) + clefShift(li, ev.start));
                     yMin = std::min(yMin, y);
                     yMax = std::max(yMax, y);
                     sc.glyphs.push_back({h.id.id, page, {x, y}, false, hollow});

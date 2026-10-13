@@ -192,7 +192,14 @@ struct PlayerLane {
 
     // Active instrument at a musical position (binary search over changes).
     InstrumentId instrumentAt(Fraction pos) const;
+    // Clef in force at `pos`: the last change at or before it, else `initial`
+    // (the instrument's clef).
+    const std::string& clefAt(Fraction pos, const std::string& initial) const;
 };
+
+// Diatonic step (step + 7 * octave) of a clef's middle staff line: treble B4,
+// bass D3, alto C4 ... Unknown clefs count as treble.
+int clefMiddleLine(const std::string& clef);
 
 struct Movement {
     MovementId id;
