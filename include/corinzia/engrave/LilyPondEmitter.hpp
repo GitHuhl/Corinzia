@@ -29,6 +29,9 @@ struct EngraveContext {
     std::shared_ptr<const std::vector<model::Instrument>> instrumentStorage;
     std::unordered_map<InstrumentId, TrackId> instrumentTracks;
     std::string paperSize = "a4";
+    // Panorama ("galley"/"continuous" view): the whole movement on one endless
+    // system; LilyPond sizes the page to fit (ly:one-line-auto-height-breaking).
+    bool panorama = false;
     double staffSizePt = 18.0;
 };
 

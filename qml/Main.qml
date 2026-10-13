@@ -85,6 +85,31 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                     }
                     ToolSeparator {}
+                    // Page / Panorama: paginated score or one endless system.
+                    ButtonGroup { id: viewGroup }
+                    ToolButton {
+                        objectName: "pageViewButton"
+                        text: "▤ Page"
+                        checkable: true
+                        checked: App.viewMode === "page"
+                        ButtonGroup.group: viewGroup
+                        focusPolicy: Qt.NoFocus
+                        onClicked: App.viewMode = "page"
+                        ToolTip.text: "Page view: the score as it will be printed"
+                        ToolTip.visible: hovered
+                    }
+                    ToolButton {
+                        objectName: "panoramaViewButton"
+                        text: "⟷ Panorama"
+                        checkable: true
+                        checked: App.viewMode === "panorama"
+                        ButtonGroup.group: viewGroup
+                        focusPolicy: Qt.NoFocus
+                        onClicked: App.viewMode = "panorama"
+                        ToolTip.text: "Panorama view: one endless system, scroll sideways"
+                        ToolTip.visible: hovered
+                    }
+                    ToolSeparator {}
                     Label { text: "Zoom" }
                     Slider {
                         id: zoomSlider

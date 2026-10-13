@@ -12,7 +12,7 @@ namespace corinzia::ui {
 
 namespace {
 // Child slots of the root transform node, in paint order.
-enum Slot { PagesSlot = 0, OverlaySlot = 1 };
+enum Slot { PagesSlot = 0, TilesSlot = 1, OverlaySlot = 2 };
 // Overlay children, created once and never deleted (unused ones get an empty
 // rect / zero vertices): the software adaptation does not reliably pick up
 // nodes that are deleted and recreated between frames.
@@ -53,20 +53,102 @@ ScoreCanvas::ScoreCanvas(QQuickItem* parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
     setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
     setAcceptHoverEvents(true);
+
+    tiles_ = new TileRenderer;
+    tiles_->moveToThread(&tileThread_);
+    connect(&tileThread_, &QThread::finished, tiles_, &QObject::deleteLater);
+    connect(tiles_, &TileRenderer::tileReady, this, &ScoreCanvas::onTileReady);   // queued back to the GUI thread
+    tileThread_.setObjectName(QStringLiteral("corinzia-tiles"));
+    tileThread_.start(QThread::LowPriority);
+    tileTimer_.setSingleShot(true);
+    connect(&tileTimer_, &QTimer::timeout, this, &ScoreCanvas::requestTiles);
+}
+
+ScoreCanvas::~ScoreCanvas() {
+    tiles_->latestLevel = -1;   // let queued requests drain as no-ops
+    tileThread_.quit();
+    tileThread_.wait();
+}
+
+qreal ScoreCanvas::devicePixelRatio() const { return window() ? window()->effectiveDevicePixelRatio() : 1.0; }
+
+std::vector<TileKey> ScoreCanvas::visibleTiles() const {
+    std::vector<TileKey> out;
+    if (!result_ || currentLevel_ <= 0) return out;
+    const qreal dpr = devicePixelRatio();
+    const double s = levelScale(currentLevel_);                    // device px per staff space
+    const QRectF view(0, 0, width(), height());
+    for (int i = 0; i < int(result_->pages.size()); ++i) {
+        const QRectF page = pageRectInItem(i);
+        const QRectF vis = page.intersected(view);
+        if (vis.isEmpty()) continue;
+        // Visible part of the page in page-device-pixel coordinates.
+        const double x0 = (vis.left() - page.left()) * dpr, x1 = (vis.right() - page.left()) * dpr;
+        const double y0 = (vis.top() - page.top()) * dpr, y1 = (vis.bottom() - page.top()) * dpr;
+        const int maxTx = int(std::ceil(result_->pages[std::size_t(i)].size.width() * s / kTileSize));
+        const int maxTy = int(std::ceil(result_->pages[std::size_t(i)].size.height() * s / kTileSize));
+        for (int ty = std::max(0, int(y0 / kTileSize)); ty <= std::min(maxTy - 1, int((y1 - 1) / kTileSize)); ++ty)
+            for (int tx = std::max(0, int(x0 / kTileSize)); tx <= std::min(maxTx - 1, int((x1 - 1) / kTileSize)); ++tx)
+                out.push_back({engravingSerial_, i, currentLevel_, tx, ty});
+    }
+    if (out.size() > 96) out.resize(96);   // absurd zoom-out on huge scores: base pages cover the rest
+    return out;
+}
+
+void ScoreCanvas::requestTiles() {
+    if (!result_) return;
+    tiles_->latestLevel = currentLevel_;
+    bool missing = false;
+    for (const TileKey& k : visibleTiles()) {
+        if (tileCache_.contains(k)) continue;
+        missing = true;
+        if (requested_.contains(k)) continue;
+        requested_.insert(k);
+        QMetaObject::invokeMethod(tiles_, [t = tiles_, r = result_, serial = engravingSerial_, k] { t->render(r, serial, k); },
+                                  Qt::QueuedConnection);
+    }
+    if (!missing) emit tilesReady();
+    update();
+}
+
+void ScoreCanvas::onTileReady(TileKey key, QImage image) {
+    requested_.remove(key);
+    if (key.engraving != engravingSerial_) return;   // engraving replaced meanwhile
+    tileCache_.insert(key, std::move(image));
+    // Bound memory: drop tiles of other zoom levels first.
+    if (tileCache_.size() > 160)
+        for (auto it = tileCache_.begin(); it != tileCache_.end();)
+            it = (it.key().level != currentLevel_) ? tileCache_.erase(it) : std::next(it);
+    if (tilesSettled()) emit tilesReady();
+    update();
+}
+
+bool ScoreCanvas::tilesSettled() const {
+    const auto vis = visibleTiles();
+    return !vis.empty() && std::all_of(vis.begin(), vis.end(), [&](const TileKey& k) { return tileCache_.contains(k); });
+}
+
+void ScoreCanvas::geometryChange(const QRectF& n, const QRectF& o) {
+    QQuickItem::geometryChange(n, o);
+    if (n.size() != o.size()) tileTimer_.start(0);
 }
 
 void ScoreCanvas::setZoom(qreal z) {
     z = std::clamp(z, 0.1, 16.0);
     if (qFuzzyCompare(z, zoom_)) return;
     zoom_ = z;
+    currentLevel_ = scaleLevel(pageScale() * devicePixelRatio());
+    tiles_->latestLevel = currentLevel_;
     emit zoomChanged();
-    update();   // GPU rescales existing textures this frame; no re-engrave needed
+    tileTimer_.start(90);   // crisp vector tiles once the zoom settles
+    update();               // meanwhile the GPU rescales what we have: instant feedback
 }
 
 void ScoreCanvas::setPan(QPointF p) {
     if (p == pan_) return;
     pan_ = p;
     emit panChanged();
+    if (!tileTimer_.isActive()) tileTimer_.start(0);   // same zoom: newly exposed tiles right away
     update();
 }
 
@@ -76,7 +158,11 @@ void ScoreCanvas::setEngraving(std::shared_ptr<const EngraveResult> result) {
     glyphs_.clear();   // the definitive layer now reflects the edit
     masks_.clear();
     texturesDirty_ = true;
-    update();
+    ++engravingSerial_;
+    tileCache_.clear();
+    requested_.clear();
+    currentLevel_ = scaleLevel(pageScale() * devicePixelRatio());
+    requestTiles();
 }
 
 void ScoreCanvas::showProvisional(std::shared_ptr<const model::Movement> edited, Fraction from, Fraction to) {
@@ -177,24 +263,47 @@ void ScoreCanvas::wheelEvent(QWheelEvent* e) {
         setZoom(zoom_ * std::pow(1.0015, e->angleDelta().y()));
         setPan(e->position() - before * pageScale());
     } else {
-        setPan(pan_ + QPointF(e->angleDelta().x(), e->angleDelta().y()) * 0.5);
+        // Panorama is one endless system: the wheel scrolls through time.
+        const QPoint d = e->angleDelta();
+        if (panorama_ && d.x() == 0) setPan(pan_ + QPointF(d.y(), 0) * 0.5);
+        else setPan(pan_ + QPointF(d.x(), d.y()) * 0.5);
     }
     e->accept();
 }
 
 QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
     auto* root = static_cast<QSGTransformNode*>(old);
-    // More pages than page nodes: rebuild the whole tree rather than inserting
-    // into a live one (the software adaptation mis-transforms nodes inserted
-    // into an already-rendered subtree; see ArrangeView).
-    if (root && texturesDirty_ && result_ &&
-        int(result_->pages.size()) > root->childAtIndex(PagesSlot)->childCount()) {
+    // Vector tiles ready for the current zoom (GUI thread is blocked here).
+    std::vector<TileKey> readyTiles;
+    for (const TileKey& k : visibleTiles())
+        if (tileCache_.contains(k)) readyTiles.push_back(k);
+
+    // More pages / tiles than pooled nodes: rebuild the whole tree rather than
+    // inserting into a live one (the software adaptation mis-transforms nodes
+    // inserted into an already-rendered subtree; see ArrangeView).
+    if (root && ((texturesDirty_ && result_ && int(result_->pages.size()) > root->childAtIndex(PagesSlot)->childCount()) ||
+                 int(readyTiles.size()) > root->childAtIndex(TilesSlot)->childCount())) {
         delete root;
         root = nullptr;
     }
     if (!root) {
         root = new QSGTransformNode;
         root->appendChildNode(new QSGNode);   // PagesSlot
+        auto* tilePool = new QSGNode;         // TilesSlot: crisp vector tiles over the base page images
+        int cap = 16;
+        while (cap < int(readyTiles.size())) cap *= 2;
+        QImage blank(1, 1, QImage::Format_ARGB32_Premultiplied);
+        blank.fill(Qt::white);
+        for (int i = 0; i < cap; ++i) {
+            auto* t = new QSGSimpleTextureNode;
+            t->setTexture(window()->createTextureFromImage(blank));   // never texture-less
+            t->setOwnsTexture(true);
+            t->setFiltering(QSGTexture::Linear);
+            t->setRect(QRectF());
+            tilePool->appendChildNode(t);
+        }
+        nodeKeys_.assign(std::size_t(cap), TileKey{});
+        root->appendChildNode(tilePool);
         auto* overlay = new QSGNode;          // OverlaySlot
         auto* maskPool = new QSGNode;                                           // MasksChild (pool)
         for (int i = 0; i < kMaskPool; ++i) maskPool->appendChildNode(new QSGSimpleRectNode(QRectF(), paper_));
@@ -271,6 +380,37 @@ QSGNode* ScoreCanvas::updatePaintNode(QSGNode* old, UpdatePaintNodeData*) {
             }
         }
         texturesDirty_ = false;
+    }
+
+    // ---- vector tiles: exact device resolution, rendered from the SVG ---------
+    QSGNode* tilePool = root->childAtIndex(TilesSlot);
+    const double s = levelScale(currentLevel_);
+    for (int i = 0; i < tilePool->childCount(); ++i) {
+        auto* node = static_cast<QSGSimpleTextureNode*>(tilePool->childAtIndex(i));
+        if (i >= int(readyTiles.size())) {
+            node->setRect(QRectF());
+            continue;
+        }
+        const TileKey& k = readyTiles[std::size_t(i)];
+        if (!(nodeKeys_[std::size_t(i)] == k)) {   // texture changes only when the node shows another tile
+            QSGTexture* old = node->texture();
+            node->setOwnsTexture(false);
+            node->setTexture(window()->createTextureFromImage(tileCache_.value(k)));
+            node->setOwnsTexture(true);
+            delete old;
+            nodeKeys_[std::size_t(i)] = k;
+        }
+        // Tile extent in staff spaces; the root transform maps it to exactly
+        // kTileSize device pixels (s = pageScale * dpr up to level rounding).
+        // Clip to the page (edge tiles would otherwise paint white beyond it)
+        // and show the matching part of the texture.
+        const double side = kTileSize / s;
+        const QSizeF pg = result_->pages[std::size_t(k.page)].size;
+        const QRectF tile(k.tx * side, k.ty * side, side, side);
+        const QRectF vis = tile.intersected(QRectF(QPointF(0, 0), pg));
+        node->setRect(vis.translated(0, tops[std::size_t(k.page)]));
+        node->setSourceRect(QRectF((vis.left() - tile.left()) * s, (vis.top() - tile.top()) * s, vis.width() * s,
+                                   vis.height() * s));
     }
 
     // ---- overlay: persistent nodes, updated in place every frame ------------

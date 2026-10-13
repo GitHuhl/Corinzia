@@ -1,5 +1,7 @@
 #include "corinzia/ui/EngravingService.hpp"
 
+#include "corinzia/ui/VectorTiles.hpp"
+
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -126,11 +128,14 @@ std::shared_ptr<EngraveResult> EngravingService::runJob(QString lilypond, model:
         QFile f(files[page]);
         if (!f.open(QIODevice::ReadOnly)) return r;
         EngravedPage pg;
-        pg.svg = f.readAll();
+        pg.svg = normalizeSvgText(f.readAll());   // keep text renderable at every zoom
         index->addPage(page, pg.svg);
         QSvgRenderer renderer(pg.svg);
         pg.size = renderer.viewBoxF().size();
-        pg.raster = QImage((pg.size * scale).toSize(), QImage::Format_ARGB32_Premultiplied);
+        // Base image only (vector tiles provide the sharp view): cap its size so
+        // a panorama page hundreds of bars wide stays a valid texture.
+        const qreal pageScale = std::min<qreal>(scale, 8192.0 / std::max(pg.size.width(), pg.size.height()));
+        pg.raster = QImage((pg.size * pageScale).toSize(), QImage::Format_ARGB32_Premultiplied);
         pg.raster.fill(Qt::white);
         QPainter painter(&pg.raster);
         painter.setRenderHint(QPainter::Antialiasing);

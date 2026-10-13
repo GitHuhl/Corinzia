@@ -6,7 +6,13 @@
 #include "corinzia/ui/EngravingService.hpp"
 #include "corinzia/ui/ScoreCanvas.hpp"
 
+#include <QDir>
+#include <QFile>
+#include <QProcess>
+#include <QTemporaryDir>
 #include <QEventLoop>
+#include <QPainter>
+#include <QSvgRenderer>
 #include <QGuiApplication>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
@@ -404,6 +410,114 @@ TEST(score_canvas_grows_from_one_to_two_pages) {
         for (int x = 0; x < f.width(); ++x) if (f.pixelColor(x, y) != QColor(128, 128, 128)) ++outside;
     std::printf("  pages %zu, ink page1 %d page2 %d, stray pixels %d\n", r2->pages.size(), ink1, ink2, outside);
     CHECK(ink1 > 300 && ink2 > 300 && outside == 0);
+}
+
+TEST(score_canvas_is_vector_sharp_at_high_zoom) {
+    Env env;
+    auto r = engraveAndWait(env.svc, env.p.snapshot(env.ids.mov), contextFor(env.p));
+    CHECK(r && r->ok);
+    if (!r || !r->ok) return;
+    QQuickWindow window;
+    window.resize(900, 700);
+    window.setColor(QColor(128, 128, 128));
+    ui::ScoreCanvas canvas(window.contentItem());
+    canvas.setPosition(QPointF(30, 20));
+    canvas.setSize(QSizeF(840, 660));
+    canvas.setPan(QPointF(-600, -300));      // look at the music, not the margin
+    canvas.setZoom(1.0);
+    canvas.setEngraving(r);
+    window.show();
+    (void)window.grabWindow();
+    canvas.setZoom(4.0);                      // 32 px per staff space
+
+    // Ground truth: the SVG rendered directly, at the same scale and origin.
+    auto reference = [&] {
+        QImage ref(window.size(), QImage::Format_ARGB32_Premultiplied);
+        ref.fill(QColor(128, 128, 128));
+        QPainter p(&ref);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QRectF canvasScene(canvas.mapToScene(QPointF(0, 0)), canvas.size());
+        p.setClipRect(canvasScene);
+        const QPointF origin = canvas.mapToScene(canvas.pageRectInItem(0).topLeft());
+        p.translate(origin);
+        p.scale(32.0, 32.0);
+        p.fillRect(QRectF(QPointF(0, 0), r->pages[0].size), Qt::white);
+        QSvgRenderer svg(r->pages[0].svg);
+        svg.render(&p, QRectF(QPointF(0, 0), r->pages[0].size));
+        return ref;
+    };
+    auto meanDiff = [&](const QImage& got, const QImage& ref) {
+        const QRect area = QRectF(canvas.mapToScene(QPointF(0, 0)), canvas.size()).toRect().adjusted(2, 2, -2, -2);
+        double sum = 0;
+        int n = 0, dark = 0;
+        for (int y = area.top(); y < area.bottom(); ++y)
+            for (int x = area.left(); x < area.right(); ++x) {
+                const int a = qGray(got.pixel(x, y)), b = qGray(ref.pixel(x, y));
+                sum += std::abs(a - b);
+                ++n;
+                if (b < 100) ++dark;
+            }
+        std::printf("    (reference ink pixels in view: %d)\n", dark);
+        return sum / n;
+    };
+    const QImage ref = reference();
+    const double blurry = meanDiff(window.grabWindow(), ref);   // tiles not rendered yet: scaled texture
+    QEventLoop loop;
+    QObject::connect(&canvas, &ui::ScoreCanvas::tilesReady, &loop, &QEventLoop::quit);
+    QTimer::singleShot(5000, &loop, &QEventLoop::quit);
+    if (!canvas.tilesSettled()) loop.exec();
+    CHECK(canvas.tilesSettled());
+    const QImage crispFrame = window.grabWindow();
+    const double crisp = meanDiff(crispFrame, ref);
+    std::printf("  mean |canvas - direct vector render| at 4x: before tiles %.2f, after tiles %.2f\n", blurry, crisp);
+    crispFrame.save(QDir::temp().filePath(QStringLiteral("corinzia-zoom4.png")));
+    CHECK(crisp < 0.5);                 // indistinguishable from direct vector rendering
+    CHECK(blurry > 4 * crisp + 0.5);    // and the test can tell the difference
+}
+
+TEST(svg_text_renders_at_every_zoom) {
+    // Real LilyPond text: a tempo mark and a markup.
+    QTemporaryDir dir;
+    const QString base = dir.filePath(QStringLiteral("text"));
+    QProcess lily;
+    lily.start(QString::fromLocal8Bit(std::getenv("CORINZIA_LILYPOND")),
+               {QStringLiteral("-dbackend=svg"), QStringLiteral("-s"), QStringLiteral("-o"), base, QStringLiteral("-")});
+    lily.waitForStarted();
+    lily.write("\\version \"2.24.0\"\n\\header{tagline=##f}\n{ \\tempo 4 = 96 c'4^\\markup\\italic \"Piccolo\" d' e' f' }\n");
+    lily.closeWriteChannel();
+    lily.waitForFinished(30000);
+    QFile f(base + QStringLiteral(".svg"));
+    CHECK(f.open(QIODevice::ReadOnly));
+    const QByteArray raw = f.readAll();
+    const QByteArray fixed = ui::normalizeSvgText(raw);
+    CHECK(fixed.contains("scale(0.01)") && !fixed.contains("font-size=\"2.2000\""));
+
+    // Ink inside the page's top area (where the tempo text and markup sit),
+    // per staff space squared, must be roughly zoom-independent.
+    auto inkDensity = [](const QByteArray& svg, double s) {
+        QSvgRenderer r(svg);
+        const QSizeF page = r.viewBoxF().size();
+        const QRectF area(0, 0, page.width(), 12.0);   // staff spaces: header region with the text
+        QImage img(int(area.width() * s), int(area.height() * s), QImage::Format_ARGB32_Premultiplied);
+        img.fill(Qt::white);
+        QPainter p(&img);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.scale(s, s);
+        r.render(&p, QRectF(QPointF(0, 0), page));
+        p.end();
+        long ink = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x) ink += 255 - qGray(img.pixel(x, y));
+        return double(ink) / (s * s);
+    };
+    double lo = 1e18, hi = 0;
+    for (double s : {6.0, 12.0, 32.0, 64.0}) {
+        const double d = inkDensity(fixed, s);
+        std::printf("  zoom %4.0f px/space: ink per space² %.0f (raw svg: %.0f)\n", s, d, inkDensity(raw, s));
+        lo = std::min(lo, d);
+        hi = std::max(hi, d);
+    }
+    CHECK(lo > 0 && hi / lo < 1.5);   // text present at every zoom, same visual weight
 }
 
 int main(int argc, char** argv) {

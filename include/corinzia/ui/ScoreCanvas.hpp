@@ -17,9 +17,13 @@
 
 #include "corinzia/model/Model.hpp"
 #include "corinzia/ui/EngravingService.hpp"
+#include "corinzia/ui/VectorTiles.hpp"
 
 #include <QColor>
 #include <QQuickItem>
+#include <QSet>
+#include <QThread>
+#include <QTimer>
 
 #include <memory>
 #include <vector>
@@ -32,9 +36,11 @@ class ScoreCanvas : public QQuickItem {
     Q_PROPERTY(QPointF pan READ pan WRITE setPan NOTIFY panChanged)
     Q_PROPERTY(QColor paperColor MEMBER paper_ NOTIFY paperColorChanged)
     Q_PROPERTY(bool inputMode READ inputMode WRITE setInputMode NOTIFY inputModeChanged)
+    Q_PROPERTY(bool panorama READ panorama WRITE setPanorama NOTIFY panoramaChanged)
 
 public:
     explicit ScoreCanvas(QQuickItem* parent = nullptr);
+    ~ScoreCanvas() override;
 
     qreal zoom() const noexcept { return zoom_; }
     void setZoom(qreal z);
@@ -51,6 +57,8 @@ public:
     // Note-input caret on one lane's staff; NaN quarter hides it.
     void setCaret(std::size_t lane, double quarter);
     bool inputMode() const noexcept { return inputMode_; }
+    bool panorama() const noexcept { return panorama_; }
+    void setPanorama(bool on) { if (on != panorama_) { panorama_ = on; emit panoramaChanged(); } }
     void setInputMode(bool on);
 
     // Geometry helpers (item coordinates <-> page/staff-space coordinates).
@@ -59,6 +67,10 @@ public:
     QRectF pageRectInItem(int page) const;
 
     const EngraveResult* engraving() const noexcept { return result_.get(); }
+    // Vector tiles for the current view: true once every visible tile is
+    // rendered at the current zoom (tests / smoke use it to wait for crispness).
+    bool tilesSettled() const;
+    int tileLevel() const noexcept { return currentLevel_; }
 
 signals:
     void zoomChanged();
@@ -68,6 +80,8 @@ signals:
     void elementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
     void emptyClicked(int page, QPointF staffSpacePos);
     void inputModeChanged();
+    void panoramaChanged();
+    void tilesReady();   // all visible tiles at the current zoom are rendered
     // Input mode: every click is a note-entry request at this page position.
     void inputClicked(int page, QPointF staffSpacePos, Qt::KeyboardModifiers mods);
 
@@ -76,9 +90,14 @@ protected:
     void mousePressEvent(QMouseEvent* e) override;
     void hoverMoveEvent(QHoverEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
+    void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
 
 private:
     qreal pageScale() const noexcept { return zoom_ * kBasePxPerSpace; }
+    qreal devicePixelRatio() const;
+    std::vector<TileKey> visibleTiles() const;   // at the current level
+    void requestTiles();
+    void onTileReady(TileKey key, QImage image);
     qreal pageTop(int page) const;
 
     static constexpr qreal kBasePxPerSpace = 8.0;
@@ -92,10 +111,22 @@ private:
     double caretQ_ = std::numeric_limits<double>::quiet_NaN();
     std::size_t caretLane_ = 0;
     bool inputMode_ = false;
+    bool panorama_ = false;
     qreal zoom_ = 1.0;
     QPointF pan_;
     QColor paper_ = QColor(255, 255, 250);
     bool texturesDirty_ = false;
+
+    // Vector tiles (GUI-thread state).
+    QThread tileThread_;
+    TileRenderer* tiles_ = nullptr;          // lives in tileThread_
+    QTimer tileTimer_;                       // debounce while zooming
+    QHash<TileKey, QImage> tileCache_;
+    QSet<TileKey> requested_;
+    std::uint64_t engravingSerial_ = 0;
+    int currentLevel_ = 0;
+    // Render-thread state: which tile each pooled node shows.
+    std::vector<TileKey> nodeKeys_;
 };
 
 }  // namespace corinzia::ui

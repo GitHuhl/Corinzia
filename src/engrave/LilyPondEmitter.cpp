@@ -83,7 +83,11 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
     std::ostringstream o;
     o << "\\version \"2.24.0\"\n"
       << "#(set-global-staff-size " << ctx.staffSizePt << ")\n"
-      << "\\paper { #(set-paper-size \"" << ctx.paperSize << "\") }\n"
+      << (ctx.panorama ? std::string("\\paper { page-breaking = #ly:one-line-auto-height-breaking\n"
+                                     "  top-margin = 4 bottom-margin = 4 right-margin = 8\n"
+                                     // one-line mode drops the indent; the staff names need the room
+                                     "  left-margin = 35 }\n")
+                       : "\\paper { #(set-paper-size \"" + ctx.paperSize + "\") }\n")
       << "\\header { tagline = ##f }\n\n";
 
     // Global context: meter / key / tempo, as spacer music shared by every staff.

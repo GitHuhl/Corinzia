@@ -54,6 +54,8 @@ class AppController : public QObject {
     Q_PROPERTY(bool chordMode READ chordMode WRITE setChordMode NOTIFY inputStateChanged)
     Q_PROPERTY(int voice READ voice WRITE setVoice NOTIFY inputStateChanged)               // 1..4
     Q_PROPERTY(QString caretLabel READ caretLabel NOTIFY inputStateChanged)
+    // Score view: "page" (paginated) or "panorama" (one endless system).
+    Q_PROPERTY(QString viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged)
     // ---- DAW tab -------------------------------------------------------------
     Q_PROPERTY(QVariantList arrangeBars READ arrangeBars NOTIFY arrangeChanged)   // [{bar, quarter}]
 
@@ -115,6 +117,8 @@ public:
     int voice() const noexcept { return voice_; }
     void setVoice(int v);
     QString caretLabel() const;
+    QString viewMode() const { return panorama_ ? QStringLiteral("panorama") : QStringLiteral("page"); }
+    void setViewMode(const QString& mode);
     QVariantList arrangeBars() const;
     static QColor trackColor(std::size_t index);
     Fraction caretPosition() const noexcept { return caretPos_; }
@@ -146,6 +150,7 @@ signals:
     void engraved();
     void inputStateChanged();
     void arrangeChanged();
+    void viewModeChanged();
 
 private slots:
     void onElementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
@@ -203,6 +208,7 @@ private:
     ElementId selection_;
     QString selectionLabel_, status_;
     bool playing_ = false;
+    bool panorama_ = false;
     int engraveCount_ = 0;
 };
 

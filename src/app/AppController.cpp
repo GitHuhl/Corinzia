@@ -401,6 +401,7 @@ engrave::EngraveContext AppController::engraveContext() const {
         ctx.instrumentTracks[i.id] = i.track;
     }
     ctx.instrumentStorage = std::move(storage);
+    ctx.panorama = panorama_;
     return ctx;
 }
 
@@ -428,6 +429,22 @@ void AppController::attachCanvas(ui::ScoreCanvas* canvas) {
         requestEngrave(m);
         engraving_.engraveNow(m);
     }
+}
+
+void AppController::setViewMode(const QString& mode) {
+    const bool p = mode == QStringLiteral("panorama");
+    if (p == panorama_) return;
+    panorama_ = p;
+    if (canvas_) {
+        canvas_->setPanorama(p);
+        canvas_->setPan(QPointF(24, 24));
+    }
+    if (auto m = displayedMovement(); m.valid()) {   // re-engrave now, no debounce
+        requestEngrave(m);
+        engraving_.engraveNow(m);
+    }
+    setStatus(p ? QStringLiteral("Panorama view: engraving one continuous system…") : QStringLiteral("Page view: engraving pages…"));
+    emit viewModeChanged();
 }
 
 void AppController::setStatus(QString s) {

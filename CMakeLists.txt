@@ -59,6 +59,7 @@ if(CORINZIA_BUILD_UI)
         include/corinzia/ui/LayoutAnchors.hpp    src/ui/LayoutAnchors.cpp
         include/corinzia/ui/ScoreCanvas.hpp      src/ui/ScoreCanvas.cpp
         include/corinzia/ui/ArrangeView.hpp      src/ui/ArrangeView.cpp
+        include/corinzia/ui/VectorTiles.hpp      src/ui/VectorTiles.cpp
     )
     target_link_libraries(corinzia_ui PUBLIC corinzia_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
     target_compile_options(corinzia_ui PRIVATE -Wall -Wextra)

@@ -15,6 +15,7 @@
 #include <QMouseEvent>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
+#include <QSvgRenderer>
 #include <QQuickWindow>
 #include <QTimer>
 #include <QtQml>
@@ -156,6 +157,59 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
     check(half && app.duration() == 1, "notes panel button selects half notes");
     key(Qt::Key_Escape);
     check(!app.inputMode(), "Esc leaves note input");
+
+    // ---- Page / Panorama view ------------------------------------------------
+    auto clickItem = [&](const char* name) {
+        QQuickItem* b = findItem(window->contentItem(), QString::fromLatin1(name));
+        if (b) QMetaObject::invokeMethod(b, "click");
+        return b != nullptr;
+    };
+    {
+        const int before = app.engraveCount();
+        check(clickItem("panoramaViewButton") && app.viewMode() == QStringLiteral("panorama"), "Panorama button switches the view");
+        check(waitFor([&] { return app.engraveCount() > before; }, 60000), "panorama engraved");
+        const auto* e = canvas->engraving();
+        const bool oneStrip = e && e->pages.size() == 1 && e->pages[0].size.width() > 3 * e->pages[0].size.height();
+        check(oneStrip, "panorama is a single endless system (one page, much wider than tall)");
+        if (e) std::printf("  panorama page %.0f x %.0f staff spaces\n", e->pages[0].size.width(), e->pages[0].size.height());
+        waitFor([&] { return canvas->tilesSettled(); }, 5000);
+        const QImage pano = window->grabWindow();
+        int inkP = 0;
+        const QRectF cv(canvas->mapToScene(QPointF(0, 0)), canvas->size());
+        for (int y = int(cv.top()); y < int(cv.bottom()); y += 2)
+            for (int x = int(cv.left()); x < int(cv.right()); x += 2)
+                if (qGray(pano.pixel(x, y)) < 96) ++inkP;
+        check(inkP > 500, "panorama music visible");
+        int names = 0;
+        for (const auto& pg : e ? e->pages : std::vector<corinzia::ui::EngravedPage>{})
+            names += pg.svg.contains("<tspan>Fl.</tspan>") + pg.svg.contains("<tspan>Cl.</tspan>");
+        {   // the staff names must lie inside the page box (not at negative x)
+            QSvgRenderer r(e->pages[0].svg);
+            check(names == 2 && r.viewBoxF().left() <= 0, "panorama keeps the staff names");
+        }
+        QString panoPng = png;
+        panoPng.replace(QStringLiteral(".png"), QStringLiteral("-panorama.png"));
+        pano.save(panoPng);
+        // Mouse entry works on the single system too.
+        key(Qt::Key_N, Qt::NoModifier, QStringLiteral("n"));
+        const auto& clar2 = *app.project().movements.front()->lanes[1].voices[0].events;
+        if (const auto* t = e ? e->index->find(clar2[0].heads[0].id.id) : nullptr) {
+            const QRectF page = canvas->pageRectInItem(t->page);
+            const QPointF sp = canvas->mapToScene(page.topLeft() + t->bounds.center() * (page.width() / e->pages[0].size.width()));
+            QMouseEvent pr(QEvent::MouseButtonPress, sp, sp, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &pr);
+            QMouseEvent rl(QEvent::MouseButtonRelease, sp, sp, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(window, &rl);
+            check(app.selectionLabel().contains(QStringLiteral("Clarinet")), "mouse note entry works in panorama");
+            app.undo();
+        }
+        key(Qt::Key_Escape);
+        const int before2 = app.engraveCount();
+        check(clickItem("pageViewButton") && app.viewMode() == QStringLiteral("page"), "Page button switches back");
+        check(waitFor([&] { return app.engraveCount() > before2; }, 60000) && canvas->engraving() &&
+                  canvas->engraving()->pages[0].size.height() > canvas->engraving()->pages[0].size.width(),
+              "page view is paginated again (A4 portrait)");
+    }
 
     // ---- Mix (DAW) tab --------------------------------------------------------
     QQuickItem* tabs = findItem(window->contentItem(), QStringLiteral("tabs"));

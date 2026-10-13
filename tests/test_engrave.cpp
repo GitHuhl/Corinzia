@@ -99,3 +99,14 @@ TEST(lily_triplets_and_barline_completion) {
         CHECK(std::system(cmd.c_str()) == 0);
     }
 }
+
+TEST(lily_panorama_uses_one_line_breaking) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    engrave::EngraveContext ctx;
+    CHECK(engrave::emitLilyPond(*p.movements[0], ctx).find("set-paper-size") != std::string::npos);
+    ctx.panorama = true;
+    const std::string ly = engrave::emitLilyPond(*p.movements[0], ctx);
+    CHECK(ly.find("ly:one-line-auto-height-breaking") != std::string::npos && ly.find("set-paper-size") == std::string::npos);
+}
