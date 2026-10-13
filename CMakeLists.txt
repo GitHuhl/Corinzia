@@ -29,6 +29,7 @@ add_library(corinzia_core
     src/model/Commands.cpp
     src/audio/ClapPluginHost.cpp
     src/audio/AudioEngine.cpp
+    src/audio/PluginManager.cpp
     src/compile/SnapshotCompiler.cpp
     src/engrave/LilyPondEmitter.cpp
     src/storage/ProjectStore.cpp
@@ -62,8 +63,20 @@ if(CORINZIA_BUILD_TESTS)
         tests/test_engine.cpp
         tests/test_engrave.cpp
         tests/test_storage.cpp
+        tests/test_plugins.cpp
     )
     target_link_libraries(corinzia_tests PRIVATE corinzia_core)
+
+    # The recorder fixture as a real .clap bundle, for dlopen/scan tests.
+    add_library(corinzia_test_recorder MODULE tests/plugin/recorder_clap.cpp)
+    target_include_directories(corinzia_test_recorder PRIVATE include)
+    target_link_libraries(corinzia_test_recorder PRIVATE PkgConfig::CLAP)
+    set_target_properties(corinzia_test_recorder PROPERTIES
+        PREFIX "" OUTPUT_NAME "corinzia-test-recorder" SUFFIX ".clap"
+        CXX_VISIBILITY_PRESET hidden
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test-plugins)
+    add_dependencies(corinzia_tests corinzia_test_recorder)
+    target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
     if(CORINZIA_BUILD_UI)
         add_executable(corinzia_ui_tests tests/test_ui.cpp)

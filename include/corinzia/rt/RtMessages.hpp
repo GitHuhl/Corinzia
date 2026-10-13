@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+namespace corinzia::audio { class ClapPluginInstance; }
+
 namespace corinzia::rt {
 
 struct PlaybackSnapshot;
@@ -19,8 +21,8 @@ struct UiToAudio {
         SetLoop,        // a: start, b: end (b <= a disables)
         SetNodeGain,    // node: index, value: linear gain
         SetParam,       // node, param, value: live knob tweak (PARAM_VALUE, not recorded here)
-        BypassNode,     // node: stop_processing + ack (main thread may then deactivate)
-        UnbypassNode,
+        BypassNode,     // nodeId + plugin: stop_processing + ack (main thread may then deactivate)
+        UnbypassNode,   // nodeId
         PreviewNote,    // node/port/channel/key/value(velocity); value<0 => note-off
     } type;
     std::uint32_t node = 0;
@@ -29,13 +31,15 @@ struct UiToAudio {
     double value = 0.0;
     SamplePos a = 0, b = 0;
     PlaybackSnapshot* snapshot = nullptr;
+    NodeId nodeId{};
+    audio::ClapPluginInstance* plugin = nullptr;
 };
 
 // ------------------------------------------------------------ Audio -> UI --
 struct AudioToUi {
     enum class Type : std::uint8_t {
         RetireSnapshot,      // snapshot: delete on UI thread
-        NodeBypassed,        // node: safe to deactivate/restart now
+        NodeBypassed,        // nodeId: safe to deactivate/restart/destroy now
         ParamChanged,        // plugin GUI moved a param: node, param, value, a = sample (for recording)
         GestureBegin, GestureEnd,
         EventsDropped,       // a: count (event list overflow - surfaced in UI, never blocks)
@@ -46,6 +50,7 @@ struct AudioToUi {
     double value = 0.0;
     SamplePos a = 0;
     PlaybackSnapshot* snapshot = nullptr;
+    NodeId nodeId{};
 };
 
 // ------------------------------------------- Audio -> UI (seqlock, per block) --

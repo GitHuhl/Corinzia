@@ -129,15 +129,19 @@ void AudioEngine::handleCommands() noexcept {
                 if (m->node < kMaxNodes && !nodes_[m->node]->in.pushParamValue(0, m->param, nullptr, m->value))
                     ++dropped_;
                 break;
-            case T::BypassNode:
-                if (snap_ && m->node < snap_->nodes.size()) {
-                    if (auto* p = snap_->nodes[m->node].plugin) p->stopProcessing();
-                    nodes_[m->node]->bypassed = true;
-                    telemetry_.tryPush({rt::AudioToUi::Type::NodeBypassed, m->node, 0, 0.0, 0, nullptr});
-                }
+            case T::BypassNode: {
+                // The plugin pointer is authoritative: it may already be absent
+                // from the current snapshot, but must still leave the processing state.
+                if (m->plugin) m->plugin->stopProcessing();
+                for (std::uint32_t i = 0; snap_ && i < snap_->nodes.size() && i < kMaxNodes; ++i)
+                    if (snap_->nodes[i].id == m->nodeId) nodes_[i]->bypassed = true;
+                rt::AudioToUi ack{rt::AudioToUi::Type::NodeBypassed, 0, 0, 0.0, 0, nullptr, m->nodeId};
+                if (!telemetry_.tryPush(ack)) ++dropped_;
                 break;
+            }
             case T::UnbypassNode:
-                if (m->node < kMaxNodes) nodes_[m->node]->bypassed = false;
+                for (std::uint32_t i = 0; snap_ && i < snap_->nodes.size() && i < kMaxNodes; ++i)
+                    if (snap_->nodes[i].id == m->nodeId) nodes_[i]->bypassed = false;
                 break;
             case T::PreviewNote:
                 if (m->node < kMaxNodes) {

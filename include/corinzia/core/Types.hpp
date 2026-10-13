@@ -34,7 +34,7 @@ struct ElementId {
 // Strongly typed aliases so a VoiceId can't be passed where a TrackId is expected.
 template <class Tag>
 struct TypedId {
-    ElementId id;
+    ElementId id{};
     constexpr bool valid() const noexcept { return id.valid(); }
     constexpr auto operator<=>(const TypedId&) const = default;
 };

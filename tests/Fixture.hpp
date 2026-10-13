@@ -25,6 +25,7 @@ struct Recorded {
 struct RecorderState {
     std::vector<Recorded> events;
     std::vector<clap_event_transport_t> transports;
+    const clap_host_t* host = nullptr;   // lets tests fire host callbacks as the plugin would
     bool midiOnly = false;      // note port advertises only CLAP_NOTE_DIALECT_MIDI
     bool processing = false;
     bool active = false;
@@ -42,7 +43,7 @@ inline const clap_plugin_t* createRecorder(const clap_host_t* host, bool midiOnl
     p->desc = midiOnly ? &kMidiDesc : &kDesc;
     p->plugin_data = new RecorderState;
     static_cast<RecorderState*>(p->plugin_data)->midiOnly = midiOnly;
-    (void)host;
+    static_cast<RecorderState*>(p->plugin_data)->host = host;
     auto st = [](const clap_plugin_t* pl) { return static_cast<RecorderState*>(pl->plugin_data); };
     p->init = [](const clap_plugin_t*) { return true; };
     p->destroy = [](const clap_plugin_t* pl) {
