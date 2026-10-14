@@ -16,5 +16,5 @@ corinzia-model = { path = "corinzia-model" }
 corinzia-edit = { path = "corinzia-edit" }
 corinzia-perform = { path = "corinzia-perform" }
 corinzia-sine = { path = "corinzia-sine" }
-corinzia-audio = { path = "corinzia-audio" }
+corinzia-audio = { path = "corinzia-audio", default-features = false }
 corinzia-layout = { path = "corinzia-layout", default-features = false }

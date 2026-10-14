@@ -6,7 +6,13 @@ if ! command -v pipewire >/dev/null; then
     echo "pipewire binary not found; skipping"; exit 0
 fi
 runtime=$(mktemp -d)
-trap 'kill "${wp_pid:-0}" "${pw_pid:-0}" 2>/dev/null || true; wait 2>/dev/null || true; rm -rf "$runtime"' EXIT
+# Only kill PIDs we started: `kill 0` would signal the whole process group (ctest, the Nix builder).
+cleanup() {
+    for pid in ${wp_pid:-} ${pw_pid:-}; do kill "$pid" 2>/dev/null || true; done
+    wait 2>/dev/null || true
+    rm -rf "$runtime"
+}
+trap cleanup EXIT
 export XDG_RUNTIME_DIR=$runtime PIPEWIRE_RUNTIME_DIR=$runtime
 unset PIPEWIRE_REMOTE
 pipewire >"$runtime/pipewire.log" 2>&1 &
