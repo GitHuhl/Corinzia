@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-layout", "corinzia-ffi", "corinzia-edit", "corinzia-app"]
+members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-layout", "corinzia-ffi", "corinzia-edit", "corinzia-perform", "corinzia-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,4 +14,5 @@ corinzia-score = { path = "corinzia-score" }
 corinzia-export = { path = "corinzia-export" }
 corinzia-model = { path = "corinzia-model" }
 corinzia-edit = { path = "corinzia-edit" }
+corinzia-perform = { path = "corinzia-perform" }
 corinzia-layout = { path = "corinzia-layout", default-features = false }

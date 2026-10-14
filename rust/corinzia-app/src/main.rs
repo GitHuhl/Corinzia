@@ -8,6 +8,7 @@
 
 mod demo;
 mod editor;
+mod files;
 mod keys;
 mod panels;
 mod score_view;
@@ -37,8 +38,26 @@ struct Popover {
     error: Option<String>,
 }
 
+/// The "New score" card.
+#[derive(Default)]
+struct NewScore {
+    title: String,
+    instruments: String,
+    bars: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NewField {
+    Title,
+    Instruments,
+    Bars,
+}
+
 struct App {
     editor: Editor,
+    undo_tip: String,
+    new_score: Option<NewScore>,
     path: Option<PathBuf>,
     view: View,
     pages: Vec<DisplayList>,
@@ -65,6 +84,17 @@ enum Message {
     PopoverInput(String),
     PopoverSubmit,
     PopoverClose,
+    NewInput(NewField, String),
+    NewCreate,
+    NewCancel,
+    /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
+    Guarded(Box<Message>),
+    Proceed(Box<Message>),
+    Open,
+    Opened(Option<PathBuf>),
+    SaveTo(Option<PathBuf>),
+    Export(files::Format),
+    ExportTo(files::Format, Option<PathBuf>),
     Frame,
     Shot(iced::window::Screenshot),
 }
@@ -76,16 +106,19 @@ struct Args {
     view: View,
     screenshot: Option<PathBuf>,
     keys: Vec<String>,
+    export: Option<PathBuf>,
 }
 
 fn args() -> Args {
-    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![] };
+    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--view" => a.view = if it.next().as_deref() == Some("panorama") { View::Panorama } else { View::Page },
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             // Scripted key presses (testing and demos): "n c d shift+e ctrl+z".
+            // Export the (edited) movement and exit: format from the extension.
+            "--export" => a.export = it.next().map(PathBuf::from),
             "--keys" => a.keys = it.next().unwrap_or_default().split_whitespace().map(String::from).collect(),
             f => a.file = Some(PathBuf::from(f)),
         }
@@ -150,7 +183,12 @@ fn quarters(f: Frac) -> f64 {
 
 impl App {
     fn boot() -> (App, Task<Message>) {
-        let a = args();
+        (App::from_args(args()), Task::none())
+    }
+
+    /// The app as the command line asks for it (file, view, scripted keys);
+    /// no window is needed, so `--export` runs headless.
+    fn from_args(a: Args) -> App {
         let (project, status) = match &a.file {
             Some(f) => match corinzia_model::store::load(f) {
                 Ok(p) => (p, format!("Opened {}", f.display())),
@@ -167,7 +205,7 @@ impl App {
             }
         }
         app.sync();
-        (app, Task::none())
+        app
     }
 
     fn new(project: Project, path: Option<PathBuf>, view: View, status: String) -> App {
@@ -175,6 +213,8 @@ impl App {
         editor.status = status;
         let mut app = App {
             editor,
+            undo_tip: String::new(),
+            new_score: None,
             path,
             view,
             pages: vec![],
@@ -255,6 +295,7 @@ impl App {
             }
         }
         self.selected = sel;
+        self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
     }
 
@@ -312,8 +353,12 @@ impl App {
             Action::FirstSecondEndings => ed.add_first_second_endings(),
             Action::Undo => ed.undo(),
             Action::Redo => ed.redo(),
-            Action::Save | Action::SaveAs => self.save(),
-            Action::Open | Action::New => {}
+            Action::Save if self.path.is_some() => self.save(self.path.clone().unwrap()),
+            Action::Save | Action::SaveAs => return self.ask_save_path(),
+            Action::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
+            Action::New => {
+                self.new_score = Some(NewScore { bars: "32".into(), ..Default::default() });
+            }
             Action::Popover(kind) => {
                 let t = self.open_popover(kind);
                 self.sync();
@@ -329,8 +374,46 @@ impl App {
         Task::none()
     }
 
-    fn save(&mut self) {
-        let path = self.path.clone().unwrap_or_else(|| PathBuf::from("untitled.project"));
+    fn ask_save_path(&self) -> Task<Message> {
+        let name = files::sibling(self.path.as_deref(), &self.editor.project.title, "project");
+        let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
+        Task::perform(
+            async move {
+                let mut d = rfd::AsyncFileDialog::new().set_title("Save project").add_filter("Corinzia project", &["project"]).set_file_name(name.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                if let Some(dir) = dir {
+                    d = d.set_directory(dir);
+                }
+                d.save_file().await.map(|h| h.path().to_path_buf())
+            },
+            Message::SaveTo,
+        )
+    }
+
+    fn open(&mut self, path: PathBuf) {
+        match corinzia_model::store::load(&path) {
+            Ok(p) => {
+                let view = self.view;
+                *self = App::new(p, Some(path.clone()), view, format!("Opened {}", path.display()));
+            }
+            Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
+        }
+    }
+
+    fn create_new(&mut self) {
+        let Some(n) = self.new_score.as_mut() else { return };
+        let bars = n.bars.trim().parse::<i64>().unwrap_or(32).clamp(1, 2000);
+        let title = if n.title.trim().is_empty() { "Untitled" } else { n.title.trim() };
+        match files::new_project(title, &n.instruments, bars) {
+            Ok(p) => {
+                let view = self.view;
+                *self = App::new(p, None, view, "New score · N starts note input".into());
+                self.editor.set_input_mode(true);
+            }
+            Err(e) => n.error = Some(e),
+        }
+    }
+
+    fn save(&mut self, path: PathBuf) {
         self.editor.status = match corinzia_model::store::save(&self.editor.project, &path) {
             Ok(()) => {
                 self.path = Some(path.clone());
@@ -389,9 +472,10 @@ impl App {
             }
             Message::Canvas(ViewEvent::Marquee { ids, shift }) => self.editor.select_elements(&ids, shift),
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         self.popover = None;
+                        self.new_score = None;
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
                     return t;
@@ -415,6 +499,87 @@ impl App {
                 }
             }
             Message::PopoverClose => self.popover = None,
+            Message::NewInput(field, v) => {
+                if let Some(n) = self.new_score.as_mut() {
+                    match field {
+                        NewField::Title => n.title = v,
+                        NewField::Instruments => n.instruments = v,
+                        NewField::Bars => n.bars = v,
+                    }
+                    n.error = None;
+                }
+                return Task::none();
+            }
+            Message::NewCancel => self.new_score = None,
+            Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
+            Message::Guarded(next) => {
+                if !self.editor.modified {
+                    return Task::done(Message::Proceed(next));
+                }
+                return Task::perform(
+                    async {
+                        rfd::AsyncMessageDialog::new()
+                            .set_title("Unsaved changes")
+                            .set_description("The score has unsaved changes. Discard them?")
+                            .set_buttons(rfd::MessageButtons::OkCancelCustom("Discard".into(), "Cancel".into()))
+                            .show()
+                            .await
+                    },
+                    move |r| match r {
+                        rfd::MessageDialogResult::Custom(c) if c == "Discard" => Message::Proceed(next.clone()),
+                        rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes => Message::Proceed(next.clone()),
+                        _ => Message::PopoverClose,
+                    },
+                );
+            }
+            Message::Proceed(next) => match *next {
+                Message::Open => {
+                    let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
+                    return Task::perform(
+                        async move {
+                            let mut d = rfd::AsyncFileDialog::new().set_title("Open project").add_filter("Corinzia project", &["project"]);
+                            if let Some(dir) = dir {
+                                d = d.set_directory(dir);
+                            }
+                            d.pick_file().await.map(|h| h.path().to_path_buf())
+                        },
+                        Message::Opened,
+                    );
+                }
+                Message::NewCreate => self.create_new(),
+                other => return Task::done(other),
+            },
+            Message::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
+            Message::Opened(None) | Message::SaveTo(None) | Message::ExportTo(_, None) => return Task::none(),
+            Message::Opened(Some(path)) => self.open(path),
+            Message::SaveTo(Some(path)) => {
+                let path = if path.extension().is_none() { path.with_extension("project") } else { path };
+                self.save(path);
+            }
+            Message::Export(format) => {
+                let name = files::sibling(self.path.as_deref(), &self.editor.project.title, format.extension());
+                let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
+                return Task::perform(
+                    async move {
+                        let mut d = rfd::AsyncFileDialog::new()
+                            .set_title(format!("Export {}", format.label()))
+                            .add_filter(format.label(), &[format.extension()])
+                            .set_file_name(name.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+                        if let Some(dir) = dir {
+                            d = d.set_directory(dir);
+                        }
+                        d.save_file().await.map(|h| h.path().to_path_buf())
+                    },
+                    move |p| Message::ExportTo(format, p),
+                );
+            }
+            Message::ExportTo(format, Some(path)) => {
+                let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
+                self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, &path) {
+                    Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
+                    Err(e) => format!("Export failed: {e}"),
+                };
+            }
             Message::Frame => {
                 self.frames += 1;
                 if self.frames == 3 && self.screenshot.is_some() {
@@ -446,9 +611,16 @@ impl App {
             button(text(label).size(14)).padding([4, 10]).style(button::secondary).on_press_maybe(enabled.then_some(Message::Act(a)))
         };
         let toolbar = row![
+            act("New", true, Action::New),
+            act("Open", true, Action::Open),
             act("Save", true, Action::Save),
             Space::new().width(10),
-            act("↶ Undo", ed.can_undo(), Action::Undo),
+            text("Export").size(13).style(text::secondary),
+            button(text("PDF").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::Pdf)),
+            button(text("MIDI").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::Midi)),
+            button(text("MusicXML").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::MusicXml)),
+            Space::new().width(10),
+            panels::tip(act("↶ Undo", ed.can_undo(), Action::Undo), self.undo_tip.as_str()),
             act("↷ Redo", ed.can_redo(), Action::Redo),
             Space::new().width(10),
             seg(if ed.input_mode { "✎ Input on" } else { "✎ Input" }, ed.input_mode, Message::Act(Action::SetInput(!ed.input_mode))),
@@ -492,7 +664,28 @@ impl App {
             if let Some(e) = &p.error {
                 card = card.push(text(e).size(12).style(text::danger));
             }
-            desk = desk.push(container(container(card).padding(10).style(container::bordered_box)).padding(16).width(Length::Fill).align_x(iced::Alignment::Center));
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(10).style(container::bordered_box))).padding(16).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
+
+        if let Some(n) = &self.new_score {
+            let field = |label: &'static str, hint: &'static str, value: &str, f: NewField| {
+                column![text(label).size(12).style(text::secondary), text_input(hint, value).on_input(move |v| Message::NewInput(f, v)).on_submit(Message::NewCreate).padding(6).size(14)].spacing(3)
+            };
+            let mut card = column![
+                text("New score").size(18),
+                field("Title", "Untitled", &n.title, NewField::Title),
+                field("Instruments (comma separated; \"2 Violin\" for two)", "Flute, Clarinet, Violin, Cello", &n.instruments, NewField::Instruments),
+                field("Bars", "32", &n.bars, NewField::Bars),
+            ]
+            .spacing(10)
+            .width(420);
+            if let Some(e) = &n.error {
+                card = card.push(text(e).size(12).style(text::danger));
+            }
+            card = card.push(
+                row![panels::spacer(), button(text("Cancel").size(14)).style(button::secondary).on_press(Message::NewCancel), button(text("Create").size(14)).style(button::primary).on_press(Message::NewCreate)].spacing(8),
+            );
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(16).style(container::bordered_box))).center(Length::Fill));
         }
 
         let tabs = row![seg("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)), seg("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure))].spacing(4).padding([0, 8]);
@@ -530,7 +723,42 @@ fn save_png(path: &std::path::Path, shot: &iced::window::Screenshot) -> Result<(
     Ok(())
 }
 
+/// The score's text font (serif) and its bold cut next to it (Foo.ttf /
+/// Foo-Bold.ttf), from CORINZIA_TEXT_FONT (set by the dev shell and the
+/// package wrapper). The engraver measures text with the fonts that draw
+/// it; the returned bytes are for the window.
+fn load_text_fonts() -> Vec<Vec<u8>> {
+    let Ok(path) = std::env::var("CORINZIA_TEXT_FONT") else { return vec![] };
+    let bold = std::fs::read(path.replace(".ttf", "-Bold.ttf").replace(".otf", "-Bold.otf")).ok();
+    let Ok(regular) = std::fs::read(&path) else { return vec![] };
+    corinzia_layout::display::set_text_font(regular.clone(), bold.clone());
+    std::iter::once(regular).chain(bold).collect()
+}
+
 fn main() -> iced::Result {
+    let a = args();
+    if let Some(out) = a.export.clone() {
+        // Headless: open, apply scripted keys, export, exit.
+        load_text_fonts();
+        let app = App::from_args(a);
+        let format = match out.extension().and_then(|e| e.to_str()) {
+            Some("pdf") => files::Format::Pdf,
+            Some("mid" | "midi") => files::Format::Midi,
+            Some("musicxml" | "xml") => files::Format::MusicXml,
+            _ => {
+                eprintln!("--export: use a .pdf, .mid or .musicxml file name");
+                std::process::exit(2);
+            }
+        };
+        match files::export_to(&app.editor.project, app.editor.movement, format, &out) {
+            Ok(()) => println!("exported {}", out.display()),
+            Err(e) => {
+                eprintln!("export failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     let mut app = iced::application(App::boot, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
@@ -538,20 +766,8 @@ fn main() -> iced::Result {
         .window_size(Size::new(1280.0, 860.0))
         .antialiasing(true)
         .font(corinzia_layout::font::FONT_DATA);
-    // A text font for the score (serif); the dev shell and the wrapper point here.
-    // A text font for the score (serif) and its bold cut next to it
-    // (Foo.ttf / Foo-Bold.ttf); the dev shell and the package wrapper set it.
-    if let Ok(path) = std::env::var("CORINZIA_TEXT_FONT") {
-        let bold_path = path.replace(".ttf", "-Bold.ttf").replace(".otf", "-Bold.otf");
-        let bold = std::fs::read(&bold_path).ok();
-        if let Ok(regular) = std::fs::read(&path) {
-            // The engraver measures text with the fonts that draw it.
-            corinzia_layout::display::set_text_font(regular.clone(), bold.clone());
-            app = app.font(regular);
-            if let Some(b) = bold {
-                app = app.font(b);
-            }
-        }
+    for font in load_text_fonts() {
+        app = app.font(font);
     }
     app.run()
 }
@@ -702,5 +918,24 @@ mod tests {
         assert_eq!(a.editor.project.movements[0].keys[0].fifths, 2);
         key(&mut a, "esc");
         assert!(a.editor.range.is_none());
+    }
+
+    #[test]
+    fn new_score_from_an_instrument_list() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::New));
+        let _ = a.update(Message::NewInput(NewField::Instruments, "Flute, kazoo".into()));
+        a.create_new();
+        assert_eq!(a.new_score.as_ref().unwrap().error.as_deref(), Some("Unknown instrument: kazoo"));
+        let _ = a.update(Message::NewInput(NewField::Instruments, "2 Violin, Viola, Cello".into()));
+        let _ = a.update(Message::NewInput(NewField::Title, "Quartet".into()));
+        let _ = a.update(Message::NewInput(NewField::Bars, "12".into()));
+        a.create_new();
+        assert!(a.new_score.is_none());
+        assert_eq!(a.editor.project.title, "Quartet");
+        let m = &a.editor.project.movements[0];
+        assert_eq!((m.lanes.len(), m.length), (4, Frac::int(12)));
+        assert!(a.editor.input_mode, "a new score starts in note input");
+        assert_eq!(a.pages[0].staves.iter().filter(|s| s.system == 0).count(), 4);
     }
 }

@@ -91,6 +91,11 @@ pub fn set_text_font(regular: Vec<u8>, bold: Option<Vec<u8>>) -> bool {
     ok
 }
 
+/// The text fonts set with `set_text_font` (regular, bold).
+pub fn text_fonts() -> (Option<&'static [u8]>, Option<&'static [u8]>) {
+    (TEXT_FONT.get().map(Vec::as_slice), TEXT_FONT_BOLD.get().map(Vec::as_slice))
+}
+
 /// Advance of `text` (staff spaces) in the score's serif text font: measured
 /// when the renderer's font is known (`set_text_font`), else estimated.
 pub fn text_width(text: &str, size: f32, bold: bool) -> f32 {

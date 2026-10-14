@@ -1,0 +1,12 @@
+[package]
+name = "corinzia-perform"
+description = "Corinzia's performance compiler: repeats unrolled, ties merged, ornaments and dynamics played; tempo maps; export documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corinzia-score.workspace = true
+corinzia-model.workspace = true
+corinzia-edit.workspace = true
+corinzia-export.workspace = true

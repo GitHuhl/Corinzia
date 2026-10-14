@@ -11,6 +11,8 @@ pub mod font;
 pub mod layout;
 pub mod notation;
 pub mod skyline;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod svg;

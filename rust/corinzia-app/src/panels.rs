@@ -17,7 +17,7 @@ pub enum Panel {
     Structure,
 }
 
-fn tip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: &'a str) -> Element<'a, M> {
+pub fn tip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: &'a str) -> Element<'a, M> {
     tooltip(content, container(text(label).size(12)).padding([3, 6]).style(container::rounded_box), tooltip::Position::Bottom).into()
 }
 

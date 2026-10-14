@@ -9,6 +9,8 @@ license.workspace = true
 default = ["raster"]
 # Rasterize display lists to images (reference tests, previews).
 raster = ["dep:tiny-skia"]
+# Vector PDF output of engraved pages.
+pdf = ["dep:pdf-writer"]
 
 [dependencies]
 serde.workspace = true
@@ -16,3 +18,4 @@ serde_json.workspace = true
 corinzia-score.workspace = true
 ttf-parser = "0.25"
 tiny-skia = { version = "0.11", optional = true }
+pdf-writer = { version = "0.12", optional = true }
