@@ -615,7 +615,7 @@ impl Editor {
             .map(|l| l.voices.iter().map(|v| (v.index, edit::slice_range(&v.events, r.from, r.to))).collect())
             .collect();
         let length = r.to - r.from;
-        self.status = format!("Copied {} staff{}, {} beats", lanes.len(), if lanes.len() == 1 { "" } else { "s" }, quarters(length));
+        self.status = format!("Copied {} {}, {} beats", lanes.len(), if lanes.len() == 1 { "staff" } else { "staves" }, quarters(length));
         self.clip = Some(Clip { lanes, length });
     }
 
@@ -940,7 +940,7 @@ impl Editor {
             let b1 = edit::bar_number(m, (r.to - Frac::new(1, 1024)).max(r.from)).0;
             let staves = r.lane_to - r.lane_from + 1;
             let bars = if b0 == b1 { format!("Bar {b0}") } else { format!("Bars {b0}–{b1}") };
-            return format!("{bars} · {staves} staff{}", if staves == 1 { "" } else { "s" });
+            return format!("{bars} · {staves} {}", if staves == 1 { "staff" } else { "staves" });
         }
         let Some(id) = self.selection else { return String::new() };
         if let Some(d) = edit::describe_item(m, id) {
