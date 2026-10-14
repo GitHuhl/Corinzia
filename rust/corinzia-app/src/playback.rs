@@ -26,7 +26,7 @@ pub struct Playback {
     mixed: Option<u64>,  // revision whose mixer settings were sent
     generation: u64,
     previews: Vec<(Instant, u32, i16)>,
-    /// "No audio output: …" when PipeWire is unavailable.
+    /// Set when PipeWire is unavailable (the details go to stderr).
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
     pub scan_errors: Vec<String>,
@@ -44,7 +44,10 @@ impl Playback {
             #[cfg(feature = "audio-out")]
             match corinzia_audio::backend::start(offline.take().unwrap(), SAMPLE_RATE as u32, MAX_FRAMES) {
                 Ok(o) => output = Some(o),
-                Err(e) => problem = Some(format!("No audio output: {e}")),
+                Err(e) => {
+                    eprintln!("corinzia: no audio output: {e}");
+                    problem = Some("No audio output (PipeWire unavailable)".into());
+                }
             }
             #[cfg(not(feature = "audio-out"))]
             {

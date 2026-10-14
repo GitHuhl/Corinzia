@@ -167,6 +167,7 @@ fn parse_key_token(t: &str) -> Option<(iced::keyboard::Key, iced::keyboard::Modi
         "esc" => Key::Named(Named::Escape),
         "bs" => Key::Named(Named::Backspace),
         "del" => Key::Named(Named::Delete),
+        "space" => Key::Named(Named::Space),
         c => Key::Character(c.into()),
     };
     Some((key, mods))
@@ -232,11 +233,7 @@ impl App {
     fn with_playback(project: Project, path: Option<PathBuf>, view: View, status: String, mut playback: playback::Playback) -> App {
         playback.stop();
         let mut editor = Editor::new(project);
-        editor.status = match &playback.problem {
-            Some(p) if status.is_empty() => p.clone(),
-            Some(p) => format!("{status} · {p}"),
-            None => status,
-        };
+        editor.status = status; // an audio problem shows on the right of the status bar
         let mut app = App {
             editor,
             playback,
@@ -718,38 +715,41 @@ impl App {
         let act = |label: &'static str, enabled: bool, a: Action| {
             button(text(label).size(14)).padding([4, 10]).style(button::secondary).on_press_maybe(enabled.then_some(Message::Act(a)))
         };
-        let toolbar = row![
+        let small = |label: &'static str, m: Message| button(text(label).size(13)).padding([4, 8]).style(button::secondary).on_press(m);
+        let mut toolbar = row![
             seg("Score", self.tab == Tab::Score, Message::Act(Action::ShowScore)),
             seg("Mix", self.tab == Tab::Mix, Message::Act(Action::ShowMix)),
-            Space::new().width(10),
+            Space::new().width(8),
             button(text(if self.playback.is_playing() { "■ Stop" } else { "▶ Play" }).size(14)).padding([4, 12]).style(button::success).on_press(Message::Act(Action::PlayStop)),
-            Space::new().width(10),
+            Space::new().width(8),
             act("New", true, Action::New),
             act("Open", true, Action::Open),
             act("Save", true, Action::Save),
-            Space::new().width(10),
+            Space::new().width(8),
             text("Export").size(13).style(text::secondary),
-            button(text("PDF").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::Pdf)),
-            button(text("MIDI").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::Midi)),
-            button(text("MusicXML").size(13)).padding([4, 8]).style(button::secondary).on_press(Message::Export(files::Format::MusicXml)),
-            Space::new().width(10),
-            panels::tip(act("↶ Undo", ed.can_undo(), Action::Undo), self.undo_tip.as_str()),
-            act("↷ Redo", ed.can_redo(), Action::Redo),
-            Space::new().width(10),
-            seg(if ed.input_mode { "✎ Input on" } else { "✎ Input" }, ed.input_mode, Message::Act(Action::SetInput(!ed.input_mode))),
-            Space::new().width(10),
-            seg("Page", self.view == View::Page, Message::SetView(View::Page)),
-            seg("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama)),
-            Space::new().width(10),
-            button(text("−").size(14)).padding([4, 10]).style(button::secondary).on_press(Message::ZoomBy(1.0 / 1.25)),
-            text(format!("{:.0} %", self.zoom * 100.0)).size(14),
-            button(text("+").size(14)).padding([4, 10]).style(button::secondary).on_press(Message::ZoomBy(1.25)),
-            panels::spacer(),
-            text(ed.movement().map(|m| m.title.clone()).unwrap_or_default()).size(14),
+            small("PDF", Message::Export(files::Format::Pdf)),
+            small("MIDI", Message::Export(files::Format::Midi)),
+            small("MusicXML", Message::Export(files::Format::MusicXml)),
+            Space::new().width(8),
+            panels::tip(act("↶", ed.can_undo(), Action::Undo), self.undo_tip.as_str()),
+            panels::tip(act("↷", ed.can_redo(), Action::Redo), "Redo (Ctrl+Shift+Z)"),
         ]
         .spacing(6)
         .padding(8)
         .align_y(iced::Alignment::Center);
+        if self.tab == Tab::Score {
+            toolbar = toolbar
+                .push(Space::new().width(8))
+                .push(seg(if ed.input_mode { "✎ Input on" } else { "✎ Input" }, ed.input_mode, Message::Act(Action::SetInput(!ed.input_mode))))
+                .push(Space::new().width(8))
+                .push(seg("Page", self.view == View::Page, Message::SetView(View::Page)))
+                .push(seg("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama)))
+                .push(Space::new().width(8))
+                .push(small("−", Message::ZoomBy(1.0 / 1.25)))
+                .push(text(format!("{:.0} %", self.zoom * 100.0)).size(13))
+                .push(small("+", Message::ZoomBy(1.25)));
+        }
+        let toolbar = toolbar.push(panels::spacer()).push(text(ed.movement().map(|m| m.title.clone()).unwrap_or_default()).size(14));
 
         let caret = ed.input_mode.then(|| Caret { part: ed.caret_lane, quarter: quarters(ed.caret) });
         let highlight = ed.range.map(|r| Highlight { part_from: r.lane_from, part_to: r.lane_to, start: quarters(r.from), end: quarters(r.to) });
@@ -812,6 +812,8 @@ impl App {
             Space::new().width(24),
             text(middle).size(13).style(text::secondary),
             panels::spacer(),
+            text(self.playback.problem.clone().unwrap_or_default()).size(13).style(text::danger),
+            Space::new().width(16),
             text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(13),
         ]
         .padding([4, 10]);
