@@ -673,6 +673,50 @@ buttons never take keyboard focus, so typing always reaches the score.
     become staff text. Verified by reading it back with LilyPond's
     `musicxml2ly`.
 
+### 5.5f Native engraver (Rust) and the road to iced
+
+LilyPond gives publication quality but needs seconds per full pass, which
+won't scale to orchestral scores. The plan is a native engraver in Rust,
+toolkit-independent, that will in time drive an iced (wgpu) front end:
+
+| Step | What | State |
+|---|---|---|
+| 1 | `corinzia-layout`: SMuFL (Bravura) metrics, single-system layout into a display list, reference tests | done |
+| 2 | Panorama view in the app engraved natively ("⚡ Native") | done |
+| 3 | slurs, hairpins, text/tempo/marks, collision avoidance, voice polish | next |
+| 4 | system and page breaking, incremental per-measure cache; native Page view | |
+| 5 | `corinzia-render` (wgpu) and the iced front end | |
+
+* **Workspace** `rust/`:
+  * `corinzia-score`: fractions, the notation JSON shared with C++ (now with
+    element ids), note values;
+  * `corinzia-export`: MIDI and MusicXML;
+  * `corinzia-layout`: the engraver;
+  * `corinzia-ffi`: the one static library the C++ app links (two Rust static
+    libraries in one binary would duplicate the Rust runtime). Its C header is
+    `corinzia_export.h`.
+* **Display list** (`display.rs`), in staff spaces: SMuFL glyphs, strokes,
+  beam quads and tie crescents, each tagged with its element id, plus staff
+  geometry and a time→x column map. Any renderer can draw it: tiny-skia for
+  the tests, SVG for the Qt canvas today, wgpu for iced later.
+* **Layout** (`layout.rs`):
+  * spacing: logarithmic in duration, on rhythmic columns shared by all
+    staves, widened where marks need room;
+  * notes: split at barlines into tied, notatable values; stems by the
+    furthest-head rule (by voice in polyphony); seconds in chords; accidentals
+    by key and bar, stacked in columns; ledger lines; dots; flags; beams by
+    beat with secondary beams and hooks; rests, including whole-bar rests;
+  * marks: ties; articulations (on the stem side in polyphony); ornaments;
+    stacked dynamics; double, final and repeat barlines.
+* **In the app** the native engraving is written as SVG shaped like
+  LilyPond's (`svg.rs`), so vector tiles, the hit index, the instant-feedback
+  layer and the playhead work unchanged. A full engraving takes about 57 ms,
+  and an edit appears on screen about 67 ms later, against about 2 s for
+  LilyPond. The re-engrave debounce drops to 40 ms in native mode.
+* **Bravura 1.392** (SIL OFL) and its SMuFL metadata are vendored in
+  `assets/fonts/bravura`. Glyph outlines come from the font itself, so zoom
+  is exact.
+
 ### 5.6 Two workspaces: Score and Mix
 
 The notation and DAW sides are separate tabs over one project. Both share the
@@ -819,8 +863,9 @@ nix build                        # sandboxed build + full test suite (incl. Lily
 ```
 
 **Verified by tests.** Five ctest suites: core (67 cases, also clean under
-ASan + UBSan), the Rust export crate (`cargo test`), PipeWire end-to-end,
-Qt/UI (14 cases, pixel-level) and an app smoke run.
+ASan + UBSan), the Rust workspace (`cargo test`: fractions, note values,
+export, engraver), PipeWire end-to-end, Qt/UI (14 cases, pixel-level) and an
+app smoke run.
 
 | Area | Tests |
 |---|---|
@@ -838,6 +883,7 @@ Qt/UI (14 cases, pixel-level) and an app smoke run.
 | Selection & spanners | eraseRange/slice/paste/applyToRange/transposeRange/markSpan; hairpin velocity ramps and slur legato; spans survive save/load and compile in LilyPond without warnings; smoke: real marquee drag (band + highlight pixels), Ctrl+C/V at a note, R, undo identity, Shift+click passage, S/H, ↑, Ctrl+A + Delete + undo, Esc |
 | Structure & text | popover parsers (keys incl. minor and Unicode accidentals, meters, clefs, barlines, tempo words); bar positions across meter changes; header edits; insert/delete bars for voices and header (maps keep their entry at 0, text follows its bar, barlines between bars survive); repeat unrolling with exact note samples and playhead mapping; LilyPond compiles barlines, marks, tempo words, clefs and text without warnings, with clickable ids; v1→v2 file migration; provisional notes and mouse entry after a mid-system clef change; smoke: Shift+K/M/T/X/B popovers incl. an invalid entry and Esc, panel rehearsal mark, click text + Delete + undo, Ctrl+B and Delete bars + undo, survives save/reopen |
 | Ornaments, endings, export | ornament figures (key-aware neighbours, unit shrinking, contiguity), rolled-chord and trill sample positions, LilyPond compiles every mark without warnings; playback order for 1st/2nd, three and shared endings; MIDI: tracks, channels, tempo/meter, tie-merged gate length, repeats unrolled (parsed back with an SMF reader); MusicXML: measures, ties over barlines, chords, endings, escaping, re-imported by `musicxml2ly` + LilyPond; Rust: fractions, VLQ, tempo-ramp steps, note-value decomposition; smoke: Shift+O, Ornaments panel, 1st/2nd ending button, Shift+R, PDF/MIDI/MusicXML export from the app |
+| Native engraver | glyph metadata vs font outlines for every glyph used; notehead lines/spaces and ledger lines per clef; stem rule incl. balanced chords; accidentals by key and bar; beams by beat; ties over barlines; column alignment across staves; polyphony (articulation sides, stacked dynamics); SVG shape and id encoding; PNG previews (target/tmp/engraving); smoke: Native button, both staves, clickable heads, edit → re-engrave in tens of ms |
 | Zoom & views | canvas pixel-exact vs direct SVG rendering at 4×; text present at every zoom; Page/Panorama engrave, names, mouse entry in panorama |
 | Mix tab | arrange blocks keep colour/position/clip through swaps, growth, scroll and shrink; score canvas growing 1 → 2 pages |
 | App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; **Ctrl+2** Mix tab: one arrange block per note head, doubling on the Piccolo lane, blocks drawn, clicking a block selects the note, clicking the timeline locates the transport sample-exactly; **Ctrl+1** back with score keys working; save to `.project` and reopen; engraved music visible on screen |

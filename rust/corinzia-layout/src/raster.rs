@@ -27,7 +27,7 @@ impl ttf_parser::OutlineBuilder for Outline<'_> {
 /// `scale`: pixels per staff space; `pad`: margin in staff spaces.
 pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     let w = ((list.width + 2.0 * pad) * scale).ceil().max(1.0) as u32;
-    let h = ((list.height + 2.0 * pad) * scale + 12.0 * scale).ceil().max(1.0) as u32;
+    let h = ((list.height + 2.0 * pad + 16.0) * scale).ceil().max(1.0) as u32; // 6 above, 10 below the staves
     let mut pm = Pixmap::new(w, h).expect("pixmap size");
     pm.fill(tiny_skia::Color::WHITE);
     let mut paint = Paint::default();
@@ -38,7 +38,11 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     let face = ttf_parser::Face::parse(FONT_DATA, 0).expect("font");
     let ups = Font::bravura().units_per_space;
     let p = |q: &Point| (q.x, q.y);
-    for item in &list.items {
+    let staff_lines = list.staves.iter().flat_map(|st| {
+        (0..5).map(move |k| Item::line(st.left, st.top + k as f32, st.right, st.top + k as f32, st.line_width, 0))
+    });
+    let all: Vec<Item> = staff_lines.chain(list.items.iter().cloned()).collect();
+    for item in &all {
         match item {
             Item::Glyph { glyph, at, .. } => {
                 let Some(ch) = char::from_u32(*glyph) else { continue };

@@ -148,6 +148,17 @@ ApplicationWindow {
                         ToolTip.text: "Panorama view: one endless system, scroll sideways"
                         ToolTip.visible: hovered
                     }
+                    ToolButton {
+                        objectName: "nativeEngraverButton"
+                        text: "⚡ Native"
+                        checkable: true
+                        checked: App.nativeEngraver
+                        enabled: App.viewMode === "panorama"
+                        focusPolicy: Qt.NoFocus
+                        onToggled: App.nativeEngraver = checked
+                        ToolTip.text: "Panorama with the native engraver: instant re-engraving after every edit (preview: no text, slurs or hairpins yet)"
+                        ToolTip.visible: hovered
+                    }
                     ToolSeparator {}
                     Label { text: "Zoom" }
                     Slider {

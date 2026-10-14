@@ -48,6 +48,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "corinzia-ffi"
+version = "0.1.0"
+dependencies = [
+ "corinzia-export",
+ "corinzia-layout",
+ "corinzia-score",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "corinzia-layout"
 version = "0.1.0"
 dependencies = [

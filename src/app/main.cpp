@@ -340,6 +340,37 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
             app.undo();
         }
         key(Qt::Key_Escape);
+
+        // Native engraver (Rust) for Panorama: fast, same canvas machinery.
+        {
+            const int beforeNative = app.engraveCount();
+            check(clickItem("nativeEngraverButton") && app.nativeEngraver(), "Native button switches the engraver");
+            check(waitFor([&] { return app.engraveCount() > beforeNative; }, 20000), "native engraving arrived");
+            auto ne = canvas->engraving();
+            check(ne && ne->index->staves().size() == 2 && ne->compileMs < 2000, "native engraving: both staves, fast");
+            if (ne) std::printf("  native engraving: %lld ms, %zu staves\n", (long long)ne->compileMs, ne->index->staves().size());
+            const auto& fl = flute();
+            const auto firstHead = fl.front().heads.empty() ? fl.front().id.id : fl.front().heads.front().id.id;
+            check(ne && ne->index->find(firstHead), "native engraving: noteheads are clickable objects");
+            // Edit -> re-engraved quickly (debounce shrinks to tens of ms).
+            check(app.selectFirstNote(), "select a note in native panorama");
+            const int beforeEdit = app.engraveCount();
+            QElapsedTimer t;
+            t.start();
+            app.transposeSelection(1);
+            check(waitFor([&] { return app.engraveCount() > beforeEdit; }, 5000), "edit re-engraved natively");
+            std::printf("  edit -> native re-engrave on screen: %lld ms\n", (long long)t.elapsed());
+            check(t.elapsed() < 1500, "native re-engrave well under LilyPond's time");
+            app.undo();
+            waitFor([&] { return canvas->tilesSettled(); }, 3000);
+            waitFor([] { return false; }, 150);
+            QString nativePng = png;
+            nativePng.replace(QStringLiteral(".png"), QStringLiteral("-native.png"));
+            window->grabWindow().save(nativePng);
+            check(clickItem("nativeEngraverButton") && !app.nativeEngraver(), "Native off again");
+            const int beforeLily = app.engraveCount();
+            check(waitFor([&] { return app.engraveCount() > beforeLily; }, 60000), "LilyPond panorama again");
+        }
         const int before2 = app.engraveCount();
         check(clickItem("pageViewButton") && app.viewMode() == QStringLiteral("page"), "Page button switches back");
         check(waitFor([&] { return app.engraveCount() > before2; }, 60000) && canvas->engraving() &&

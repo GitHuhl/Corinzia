@@ -133,3 +133,20 @@ fn a_full_example_renders() {
     let l = layout_line(&s, &Options::default());
     preview("example", &l);
 }
+
+#[test]
+fn polyphony_keeps_voices_apart() {
+    // Voice 1 staccato above (stem side), voice 2's below; two dynamics stacked.
+    let s = score(&[("treble", &["c''4-.\\mp d''-. e'' f''", "e'4-.\\p f' g' a'"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let above = glyphs(&l, Glyph::StaccatoAbove);
+    let below = glyphs(&l, Glyph::StaccatoBelow);
+    assert_eq!(above.len(), 2);
+    assert_eq!(below.len(), 1);
+    assert!(above.iter().all(|a| a.1 < 0.0), "voice 1 staccatos above the staff: {above:?}");
+    let p = glyphs(&l, Glyph::DynamicP);
+    let m = glyphs(&l, Glyph::DynamicM);
+    assert_eq!(m.len(), 1);
+    assert!(p.iter().any(|g| g.1 > m[0].1 + 1.5), "the second dynamic sits below the first");
+    preview("polyphony", &l);
+}

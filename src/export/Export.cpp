@@ -73,13 +73,9 @@ std::string event(const model::MusicEvent& e) {
 
 }  // namespace
 
-std::string exportDocument(const model::Project& project, const model::Movement& m, double sampleRate) {
-    auto& p = const_cast<model::Project&>(project);   // lookups only
+std::string scoreJson(const model::Movement& m, const PartResolver& resolve) {
     std::ostringstream o;
-    o << "{\"version\":1,\"title\":" << str(project.meta.title) << ",\"composer\":" << str(project.meta.composer);
-
-    // ---- notation ------------------------------------------------------------
-    o << ",\"score\":{\"title\":" << str(m.title) << ",\"length\":" << frac(m.length);
+    o << "{\"title\":" << str(m.title) << ",\"length\":" << frac(m.length);
     o << ",\"tempo\":" << array(m.tempo, [](const model::TempoEvent& t) {
         return "{\"at\":" + frac(t.at) + ",\"bpm\":" + num(t.quarterBpm) + ",\"text\":" + str(t.text) + "}";
     });
@@ -100,10 +96,8 @@ std::string exportDocument(const model::Project& project, const model::Movement&
     });
     o << ",\"marks\":" << array(m.rehearsal, [](const model::RehearsalMark& r) { return frac(r.at); });
     o << ",\"parts\":" << array(m.lanes, [&](const model::PlayerLane& lane) {
-        const model::Player* pl = p.player(lane.player);
-        const model::Instrument* inst = lane.changes.empty() ? nullptr : p.instrument(lane.changes.front().instrument);
-        std::string s = "{\"name\":" + str(inst ? inst->name : pl ? pl->name : "") + ",\"abbr\":" + str(inst ? inst->engraverName : "") +
-                        ",\"clef\":" + str(inst ? inst->clef : "treble");
+        const PartInfo info = resolve(lane);
+        std::string s = "{\"name\":" + str(info.name) + ",\"abbr\":" + str(info.abbreviation) + ",\"clef\":" + str(info.clef);
         s += ",\"clefs\":" + array(lane.clefs, [](const model::ClefChange& c) {
             return "{\"at\":" + frac(c.at) + ",\"clef\":" + str(c.clef) + "}";
         });
@@ -113,9 +107,9 @@ std::string exportDocument(const model::Project& project, const model::Movement&
         for (const auto& t : lane.texts)
             texts.push_back("{\"at\":" + frac(t.at) + ",\"text\":" + str(t.text) +
                             (t.kind == model::TextKind::Technique ? ",\"technique\":true" : "") + "}");
-        for (std::size_t ci = 1; ci < lane.changes.size(); ++ci)
-            if (const model::Instrument* to = p.instrument(lane.changes[ci].instrument))
-                texts.push_back("{\"at\":" + frac(lane.changes[ci].at) + ",\"text\":" + str(to->name) + ",\"technique\":true}");
+        for (std::size_t ci = 1; ci < lane.changes.size() && ci - 1 < info.changeNames.size(); ++ci)
+            texts.push_back("{\"at\":" + frac(lane.changes[ci].at) + ",\"text\":" + str(info.changeNames[ci - 1]) +
+                            ",\"technique\":true}");
         s += ",\"texts\":" + array(texts, [](const std::string& x) { return x; });
         s += ",\"voices\":" + array(lane.voices, [](const model::Voice& v) {
             return "{\"index\":" + std::to_string(v.index) + ",\"events\":" + array(*v.events, event) + "}";
@@ -123,6 +117,31 @@ std::string exportDocument(const model::Project& project, const model::Movement&
         return s + "}";
     });
     o << "}";
+    return o.str();
+}
+
+PartResolver projectResolver(const model::Project& project) {
+    return [&project](const model::PlayerLane& lane) {
+        auto& p = const_cast<model::Project&>(project);   // lookups only
+        PartInfo info;
+        const model::Player* pl = p.player(lane.player);
+        const model::Instrument* inst = lane.changes.empty() ? nullptr : p.instrument(lane.changes.front().instrument);
+        info.name = inst ? inst->name : pl ? pl->name : "";
+        info.abbreviation = inst ? inst->engraverName : "";
+        info.clef = inst ? inst->clef : "treble";
+        for (std::size_t ci = 1; ci < lane.changes.size(); ++ci) {
+            const model::Instrument* to = p.instrument(lane.changes[ci].instrument);
+            info.changeNames.push_back(to ? to->name : "");
+        }
+        return info;
+    };
+}
+
+std::string exportDocument(const model::Project& project, const model::Movement& m, double sampleRate) {
+    auto& p = const_cast<model::Project&>(project);   // lookups only
+    std::ostringstream o;
+    o << "{\"version\":1,\"title\":" << str(project.meta.title) << ",\"composer\":" << str(project.meta.composer);
+    o << ",\"score\":" << scoreJson(m, projectResolver(project));
 
     // ---- performance ---------------------------------------------------------
     const compile::Performance perf = compile::perform(m, sampleRate);
@@ -177,6 +196,19 @@ std::string writeMidi(const model::Project& project, const model::Movement& move
 
 std::string writeMusicXml(const model::Project& project, const model::Movement& movement, const std::string& path) {
     return call(cz_export_musicxml, exportDocument(project, movement), path);
+}
+
+std::string engraveNativeSvg(const model::Movement& movement, const PartResolver& resolve, std::string& error) {
+    const std::string doc = "{\"version\":1,\"score\":" + scoreJson(movement, resolve) + "}";
+    char err[512] = {0};
+    char* out = nullptr;
+    if (cz_layout_svg(reinterpret_cast<const unsigned char*>(doc.data()), doc.size(), &out, err, sizeof err) != 0 || !out) {
+        error = err[0] ? err : "native engraving failed";
+        return {};
+    }
+    std::string svg(out);
+    cz_free_string(out);
+    return svg;
 }
 
 }  // namespace corinzia::exporter

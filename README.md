@@ -61,6 +61,12 @@ press Delete to remove it. Shift+O adds ornaments (tr, mordent, turn, trem,
 arp, breath, caesura); "1st / 2nd ending" or Shift+R add repeat endings, and
 repeats play back as written.
 
+**⚡ Native** (in Panorama view) engraves with Corinzia's own engraver,
+written in Rust with the Bravura font: re-engraving takes tens of
+milliseconds instead of seconds. It's a preview: text, slurs and hairpins
+are still to come. See §5.5f of the architecture document for the plan
+towards a full native engraver and an iced front end.
+
 **Export ▾** in the toolbar writes PDF (LilyPond), MIDI (sounds like playback,
 one track per mixer track) and MusicXML 4.0. MIDI and MusicXML come from a
 small Rust crate (`rust/corinzia-export`) built by the same Nix flake.

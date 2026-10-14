@@ -12,6 +12,7 @@ pub mod layout;
 pub mod notation;
 #[cfg(feature = "raster")]
 pub mod raster;
+pub mod svg;
 
 pub use display::DisplayList;
 pub use layout::{layout_line, Options};

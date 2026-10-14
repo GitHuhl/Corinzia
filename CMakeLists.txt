@@ -44,12 +44,13 @@ target_link_libraries(corinzia_core PUBLIC PkgConfig::CLAP PkgConfig::SQLITE ${C
 target_compile_options(corinzia_core PRIVATE -Wall -Wextra -Wpedantic)
 
 # --------------------------------------------------------------- export ----
-# MIDI / MusicXML writers in Rust (rust/corinzia-export), built by Cargo through
-# Corrosion and linked as a static library; Export.cpp builds their input.
+# Rust (rust/): MIDI / MusicXML export and the native engraver, behind one
+# static library (corinzia-ffi) built by Cargo through Corrosion; Export.cpp
+# builds their JSON input.
 find_package(Corrosion REQUIRED)
-corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml CRATES corinzia-export CRATE_TYPES staticlib)
+corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml CRATES corinzia-ffi)
 add_library(corinzia_io src/export/Export.cpp)
-target_link_libraries(corinzia_io PUBLIC corinzia_core PRIVATE corinzia_export)
+target_link_libraries(corinzia_io PUBLIC corinzia_core PRIVATE corinzia_ffi)
 target_compile_options(corinzia_io PRIVATE -Wall -Wextra -Wpedantic)
 
 # PipeWire backend (separate library: libpipewire's C headers use GNU extensions).
@@ -71,7 +72,7 @@ if(CORINZIA_BUILD_UI)
         include/corinzia/ui/ArrangeView.hpp      src/ui/ArrangeView.cpp
         include/corinzia/ui/VectorTiles.hpp      src/ui/VectorTiles.cpp
     )
-    target_link_libraries(corinzia_ui PUBLIC corinzia_core Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
+    target_link_libraries(corinzia_ui PUBLIC corinzia_core corinzia_io Qt6::Core Qt6::Gui Qt6::Quick Qt6::Svg)
     target_compile_options(corinzia_ui PRIVATE -Wall -Wextra)
 endif()
 

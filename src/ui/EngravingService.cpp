@@ -1,5 +1,7 @@
 #include "corinzia/ui/EngravingService.hpp"
 
+#include "corinzia/export/Export.hpp"
+
 #include "corinzia/ui/VectorTiles.hpp"
 
 #include <QDir>
@@ -81,6 +83,72 @@ void EngravingService::launch(Slot& slot) {
     });
 }
 
+namespace {
+
+// What the native engraver needs to know about each staff, from the context.
+exporter::PartResolver contextResolver(const engrave::EngraveContext& ctx) {
+    return [&ctx](const model::PlayerLane& lane) {
+        exporter::PartInfo info;
+        const model::Instrument* first = nullptr;
+        if (!lane.changes.empty())
+            if (auto it = ctx.instruments.find(lane.changes.front().instrument); it != ctx.instruments.end()) first = it->second;
+        const auto pn = ctx.playerNames.find(lane.player);
+        info.name = first ? first->name : pn != ctx.playerNames.end() ? pn->second : "";
+        info.abbreviation = first ? first->engraverName : "";
+        info.clef = first ? first->clef : "treble";
+        for (std::size_t ci = 1; ci < lane.changes.size(); ++ci) {
+            auto it = ctx.instruments.find(lane.changes[ci].instrument);
+            info.changeNames.push_back(it != ctx.instruments.end() ? it->second->name : "");
+        }
+        return info;
+    };
+}
+
+enum class LilyOutcome { Ok, Failed, Cancelled };
+
+// Runs LilyPond (SVG backend) on the movement; a newer request cancels it.
+LilyOutcome runLilyPond(const QString& lilypond, const model::MovementSnapshot& snap, const engrave::EngraveContext& ctx,
+                        const std::shared_ptr<std::atomic<std::uint64_t>>& latest, EngraveResult& r,
+                        std::vector<QByteArray>& out) {
+    const QByteArray source = QByteArray::fromStdString(engrave::emitLilyPond(*snap.movement, ctx));
+    QTemporaryDir dir;
+    if (!dir.isValid()) { r.log = QStringLiteral("cannot create temp dir"); return LilyOutcome::Failed; }
+    const QString base = dir.filePath(QStringLiteral("movement"));
+
+    QProcess proc;
+    proc.setProgram(lilypond);
+    proc.setArguments({QStringLiteral("-dbackend=svg"), QStringLiteral("-dno-point-and-click"), QStringLiteral("-s"),
+                       QStringLiteral("-o"), base, QStringLiteral("-")});
+    proc.start();
+    if (!proc.waitForStarted(5000)) { r.log = QStringLiteral("cannot start ") + lilypond; return LilyOutcome::Failed; }
+    proc.write(source);
+    proc.closeWriteChannel();
+    // Poll so a newer edit can cancel this compile within ~30 ms.
+    while (!proc.waitForFinished(30)) {
+        if (latest->load() > snap.revision) {
+            proc.kill();
+            proc.waitForFinished(1000);
+            return LilyOutcome::Cancelled;
+        }
+        if (proc.state() == QProcess::NotRunning) break;
+    }
+    r.log = QString::fromUtf8(proc.readAllStandardError());
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) return LilyOutcome::Failed;
+
+    // Single page -> movement.svg; multi-page -> movement-1.svg, movement-2.svg, ...
+    QStringList files;
+    if (QFile::exists(base + QStringLiteral(".svg"))) files << base + QStringLiteral(".svg");
+    for (int i = 1; QFile::exists(base + QStringLiteral("-%1.svg").arg(i)); ++i) files << base + QStringLiteral("-%1.svg").arg(i);
+    for (const QString& file : files) {
+        QFile f(file);
+        if (!f.open(QIODevice::ReadOnly)) return LilyOutcome::Failed;
+        out.push_back(f.readAll());
+    }
+    return LilyOutcome::Ok;
+}
+
+}  // namespace
+
 std::shared_ptr<EngraveResult> EngravingService::runJob(QString lilypond, model::MovementSnapshot snap,
                                                         engrave::EngraveContext ctx, qreal scale,
                                                         std::shared_ptr<std::atomic<std::uint64_t>> latest) {
@@ -92,43 +160,29 @@ std::shared_ptr<EngraveResult> EngravingService::runJob(QString lilypond, model:
     QElapsedTimer clock;
     clock.start();
 
-    const QByteArray source = QByteArray::fromStdString(engrave::emitLilyPond(*snap.movement, ctx));
-    QTemporaryDir dir;
-    if (!dir.isValid()) { r->log = QStringLiteral("cannot create temp dir"); return r; }
-    const QString base = dir.filePath(QStringLiteral("movement"));
-
-    QProcess proc;
-    proc.setProgram(lilypond);
-    proc.setArguments({QStringLiteral("-dbackend=svg"), QStringLiteral("-dno-point-and-click"), QStringLiteral("-s"),
-                       QStringLiteral("-o"), base, QStringLiteral("-")});
-    proc.start();
-    if (!proc.waitForStarted(5000)) { r->log = QStringLiteral("cannot start ") + lilypond; return r; }
-    proc.write(source);
-    proc.closeWriteChannel();
-    // Poll so a newer edit can cancel this compile within ~30 ms.
-    while (!proc.waitForFinished(30)) {
-        if (latest->load() > snap.revision) {
-            proc.kill();
-            proc.waitForFinished(1000);
-            return nullptr;
+    std::vector<QByteArray> pageSvgs;
+    if (ctx.nativeEngraver) {
+        // Native engraver (Rust): milliseconds, in this thread.
+        std::string err;
+        const std::string svg = exporter::engraveNativeSvg(*snap.movement, contextResolver(ctx), err);
+        if (svg.empty()) {
+            r->log = QString::fromStdString(err);
+            return r;
         }
-        if (proc.state() == QProcess::NotRunning) break;
+        pageSvgs.push_back(QByteArray::fromStdString(svg));
+    } else {
+        switch (runLilyPond(lilypond, snap, ctx, latest, *r, pageSvgs)) {
+            case LilyOutcome::Cancelled: return nullptr;
+            case LilyOutcome::Failed: return r;
+            case LilyOutcome::Ok: break;
+        }
     }
-    r->log = QString::fromUtf8(proc.readAllStandardError());
-    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) return r;
-
-    // Single page -> movement.svg; multi-page -> movement-1.svg, movement-2.svg, ...
-    QStringList files;
-    if (QFile::exists(base + QStringLiteral(".svg"))) files << base + QStringLiteral(".svg");
-    for (int i = 1; QFile::exists(base + QStringLiteral("-%1.svg").arg(i)); ++i) files << base + QStringLiteral("-%1.svg").arg(i);
 
     auto index = std::make_shared<SvgHitIndex>();
-    for (int page = 0; page < files.size(); ++page) {
+    for (int page = 0; page < int(pageSvgs.size()); ++page) {
         if (latest->load() > snap.revision) return nullptr;
-        QFile f(files[page]);
-        if (!f.open(QIODevice::ReadOnly)) return r;
         EngravedPage pg;
-        pg.svg = normalizeSvgText(f.readAll());   // keep text renderable at every zoom
+        pg.svg = normalizeSvgText(pageSvgs[std::size_t(page)]);   // keep text renderable at every zoom
         index->addPage(page, pg.svg);
         QSvgRenderer renderer(pg.svg);
         pg.size = renderer.viewBoxF().size();

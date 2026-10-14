@@ -579,10 +579,7 @@ impl<'a> Engraver<'a> {
         let right = self.out.width - self.opt.margin;
         for pi in 0..self.score.parts.len() {
             let top = self.top(pi);
-            for l in 0..5 {
-                self.push(Item::line(self.opt.margin, top + l as f32, right, top + l as f32, t, 0));
-            }
-            self.out.staves.push(StaffGeom { part: pi, top, left: self.opt.margin, right });
+            self.out.staves.push(StaffGeom { part: pi, top, left: self.opt.margin, right, line_width: t });
             // Clef at the system start.
             let (g, dy) = clef_glyph(&self.score.parts[pi].clef);
             self.push(Item::glyph(g, self.opt.margin + 0.8, top + dy, 0));
@@ -909,9 +906,11 @@ impl<'a> Engraver<'a> {
             }
             let top = self.top(n.part);
             let center = |g: Glyph, s: &Self| n.x + HEAD_W / 2.0 - s.width(g) / 2.0;
+            let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
             if !n.rest {
-                // Close articulations on the notehead side away from the stem, in spaces.
-                let below = n.stem_up;
+                // Close articulations on the notehead side away from the stem, in spaces;
+                // in polyphony on the stem side, away from the other voice.
+                let below = if poly { n.voice % 2 == 0 } else { n.stem_up };
                 let outer = if below { n.heads[0].pos } else { n.heads[n.heads.len() - 1].pos };
                 let mut pos = outer + if below { -2 } else { 2 };
                 for (bit, up_g, down_g) in [
@@ -923,6 +922,11 @@ impl<'a> Engraver<'a> {
                 ] {
                     if n.art & bit == 0 {
                         continue;
+                    }
+                    if poly && below == !n.stem_up && n.has_stem() {
+                        // Stem side: beyond the stem end.
+                        let end_pos = ((self.top(n.part) + 2.0 - self.notes[i].stem_end) * 2.0).round() as i32;
+                        pos = if below { pos.min(end_pos - 1) } else { pos.max(end_pos + 1) };
                     }
                     if pos.abs() <= 4 && pos % 2 == 0 {
                         pos += if below { -1 } else { 1 }; // into the space
@@ -975,9 +979,16 @@ impl<'a> Engraver<'a> {
                 for o in self.notes.iter().filter(|o| o.part == n.part && o.start == n.start && !o.rest) {
                     y = y.max(self.y(o.part, o.heads[0].pos) + 2.6);
                     if !o.stem_up && o.has_stem() {
-                        y = y.max(o.stem_end + 2.0);
+                        let marks = o.art & (art::STACCATO | art::STACCATISSIMO | art::TENUTO | art::ACCENT | art::MARCATO) != 0;
+                        y = y.max(o.stem_end + if marks { 3.2 } else { 2.0 });
                     }
                 }
+                // Several voices with a dynamic at one moment: stacked, voice 1 on top.
+                let earlier = self.notes[..i]
+                    .iter()
+                    .filter(|o| o.part == n.part && o.start == n.start && o.first && o.dynamic.is_some())
+                    .count();
+                y += earlier as f32 * 2.2;
                 for ch in dynamic.chars() {
                     let g = match ch {
                         'p' => Glyph::DynamicP,

@@ -56,6 +56,8 @@ class AppController : public QObject {
     Q_PROPERTY(QString caretLabel READ caretLabel NOTIFY inputStateChanged)
     // Score view: "page" (paginated) or "panorama" (one endless system).
     Q_PROPERTY(QString viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged)
+    // Panorama engraved by the native engraver (Rust) instead of LilyPond.
+    Q_PROPERTY(bool nativeEngraver READ nativeEngraver WRITE setNativeEngraver NOTIFY viewModeChanged)
     Q_PROPERTY(bool hasRange READ hasRange NOTIFY selectionChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY selectionChanged)
     // ---- DAW tab -------------------------------------------------------------
@@ -153,6 +155,8 @@ public:
     QString caretLabel() const;
     QString viewMode() const { return panorama_ ? QStringLiteral("panorama") : QStringLiteral("page"); }
     void setViewMode(const QString& mode);
+    bool nativeEngraver() const noexcept { return nativeEngraver_; }
+    void setNativeEngraver(bool on);
     QVariantList arrangeBars() const;
     static QColor trackColor(std::size_t index);
     Fraction caretPosition() const noexcept { return caretPos_; }
@@ -263,6 +267,7 @@ private:
     QString selectionLabel_, status_;
     bool playing_ = false;
     bool panorama_ = false;
+    bool nativeEngraver_ = false;
     int engraveCount_ = 0;
 };
 

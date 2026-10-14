@@ -32,6 +32,9 @@ struct EngraveContext {
     // Panorama ("galley"/"continuous" view): the whole movement on one endless
     // system; LilyPond sizes the page to fit (ly:one-line-auto-height-breaking).
     bool panorama = false;
+    // Engrave with the native engraver (rust/corinzia-layout, one system)
+    // instead of LilyPond.
+    bool nativeEngraver = false;
     double staffSizePt = 18.0;
 };
 

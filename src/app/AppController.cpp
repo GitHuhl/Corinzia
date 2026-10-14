@@ -447,6 +447,7 @@ engrave::EngraveContext AppController::engraveContext() const {
     }
     ctx.instrumentStorage = std::move(storage);
     ctx.panorama = panorama_;
+    ctx.nativeEngraver = nativeEngraver_ && panorama_;   // the native engraver lays out one system
     return ctx;
 }
 
@@ -475,6 +476,21 @@ void AppController::attachCanvas(ui::ScoreCanvas* canvas) {
     if (auto m = displayedMovement(); m.valid()) {
         requestEngrave(m);
         engraving_.engraveNow(m);
+    }
+}
+
+void AppController::setNativeEngraver(bool on) {
+    if (on == nativeEngraver_) return;
+    nativeEngraver_ = on;
+    // Native engraving takes milliseconds: re-engrave right after an edit.
+    engraving_.setDebounceMs(on ? 40 : opt_.engraveDebounceMs);
+    emit viewModeChanged();
+    if (panorama_) {
+        const MovementId mv = displayedMovement();
+        if (mv.valid()) {
+            requestEngrave(mv);
+            engraving_.engraveNow(mv);
+        }
     }
 }
 

@@ -43,14 +43,15 @@ impl Item {
     }
 }
 
-/// Geometry the editor needs besides the marks: staves (for the caret and
-/// mouse entry) and the time -> x map (for the playhead).
+/// Geometry besides the marks: staves (drawn by every renderer from this,
+/// and used for the caret and mouse entry) and the time -> x map (playhead).
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct StaffGeom {
     pub part: usize,
-    pub top: f32, // y of the top line
+    pub top: f32, // y of the top line; five lines one space apart
     pub left: f32,
     pub right: f32,
+    pub line_width: f32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
