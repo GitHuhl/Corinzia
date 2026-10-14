@@ -182,6 +182,9 @@ pub struct Meter {
     pub at: Frac,
     pub num: i64,
     pub den: i64,
+    /// An upbeat (anacrusis): this bar is num/den long, written with the
+    /// next meter's signature and not counted.
+    pub pickup: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Key {

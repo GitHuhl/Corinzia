@@ -189,7 +189,7 @@ pub fn load(path: &Path) -> Result<Project> {
             });
         }
         for t in serde_json::from_str::<Vec<Value>>(&meter)? {
-            m.meter.push(Meter { at: frac(&t["at"]), num: t["num"].as_i64().unwrap_or(4), den: t["den"].as_i64().unwrap_or(4) });
+            m.meter.push(Meter { at: frac(&t["at"]), num: t["num"].as_i64().unwrap_or(4), den: t["den"].as_i64().unwrap_or(4), pickup: t["pickup"].as_bool().unwrap_or(false) });
         }
         for t in serde_json::from_str::<Vec<Value>>(&keys)? {
             m.keys.push(Key { at: frac(&t["at"]), fifths: t["fifths"].as_i64().unwrap_or(0) as i32, minor: t["minor"].as_bool().unwrap_or(false) });
@@ -469,7 +469,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             }
             o
         }).collect());
-        let meter = arr(m.meter.iter().map(|t| json!({"at": jfrac(t.at), "num": t.num, "den": t.den})).collect());
+        let meter = arr(m.meter.iter().map(|t| json!({"at": jfrac(t.at), "num": t.num, "den": t.den, "pickup": t.pickup})).collect());
         let keys = arr(m.keys.iter().map(|k| json!({"at": jfrac(k.at), "fifths": k.fifths, "minor": k.minor})).collect());
         let mut clefs = Vec::new();
         let mut texts = Vec::new();

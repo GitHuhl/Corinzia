@@ -226,7 +226,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
         composer: String::new(),
         length: bar * Frac::int(bars.max(1)),
         tempo: vec![],
-        meter: vec![Meter { at: Frac::ZERO, num: meter.0, den: meter.1 }],
+        meter: vec![Meter { at: Frac::ZERO, num: meter.0, den: meter.1, pickup: false }],
         keys: vec![corinzia_score::score::Key { at: Frac::ZERO, fifths, minor: false }],
         barlines: vec![],
         endings: vec![],

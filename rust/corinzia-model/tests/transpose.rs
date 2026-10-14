@@ -40,7 +40,7 @@ fn transposed_view_writes_pitches_and_keys() {
         length: Frac::int(1),
         revision: 0,
         tempo: vec![],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }],
         keys: vec![Key { at: Frac::ZERO, fifths: -2, minor: false }],
         barlines: vec![],
         rehearsal: vec![],

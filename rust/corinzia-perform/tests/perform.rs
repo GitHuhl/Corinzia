@@ -24,7 +24,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         length,
         revision: 0,
         tempo: vec![Tempo { at: F::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
-        meter: vec![Meter { at: F::ZERO, num: 4, den: 4 }],
+        meter: vec![Meter { at: F::ZERO, num: 4, den: 4, pickup: false }],
         keys: vec![Key { at: F::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],

@@ -28,7 +28,7 @@ fn sample() -> Project {
         length: Frac::int(6),
         revision: 7,
         tempo: vec![Tempo { at: Frac::ZERO, bpm: 96.0, ramp: false, text: "Andante \"con moto\"".into() }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }, Meter { at: Frac::int(4), num: 3, den: 4 }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }, Meter { at: Frac::int(4), num: 3, den: 4, pickup: false }],
         keys: vec![Key { at: Frac::ZERO, fifths: 1, minor: false }],
         barlines: vec![Barline { id: 20, at: Frac::int(2), kind: BarKind::RepeatEnd }],
         rehearsal: vec![RehearsalMark { id: 21, at: Frac::int(1) }],

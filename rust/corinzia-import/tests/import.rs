@@ -39,62 +39,63 @@ fn parts_staves_and_header() {
     // The left hand starts in the bass clef and changes to treble in bar 3.
     assert_eq!(m.lanes[2].clefs[0].clef, "bass");
     assert_eq!(m.lanes[2].clefs[0].at, Frac::ZERO);
-    assert!(m.lanes[2].clefs.iter().any(|c| c.clef == "treble" && c.at == f(6, 4)));
+    assert!(m.lanes[2].clefs.iter().any(|c| c.clef == "treble" && c.at == f(4, 4)));
 }
 
 #[test]
 fn bars_keys_meter_tempo_and_the_pickup() {
     let m = &load().movements[0];
-    // The pickup is padded to a full 3/4 bar: four bars of 3/4.
-    assert_eq!(m.length, f(3, 1));
-    assert_eq!((m.meter[0].num, m.meter[0].den), (3, 4));
+    // A quarter pickup, then three bars of 3/4.
+    assert_eq!(m.length, f(10, 4));
+    assert!(m.meter[0].pickup);
+    assert_eq!((m.meter[0].at, m.meter[0].num, m.meter[0].den), (Frac::ZERO, 1, 4));
+    assert_eq!((m.meter[1].at, m.meter[1].num, m.meter[1].den, m.meter[1].pickup), (f(1, 4), 3, 4, false));
     assert_eq!(m.keys[0].fifths, -1);
     assert_eq!(m.tempo[0].bpm, 72.0);
     assert_eq!(m.tempo[0].text, "Andante");
-    // The pickup note sits on the last beat of bar 1, rests before it.
     let voice = &m.lanes[0].voices[0].events;
-    assert_eq!(names(&voice[..2]), ["r", "C5"]);
-    assert_eq!(voice[1].start, f(2, 4));
+    assert_eq!(names(&voice[..1]), ["C5"]);
+    assert_eq!(voice[0].start, Frac::ZERO);
 }
 
 #[test]
 fn notes_chords_ties_marks_and_lyrics() {
     let m = &load().movements[0];
     let v = &m.lanes[0].voices[0].events;
-    assert_eq!(names(v), ["r", "C5", "F4", "G4", "A4", "Bb4", "Bb4", "r", "C5"]);
-    assert_eq!(v[1].lyrics[0].text, "Oh");
-    assert!(v[2].lyrics[0].hyphen && !v[3].lyrics[0].hyphen);
-    assert!(v[2].spans & span::SLUR_START != 0 && v[4].spans & span::SLUR_END != 0);
-    assert!(v[4].articulations & art::STACCATO != 0);
-    assert_eq!(v[2].dynamic, Some(2)); // p
-    assert!(v[2].spans & span::CRESC_START != 0);
-    assert!(v[4].spans & span::HAIRPIN_END != 0);
-    assert_eq!(v[5].dynamic, Some(5)); // f
-    assert!(v[5].heads[0].tie && !v[6].heads[0].tie);
-    assert!(v[6].articulations & art::FERMATA != 0);
+    assert_eq!(names(v), ["C5", "F4", "G4", "A4", "Bb4", "Bb4", "r", "C5"]);
+    assert_eq!(v[0].lyrics[0].text, "Oh");
+    assert!(v[1].lyrics[0].hyphen && !v[2].lyrics[0].hyphen);
+    assert!(v[1].spans & span::SLUR_START != 0 && v[3].spans & span::SLUR_END != 0);
+    assert!(v[3].articulations & art::STACCATO != 0);
+    assert_eq!(v[1].dynamic, Some(2)); // p
+    assert!(v[1].spans & span::CRESC_START != 0);
+    assert!(v[3].spans & span::HAIRPIN_END != 0);
+    assert_eq!(v[4].dynamic, Some(5)); // f
+    assert!(v[4].heads[0].tie && !v[5].heads[0].tie);
+    assert!(v[5].articulations & art::FERMATA != 0);
     // Chord symbols in Corinzia's spelling.
     let chords: Vec<&str> = m.lanes[0].chords.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(chords, ["F", "Bb7/D"]);
     // The piano: a chord in the right hand; two voices in the left.
     let rh = &m.lanes[1].voices[0].events;
-    // (padding before the pickup, the pickup's own rest, then bar 2)
-    assert_eq!(names(rh)[..3], ["r", "r", "F4+A4+C5"]);
+    // (the pickup's rest, then bar 1)
+    assert_eq!(names(rh)[..2], ["r", "F4+A4+C5"]);
     let lh = &m.lanes[2];
     assert_eq!(lh.voices.len(), 2);
-    assert_eq!(names(&lh.voices[0].events)[..6], ["r", "r", "F2", "C3", "A3", "F3"]);
+    assert_eq!(names(&lh.voices[0].events)[..5], ["r", "F2", "C3", "A3", "F3"]);
     assert_eq!(names(&lh.voices[1].events), ["F3"]);
-    assert_eq!(lh.voices[1].events[0].start, f(3, 4));
+    assert_eq!(lh.voices[1].events[0].start, f(1, 4));
 }
 
 #[test]
 fn repeats_and_endings() {
     let m = &load().movements[0];
     let kinds: Vec<(Frac, BarKind)> = m.barlines.iter().map(|b| (b.at, b.kind)).collect();
-    assert!(kinds.contains(&(f(3, 4), BarKind::RepeatStart)), "{kinds:?}");
-    assert!(kinds.contains(&(f(9, 4), BarKind::RepeatEnd)), "{kinds:?}");
-    assert!(kinds.contains(&(f(12, 4), BarKind::Final)), "{kinds:?}");
+    assert!(kinds.contains(&(f(1, 4), BarKind::RepeatStart)), "{kinds:?}");
+    assert!(kinds.contains(&(f(7, 4), BarKind::RepeatEnd)), "{kinds:?}");
+    assert!(kinds.contains(&(f(10, 4), BarKind::Final)), "{kinds:?}");
     let endings: Vec<(Frac, Frac, u8)> = m.endings.iter().map(|e| (e.from, e.to, e.passes)).collect();
-    assert_eq!(endings, [(f(6, 4), f(9, 4), 1), (f(9, 4), f(12, 4), 2)]);
+    assert_eq!(endings, [(f(4, 4), f(7, 4), 1), (f(7, 4), f(10, 4), 2)]);
 }
 
 #[test]

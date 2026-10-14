@@ -54,13 +54,14 @@ struct Measure {
     len: Frac,
     num: i64,
     den: i64,
+    implicit: bool,
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
     let mut meters = s.meter.clone();
     meters.sort_by(|a, b| a.at.cmp(&b.at));
     if meters.is_empty() || meters[0].at > Frac::ZERO {
-        meters.insert(0, crate::doc::Meter { at: Frac::ZERO, num: 4, den: 4 });
+        meters.insert(0, crate::doc::Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false });
     }
     let mut out = Vec::new();
     let mut at = Frac::ZERO;
@@ -74,7 +75,12 @@ fn measures(s: &Score) -> Vec<Measure> {
         if at + len > s.length {
             len = s.length - at;
         }
-        out.push(Measure { start: at, len, num: m.num, den: m.den });
+        // A pickup is written in the following meter, as an implicit bar.
+        let (num, den) = match meters.iter().find(|x| m.pickup && x.at > m.at && !x.pickup) {
+            Some(next) => (next.num, next.den),
+            None => (m.num, m.den),
+        };
+        out.push(Measure { start: at, len, num, den, implicit: m.pickup });
         at = at + len;
     }
     out
@@ -115,7 +121,12 @@ impl<'a> Writer<'a> {
         let mut prev_meter = (0, 0);
         for (mi, m) in ms.iter().enumerate() {
             let end = m.start + m.len;
-            let _ = writeln!(self.out, "    <measure number=\"{}\">", mi + 1);
+            let pickup = ms.first().is_some_and(|m| m.implicit) as usize;
+            if m.implicit {
+                let _ = writeln!(self.out, "    <measure number=\"{}\" implicit=\"yes\">", mi + 1 - pickup);
+            } else {
+                let _ = writeln!(self.out, "    <measure number=\"{}\">", mi + 1 - pickup);
+            }
             // Left barline: start repeat and/or ending start.
             let start_repeat = s
                 .barlines
@@ -145,7 +156,7 @@ impl<'a> Writer<'a> {
             }
             // Attributes.
             let key_here = keys.iter().rev().find(|k| k.at <= m.start && (mi == 0 || k.at > ms[mi - 1].start));
-            let meter_changed = (m.num, m.den) != prev_meter && m.len == Frac::new(m.num, m.den) || mi == 0;
+            let meter_changed = (m.num, m.den) != prev_meter && (m.len == Frac::new(m.num, m.den) || m.implicit) || mi == 0;
             if mi == 0 || key_here.is_some() || meter_changed {
                 self.line("      <attributes>");
                 if mi == 0 {

@@ -250,6 +250,14 @@ fn pages_break_into_justified_systems() {
     // Abbreviated names after the first system.
     let texts: Vec<&str> = pages.iter().flat_map(|p| p.items.iter()).filter_map(|i| match i { Item::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
     assert!(texts.contains(&"Violin") && texts.contains(&"Vln.") && texts.contains(&"Étude"));
+    // Every system but the first starts with its bar number, rising.
+    let numbers: Vec<usize> = pages
+        .iter()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|i| match i { Item::Text { text, size, .. } if (*size - 1.6).abs() < 1e-6 => text.parse().ok(), _ => None })
+        .collect();
+    assert_eq!(numbers.len(), systems - 1, "{numbers:?}");
+    assert!(numbers[0] > 1 && numbers.windows(2).all(|w| w[0] < w[1]), "{numbers:?}");
 }
 
 #[test]
@@ -413,4 +421,25 @@ fn page_header_and_numbers() {
     }
     assert!(!texts(&pages[1]).iter().any(|t| t.0 == "Sonatina"));
     preview("page_header", &pages[0]);
+}
+
+#[test]
+fn pickup_bar_counts_its_beats_from_the_end() {
+    // Five eighths before the first 4/4 bar: the first is on beat 2 and
+    // stands alone, the other four share the bar's second half.
+    let mut s = score(&[("treble", &["c''8 d'' e'' f'' g'' a''1"])], (4, 4), 0);
+    s.meter = vec![
+        corinzia_score::score::Meter { at: corinzia_score::Frac::ZERO, num: 5, den: 8, pickup: true },
+        corinzia_score::score::Meter { at: corinzia_score::Frac::new(5, 8), num: 4, den: 4, pickup: false },
+    ];
+    s.length = corinzia_score::Frac::new(13, 8);
+    let l = layout_line(&s, &Options::default());
+    // The time signature is written once, as 4/4.
+    assert_eq!(glyphs(&l, Glyph::TimeSigDigit(4)).len(), 2);
+    assert!(glyphs(&l, Glyph::TimeSigDigit(5)).is_empty() && glyphs(&l, Glyph::TimeSigDigit(8)).is_empty());
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    let flags: Vec<f32> = glyphs(&l, Glyph::Flag8thDown).into_iter().chain(glyphs(&l, Glyph::Flag8thUp)).map(|f| f.0).collect();
+    assert_eq!(flags.len(), 1);
+    assert!(flags[0] < heads[1].0, "the flagged eighth is the first: {flags:?}");
+    preview("pickup", &l);
 }

@@ -341,14 +341,16 @@ pub fn bar_number(m: &Movement, pos: Frac) -> (usize, Frac) {
     let starts = bar_starts(m);
     let i = starts.iter().rposition(|&s| s <= pos).unwrap_or(0);
     let s = starts.get(i).copied().unwrap_or(Frac::ZERO);
+    // A pickup is bar 0.
+    let first = if pickup(m).is_some() { 0 } else { 1 };
     if pos >= m.length && !starts.is_empty() {
         // Past the end: count on in the last bar's meter.
         let len = bar_length(m, pos);
         let extra = (pos - m.length) * Frac::new(len.den, len.num);
-        let n = starts.len() + (extra.num / extra.den) as usize;
+        let n = starts.len() + (extra.num / extra.den) as usize - pickup(m).is_some() as usize;
         return (n + 1, pos - (m.length + len * Frac::int(extra.num / extra.den)));
     }
-    (i + 1, pos - s)
+    (i + first, pos - s)
 }
 
 /// `end` rounded up to whole bars (at least `m.length`).
@@ -374,8 +376,66 @@ fn replace_at<T>(v: &mut Vec<T>, at: Frac, item: T, at_of: impl Fn(&T) -> Frac) 
 pub fn set_key(m: &mut Movement, at: Frac, key: KeySig) {
     replace_at(&mut m.keys, at, Key { at, fifths: key.fifths, minor: key.minor }, |k| k.at);
 }
+/// A meter at the start of a pickup bar applies from the bar after it.
 pub fn set_meter(m: &mut Movement, at: Frac, num: i64, den: i64) {
-    replace_at(&mut m.meter, at, Meter { at, num, den }, |k| k.at);
+    let at = match m.meter.iter().find(|x| x.at == at && x.pickup) {
+        Some(p) => at + Frac::new(p.num, p.den),
+        None => at,
+    };
+    replace_at(&mut m.meter, at, Meter { at, num, den, pickup: false }, |k| k.at);
+}
+
+/// The pickup (upbeat) bar's length, if the movement starts with one.
+pub fn pickup(m: &Movement) -> Option<Frac> {
+    m.meter.first().filter(|x| x.at == Frac::ZERO && x.pickup).map(|x| Frac::new(x.num, x.den))
+}
+
+/// Sets, changes or removes (`None`) the pickup bar. A new pickup is an
+/// empty bar of `len` before the music; removing one deletes its music.
+pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
+    if let Some(old) = pickup(m) {
+        m.meter.remove(0);
+        // The main meter moves back to 0 with everything else.
+        delete_span(m, Frac::ZERO, old);
+        for l in m.lanes.iter_mut() {
+            for v in l.voices.iter_mut() {
+                v.events = delete_span_events(&v.events, Frac::ZERO, old).into();
+            }
+        }
+    }
+    let Some(len) = len.filter(|l| *l > Frac::ZERO) else { return };
+    insert_span(m, Frac::ZERO, len);
+    for l in m.lanes.iter_mut() {
+        for v in l.voices.iter_mut() {
+            v.events = insert_span_events(&v.events, Frac::ZERO, len).into();
+        }
+    }
+    // Entries at 0 (the meter, key, tempo, instruments) stay at 0: the
+    // pickup is in the movement's opening meter, key and tempo. The meter
+    // itself moves to the first full bar.
+    for x in m.meter.iter_mut().filter(|x| x.at == Frac::ZERO) {
+        x.at = len;
+    }
+    if m.meter.iter().all(|x| x.at != len) {
+        m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false });
+    }
+    m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true });
+    m.meter.sort_by(|a, b| a.at.cmp(&b.at));
+}
+
+/// Pickup lengths typed into the time popover: "pickup 1/4" (a note value
+/// or fraction of a whole), "pickup 2" (beats of `beat`), "no pickup".
+pub fn parse_pickup(text: &str, beat: Frac) -> Option<Option<Frac>> {
+    let t = text.trim().to_lowercase();
+    if matches!(t.as_str(), "no pickup" | "pickup 0" | "nopickup" | "no upbeat") {
+        return Some(None);
+    }
+    let rest = t.strip_prefix("pickup").or_else(|| t.strip_prefix("upbeat")).or_else(|| t.strip_prefix("anacrusis"))?.trim();
+    let len = match rest.split_once('/') {
+        Some((n, d)) => Frac::new(n.trim().parse().ok()?, d.trim().parse().ok()?),
+        None => beat * Frac::int(rest.parse().ok()?),
+    };
+    (len > Frac::ZERO).then_some(Some(len))
 }
 pub fn set_tempo(m: &mut Movement, at: Frac, t: &TempoSpec) {
     replace_at(&mut m.tempo, at, Tempo { at, bpm: t.bpm, ramp: false, text: t.text.clone() }, |k| k.at);

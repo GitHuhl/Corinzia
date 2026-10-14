@@ -215,7 +215,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
     // longest voice (or its time signature when empty).
     let mut meter_len = Frac::int(1);
     let mut bar_starts: Vec<Frac> = Vec::new();
-    let mut lead = Frac::ZERO; // rests in front of a pickup
+    let mut pickup: Option<Frac> = None;
     {
         let mut divisions: i64 = 1;
         let mut at = Frac::ZERO;
@@ -253,11 +253,9 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                 }
                 longest = longest.max(cursor);
             }
-            let mut len = if longest > Frac::ZERO { longest } else { meter_len };
+            let len = if longest > Frac::ZERO { longest } else { meter_len };
             if mi == 0 && len < meter_len {
-                // A pickup: pad it to a full bar.
-                lead = meter_len - len;
-                len = meter_len;
+                pickup = Some(len);
             }
             at = at + len;
         }
@@ -292,13 +290,11 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         for (mi, m) in children(*part, "measure").enumerate() {
             let Some(&bar) = bar_starts.get(mi) else { break };
             let bar_end = bar_starts.get(mi + 1).copied().unwrap_or(end);
-            // The pickup's music sits at the end of the first bar.
-            let offset = if mi == 0 { lead } else { Frac::ZERO };
             let mut cursor = Frac::ZERO;
             let mut last_start = Frac::ZERO;
             let q = |d: i64, div: i64| Frac::new(d, div * 4);
             for e in m.children().filter(|c| c.is_element()) {
-                let at = bar + offset + cursor;
+                let at = bar + cursor;
                 match e.tag_name().name() {
                     "attributes" => {
                         if let Some(d) = int(e, "divisions") {
@@ -328,7 +324,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                                 if let (Some(b), Some(bt)) = (beats(t), int(t, "beat-type")) {
                                     let at = if mi == 0 { Frac::ZERO } else { bar };
                                     movement.meter.retain(|x| x.at != at);
-                                    movement.meter.push(Meter { at, num: b, den: bt.max(1) });
+                                    movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false });
                                 }
                             }
                         }
@@ -339,7 +335,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                             }
                             let name = clef_name(c);
                             let s = &mut staves[staff];
-                            if s.clef.is_none() && at <= Frac::ZERO + offset {
+                            if s.clef.is_none() && at <= Frac::ZERO {
                                 s.clef = Some(name);
                             } else if s.clef.as_deref() != Some(name.as_str()) || !s.clefs.is_empty() {
                                 s.clefs.push((at, name));
@@ -374,7 +370,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                         }
                         let dur = q(int(e, "duration").unwrap_or(0), divisions);
                         let chord = child(e, "chord").is_some();
-                        let start = if chord { bar + offset + last_start } else { at };
+                        let start = if chord { bar + last_start } else { at };
                         if !chord {
                             last_start = cursor;
                             cursor = cursor + dur;
@@ -418,7 +414,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
 
     // Defaults where the first part had none.
     if movement.meter.is_empty() {
-        movement.meter.push(Meter { at: Frac::ZERO, num: 4, den: 4 });
+        movement.meter.push(Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false });
     }
     if movement.keys.is_empty() {
         movement.keys.push(Key { at: Frac::ZERO, fifths: 0, minor: false });
@@ -427,6 +423,15 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         movement.tempo.push(Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() });
     }
     movement.meter.sort_by(|a, b| a.at.cmp(&b.at));
+    // A short first bar is a pickup in the opening meter.
+    if let Some(len) = pickup {
+        if movement.meter.len() == 1 || movement.meter[1].at != len {
+            movement.meter[0].at = len;
+        } else {
+            movement.meter.remove(0);
+        }
+        movement.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true });
+    }
     movement.keys.sort_by(|a, b| a.at.cmp(&b.at));
     movement.tempo.sort_by(|a, b| a.at.cmp(&b.at));
     movement.id = p.allocate_id();

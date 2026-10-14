@@ -1028,8 +1028,15 @@ impl Editor {
                 label = "Key signature".into();
                 Box::new(move |m, _| edit::set_key(m, bar, k))
             }
+            PopoverKind::Time if edit::parse_pickup(&text, Frac::new(1, 4)).is_some() => {
+                let beat = m.meter.iter().find(|x| !x.pickup).map(|x| Frac::new(1, x.den)).unwrap_or(Frac::new(1, 4));
+                let len = edit::parse_pickup(&text, beat).flatten();
+                at = Frac::ZERO;
+                label = if len.is_some() { "Pickup bar".into() } else { "Remove pickup".into() };
+                Box::new(move |m, _| edit::set_pickup(m, len))
+            }
             PopoverKind::Time => {
-                let (n, d) = edit::parse_time(&text).ok_or("Time signature not understood: try 3/4, 6/8, C or C|")?;
+                let (n, d) = edit::parse_time(&text).ok_or("Time signature not understood: try 3/4, 6/8, C, C| or \"pickup 1/4\"")?;
                 at = bar;
                 label = "Time signature".into();
                 Box::new(move |m, _| {

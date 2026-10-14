@@ -242,6 +242,8 @@ struct Measure {
     last: bool,       // the movement's last bar (final barline)
     shortest: Frac,   // the movement's common shortest duration (spacing)
     stretch: f32,     // the stretchability of the bar's springs
+    phase: Frac,      // a pickup's missing beginning (beats count from it)
+    number: usize,    // the bar number (a pickup is bar 0)
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
@@ -253,8 +255,18 @@ fn measures(s: &Score) -> Vec<Measure> {
     let mut at = Frac::ZERO;
     while at < s.length && out.len() < 100_000 {
         let m = meters.iter().rev().find(|m| m.at <= at).copied();
-        let (num, den) = m.map(|m| (m.num.max(1), m.den.max(1))).unwrap_or((4, 4));
+        let (mut num, mut den) = m.map(|m| (m.num.max(1), m.den.max(1))).unwrap_or((4, 4));
         let mut len = Frac::new(num, den);
+        let mut phase = Frac::ZERO;
+        // A pickup is written with the following meter's signature, its
+        // beats counted back from that bar's end.
+        if let Some(pm) = m.filter(|m| m.pickup) {
+            if let Some(next) = meters.iter().find(|x| x.at > pm.at && !x.pickup) {
+                (num, den) = (next.num.max(1), next.den.max(1));
+                let full = Frac::new(num, den);
+                phase = if full > len { full - len } else { Frac::ZERO };
+            }
+        }
         if let Some(next) = meters.iter().find(|x| x.at > at && x.at < at + len) {
             len = next.at - at;
         }
@@ -269,11 +281,15 @@ fn measures(s: &Score) -> Vec<Measure> {
             (Some(p), Some(k)) if k.at > p.start => Some(k),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0 });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0 });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
         m.last = true;
+    }
+    let first = if out.first().is_some_and(|m| !m.phase.is_zero()) { 0 } else { 1 };
+    for (i, m) in out.iter_mut().enumerate() {
+        m.number = i + first;
     }
     out
 }
@@ -377,7 +393,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         continue;
                     }
                     let rest = e.pitches.is_empty();
-                    let whole_bar = rest && a == m.start && b == m.start + m.len;
+                    let whole_bar = rest && a == m.start && b == m.start + m.len && m.phase.is_zero();
                     let values = if whole_bar { vec![NoteValue { base: 1, dots: 0, triplet: false }] } else { decompose(b - a) };
                     let mut t = a;
                     for (k, nv) in values.iter().enumerate() {
@@ -480,6 +496,8 @@ struct Engraver<'a> {
 
 const HEAD_W: f32 = 1.18;
 /// The brace before a grand staff, and its gap to the system's barline.
+/// Bar numbers at system starts (LilyPond's font-size -2).
+const BAR_NUMBER_SIZE: f32 = 1.6;
 const BRACE_WIDTH: f32 = 1.3;
 const BRACE_GAP: f32 = 0.4;
 
@@ -640,7 +658,7 @@ impl<'a> Engraver<'a> {
                 let n = &this.notes[i];
                 let m = &this.ms[n.measure];
                 let w = span(m);
-                let rel = (n.start - m.start) * Frac::new(w.den, w.num);
+                let rel = (n.start - m.start + m.phase) * Frac::new(w.den, w.num);
                 let key = (n.part, n.voice, n.measure, rel.num / rel.den);
                 let beamable = !n.rest && n.value.base >= 8;
                 if !beamable || cur_key != Some(key) {
@@ -2002,6 +2020,17 @@ impl<'a> Engraver<'a> {
         // Rehearsal marks: boxed letters at their barline.
         let mut marks = self.score.marks.clone();
         marks.sort();
+        // The bar number at the start of every system but the first, above
+        // the clef.
+        if !self.first_system {
+            if let Some(m) = self.ms.first() {
+                let text = m.number.to_string();
+                let w = text_width(&text, BAR_NUMBER_SIZE, false);
+                let x = self.left;
+                let y = (self.sky[0].top_over(x, x + w) - 0.5).min(self.top(0) - 1.0);
+                self.place(0, Item::Text { text, at: pt(x, y), size: BAR_NUMBER_SIZE, italic: false, bold: false, anchor: 0, id: 0 });
+            }
+        }
         for (k, at) in marks.iter().enumerate().filter(|(_, at)| **at >= r0 && **at < r1) {
             let letter: String = std::iter::repeat_n((b'A' + (k % 26) as u8) as char, k / 26 + 1).collect();
             let size = 2.4;

@@ -169,7 +169,7 @@ fn header() -> Movement {
         length: f(8, 1),
         revision: 0,
         tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
@@ -222,7 +222,7 @@ fn parse_tempo_cases() {
 #[test]
 fn bar_positions() {
     let mut h = header();
-    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4 });
+    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4, pickup: false });
     assert_eq!(bar_start_at_or_before(&h, f(3, 2)), f(1, 1));
     assert_eq!(bar_start_at_or_before(&h, f(2, 1)), f(2, 1));
     assert_eq!(bar_start_at_or_before(&h, f(23, 8)), f(11, 4));
@@ -232,6 +232,42 @@ fn bar_positions() {
     assert_eq!(nearest_barline(&h, f(63, 8)), f(8, 1));
     assert_eq!(bar_number(&h, f(9, 4)), (3, f(1, 4)));
     assert_eq!(round_up_to_bar(&h, f(33, 4)), f(35, 4));
+}
+
+#[test]
+fn pickup_bars() {
+    let q = f(1, 4);
+    assert_eq!(parse_pickup("pickup 1/4", q), Some(Some(f(1, 4))));
+    assert_eq!(parse_pickup("Pickup 2", f(1, 8)), Some(Some(f(1, 4))));
+    assert_eq!(parse_pickup("no pickup", q), Some(None));
+    assert_eq!(parse_pickup("3/4", q), None);
+    assert_eq!(parse_pickup("pickup 0/4", q), None);
+
+    let mut h = header();
+    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] };
+    Arc::make_mut(&mut h.lanes[0].voices[0].events).push(n(f(1, 1)));
+    set_pickup(&mut h, Some(f(1, 4)));
+    assert_eq!(pickup(&h), Some(f(1, 4)));
+    assert_eq!(h.length, f(33, 4));
+    assert_eq!(h.lanes[0].voices[0].events[0].start, f(5, 4));
+    assert_eq!(bar_starts(&h)[..3], [Frac::ZERO, f(1, 4), f(5, 4)]);
+    assert_eq!(bar_number(&h, f(1, 8)), (0, f(1, 8)));
+    assert_eq!(bar_number(&h, f(5, 4)), (2, Frac::ZERO));
+    // A time signature on the pickup applies from bar 1.
+    set_meter(&mut h, Frac::ZERO, 3, 4);
+    assert_eq!(h.meter.len(), 2);
+    assert_eq!((h.meter[1].at, h.meter[1].num), (f(1, 4), 3));
+    // A longer pickup, then none.
+    set_pickup(&mut h, Some(f(1, 2)));
+    assert_eq!(pickup(&h), Some(f(1, 2)));
+    assert_eq!((h.meter[1].at, h.meter[1].num), (f(1, 2), 3));
+    assert_eq!(h.lanes[0].voices[0].events[0].start, f(3, 2));
+    set_pickup(&mut h, None);
+    assert_eq!(pickup(&h), None);
+    assert_eq!(h.meter.len(), 1);
+    assert_eq!((h.meter[0].at, h.meter[0].num), (Frac::ZERO, 3));
+    assert_eq!(h.length, f(8, 1));
+    assert_eq!(h.lanes[0].voices[0].events[0].start, f(1, 1));
 }
 
 #[test]
