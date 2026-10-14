@@ -77,7 +77,7 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     let rhythm = vec![
         tool("·", false, ed.spec.dots == 1, "Dotted (.)", Action::Dots),
         tool("··", false, ed.spec.dots == 2, "Double dotted (. twice)", Action::Dots),
-        tool("3", false, ed.spec.triplet, "Triplet (;)", Action::Triplet),
+        tool("3", false, ed.tuplet_input.is_some(), "Triplets; ; for any tuplet, : to end", Action::Triplet),
         tool("\u{E4E5}", true, false, "Rest (R or , in input mode)", Action::Rest),
         tool("♬", false, ed.chord_mode, "Chord mode (Q)", Action::ChordMode),
     ];

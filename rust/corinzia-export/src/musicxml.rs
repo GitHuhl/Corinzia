@@ -86,6 +86,15 @@ fn measures(s: &Score) -> Vec<Measure> {
     out
 }
 
+/// A note's tuplet context: the time modification, the `<tuplet>` marks
+/// it carries and its sounding duration.
+struct Tm {
+    actual: i64,
+    normal: i64,
+    marks: String,
+    real: Frac,
+}
+
 // -------------------------------------------------------------------- writer --
 struct Writer<'a> {
     score: &'a Score,
@@ -273,6 +282,35 @@ impl<'a> Writer<'a> {
                     if v.index == 1 {
                         self.emit_directions(&mut directions, p.from);
                     }
+                    // Explicit tuplets around the piece (outermost first).
+                    let mut around: Vec<&crate::doc::Tuplet> = v.tuplets.iter().filter(|t| p.from >= t.start && p.from < t.start + t.length).collect();
+                    around.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
+                    if !around.is_empty() {
+                        let (actual, normal) = around.iter().fold((1, 1), |(a, n), t| (a * t.actual, n * t.normal));
+                        let values = decompose((p.to - p.from) * Frac::new(actual, normal));
+                        for (k, nv) in values.iter().enumerate() {
+                            let (first, last) = (k == 0, k + 1 == values.len());
+                            let real = nv.length() * Frac::new(normal, actual);
+                            let mut marks = String::new();
+                            for (depth, t) in around.iter().enumerate() {
+                                let show = format!(
+                                    "<tuplet-actual><tuplet-number>{}</tuplet-number></tuplet-actual><tuplet-normal><tuplet-number>{}</tuplet-number></tuplet-normal>",
+                                    t.actual, t.normal
+                                );
+                                if first && p.from == t.start && p.event_first {
+                                    let _ = write!(marks, "<tuplet type=\"start\" number=\"{}\" bracket=\"yes\">{show}</tuplet>", depth + 1);
+                                }
+                                if last && p.to == t.start + t.length && p.event_last {
+                                    let _ = write!(marks, "<tuplet type=\"stop\" number=\"{}\"/>", depth + 1);
+                                }
+                            }
+                            let tm = Tm { actual, normal, marks, real };
+                            self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut slur_open[vi], &mut wedge_open, first);
+                        }
+                        triplet_run = 0;
+                        at = p.to;
+                        continue;
+                    }
                     let values = decompose(p.to - p.from);
                     let next_is_triplet = |idx: usize| pieces.get(idx).is_some_and(|q| decompose(q.to - q.from).first().is_some_and(|x| x.triplet));
                     for (k, nv) in values.iter().enumerate() {
@@ -297,7 +335,13 @@ impl<'a> Writer<'a> {
                             triplet_run = 0;
                             None
                         };
-                        self.note(p, *nv, v.index, first && p.event_first, last, tuplet, &mut slur_open[vi], &mut wedge_open, first);
+                        let tm = Tm {
+                            actual: if nv.triplet { 3 } else { 1 },
+                            normal: if nv.triplet { 2 } else { 1 },
+                            marks: tuplet.map(|t| format!("<tuplet type=\"{t}\"/>")).unwrap_or_default(),
+                            real: nv.length(),
+                        };
+                        self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut slur_open[vi], &mut wedge_open, first);
                     }
                     at = p.to;
                 }
@@ -413,7 +457,7 @@ impl<'a> Writer<'a> {
         voice: u8,
         event_start: bool,
         piece_last: bool,
-        tuplet: Option<&str>,
+        tm: &Tm,
         slur_open: &mut bool,
         wedge_open: &mut bool,
         piece_first: bool,
@@ -458,7 +502,7 @@ impl<'a> Writer<'a> {
                     let _ = write!(s, "<octave>{}</octave></pitch>", h.octave);
                 }
             }
-            let _ = write!(s, "<duration>{}</duration>", self.dur(nv.length()));
+            let _ = write!(s, "<duration>{}</duration>", self.dur(tm.real));
             let tie_stop = h.is_some() && (continued_before || p.tied_in && piece_first && p.event_first);
             let tie_start = h.is_some_and(|h| continues_after || h.tie && piece_last && p.event_last);
             if tie_stop {
@@ -471,8 +515,8 @@ impl<'a> Writer<'a> {
             for _ in 0..nv.dots {
                 s.push_str("<dot/>");
             }
-            if nv.triplet {
-                s.push_str("<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>");
+            if tm.actual != tm.normal {
+                let _ = write!(s, "<time-modification><actual-notes>{}</actual-notes><normal-notes>{}</normal-notes></time-modification>", tm.actual, tm.normal);
             }
             // Notations.
             let mut n = String::new();
@@ -482,8 +526,8 @@ impl<'a> Writer<'a> {
             if tie_start {
                 n.push_str("<tied type=\"start\"/>");
             }
-            if let (Some(t), 0) = (tuplet, hi) {
-                let _ = write!(n, "<tuplet type=\"{t}\"/>");
+            if hi == 0 {
+                n.push_str(&tm.marks);
             }
             if event_start && hi == 0 && !is_rest {
                 if e.spans & span::SLUR_END != 0 && *slur_open {

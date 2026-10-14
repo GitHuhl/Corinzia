@@ -31,11 +31,10 @@ impl BaseDuration {
 pub struct DurationSpec {
     pub base: BaseDuration,
     pub dots: u8, // 0..2
-    pub triplet: bool,
 }
 impl Default for DurationSpec {
     fn default() -> Self {
-        DurationSpec { base: BaseDuration::Quarter, dots: 0, triplet: false }
+        DurationSpec { base: BaseDuration::Quarter, dots: 0 }
     }
 }
 impl DurationSpec {
@@ -46,11 +45,7 @@ impl DurationSpec {
             add = add * Frac::new(1, 2);
             v = v + add;
         }
-        if self.triplet {
-            v * Frac::new(2, 3)
-        } else {
-            v
-        }
+        v
     }
     /// The undotted, non-tuplet value: the grid for mouse input.
     pub fn grid(&self) -> Frac {
@@ -466,6 +461,15 @@ pub fn move_events(list: &[Event], from: Frac, to: Frac, by: Frac, fill: bool, i
     }
     sort_events(&mut out);
     Some(EditResult { events: out, focus: Some(focus), from: lo, to: hi, caret: t1 })
+}
+
+/// The longest undotted note value (a power of two) no longer than `d`.
+pub fn plain_value(d: Frac) -> Frac {
+    let mut v = Frac::int(2);
+    while v > d && v > Frac::new(1, 256) {
+        v = v * Frac::new(1, 2);
+    }
+    v
 }
 
 fn is_plain(d: Frac) -> bool {

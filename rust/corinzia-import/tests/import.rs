@@ -174,3 +174,48 @@ fn transposing_parts_come_in_at_concert_pitch() {
     assert_eq!(names(&m.lanes[0].voices[0].events), ["D5"]);
     assert_eq!(m.lanes[0].chords[0].text, "Dm");
 }
+
+#[test]
+fn tuplets_import_and_survive_a_round_trip() {
+    // Beat 1: an eighth triplet; beat 2: a sixteenth quintuplet; then a half.
+    let n = |step: &str, dur: i64, ty: &str, tm: (i64, i64), mark: &str| {
+        format!(
+            "<note><pitch><step>{step}</step><octave>5</octave></pitch><duration>{dur}</duration><voice>1</voice><type>{ty}</type>\
+             <time-modification><actual-notes>{}</actual-notes><normal-notes>{}</normal-notes></time-modification>{mark}</note>",
+            tm.0, tm.1
+        )
+    };
+    let start = "<notations><tuplet type=\"start\"/></notations>";
+    let stop = "<notations><tuplet type=\"stop\"/></notations>";
+    // divisions 30 per quarter: triplet eighth = 10, quintuplet sixteenth = 6.
+    let notes = [
+        n("C", 10, "eighth", (3, 2), start),
+        n("D", 10, "eighth", (3, 2), ""),
+        n("E", 10, "eighth", (3, 2), stop),
+        n("F", 6, "16th", (5, 4), start),
+        n("G", 6, "16th", (5, 4), ""),
+        n("A", 6, "16th", (5, 4), ""),
+        n("B", 6, "16th", (5, 4), ""),
+        n("C", 6, "16th", (5, 4), stop),
+    ]
+    .join("");
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>30</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+{notes}<note><pitch><step>D</step><octave>5</octave></pitch><duration>60</duration><voice>1</voice><type>half</type></note>
+</measure></part></score-partwise>"#
+    );
+    let check = |p: &Project| {
+        let v = &p.movements[0].lanes[0].voices[0];
+        let ts: Vec<(Frac, Frac, i64, i64)> = v.tuplets.iter().map(|t| (t.start, t.length, t.actual, t.normal)).collect();
+        assert_eq!(ts, [(Frac::ZERO, f(1, 4), 3, 2), (f(1, 4), f(1, 4), 5, 4)]);
+        assert_eq!(v.events[3].start, f(1, 4));
+        assert_eq!(v.events[3].duration, f(1, 20));
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    assert!(out.contains("<actual-notes>5</actual-notes><normal-notes>4</normal-notes>"), "{out}");
+    check(&musicxml(out.as_bytes()).unwrap());
+}

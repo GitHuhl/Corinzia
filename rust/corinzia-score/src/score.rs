@@ -122,6 +122,16 @@ pub struct Text {
 pub struct Voice {
     pub index: u8,
     pub events: Vec<Event>,
+    /// Tuplets: `actual` in the time of `normal` over `[start, start + length)`.
+    pub tuplets: Vec<Tuplet>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tuplet {
+    pub start: Frac,
+    pub length: Frac,
+    pub actual: i64,
+    pub normal: i64,
 }
 
 #[derive(Debug, Clone)]

@@ -2,6 +2,7 @@
 //!
 //! `corinzia [file.project] [--view page|panorama] [--keys "n c d"]
 //! [--screenshot out.png] [--export out.pdf|mid|musicxml]`
+//! (in `--keys`, `type:TEXT` and `enter` fill and submit an open popover)
 //!
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
 //! as vector geometry; playback runs through corinzia-audio.
@@ -250,6 +251,17 @@ impl App {
         let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
         for t in &a.keys {
+            // An open popover takes typed text ("type:5:4") and Enter.
+            if app.popover.is_some() {
+                if let Some(text) = t.strip_prefix("type:") {
+                    let _ = app.update(Message::PopoverInput(text.to_string()));
+                    continue;
+                }
+                if t == "enter" {
+                    let _ = app.update(Message::PopoverSubmit);
+                    continue;
+                }
+            }
             match parse_key_token(t) {
                 Some((key, mods)) => app.press(&key, mods).into_iter().for_each(drop),
                 None => eprintln!("--keys: cannot parse {t:?}"),
@@ -554,7 +566,11 @@ impl App {
             Action::Grid(i) => ed.grid = i.min(editor::GRIDS.len() - 1),
             Action::GridStep(d) => ed.step_grid(d),
             Action::Accidental(x) if !ed.input_mode && ed.has_selection() => ed.set_selection_accidental(x),
-            Action::Triplet => ed.spec.triplet = !ed.spec.triplet,
+            Action::Triplet => ed.toggle_triplets(),
+            Action::TupletOff => {
+                ed.tuplet_input = None;
+                ed.status = "Tuplet input off".into();
+            }
             Action::Accidental(x) => ed.toggle_accidental(x),
             Action::ChordMode => ed.chord_mode = !ed.chord_mode,
             Action::Tie => ed.toggle_tie(),

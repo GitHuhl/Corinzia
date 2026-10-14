@@ -44,6 +44,14 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   start and duration as exact whole-note fractions, heads (pitch, tie,
   velocity), articulation bits, dynamic, span bits (slurs, hairpins) and
   lyrics (verse, syllable, hyphen, extender).
+* A voice also lists its tuplets: `actual` in the time of `normal` over a
+  span (3:2, 5:4, 2:3), nestable. Events inside keep their sounding
+  durations; the engraver writes them `actual/normal` longer. Edits keep
+  the list in step: a tuplet goes when an event crosses its edge, moves
+  with inserted or deleted bars, and travels with copy, paste and Alt+arrow
+  moves.
+* A meter may be a pickup: a short first bar, written in the following
+  meter and numbered 0.
 * Every object has a persistent element id. The id is used in the file, in
   the engraving (hit testing) and in playback (highlighting).
 * `notation::score` converts a movement into the engraver's input
@@ -81,6 +89,15 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   note.
 * **Ranges** support erase, slice, paste, transpose and spanners. A passage
   is the notes *starting* in `[from, to)`.
+* **Selections** change rhythm and position: a new duration lays the
+  selected events end to end (longer overwrites what follows, shorter
+  leaves rests), and Alt+arrows move them by the rhythmic grid. Rests left
+  behind join within each bar, never across a barline or tuplet edge.
+* **Tuplets** (`tuplets.rs`): the `;` popover takes "3", "5", "5:4", "7:8"
+  or "2" (duplet). In note input it starts tuplet input: each note goes into
+  the tuplet at the caret, a new one starting when it fills, until `:`.
+  On a selected note it makes a tuplet in that note's value, the note
+  first.
 * **Structure** covers:
   * popover parsing: key ("Eb", "f#" minor), time, clef, barline, tempo
     ("Allegro 132", "q=96"), endings ("1, 2"), ornaments, chord symbols
@@ -153,6 +170,15 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   lengths are within 0.15 spaces on average.
 * Also drawn: ledger lines, dots, flags, secondary beams and hooks, rests
   and whole-bar rests.
+* Rests are split by the meter: each piece starts on a multiple of its own
+  length and none hides a beat (no half rest on beat 2 of 4/4); dotted
+  rests fill whole dotted beats.
+* Tuplets: their notes are written by the ratio, and beams break at their
+  edges (LilyPond beams 4/4 triplet eighths in threes). One beam over a
+  whole tuplet carries just the number, next to the beam; otherwise a
+  bracket with the number in a gap. Spacing uses sounding time, and
+  matches LilyPond's for triplets, quintuplets and sextuplets.
+* Bar numbers start every system but the first.
 
 **Marks around the staff.** Each staff has a skyline: the boxes of
 everything drawn so far. Outer marks are placed against it from the staff

@@ -33,8 +33,9 @@ fn ly_pitch(step: u8, alter: i8, octave: i8) -> String {
     s
 }
 
-fn ly_event(e: &Event) -> String {
-    let values = decompose(e.dur);
+/// `ratio`: sounding to written time (the tuplets around the event).
+fn ly_event(e: &Event, ratio: Frac) -> String {
+    let values = decompose(e.dur * ratio);
     let mut out = String::new();
     for (k, v) in values.iter().enumerate() {
         let mut d = format!("{}", v.base);
@@ -98,8 +99,22 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
             _ => "treble",
         };
         let _ = write!(ly, "\\new Staff {{ \\clef {clef} \\key {} \\major \\time {}/{} ", MAJOR[(key + 7) as usize], m.0, m.1);
-        for e in &p.voices[0].events {
-            ly.push_str(&ly_event(e));
+        let v = &p.voices[0];
+        let mut open: Vec<corinzia_score::score::Tuplet> = Vec::new();
+        for e in &v.events {
+            while open.last().is_some_and(|t| e.start >= t.start + t.length) {
+                open.pop();
+                ly.push_str("} ");
+            }
+            for t in v.tuplets.iter().filter(|t| t.start == e.start) {
+                let _ = write!(ly, "\\tuplet {}/{} {{ ", t.actual, t.normal);
+                open.push(*t);
+            }
+            let ratio = open.iter().fold(Frac::int(1), |r, t| r * Frac::new(t.actual, t.normal));
+            ly.push_str(&ly_event(e, ratio));
+        }
+        for _ in open {
+            ly.push_str("} ");
         }
         ly.push_str("}\n");
     }
@@ -207,6 +222,7 @@ fn corpus() -> Vec<(&'static str, Score)> {
         ("chords", score(&[("treble", &["<c'' e'' g''>4 <d'' f''>4 <e' g' c''>2 | <f' a' c''>4 <g' b' d''>4 <c' e' g' c''>2"])], (4, 4), 0)),
         ("bass and 3/4", score(&[("bass", &["c4 e8 g8 c'4 | g,2. | f4 a4 c'4"])], (3, 4), 0)),
         ("key signature", score(&[("treble", &["fis'8 g'8 a'4 b'4 cis''4 | d''2 c''2"])], (4, 4), 2)),
+        ("tuplets", score(&[("treble", &["\\tuplet 3/2 { c''8 d'' e'' } \\tuplet 3/2 { f'' g'' a'' } \\tuplet 5/4 { c''16 d'' e'' f'' g'' } c''4 | \\tuplet 3/2 { c''4 d'' e'' } \\tuplet 6/4 { c''16 d'' e'' f'' g'' a'' } c''4"])], (4, 4), 0)),
         ("two staves", score(&[("treble", &["e''4 d''8 c''8 b'4 c''4 | g'2 g'2"]), ("bass", &["c2 g,2 | c8 d8 e8 f8 g4 c4"])], (4, 4), 0)),
     ]
 }

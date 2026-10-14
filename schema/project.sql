@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS voice (
     movement_id  INTEGER NOT NULL,
     player_id    INTEGER NOT NULL,
     voice_index  INTEGER NOT NULL CHECK (voice_index BETWEEN 1 AND 4),
+    -- JSONB array of tuplets {"s":[n,d] start,"l":[n,d] length,"a":actual,"n":normal}
+    tuplets      BLOB    NOT NULL DEFAULT (jsonb('[]')),
     FOREIGN KEY (movement_id, player_id) REFERENCES player_lane(movement_id, player_id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS voice_by_lane ON voice(movement_id, player_id);

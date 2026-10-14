@@ -104,6 +104,8 @@ the selected notes' durations (longer music overwrites what follows;
 shorter leaves rests), A–G change the pitch, `-` `=` `0` set flat, sharp or
 natural, Alt+←/→ move notes by the rhythmic grid chosen in the status
 bar (Alt+[ / Alt+] change it). Shift+M "pickup 1/4" adds an upbeat bar.
+`;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
+type go into them until `:`; with a note selected it starts one.
 Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T
 tempo ("Allegro 132"), Shift+B barline (":|"), Shift+C clef, Shift+X /
 Shift+P expression or technique text, Shift+O ornaments, Shift+R endings,

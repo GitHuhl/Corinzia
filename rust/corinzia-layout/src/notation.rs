@@ -8,9 +8,10 @@
 //! * `-.` `->` `--` `-!` `-^` articulations, `\fermata \trill \mordent \turn
 //!   \arpeggio \breathe`, dynamics `\pp` … `\ff`;
 //! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings);
-//! * `\ly=Glo-` lyrics (`\ly2=` for verse 2; `-` hyphen, `_` extender).
+//! * `\ly=Glo-` lyrics (`\ly2=` for verse 2; `-` hyphen, `_` extender);
+//! * `\tuplet 5/4 { … }` tuplets (nestable; durations inside are written).
 
-use corinzia_score::score::{art, span, Event, Meter, Part, Pitch, Score, Voice};
+use corinzia_score::score::{art, span, Event, Meter, Part, Pitch, Score, Tuplet, Voice};
 use corinzia_score::Frac;
 
 fn parse_pitch(tok: &str) -> Option<(Pitch, &str)> {
@@ -77,7 +78,10 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
     let mut at = Frac::ZERO;
     let mut dur = Frac::new(1, 4);
     let mut last_chord: Vec<Pitch> = Vec::new();
-    let spaced = text.replace('\\', " \\").replace('<', " < ").replace('>', " > ");
+    let spaced = text.replace('\\', " \\").replace('<', " < ").replace('>', " > ").replace('{', " { ").replace('}', " } ");
+    let mut tuplets: Vec<Tuplet> = Vec::new();
+    let mut open: Vec<(Frac, i64, i64)> = Vec::new(); // (start, actual, normal)
+    let mut pending: Option<(i64, i64)> = None;
     // Re-glue chord closings with their duration/marks: "> 2~" -> ">2~"
     let mut tokens: Vec<String> = Vec::new();
     let mut in_chord = false;
@@ -99,6 +103,26 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
     while i < tokens.len() {
         let t = tokens[i].clone();
         i += 1;
+        if t == "\\tuplet" {
+            let ratio = tokens.get(i).cloned().unwrap_or_default();
+            i += 1;
+            if let Some((a, n)) = ratio.split_once('/') {
+                pending = Some((a.parse().unwrap_or(3), n.parse().unwrap_or(2)));
+            }
+            continue;
+        }
+        if t == "{" {
+            if let Some((a, n)) = pending.take() {
+                open.push((at, a, n));
+            }
+            continue;
+        }
+        if t == "}" {
+            if let Some((start, actual, normal)) = open.pop() {
+                tuplets.push(Tuplet { start, length: at - start, actual, normal });
+            }
+            continue;
+        }
         if let Some(dynamic) = t.strip_prefix('\\') {
             if let Some(e) = events.last_mut() {
                 match dynamic {
@@ -156,7 +180,9 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
             dur = d;
             rest = r.to_string();
         }
-        let mut e = Event { id: *next_id, start: at, dur, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![] };
+        // Sounding time inside tuplets.
+        let scale = open.iter().fold(Frac::int(1), |f, &(_, a, n)| f * Frac::new(n, a));
+        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![] };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;
@@ -187,10 +213,11 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         if !is_rest {
             last_chord = e.pitches.iter().map(|p| Pitch { tie: false, ..*p }).collect();
         }
-        at = at + dur;
+        at = at + e.dur;
         events.push(e);
     }
-    Voice { index, events }
+    tuplets.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
+    Voice { index, events, tuplets }
 }
 
 /// A score from (clef, voices) per staff, in one meter and key.

@@ -48,7 +48,7 @@ pub fn project() -> Project {
             clefs: vec![],
             texts: if k == 0 { vec![TextItem { id: 50, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }] } else { vec![] },
             chords: vec![],
-            voices: vec![Voice { id: 60 + k as u64, index: 1, events: Arc::new(events) }],
+            voices: vec![Voice { id: 60 + k as u64, index: 1, events: Arc::new(events), tuplets: vec![] }],
         });
     }
     p.movements.push(Movement {
@@ -100,7 +100,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
                 clefs: clef_changes,
                 texts: vec![],
                 chords: vec![],
-                voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests) }],
+                voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests), tuplets: vec![] }],
             });
         }
     }

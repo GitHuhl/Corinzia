@@ -54,6 +54,13 @@ impl Mul for Frac {
         Frac::new(self.num * o.num, self.den * o.den)
     }
 }
+impl std::ops::Div for Frac {
+    type Output = Frac;
+    /// The divisor must not be zero.
+    fn div(self, o: Frac) -> Frac {
+        Frac::new(self.num * o.den, self.den * o.num)
+    }
+}
 impl PartialEq for Frac {
     fn eq(&self, o: &Frac) -> bool {
         self.num * o.den == o.num * self.den

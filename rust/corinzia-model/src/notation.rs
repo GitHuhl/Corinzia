@@ -91,6 +91,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                     .iter()
                     .map(|v| sc::Voice {
                         index: v.index,
+                        tuplets: v.tuplets.iter().map(|t| sc::Tuplet { start: t.start, length: t.length, actual: t.actual, normal: t.normal }).collect(),
                         events: v
                             .events
                             .iter()

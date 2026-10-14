@@ -35,7 +35,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
             clefs: vec![],
             texts: vec![],
             chords: vec![],
-            voices: vec![Voice { id: 5, index: 1, events: Arc::new(events) }],
+            voices: vec![Voice { id: 5, index: 1, events: Arc::new(events), tuplets: vec![] }],
         }],
     }
 }

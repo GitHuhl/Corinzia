@@ -39,7 +39,7 @@ fn sample() -> Project {
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
             texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
             chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
-            voices: vec![Voice { id: 26, index: 1, events: Arc::new(events) }],
+            voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![] }],
         }],
     });
     p

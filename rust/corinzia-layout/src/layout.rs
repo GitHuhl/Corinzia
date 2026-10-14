@@ -370,6 +370,7 @@ struct Note {
     art: u16,
     dynamic: Option<String>,
     lyrics: Vec<corinzia_score::score::Lyric>, // on the first piece only
+    tuplets: Vec<usize>, // the explicit tuplets around it (`tuplet_list`), outermost first
     // layout
     stem_up: bool,
     beamed: bool,
@@ -401,7 +402,22 @@ impl Note {
     }
 }
 
+/// Every voice's explicit tuplets as (part, voice index, tuplet): a note's
+/// `tuplets` index this list.
+fn tuplet_list(score: &Score) -> Vec<(usize, u8, corinzia_score::score::Tuplet)> {
+    let mut out = Vec::new();
+    for (pi, part) in score.parts.iter().enumerate() {
+        for v in &part.voices {
+            let mut ts = v.tuplets.clone();
+            ts.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
+            out.extend(ts.into_iter().filter(|t| t.actual > 0 && t.normal > 0 && t.length > Frac::ZERO).map(|t| (pi, v.index, t)));
+        }
+    }
+    out
+}
+
 fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
+    let tuplets = tuplet_list(score);
     let clefs_at = |part: &Part, at: Frac| -> String {
         part.clefs.iter().filter(|c| c.at <= at).max_by(|a, b| a.at.cmp(&b.at)).map(|c| c.clef.clone()).unwrap_or(part.clef.clone())
     };
@@ -417,9 +433,17 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         continue;
                     }
                     let rest = e.pitches.is_empty();
-                    let whole_bar = rest && a == m.start && b == m.start + m.len && m.phase.is_zero();
+                    // Inside tuplets the written value is the sounding one
+                    // times each tuplet's actual/normal.
+                    let around: Vec<usize> = (0..tuplets.len())
+                        .filter(|&k| tuplets[k].0 == pi && tuplets[k].1 == v.index && a >= tuplets[k].2.start && a < tuplets[k].2.start + tuplets[k].2.length)
+                        .collect();
+                    let ratio = around.iter().fold(Frac::int(1), |r, &k| r * Frac::new(tuplets[k].2.actual, tuplets[k].2.normal));
+                    let whole_bar = rest && around.is_empty() && a == m.start && b == m.start + m.len && m.phase.is_zero();
                     let values = if whole_bar {
                         vec![NoteValue { base: 1, dots: 0, triplet: false }]
+                    } else if !around.is_empty() {
+                        decompose((b - a) * ratio)
                     } else if rest {
                         decompose_rest(a - m.start + m.phase, b - a, beat_of(m.num, m.den))
                     } else {
@@ -446,7 +470,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             })
                             .collect();
                         heads.sort_by_key(|h| h.dia);
-                        let dur = if whole_bar { m.len } else { nv.length() };
+                        let dur = if whole_bar { m.len } else { nv.length() * Frac::new(ratio.den, ratio.num) };
                         out.push(Note {
                             part: pi,
                             voice: v.index,
@@ -462,6 +486,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             art: e.art,
                             dynamic: e.dynamic.clone(),
                             lyrics: if first { e.lyrics.clone() } else { vec![] },
+                            tuplets: around.clone(),
                             stem_up: true,
                             beamed: false,
                             stem_x: 0.0,
@@ -494,6 +519,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     art: 0,
                     dynamic: None,
                     lyrics: vec![],
+                    tuplets: vec![],
                     stem_up: true,
                     beamed: false,
                     stem_x: 0.0,
@@ -522,12 +548,13 @@ struct Engraver<'a> {
     width: Option<f32>,                      // justify the system to this width
     range: (Frac, Frac),                     // written span of this system
     tops: Vec<f32>,                          // y of each staff's top line
+    beam_of: Vec<usize>,                     // per note: its beam group + 1 (0: none)
 }
 
 const HEAD_W: f32 = 1.18;
-/// The brace before a grand staff, and its gap to the system's barline.
 /// Bar numbers at system starts (LilyPond's font-size -2).
 const BAR_NUMBER_SIZE: f32 = 1.6;
+/// The brace before a grand staff, and its gap to the system's barline.
 const BRACE_WIDTH: f32 = 1.3;
 const BRACE_GAP: f32 = 0.4;
 
@@ -679,7 +706,7 @@ impl<'a> Engraver<'a> {
                 let m = &this.ms[n.measure];
                 let w = span(m);
                 let rel = (n.start - m.start + m.phase) * Frac::new(w.den, w.num);
-                let key = (n.part, n.voice, n.measure, rel.num / rel.den);
+                let key = (n.part, n.voice, n.measure, rel.num / rel.den, n.tuplets.last().copied());
                 let beamable = !n.rest && n.value.base >= 8;
                 if !beamable || cur_key != Some(key) {
                     if cur.len() >= 2 {
@@ -1729,21 +1756,34 @@ impl<'a> Engraver<'a> {
     /// the number in a gap.
     fn draw_tuplets(&mut self) {
         let d = self.font.defaults;
-        let mut groups: Vec<Vec<usize>> = Vec::new();
+        // Explicit tuplets, innermost first so outer brackets clear them.
+        let list = tuplet_list(self.score);
+        let mut groups: Vec<(usize, i64, Vec<usize>)> = Vec::new(); // (depth, number, notes)
+        for (k, t) in list.iter().enumerate() {
+            let notes: Vec<usize> = (0..self.notes.len()).filter(|&i| self.notes[i].tuplets.contains(&k)).collect();
+            if let Some(&i) = notes.first() {
+                let depth = self.notes[i].tuplets.iter().position(|&x| x == k).unwrap_or(0);
+                groups.push((depth, t.2.actual, notes));
+            }
+        }
+        groups.sort_by(|a, b| b.0.cmp(&a.0));
+        // Triplet values outside any explicit tuplet: grouped by whole
+        // undotted spans (imported or typed as durations alone).
         let mut cur: Vec<usize> = Vec::new();
         let mut sum = Frac::ZERO;
         let mut min_plain = Frac::int(4);
         for i in 0..self.notes.len() {
             let n = &self.notes[i];
+            let implicit = n.value.triplet && n.tuplets.is_empty();
             let contiguous = cur.last().is_some_and(|&p| {
                 let o = &self.notes[p];
                 o.part == n.part && o.voice == n.voice && o.start + o.dur == n.start
             });
-            if !n.value.triplet || !cur.is_empty() && !contiguous {
+            if !implicit || !cur.is_empty() && !contiguous {
                 cur.clear();
                 sum = Frac::ZERO;
                 min_plain = Frac::int(4);
-                if !n.value.triplet {
+                if !implicit {
                     continue;
                 }
             }
@@ -1752,39 +1792,61 @@ impl<'a> Engraver<'a> {
             min_plain = min_plain.min(n.dur * Frac::new(3, 2));
             let pow2 = sum.num == 1 && sum.den & (sum.den - 1) == 0;
             if pow2 && sum >= min_plain * Frac::int(2) {
-                groups.push(std::mem::take(&mut cur));
+                groups.push((0, 3, std::mem::take(&mut cur)));
                 sum = Frac::ZERO;
                 min_plain = Frac::int(4);
             }
         }
-        for g in groups {
+        for (_, number, g) in groups {
             let (first, last) = (&self.notes[g[0]], &self.notes[*g.last().unwrap()]);
             let part = first.part;
             let above = g.iter().all(|&i| self.notes[i].stem_up || self.notes[i].rest);
-            let beamed = g.iter().all(|&i| self.notes[i].beamed);
+            // The number alone over one beam that spans exactly the tuplet;
+            // otherwise a bracket (LilyPond's if-no-beam).
+            let beamed = g.iter().all(|&i| self.notes[i].beamed) && self.beam_spans(&g);
             let (x0, x1) = (first.x - 0.2, last.x + HEAD_W + 0.2);
-            let num = Glyph::TupletDigit(3);
-            let nb = self.font.bbox(num);
+            let digits: Vec<Glyph> = number.to_string().bytes().map(|c| Glyph::TupletDigit(c - b'0')).collect();
+            let boxes: Vec<_> = digits.iter().map(|&g| self.font.bbox(g)).collect();
+            let nw: f32 = boxes.iter().map(|b| b.width()).sum();
+            let (sw, ne) = (boxes.iter().map(|b| b.sw.1).fold(0.0f32, f32::min), boxes.iter().map(|b| b.ne.1).fold(0.0f32, f32::max));
             let xm = (x0 + x1) / 2.0;
             let id = first.id;
+            let put_number = |me: &mut Self, y: f32| {
+                let mut x = xm - nw / 2.0;
+                for (g, b) in digits.iter().zip(&boxes) {
+                    me.place(part, Item::glyph(*g, x, y, id));
+                    x += b.width();
+                }
+            };
             if beamed {
-                let y = if above { self.sky[part].top_over(x0, x1) - 0.4 + nb.sw.1 } else { self.sky[part].bottom_over(x0, x1) + 0.4 + nb.ne.1 };
-                self.place(part, Item::glyph(num, xm - nb.width() / 2.0, y, id));
+                // Just past the beam, at its height in the middle (LilyPond's
+                // number follows the beam rather than the staff).
+                let (f, l) = (&self.notes[g[0]], &self.notes[*g.last().unwrap()]);
+                let beam_at = |x: f32| if (l.stem_x - f.stem_x).abs() < 1e-3 { f.stem_end } else { f.stem_end + (l.stem_end - f.stem_end) * (x - f.stem_x) / (l.stem_x - f.stem_x) };
+                let up = f.stem_up;
+                let y = if up { beam_at(xm) - 0.5 + sw } else { beam_at(xm) + 0.5 + ne };
+                put_number(self, y);
             } else {
                 let (line, hook) = if above {
                     (self.sky[part].top_over(x0, x1) - 1.0, 0.6)
                 } else {
                     (self.sky[part].bottom_over(x0, x1) + 1.0, -0.6)
                 };
-                let gap = nb.width() / 2.0 + 0.3;
+                let gap = nw / 2.0 + 0.3;
                 let w = d.tuplet_bracket_thickness;
                 self.place(part, Item::line(x0, line + hook, x0, line, w, id));
                 self.place(part, Item::line(x0, line, xm - gap, line, w, id));
                 self.place(part, Item::line(xm + gap, line, x1, line, w, id));
                 self.place(part, Item::line(x1, line, x1, line + hook, w, id));
-                self.place(part, Item::glyph(num, xm - nb.width() / 2.0, line + 0.75, id));
+                put_number(self, line + 0.75);
             }
         }
+    }
+
+    /// True if the notes of `g` are exactly one beam group.
+    fn beam_spans(&self, g: &[usize]) -> bool {
+        let b = self.beam_of.get(g[0]).copied().unwrap_or(0);
+        b != 0 && g.iter().all(|&i| self.beam_of.get(i) == Some(&b)) && self.beam_of.iter().filter(|&&x| x == b).count() == g.len()
     }
 
     /// Fermatas and ornaments above the note, clear of everything there.
@@ -2221,6 +2283,7 @@ impl<'a> Engraver<'a> {
             width,
             range,
             tops: (0..score.parts.len()).map(|p| p as f32 * opt.staff_distance).collect(),
+            beam_of: vec![],
         }
     }
 
@@ -2228,6 +2291,12 @@ impl<'a> Engraver<'a> {
     /// The display list and each staff's skyline.
     fn engrave(mut self) -> (DisplayList, Vec<Skyline>) {
         let groups = self.beam_groups();
+        self.beam_of = vec![0; self.notes.len()];
+        for (k, g) in groups.iter().enumerate() {
+            for &i in g {
+                self.beam_of[i] = k + 1;
+            }
+        }
         self.space();
         self.draw_staves();
         self.draw_measure_furniture();

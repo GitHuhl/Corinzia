@@ -16,7 +16,7 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Tempo, TextItem, TextKind, Track, Voice, DYNAMICS,
+    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS,
 };
 use corinzia_score::score::{art, span, Lyric};
 use corinzia_score::Frac;
@@ -165,6 +165,10 @@ struct StaffMusic {
     chords: Vec<(Frac, String)>,
     /// MusicXML voice name -> events (in time order).
     voices: BTreeMap<String, Vec<Event>>,
+    /// MusicXML voice name -> its tuplets, and those still open
+    /// (start, actual, normal).
+    tuplets: BTreeMap<String, Vec<Tuplet>>,
+    open_tuplets: BTreeMap<String, Vec<(Frac, i64, i64)>>,
     /// Dynamics and hairpins waiting for the next event at or after a time.
     dynamics: Vec<(Frac, u8)>,
     wedges: Vec<(Frac, u8)>,
@@ -383,6 +387,9 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                             staves.push(StaffMusic::default());
                         }
                         let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
+                        if !chord {
+                            tuplet_marks(e, start, dur, &voice, &mut staves[staff]);
+                        }
                         note(e, start, dur, chord, &mut staves[staff], voice, to_concert, &mut p);
                     }
                     _ => {}
@@ -650,22 +657,45 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
 /// A staff's lane: voices numbered in order of appearance (at most four;
 /// further ones join the fourth), voice 1 filled with rests where it is
 /// silent; dynamics and hairpins on the next note.
+/// `<tuplet type="start|stop">` on a note (nested ones too): the ratio
+/// from `<tuplet-actual>`/`<tuplet-normal>`, else `<time-modification>`.
+fn tuplet_marks(e: Node, start: Frac, dur: Frac, voice: &str, s: &mut StaffMusic) {
+    let tm = child(e, "time-modification");
+    let (ta, tn) = (tm.and_then(|t| int(t, "actual-notes")).unwrap_or(3), tm.and_then(|t| int(t, "normal-notes")).unwrap_or(2));
+    let marks: Vec<Node> = children(e, "notations").flat_map(|n| children(n, "tuplet")).collect();
+    for t in marks.iter().filter(|t| t.attribute("type") == Some("start")) {
+        let number = |tag: &str| child(*t, tag).and_then(|x| int(x, "tuplet-number"));
+        let (a, n) = (number("tuplet-actual").unwrap_or(ta), number("tuplet-normal").unwrap_or(tn));
+        s.open_tuplets.entry(voice.to_string()).or_default().push((start, a.max(1), n.max(1)));
+    }
+    for _ in marks.iter().filter(|t| t.attribute("type") == Some("stop")) {
+        if let Some((from, actual, normal)) = s.open_tuplets.get_mut(voice).and_then(|o| o.pop()) {
+            s.tuplets.entry(voice.to_string()).or_default().push(Tuplet { start: from, length: start + dur - from, actual, normal });
+        }
+    }
+}
+
 fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut Project) -> Lane {
     let mut voices: Vec<Vec<Event>> = Vec::new();
+    let mut tuplets: Vec<Vec<Tuplet>> = Vec::new();
     // The voice with the most music first.
     let mut named: Vec<(String, Vec<Event>)> = std::mem::take(&mut s.voices).into_iter().collect();
     named.sort_by_key(|(name, evs)| (std::cmp::Reverse(evs.iter().filter(|e| !e.is_rest()).count()), name.clone()));
-    for (_, mut evs) in named {
+    for (name, mut evs) in named {
         evs.sort_by_key(|e| e.start);
+        let ts = s.tuplets.remove(&name).unwrap_or_default();
         if voices.len() < 4 {
             voices.push(evs);
+            tuplets.push(ts);
         } else {
             voices[3].extend(evs);
             voices[3].sort_by_key(|e| e.start);
+            tuplets[3].extend(ts);
         }
     }
     if voices.is_empty() {
         voices.push(Vec::new());
+        tuplets.push(Vec::new());
     }
     // Dynamics and hairpins go on the first event at or after them (any voice, voice 1 first).
     let attach = |voices: &mut Vec<Vec<Event>>, at: Frac, f: &mut dyn FnMut(&mut Event)| {
@@ -710,9 +740,10 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
     }
     voices[0] = v1;
     let mut lane_voices = Vec::new();
-    for (i, evs) in voices.into_iter().enumerate() {
+    for (i, (evs, ts)) in voices.into_iter().zip(tuplets).enumerate() {
         let id = p.allocate_id();
-        lane_voices.push(Voice { id, index: i as u8 + 1, events: Arc::new(evs) });
+        let ts = corinzia_edit::tuplets::sanitize(&evs, &ts);
+        lane_voices.push(Voice { id, index: i as u8 + 1, events: Arc::new(evs), tuplets: ts });
     }
     let change = p.allocate_id();
     let clefs = s.clefs.into_iter().map(|(at, clef)| ClefChange { id: p.allocate_id(), at, clef }).collect();

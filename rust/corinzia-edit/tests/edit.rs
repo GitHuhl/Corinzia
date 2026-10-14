@@ -40,12 +40,11 @@ fn two_bars(ids: &mut Ids) -> Vec<Event> {
 
 #[test]
 fn durations() {
-    let d = |base, dots, triplet| DurationSpec { base, dots, triplet }.value();
-    assert_eq!(d(BaseDuration::Quarter, 0, false), f(1, 4));
-    assert_eq!(d(BaseDuration::Quarter, 1, false), f(3, 8));
-    assert_eq!(d(BaseDuration::Half, 2, false), f(7, 8));
-    assert_eq!(d(BaseDuration::Eighth, 0, true), f(1, 12));
-    assert_eq!(d(BaseDuration::SixtyFourth, 0, false), f(1, 64));
+    let d = |base, dots| DurationSpec { base, dots }.value();
+    assert_eq!(d(BaseDuration::Quarter, 0), f(1, 4));
+    assert_eq!(d(BaseDuration::Quarter, 1), f(3, 8));
+    assert_eq!(d(BaseDuration::Half, 2), f(7, 8));
+    assert_eq!(d(BaseDuration::SixtyFourth, 0), f(1, 64));
 }
 
 #[test]
@@ -174,7 +173,7 @@ fn header() -> Movement {
         barlines: vec![],
         rehearsal: vec![],
         endings: vec![],
-        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]) }] }],
+        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
     }
 }
 
@@ -467,4 +466,54 @@ fn lyrics_on_notes() {
     assert_eq!(r3.events[0].lyrics.len(), 1, "empty text removes the syllable");
     let rest = make_event(&mut ids, f(2, 1), f(1, 4), &[], 0);
     assert!(set_lyric(&[rest.clone()], rest.id, 1, "x", false, false).is_none(), "no lyrics on rests");
+}
+
+// --------------------------------------------------------------- tuplets --
+#[test]
+fn tuplet_popover_and_ratios() {
+    use corinzia_edit::tuplets::*;
+    assert_eq!(parse_tuplet("3"), Some((3, 2)));
+    assert_eq!(parse_tuplet("5"), Some((5, 4)));
+    assert_eq!(parse_tuplet("7"), Some((7, 4)));
+    assert_eq!(parse_tuplet("9"), Some((9, 8)));
+    assert_eq!(parse_tuplet("2"), Some((2, 3)));
+    assert_eq!(parse_tuplet(" 7:8 "), Some((7, 8)));
+    assert!(parse_tuplet("x").is_none() && parse_tuplet("1").is_none() && parse_tuplet("4:4").is_none());
+}
+
+#[test]
+fn tuplets_follow_edits() {
+    use corinzia_edit::tuplets::*;
+    use corinzia_model::Tuplet;
+    let mut ids = Ids(100);
+    // A bar of quarters C D E F.
+    let mut evs = Vec::new();
+    for (i, s) in [0, 1, 2, 3].iter().enumerate() {
+        evs.push(make_event(&mut ids, f(i as i64, 4), f(1, 4), &[Pitch { step: *s, alter: 0, octave: 5 }], 0));
+    }
+    // A triplet of eighths made from D: D keeps its pitch, a rest fills the rest.
+    let d = evs[1].clone();
+    let (r, ts) = create(&evs, &[], f(1, 4), f(1, 8), 3, 2, Some(&d), true, &mut ids).unwrap();
+    assert_eq!(ts, vec![Tuplet { start: f(1, 4), length: f(1, 4), actual: 3, normal: 2 }]);
+    let inside: Vec<(Frac, Frac, bool)> = r.events.iter().filter(|e| ts[0].contains(e.start)).map(|e| (e.start, e.duration, e.is_rest())).collect();
+    assert_eq!(inside, [(f(1, 4), f(1, 12), false), (f(1, 3), f(1, 6), true)]);
+    assert_eq!(sounding_scale(&ts, f(1, 3)), f(2, 3));
+    assert_eq!(sounding_scale(&ts, f(1, 2)), f(1, 1));
+    // A note crossing its end removes it; one inside keeps it.
+    let crossing = insert_event(&r.events, make_event(&mut ids, f(1, 3), f(1, 4), &[], 0), true, &mut ids);
+    assert!(sanitize(&crossing.events, &ts).is_empty());
+    let inner = insert_event(&r.events, make_event(&mut ids, f(1, 3), f(1, 12), &[], 0), true, &mut ids);
+    assert_eq!(sanitize(&inner.events, &ts), ts);
+    // Bars inserted before it move it; a deleted span holding it removes it.
+    assert_eq!(shift(&ts, Frac::ZERO, f(1, 1))[0].start, f(5, 4));
+    assert!(cut(&ts, Frac::ZERO, f(1, 2)).is_empty());
+    assert_eq!(cut(&ts, Frac::ZERO, f(1, 4))[0].start, Frac::ZERO);
+    // Copy and paste carry it.
+    let clip = slice(&ts, f(1, 4), f(1, 2));
+    assert_eq!(paste(&[], &clip, f(2, 1), f(1, 4))[0].start, f(2, 1));
+    // An eighth quintuplet inside the triplet would not fit; a nested triplet does.
+    assert!(create(&r.events, &ts, f(1, 4), f(1, 8), 5, 4, None, true, &mut ids).is_none());
+    let (_, nested) = create(&r.events, &ts, f(1, 4), f(1, 16), 3, 2, None, true, &mut ids).unwrap();
+    assert_eq!(nested.len(), 2);
+    assert_eq!(nested[1].length, f(1, 12));
 }

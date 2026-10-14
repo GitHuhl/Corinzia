@@ -24,7 +24,7 @@ pub struct Range {
 
 #[derive(Clone, Debug)]
 struct Clip {
-    lanes: Vec<Vec<(u8, Vec<Event>)>>, // per staff: (voice index, events from 0)
+    lanes: Vec<Vec<(u8, Vec<Event>, Vec<Tuplet>)>>, // per staff: (voice index, events and tuplets from 0)
     length: Frac,
 }
 
@@ -52,6 +52,9 @@ pub struct Editor {
     /// The rhythmic grid: Alt+arrows move music by it and the caret steps
     /// by it (an index into `GRIDS`).
     pub grid: usize,
+    /// Tuplet input (actual, normal): notes entered go into a tuplet, a new
+    /// one starting whenever the caret is outside one.
+    pub tuplet_input: Option<(i64, i64)>,
     pub selection: Option<Id>,
     pub range: Option<Range>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -98,13 +101,34 @@ fn voice_slot(m: &mut Movement, lane: usize, index: u8, create: bool, ids: &mut 
     if !create {
         return None;
     }
-    l.voices.push(Voice { id: ids.next(), index, events: Arc::new(Vec::new()) });
+    l.voices.push(Voice { id: ids.next(), index, events: Arc::new(Vec::new()), tuplets: vec![] });
     l.voices.sort_by_key(|v| v.index);
     l.voices.iter().position(|v| v.index == index)
 }
 
+/// A voice's new events; its tuplets follow (one an event now crosses goes).
 fn set_events(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) {
-    m.lanes[lane].voices[voice].events = Arc::new(r.events.clone());
+    let v = &mut m.lanes[lane].voices[voice];
+    v.events = Arc::new(r.events.clone());
+    v.tuplets = edit::tuplets::sanitize(&v.events, &v.tuplets);
+}
+
+/// Note input's sounding duration at `caret`: the written value scaled by
+/// the tuplets there. With tuplet input on and no tuplet at the caret, a
+/// new one (of rests) starts there first.
+fn input_duration(m: &mut Movement, lane: usize, vi: usize, caret: Frac, spec: DurationSpec, tuplet: Option<(i64, i64)>, ids: &mut Ids) -> Frac {
+    let v = &mut m.lanes[lane].voices[vi];
+    if let Some((actual, normal)) = tuplet {
+        if edit::tuplets::tuplet_at(&v.tuplets, caret).is_none() {
+            let unit = DurationSpec { dots: 0, ..spec }.value();
+            if let Some((r, ts)) = edit::tuplets::create(&v.events, &v.tuplets, caret, unit, actual, normal, None, v.index == 1, ids) {
+                v.events = Arc::new(r.events);
+                v.tuplets = ts;
+                extend_to(m, r.to);
+            }
+        }
+    }
+    spec.value() * edit::tuplets::sounding_scale(&m.lanes[lane].voices[vi].tuplets, caret)
 }
 
 /// After a rhythm edit, voice 1's rests around `[r.from, r.to]` join up
@@ -112,9 +136,14 @@ fn set_events(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) {
 fn set_events_tidy(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) {
     let mut evs = r.events.clone();
     if m.lanes[lane].voices[voice].index == 1 {
-        edit::merge_rests(&mut evs, r.from, r.to, &edit::bar_starts(m));
+        // Never across a barline or a tuplet's edge.
+        let mut edges = edit::bar_starts(m);
+        edges.extend(m.lanes[lane].voices[voice].tuplets.iter().flat_map(|t| [t.start, t.end()]));
+        edges.sort();
+        edges.dedup();
+        edit::merge_rests(&mut evs, r.from, r.to, &edges);
     }
-    m.lanes[lane].voices[voice].events = Arc::new(evs);
+    set_events(m, lane, voice, &EditResult { events: evs, ..r.clone() });
 }
 
 /// Single note selected: a span from it to the next note in its voice.
@@ -141,6 +170,7 @@ impl Editor {
             range_anchor: None,
             transposed: false,
             grid: 1,
+            tuplet_input: None,
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -347,6 +377,7 @@ impl Editor {
     pub fn enter_note(&mut self, step: i32, add_to_chord: bool) {
         let step = step.rem_euclid(7);
         let (lane, voice, caret, spec, alter, chord) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from), add_to_chord || self.chord_mode);
+        let tuplet = self.tuplet_input;
         let transposed = self.transposed;
         let instruments: std::collections::HashMap<Id, Interval> = self.project.instruments.iter().map(|i| (i.id, i.transposition)).collect();
         let mut out: Option<EditResult> = None;
@@ -381,7 +412,9 @@ impl Editor {
             } else {
                 let reference = edit::previous_pitch(&evs, caret).map(|p| p.transposed(by)).unwrap_or(Pitch { step: 6, alter: 0, octave: 4 });
                 let p = concert(edit::nearest_pitch(step, alter, fifths, reference));
-                let r = edit::insert_event(&evs, edit::make_event(ids, caret, spec.value(), &[p], 0), voice == 1, ids);
+                let dur = input_duration(m, lane, vi, caret, spec, tuplet, ids);
+                let evs = m.lanes[lane].voices[vi].events.clone();
+                let r = edit::insert_event(&evs, edit::make_event(ids, caret, dur, &[p], 0), voice == 1, ids);
                 extend_to(m, r.to);
                 r
             };
@@ -400,7 +433,7 @@ impl Editor {
     }
 
     pub fn enter_rest(&mut self) {
-        let (lane, voice, caret, spec) = (self.caret_lane, self.voice, self.caret, self.spec);
+        let (lane, voice, caret, spec, tuplet) = (self.caret_lane, self.voice, self.caret, self.spec, self.tuplet_input);
         let mut out = None;
         self.transact("Rest input", |m, ids| {
             if m.lanes.is_empty() {
@@ -408,8 +441,9 @@ impl Editor {
             }
             let lane = lane.min(m.lanes.len() - 1);
             let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
+            let dur = input_duration(m, lane, vi, caret, spec, tuplet, ids);
             let evs = m.lanes[lane].voices[vi].events.clone();
-            let r = edit::insert_event(&evs, edit::make_event(ids, caret, spec.value(), &[], 0), voice == 1, ids);
+            let r = edit::insert_event(&evs, edit::make_event(ids, caret, dur, &[], 0), voice == 1, ids);
             extend_to(m, r.to);
             set_events(m, lane, vi, &r);
             out = Some(r);
@@ -432,7 +466,14 @@ impl Editor {
         let k = (quarter / grid_q + 0.35).floor().max(0.0) as i64;
         self.caret_lane = lane;
         self.caret = grid * Frac::int(k);
-        let (voice, caret, spec, accidental, chord) = (self.voice, self.caret, self.spec, self.accidental, add_to_chord || self.chord_mode);
+        // Inside a tuplet, snap to its notes instead.
+        if let Some(t) = self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.voices.iter().find(|v| v.index == self.voice)).and_then(|v| edit::tuplets::tuplet_at(&v.tuplets, self.caret)) {
+            let step = t.length * Frac::new(1, t.actual);
+            let q = |f: Frac| f.num as f64 / f.den as f64 * 4.0;
+            let k = ((quarter - q(t.start)) / q(step) + 0.35).floor().clamp(0.0, (t.actual - 1) as f64) as i64;
+            self.caret = t.start + step * Frac::int(k);
+        }
+        let (voice, caret, spec, accidental, chord, tuplet) = (self.voice, self.caret, self.spec, self.accidental, add_to_chord || self.chord_mode, self.tuplet_input);
         let step = diatonic.rem_euclid(7);
         let mut out = None;
         self.transact("Note input", |m, ids| {
@@ -447,7 +488,9 @@ impl Editor {
                     None => return false,
                 }
             } else {
-                let r = edit::insert_event(&evs, edit::make_event(ids, caret, spec.value(), &[p], 0), voice == 1, ids);
+                let dur = input_duration(m, lane, vi, caret, spec, tuplet, ids);
+                let evs = m.lanes[lane].voices[vi].events.clone();
+                let r = edit::insert_event(&evs, edit::make_event(ids, caret, dur, &[p], 0), voice == 1, ids);
                 extend_to(m, r.to);
                 r
             };
@@ -727,6 +770,14 @@ impl Editor {
     pub fn delete_selection(&mut self) {
         if let Some(r) = self.range {
             self.edit_range_voices("Delete", |evs, index, ids| Some(edit::erase_range(evs, r.from, r.to, index == 1, ids)));
+            // Tuplets inside the passage go with it.
+            if let Some(m) = self.project.movements.get_mut(self.movement) {
+                for li in r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1)) {
+                    for v in m.lanes[li].voices.iter_mut() {
+                        v.tuplets = edit::tuplets::remove_within(&v.tuplets, r.from, r.to);
+                    }
+                }
+            }
             return;
         }
         if self.delete_structure_item() {
@@ -869,6 +920,8 @@ impl Editor {
                     let v = &m.lanes[li].voices[vi];
                     if let Some(r) = edit::move_events(&v.events.clone(), from, to, by, v.index == 1, ids) {
                         extend_to(m, r.to);
+                        let v = &mut m.lanes[li].voices[vi];
+                        v.tuplets = edit::tuplets::moved(&v.tuplets, from, to, by);
                         set_events_tidy(m, li, vi, &r);
                         any = true;
                     }
@@ -888,7 +941,7 @@ impl Editor {
 
     /// A duration key or button with music selected changes its rhythm.
     pub fn set_selection_duration(&mut self) {
-        let d = edit::DurationSpec { dots: 0, ..self.spec }.value();
+        let d = edit::DurationSpec { dots: 0, ..self.spec }.value() * self.selection_scale();
         if self.change_durations("Duration", |_| d) {
             self.status = "Duration changed".into();
         }
@@ -896,7 +949,67 @@ impl Editor {
 
     /// The dot key with music selected: plain → dotted → double-dotted.
     pub fn cycle_selection_dots(&mut self) {
-        self.change_durations("Dots", edit::cycle_dots);
+        let scale = self.selection_scale();
+        self.change_durations("Dots", move |d| edit::cycle_dots(d / scale) * scale);
+    }
+
+    /// Sounding per written time where the selection starts (tuplets).
+    fn selection_scale(&self) -> Frac {
+        let at = |lane: usize, voice: Option<usize>, t: Frac| -> Frac {
+            let Some(l) = self.movement().and_then(|m| m.lanes.get(lane)) else { return Frac::int(1) };
+            let v = voice.and_then(|v| l.voices.get(v)).or(l.voices.first());
+            v.map(|v| edit::tuplets::sounding_scale(&v.tuplets, t)).unwrap_or(Frac::int(1))
+        };
+        match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+            (Some(r), _) => at(r.lane_from, None, r.from),
+            (None, Some((loc, e))) => at(loc.lane, Some(loc.voice), e.start),
+            _ => Frac::int(1),
+        }
+    }
+
+    /// The tuplet popover: in note input, tuplet input of `actual:normal`
+    /// (from the caret on); otherwise the selected note becomes the first
+    /// note of a tuplet written in its value.
+    pub fn apply_tuplet(&mut self, actual: i64, normal: i64) {
+        if self.input_mode {
+            self.tuplet_input = Some((actual, normal));
+            self.status = format!("Tuplet input {actual}:{normal} · : ends it");
+            return;
+        }
+        let Some((loc, e)) = self.selection.and_then(|id| self.event_of(id)) else {
+            self.status = "Select a note, or start note input, to make a tuplet".into();
+            return;
+        };
+        let (first, at) = (e.clone(), e.start);
+        let scale = self.selection_scale();
+        // The note's written value, undotted.
+        let written = edit::plain_value(first.duration / scale);
+        let mut focus = None;
+        let ok = self.transact("Tuplet", |m, ids| {
+            let v = &m.lanes[loc.lane].voices[loc.voice];
+            let fill = v.index == 1;
+            match edit::tuplets::create(&v.events, &v.tuplets, at, written, actual, normal, Some(&first), fill, ids) {
+                Some((r, ts)) => {
+                    extend_to(m, r.to);
+                    m.lanes[loc.lane].voices[loc.voice].tuplets = ts;
+                    set_events(m, loc.lane, loc.voice, &r);
+                    focus = r.focus;
+                    true
+                }
+                None => false,
+            }
+        });
+        if ok {
+            self.selection = focus;
+            self.status = format!("Tuplet {actual}:{normal}");
+        } else {
+            self.status = "The tuplet does not fit there".into();
+        }
+    }
+
+    /// Toggles triplet input (the panel's 3 button).
+    pub fn toggle_triplets(&mut self) {
+        self.tuplet_input = if self.tuplet_input.is_some() { None } else { Some((3, 2)) };
     }
 
     /// The written interval of the instrument playing `lane` at `at`, in a
@@ -1028,9 +1141,9 @@ impl Editor {
             }
         }
         let (Some(r), Some(m)) = (self.range, self.movement()) else { return };
-        let lanes: Vec<Vec<(u8, Vec<Event>)>> = (r.lane_from..=r.lane_to)
+        let lanes: Vec<Vec<(u8, Vec<Event>, Vec<Tuplet>)>> = (r.lane_from..=r.lane_to)
             .filter_map(|li| m.lanes.get(li))
-            .map(|l| l.voices.iter().map(|v| (v.index, edit::slice_range(&v.events, r.from, r.to))).collect())
+            .map(|l| l.voices.iter().map(|v| (v.index, edit::slice_range(&v.events, r.from, r.to), edit::tuplets::slice(&v.tuplets, r.from, r.to))).collect())
             .collect();
         let length = r.to - r.from;
         self.status = format!("Copied {} {}, {} beats", lanes.len(), if lanes.len() == 1 { "staff" } else { "staves" }, quarters(length));
@@ -1069,10 +1182,12 @@ impl Editor {
                     break;
                 }
                 last_lane = li;
-                for (index, events) in lane_clip {
+                for (index, events, tuplets) in lane_clip {
                     let Some(vi) = voice_slot(m, li, *index, !events.is_empty(), ids) else { continue };
                     let evs = m.lanes[li].voices[vi].events.clone();
                     let r = edit::paste_events(&evs, events, at, clip.length, *index == 1, ids);
+                    let v = &mut m.lanes[li].voices[vi];
+                    v.tuplets = edit::tuplets::paste(&v.tuplets, tuplets, at, clip.length);
                     set_events(m, li, vi, &r);
                 }
             }
@@ -1219,6 +1334,11 @@ impl Editor {
     /// Applies a popover; `Err` carries the hint to show.
     pub fn apply_popover(&mut self, kind: PopoverKind, input: &str) -> Result<(), String> {
         let text = input.trim().to_string();
+        if kind == PopoverKind::Tuplet {
+            let (a, n) = edit::tuplets::parse_tuplet(&text).ok_or("Tuplet not understood: try 3, 5, 5:4 or 7:8")?;
+            self.apply_tuplet(a, n);
+            return Ok(());
+        }
         if kind == PopoverKind::Ornament {
             let bit = edit::parse_ornament(&text).ok_or("Ornament not understood: tr, mordent, turn, trem, arp, breath, caesura, fermata")?;
             if self.range.is_none() && self.selection.is_none() {
@@ -1312,7 +1432,7 @@ impl Editor {
                 let verse = self.lyric_verse;
                 return self.enter_lyric(verse, &text, false, false).map(|_| ());
             }
-            PopoverKind::Ornament => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -1357,6 +1477,7 @@ impl Editor {
             for l in m.lanes.iter_mut() {
                 for v in l.voices.iter_mut() {
                     v.events = Arc::new(edit::insert_span_events(&v.events, at, len));
+                    v.tuplets = edit::tuplets::shift(&v.tuplets, at, len);
                 }
             }
             edit::insert_span(m, at, len);
@@ -1378,6 +1499,7 @@ impl Editor {
             for l in m.lanes.iter_mut() {
                 for v in l.voices.iter_mut() {
                     v.events = Arc::new(edit::delete_span_events(&v.events, from, to));
+                    v.tuplets = edit::tuplets::cut(&v.tuplets, from, to);
                 }
             }
             edit::delete_span(m, from, to);
@@ -1452,6 +1574,7 @@ pub enum PopoverKind {
     Ornament,
     Lyrics,
     Chord,
+    Tuplet,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -1468,6 +1591,7 @@ impl PopoverKind {
             PopoverKind::Ornament => "Ornament",
             PopoverKind::Lyrics => "Lyrics",
             PopoverKind::Chord => "Chord symbol",
+            PopoverKind::Tuplet => "Tuplet",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -1484,6 +1608,7 @@ impl PopoverKind {
             PopoverKind::Ornament => "tr, mordent, turn, trem, arp, fermata",
             PopoverKind::Lyrics => "Syllable; space = next note, - = hyphen, _ = extender",
             PopoverKind::Chord => "C, F#m7, Bbmaj7, G7/B; space = next beat",
+            PopoverKind::Tuplet => "3, 5, 6, 7, 2 (duplet), 5:4, 7:8",
         }
     }
 }
@@ -1682,6 +1807,79 @@ mod tests {
         e.caret = Frac::ZERO;
         e.move_caret(1);
         assert_eq!(e.caret, f(1, 8));
+    }
+
+    fn tuplets(e: &Editor) -> Vec<Tuplet> {
+        e.movement().unwrap().lanes[0].voices[0].tuplets.clone()
+    }
+
+    #[test]
+    fn tuplet_input_fills_tuplets_one_after_another() {
+        let mut e = blank();
+        e.set_input_mode(true);
+        e.spec.base = edit::BaseDuration::Eighth;
+        e.apply_popover(PopoverKind::Tuplet, "3").unwrap();
+        for step in [0, 1, 2, 3, 4, 5] {
+            e.enter_note(step, false);
+        }
+        // Two triplets of eighths, one per beat.
+        let ts = tuplets(&e);
+        assert_eq!(ts.len(), 2);
+        assert_eq!((ts[0].start, ts[0].length, ts[1].start), (Frac::ZERO, f(1, 4), f(1, 4)));
+        assert_eq!(rhythm(&e, 0)[..6].iter().map(|r| r.split(':').nth(1).unwrap()).collect::<Vec<_>>(), ["1/3"; 6]);
+        assert_eq!(e.caret, f(1, 2));
+        // ':' ends tuplet input: the next eighth is plain.
+        e.tuplet_input = None;
+        e.enter_note(6, false);
+        assert_eq!(rhythm(&e, 0)[6], "B5:1/2");
+        assert_eq!(tuplets(&e).len(), 2);
+        // A quintuplet of sixteenths over the next beat.
+        e.caret = f(3, 4);
+        e.spec.base = edit::BaseDuration::Sixteenth;
+        e.apply_popover(PopoverKind::Tuplet, "5").unwrap();
+        for step in [0, 1, 2, 3, 4] {
+            e.enter_note(step, false);
+        }
+        let q = tuplets(&e).into_iter().find(|t| t.actual == 5).unwrap();
+        assert_eq!((q.start, q.length, q.normal), (f(3, 4), f(1, 4), 4));
+        assert_eq!(e.caret, f(1, 1));
+    }
+
+    #[test]
+    fn a_selected_note_becomes_a_tuplet_and_edits_keep_it_sound() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        // D (a quarter) starts a quarter-note triplet over two beats.
+        select_nth(&mut e, 1);
+        e.apply_popover(PopoverKind::Tuplet, "3").unwrap();
+        assert_eq!(tuplets(&e), vec![Tuplet { start: f(1, 4), length: f(1, 2), actual: 3, normal: 2 }]);
+        assert_eq!(rhythm(&e, 0)[..4], ["C5:1", "D5:2/3", "r:4/3", "F5:1"]);
+        // Duration keys inside it are written values: an eighth is 1/12.
+        e.spec.base = edit::BaseDuration::Eighth;
+        e.set_selection_duration();
+        assert_eq!(rhythm(&e, 0)[1], "D5:1/3");
+        assert_eq!(tuplets(&e).len(), 1, "still inside");
+        // A note now crossing its end removes it.
+        e.spec.base = edit::BaseDuration::Whole;
+        e.set_selection_duration();
+        assert!(tuplets(&e).is_empty());
+        e.undo();
+        e.undo();
+        assert_eq!(tuplets(&e).len(), 1);
+        // Copy the triplet's beats, paste them on beat 1 of bar 2: it comes along.
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: f(1, 4), to: f(3, 4) });
+        e.copy();
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: f(1, 1), to: f(1, 1) });
+        e.paste();
+        assert_eq!(tuplets(&e).iter().map(|t| t.start).collect::<Vec<_>>(), [f(1, 4), f(1, 1)]);
+        // Deleting a passage holding it removes it; inserting a bar before moves it.
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: f(1, 1), to: f(3, 2) });
+        e.delete_selection();
+        assert_eq!(tuplets(&e).len(), 1);
+        e.clear_selection();
+        e.caret = Frac::ZERO;
+        e.insert_bars(1);
+        assert_eq!(tuplets(&e)[0].start, f(5, 4));
     }
 
     #[test]

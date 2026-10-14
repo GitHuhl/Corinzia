@@ -117,6 +117,35 @@ pub struct Voice {
     pub id: Id,
     pub index: u8, // 1..4
     pub events: Arc<Vec<Event>>,
+    /// Tuplet brackets, sorted by start; an enclosing one comes first.
+    pub tuplets: Vec<Tuplet>,
+}
+
+/// `actual` notes in the time of `normal` over `[start, start + length)`
+/// (5:4, 3:2, 2:3). The events inside keep their sounding durations; they
+/// are written `actual / normal` times longer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tuplet {
+    pub start: Frac,
+    pub length: Frac,
+    pub actual: i64,
+    pub normal: i64,
+}
+impl Tuplet {
+    pub fn end(&self) -> Frac {
+        self.start + self.length
+    }
+    /// Sounding time to written time.
+    pub fn ratio(&self) -> Frac {
+        Frac::new(self.actual, self.normal)
+    }
+    /// The written value of one of its `actual` notes.
+    pub fn unit(&self) -> Frac {
+        self.length * Frac::new(1, self.normal)
+    }
+    pub fn contains(&self, t: Frac) -> bool {
+        t >= self.start && t < self.end()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

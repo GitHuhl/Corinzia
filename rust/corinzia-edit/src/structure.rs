@@ -400,6 +400,7 @@ pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
         for l in m.lanes.iter_mut() {
             for v in l.voices.iter_mut() {
                 v.events = delete_span_events(&v.events, Frac::ZERO, old).into();
+                v.tuplets = crate::tuplets::cut(&v.tuplets, Frac::ZERO, old);
             }
         }
     }
@@ -408,6 +409,7 @@ pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
     for l in m.lanes.iter_mut() {
         for v in l.voices.iter_mut() {
             v.events = insert_span_events(&v.events, Frac::ZERO, len).into();
+            v.tuplets = crate::tuplets::shift(&v.tuplets, Frac::ZERO, len);
         }
     }
     // Entries at 0 (the meter, key, tempo, instruments) stay at 0: the

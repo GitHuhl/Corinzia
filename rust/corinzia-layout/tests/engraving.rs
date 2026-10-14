@@ -443,3 +443,27 @@ fn pickup_bar_counts_its_beats_from_the_end() {
     assert!(flags[0] < heads[1].0, "the flagged eighth is the first: {flags:?}");
     preview("pickup", &l);
 }
+
+#[test]
+fn tuplets_show_their_number_and_a_bracket_without_a_beam() {
+    // Two eighth triplets (a beam each, a 3 over each), a quintuplet of
+    // sixteenths (one beam, a 5), then a quarter-note triplet: a bracket.
+    let s = score(&[("treble", &["\\tuplet 3/2 { c''8 d'' e'' } \\tuplet 3/2 { f'' g'' a'' } \\tuplet 5/4 { c''16 d'' e'' f'' g'' } c''4 | \\tuplet 3/2 { c''4 d'' e'' } c''2"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    assert_eq!(glyphs(&l, Glyph::TupletDigit(3)).len(), 3);
+    assert_eq!(glyphs(&l, Glyph::TupletDigit(5)).len(), 1);
+    // Beams: one per triplet and two (8th + 16th levels) for the quintuplet.
+    let beams = l.items.iter().filter(|i| matches!(i, Item::Quad { .. })).count();
+    assert_eq!(beams, 1 + 1 + 2);
+    // The quarter triplet is bracketed: four lines (two hooks, two halves).
+    let digit3 = glyphs(&l, Glyph::TupletDigit(3)).into_iter().map(|g| g.0).fold(0.0f32, f32::max);
+    let bracket = l
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Line { from, to, .. } if from.y == to.y && (from.x - digit3).abs() < 8.0 && from.y.fract() != 0.0))
+        .count();
+    assert!(bracket >= 2, "a bracket around the quarter triplet");
+    // Quarter-triplet heads are half the width of a 3/2 quarter: written as quarters.
+    assert_eq!(glyphs(&l, Glyph::NoteheadBlack).len(), 3 + 3 + 5 + 1 + 3);
+    preview("tuplets", &l);
+}

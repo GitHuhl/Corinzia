@@ -212,9 +212,13 @@ pub fn load(path: &Path) -> Result<Project> {
             })? {
                 lane.changes.push(c?);
             }
-            let mut sv = db.prepare("SELECT id, voice_index FROM voice WHERE movement_id = ? AND player_id = ? ORDER BY voice_index")?;
-            let voices: Vec<(i64, i64)> = sv.query_map(params![id, pid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
-            for (vid, index) in voices {
+            let mut sv = db.prepare("SELECT id, voice_index, json(tuplets) FROM voice WHERE movement_id = ? AND player_id = ? ORDER BY voice_index")?;
+            let voices: Vec<(i64, i64, String)> = sv.query_map(params![id, pid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+            for (vid, index, tuplets) in voices {
+                let tuplets: Vec<Tuplet> = serde_json::from_str::<Vec<Value>>(&tuplets)?
+                    .iter()
+                    .map(|t| Tuplet { start: frac(&t["s"]), length: frac(&t["l"]), actual: t["a"].as_i64().unwrap_or(3), normal: t["n"].as_i64().unwrap_or(2) })
+                    .collect();
                 let mut sch = db.prepare("SELECT json(events) FROM voice_chunk WHERE voice_id = ? ORDER BY chunk_index")?;
                 let chunks: Vec<String> = sch.query_map([vid], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
                 let mut events = Vec::new();
@@ -223,7 +227,7 @@ pub fn load(path: &Path) -> Result<Project> {
                         events.push(e.into_event());
                     }
                 }
-                lane.voices.push(Voice { id: vid as u64, index: index as u8, events: Arc::new(events) });
+                lane.voices.push(Voice { id: vid as u64, index: index as u8, events: Arc::new(events), tuplets });
             }
             m.lanes.push(lane);
         }
@@ -517,8 +521,15 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             )?;
             for v in &l.voices {
                 tx.execute(
-                    "INSERT INTO voice(id, movement_id, player_id, voice_index) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET voice_index=excluded.voice_index",
-                    params![v.id as i64, m.id as i64, l.player as i64, v.index],
+                    "INSERT INTO voice(id, movement_id, player_id, voice_index, tuplets) VALUES (?,?,?,?,jsonb(?)) \
+                     ON CONFLICT(id) DO UPDATE SET voice_index=excluded.voice_index, tuplets=excluded.tuplets",
+                    params![
+                        v.id as i64,
+                        m.id as i64,
+                        l.player as i64,
+                        v.index,
+                        Value::Array(v.tuplets.iter().map(|t| json!({"s": jfrac(t.start), "l": jfrac(t.length), "a": t.actual, "n": t.normal})).collect()).to_string()
+                    ],
                 )?;
                 tx.execute("DELETE FROM voice_chunk WHERE voice_id = ?", [v.id as i64])?;
                 let mut i = 0;

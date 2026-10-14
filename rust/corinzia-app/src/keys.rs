@@ -14,6 +14,7 @@ pub enum Action {
     Rest,
     Duration(u8), // 0 = whole .. 6 = 64th
     Pitch(i32),   // a letter outside note input: the selection's pitch
+    TupletOff,    // ends tuplet input
     Nudge(i64),   // move the selection by the rhythmic grid
     Grid(usize),  // choose the rhythmic grid (editor::GRIDS)
     GridStep(i64), // a coarser (-1) or finer (+1) grid
@@ -178,7 +179,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
         _ if note.is_some() && !shift => Pitch(note.unwrap() as i32),
         '1'..='7' => Duration(7 - (c as u8 - b'0')),
         '.' => Dots,
-        ';' => Triplet,
+        ';' => Popover(PopoverKind::Tuplet),
+        ':' if input_mode => TupletOff,
         'r' | ',' if input_mode => Rest,
         'r' => Repeat,
         's' => Slur,

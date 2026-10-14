@@ -8,9 +8,11 @@ license.workspace = true
 [dependencies]
 corinzia-score.workspace = true
 corinzia-model.workspace = true
+corinzia-edit.workspace = true
 roxmltree = "0.20"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+corinzia-perform.workspace = true
 corinzia-layout.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }
