@@ -360,6 +360,132 @@ pub fn apply_to_range(list: &[Event], from: Frac, to: Frac, mut f: impl FnMut(&m
     first.map(|f| EditResult { events: out, focus: Some(f), from, to, caret: to })
 }
 
+/// Rhythm edit: every event starting in `[from, to)` takes the duration
+/// `f(old)`, the events staying in order (gaps between them kept). Longer
+/// music overwrites what follows (a note it cuts into leaves its tail as a
+/// rest in voice 1); shorter music leaves rests (voice 1, `fill`) or a hole.
+/// A changed note's ties are dropped. `None` when nothing changes.
+pub fn set_durations(list: &[Event], from: Frac, to: Frac, f: impl Fn(Frac) -> Frac, fill: bool, ids: &mut Ids) -> Option<EditResult> {
+    let sel: Vec<&Event> = list.iter().filter(|e| e.start >= from && e.start < to).collect();
+    let first = *sel.first()?;
+    let old_end = sel.iter().map(|e| e.end()).max()?;
+    let mut new = Vec::with_capacity(sel.len());
+    let (mut at, mut prev_end, mut changed) = (first.start, first.start, false);
+    for e in sel {
+        let d = f(e.duration);
+        if d <= Frac::ZERO {
+            return None;
+        }
+        at = at + (e.start - prev_end).max(Frac::ZERO);
+        prev_end = e.end();
+        let mut c = e.clone();
+        if d != e.duration {
+            untie(&mut c);
+        }
+        changed |= d != e.duration || at != e.start;
+        c.start = at;
+        c.duration = d;
+        at = at + d;
+        new.push(c);
+    }
+    if !changed {
+        return None;
+    }
+    let start = first.start;
+    let end = at.max(old_end);
+    let mut out = Vec::with_capacity(list.len() + 2);
+    clear_range(&mut out, list, start, at.max(old_end), fill, ids);
+    if fill && at < old_end {
+        out.push(rest_of(ids, at, old_end - at));
+    }
+    let focus = first_focus(&new[0]);
+    out.extend(new);
+    sort_events(&mut out);
+    Some(EditResult { events: out, focus: Some(focus), from: start, to: end, caret: at })
+}
+
+/// Joins rests that follow each other inside `[lo, hi]` into one, never
+/// across a bar start in `bars` (the engraver writes a long rest as the
+/// meter wants it).
+pub fn merge_rests(v: &mut Vec<Event>, lo: Frac, hi: Frac, bars: &[Frac]) {
+    sort_events(v);
+    let mut out: Vec<Event> = Vec::with_capacity(v.len());
+    for e in v.drain(..) {
+        if let Some(last) = out.last_mut() {
+            if last.is_rest() && e.is_rest() && last.end() == e.start && e.start >= lo && e.start <= hi && bars.binary_search(&e.start).is_err() {
+                last.duration = last.duration + e.duration;
+                continue;
+            }
+        }
+        out.push(e);
+    }
+    *v = out;
+}
+
+/// Moves every event starting in `[from, to)` by `by` (earlier when
+/// negative). The music overwrites what it lands on; voice 1 (`fill`) gets
+/// rests where it was. Ties into and out of the moved music are dropped.
+/// `None` if nothing moves or it would start before 0.
+pub fn move_events(list: &[Event], from: Frac, to: Frac, by: Frac, fill: bool, ids: &mut Ids) -> Option<EditResult> {
+    let moved: Vec<Event> = list.iter().filter(|e| e.start >= from && e.start < to).cloned().collect();
+    let first = moved.first()?;
+    if by == Frac::ZERO || first.start + by < Frac::ZERO {
+        return None;
+    }
+    let (s0, s1) = (first.start, moved.iter().map(|e| e.end()).max()?);
+    // Lift the music out (rests in voice 1); untie the note leading in.
+    let mut rest: Vec<Event> = Vec::with_capacity(list.len() + 4);
+    for e in list {
+        if e.start >= from && e.start < to {
+            if fill {
+                rest.push(rest_of(ids, e.start, e.duration));
+            }
+        } else {
+            let mut c = e.clone();
+            if c.end() == s0 {
+                untie(&mut c);
+            }
+            rest.push(c);
+        }
+    }
+    let (t0, t1) = (s0 + by, s1 + by);
+    let mut out = Vec::with_capacity(rest.len() + 4);
+    clear_range(&mut out, &rest, t0, t1, fill, ids);
+    let focus = first_focus(first);
+    for mut e in moved {
+        e.start = e.start + by;
+        if e.end() == t1 {
+            untie(&mut e);
+        }
+        out.push(e);
+    }
+    let (lo, hi) = (s0.min(t0), s1.max(t1));
+    if fill {
+        let limit = voice_end(&out).max(hi);
+        fill_gaps(&mut out, Frac::ZERO, limit, ids);
+    }
+    sort_events(&mut out);
+    Some(EditResult { events: out, focus: Some(focus), from: lo, to: hi, caret: t1 })
+}
+
+fn is_plain(d: Frac) -> bool {
+    let pow2 = |x: i64| x > 0 && x & (x - 1) == 0;
+    pow2(d.num) && pow2(d.den)
+}
+
+/// The next duration in the cycle plain → dotted → double-dotted → plain.
+pub fn cycle_dots(d: Frac) -> Frac {
+    if is_plain(d) {
+        d * Frac::new(3, 2)
+    } else if is_plain(d * Frac::new(2, 3)) {
+        d * Frac::new(7, 6)
+    } else if is_plain(d * Frac::new(4, 7)) {
+        d * Frac::new(4, 7)
+    } else {
+        d
+    }
+}
+
 /// Diatonic transposition of every head in the range (accidentals kept).
 pub fn transpose_range(list: &[Event], from: Frac, to: Frac, steps: i32) -> Option<EditResult> {
     apply_to_range(list, from, to, |e| {

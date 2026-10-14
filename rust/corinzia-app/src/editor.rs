@@ -30,6 +30,9 @@ struct Clip {
 
 const UNDO_LIMIT: usize = 500;
 
+/// Rhythmic grid choices (whole-note fractions) and their labels.
+pub const GRIDS: [(i64, i64, &str); 5] = [(1, 4, "1/4"), (1, 8, "1/8"), (1, 16, "1/16"), (1, 32, "1/32"), (1, 12, "1/8T")];
+
 pub struct Editor {
     pub project: Project,
     pub movement: usize,
@@ -46,6 +49,9 @@ pub struct Editor {
     /// The score shows written pitches: letters typed are written pitches
     /// of the caret staff's instrument.
     pub transposed: bool,
+    /// The rhythmic grid: Alt+arrows move music by it and the caret steps
+    /// by it (an index into `GRIDS`).
+    pub grid: usize,
     pub selection: Option<Id>,
     pub range: Option<Range>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -101,6 +107,16 @@ fn set_events(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) {
     m.lanes[lane].voices[voice].events = Arc::new(r.events.clone());
 }
 
+/// After a rhythm edit, voice 1's rests around `[r.from, r.to]` join up
+/// within each bar.
+fn set_events_tidy(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) {
+    let mut evs = r.events.clone();
+    if m.lanes[lane].voices[voice].index == 1 {
+        edit::merge_rests(&mut evs, r.from, r.to, &edit::bar_starts(m));
+    }
+    m.lanes[lane].voices[voice].events = Arc::new(evs);
+}
+
 /// Single note selected: a span from it to the next note in its voice.
 fn span_from_note(evs: &[Event], note: Id) -> Option<(Frac, Frac)> {
     let (e, _) = edit::find_event(evs, note)?;
@@ -124,6 +140,7 @@ impl Editor {
             range: None,
             range_anchor: None,
             transposed: false,
+            grid: 1,
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -449,7 +466,7 @@ impl Editor {
     // ------------------------------------------------------------- caret --
     pub fn move_caret(&mut self, direction: i64) {
         let len = self.movement().map(|m| m.length).unwrap_or(Frac::ZERO);
-        let next = self.caret + self.spec.value() * Frac::int(direction);
+        let next = self.caret + self.grid_value() * Frac::int(direction);
         self.caret = next.max(Frac::ZERO).min(len);
     }
 
@@ -778,6 +795,205 @@ impl Editor {
             edit::modify_event(evs, id, |e, head| match head {
                 Some(i) => e.heads[i].tie = !e.heads[i].tie,
                 None => e.heads.iter_mut().for_each(|h| h.tie = !h.tie),
+            })
+        });
+    }
+
+    /// True when a note, rest or passage is selected.
+    pub fn has_selection(&self) -> bool {
+        self.range.is_some() || self.selection.is_some_and(|id| self.event_of(id).is_some())
+    }
+
+    /// Changes the rhythm of the selection (a note or rest, or every event
+    /// in a passage) with `f(old duration)`: see `edit::set_durations`.
+    fn change_durations(&mut self, label: &str, f: impl Fn(Frac) -> Frac + Copy) -> bool {
+        let (lanes, voice, from, to) = match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+            (Some(r), _) => ((r.lane_from, r.lane_to), None, r.from, r.to),
+            (None, Some((loc, e))) => ((loc.lane, loc.lane), Some(loc.voice), e.start, e.end()),
+            _ => return false,
+        };
+        let mut end = to;
+        let done = self.transact(label, |m, ids| {
+            let mut any = false;
+            for li in lanes.0..=lanes.1.min(m.lanes.len().saturating_sub(1)) {
+                for vi in 0..m.lanes[li].voices.len() {
+                    if voice.is_some_and(|v| v != vi) {
+                        continue;
+                    }
+                    let v = &m.lanes[li].voices[vi];
+                    if let Some(r) = edit::set_durations(&v.events.clone(), from, to, f, v.index == 1, ids) {
+                        extend_to(m, r.to);
+                        set_events_tidy(m, li, vi, &r);
+                        end = if any { end.max(r.caret) } else { r.caret };
+                        any = true;
+                    }
+                }
+            }
+            any
+        });
+        if done {
+            if let Some(r) = self.range {
+                self.range = Some(Range { to: end, ..r });
+            }
+        }
+        done
+    }
+
+    pub fn grid_value(&self) -> Frac {
+        let (n, d, _) = GRIDS[self.grid.min(GRIDS.len() - 1)];
+        Frac::new(n, d)
+    }
+
+    /// Alt+[ / Alt+]: a coarser or finer grid (the triplet grid is last).
+    pub fn step_grid(&mut self, dir: i64) {
+        self.grid = (self.grid as i64 + dir).clamp(0, GRIDS.len() as i64 - 1) as usize;
+        self.status = format!("Rhythmic grid: {}", GRIDS[self.grid].2);
+    }
+
+    /// Alt+Left/Right: the selected note, rest or passage moves by the
+    /// rhythmic grid, overwriting what it lands on.
+    pub fn nudge(&mut self, dir: i64) {
+        let by = self.grid_value() * Frac::int(dir);
+        let (lanes, voice, from, to) = match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+            (Some(r), _) => ((r.lane_from, r.lane_to), None, r.from, r.to),
+            (None, Some((loc, e))) => ((loc.lane, loc.lane), Some(loc.voice), e.start, e.end()),
+            _ => return,
+        };
+        let done = self.transact("Move", |m, ids| {
+            let mut any = false;
+            for li in lanes.0..=lanes.1.min(m.lanes.len().saturating_sub(1)) {
+                for vi in 0..m.lanes[li].voices.len() {
+                    if voice.is_some_and(|v| v != vi) {
+                        continue;
+                    }
+                    let v = &m.lanes[li].voices[vi];
+                    if let Some(r) = edit::move_events(&v.events.clone(), from, to, by, v.index == 1, ids) {
+                        extend_to(m, r.to);
+                        set_events_tidy(m, li, vi, &r);
+                        any = true;
+                    }
+                }
+            }
+            any
+        });
+        if done {
+            if let Some(r) = self.range {
+                self.range = Some(Range { from: r.from + by, to: r.to + by, ..r });
+                self.caret = r.from + by;
+            }
+        } else {
+            self.status = "Nothing to move there".into();
+        }
+    }
+
+    /// A duration key or button with music selected changes its rhythm.
+    pub fn set_selection_duration(&mut self) {
+        let d = edit::DurationSpec { dots: 0, ..self.spec }.value();
+        if self.change_durations("Duration", |_| d) {
+            self.status = "Duration changed".into();
+        }
+    }
+
+    /// The dot key with music selected: plain → dotted → double-dotted.
+    pub fn cycle_selection_dots(&mut self) {
+        self.change_durations("Dots", edit::cycle_dots);
+    }
+
+    /// The written interval of the instrument playing `lane` at `at`, in a
+    /// transposed score (else none).
+    fn written_interval(&self, lane: usize, at: Frac) -> Interval {
+        if !self.transposed {
+            return Interval::default();
+        }
+        let Some(m) = self.movement() else { return Interval::default() };
+        m.lanes.get(lane).and_then(|l| l.instrument_at(at)).and_then(|i| self.project.instrument(i)).map(|i| i.transposition).unwrap_or_default()
+    }
+
+    /// A letter with a note or rest selected (outside note input): the note
+    /// takes that pitch nearest its old one; a rest becomes that note.
+    pub fn repitch_selection(&mut self, step: i32) {
+        let Some(id) = self.selection else { return };
+        let Some((loc, e)) = self.event_of(id) else { return };
+        let (start, lane, voice) = (e.start, loc.lane, loc.voice);
+        let by = self.written_interval(lane, start);
+        let Some(m) = self.movement() else { return };
+        let fifths = corinzia_model::shift_key(key_fifths_at(m, start), by.fifths());
+        let evs = m.lanes[lane].voices[voice].events.clone();
+        let reference = match edit::find_event(&evs, id) {
+            Some((e, Some(h))) => e.heads[h].pitch,
+            Some((e, None)) if !e.heads.is_empty() => e.heads[0].pitch,
+            _ => edit::previous_pitch(&evs, start).unwrap_or(Pitch { step: 6, alter: 0, octave: 4 }),
+        }
+        .transposed(by);
+        let p = edit::nearest_pitch(step.rem_euclid(7), None, fifths, reference).transposed(by.inverse());
+        let mut focus = id;
+        self.edit_selected("Pitch", |evs, id, _, ids| {
+            edit::modify_event(evs, id, |e, head| {
+                match head {
+                    Some(i) => e.heads[i].pitch = p,
+                    None if e.heads.is_empty() => {
+                        focus = ids.next();
+                        e.heads.push(Head { id: focus, pitch: p, tie: false, velocity: 0 });
+                        e.kind = corinzia_model::EventKind::Note;
+                    }
+                    None => {
+                        // A whole chord moves by its lowest note.
+                        let shift = edit::diatonic(p) - edit::diatonic(e.heads[0].pitch);
+                        let lowest = e.heads[0].id;
+                        for h in e.heads.iter_mut() {
+                            h.pitch = if h.id == lowest { p } else { edit::from_diatonic(edit::diatonic(h.pitch) + shift, h.pitch.alter as i32) };
+                        }
+                    }
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            })
+        });
+        self.selection = Some(focus);
+    }
+
+    /// An accidental key with music selected (outside note input): the
+    /// selected heads take it; pressing it again returns to the key's.
+    pub fn set_selection_accidental(&mut self, alter: i8) {
+        let Some(m) = self.movement() else { return };
+        let keys: Vec<(Frac, i32)> = m.keys.iter().map(|k| (k.at, k.fifths)).collect();
+        let key_at = move |at: Frac| keys.iter().filter(|k| k.0 <= at).last().map(|k| k.1).unwrap_or(0);
+        let respell = move |h: &mut Head, by: Interval, at: Frac| {
+            let w = h.pitch.transposed(by);
+            let fifths = corinzia_model::shift_key(key_at(at), by.fifths());
+            let a = if w.alter == alter { edit::key_alter(fifths, w.step as i32) as i8 } else { alter };
+            h.pitch = Pitch { alter: a, ..w }.transposed(by.inverse());
+        };
+        if let Some(r) = self.range {
+            let intervals: Vec<Interval> = (r.lane_from..=r.lane_to).map(|li| self.written_interval(li, r.from)).collect();
+            self.transact("Accidental", |m, _| {
+                let mut any = false;
+                for (k, lane) in (r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1))).enumerate() {
+                    for v in m.lanes[lane].voices.iter_mut() {
+                        let evs = std::sync::Arc::make_mut(&mut v.events);
+                        for e in evs.iter_mut().filter(|e| e.start >= r.from && e.start < r.to) {
+                            let at = e.start;
+                            for h in e.heads.iter_mut() {
+                                respell(h, intervals[k], at);
+                                any = true;
+                            }
+                        }
+                    }
+                }
+                any
+            });
+            return;
+        }
+        let Some(id) = self.selection else { return };
+        let Some((loc, e)) = self.event_of(id) else { return };
+        let interval = self.written_interval(loc.lane, e.start);
+        self.edit_selected("Accidental", |evs, id, _, _| {
+            edit::modify_event(evs, id, |e, head| {
+                let at = e.start;
+                match head {
+                    Some(i) => respell(&mut e.heads[i], interval, at),
+                    None => e.heads.iter_mut().for_each(|h| respell(h, interval, at)),
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
             })
         });
     }
@@ -1257,7 +1473,7 @@ impl PopoverKind {
     pub fn placeholder(self) -> &'static str {
         match self {
             PopoverKind::Key => "C, Eb, f#, a minor",
-            PopoverKind::Time => "3/4, 6/8, C, C|",
+            PopoverKind::Time => "3/4, 6/8, C, C|, pickup 1/4",
             PopoverKind::Clef => "treble, bass, alto, tenor",
             PopoverKind::Barline => "||  |.  |:  :|  :|:",
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",
@@ -1325,6 +1541,155 @@ mod tests {
         e.transposed = false;
         e.enter_note(0, false); // concert C, next to C5
         assert_eq!(notes(&e, 0)[2], "C5");
+    }
+
+    /// Durations as quarters, rests as "r": "C5:1 r:1/2".
+    fn rhythm(e: &Editor, lane: usize) -> Vec<String> {
+        events(e, lane, 0)
+            .iter()
+            .map(|ev| {
+                let q = ev.duration * Frac::int(4);
+                let name = if ev.is_rest() { "r".to_string() } else { pitch_name(ev.heads[0].pitch) };
+                if q.den == 1 { format!("{name}:{}", q.num) } else { format!("{name}:{}/{}", q.num, q.den) }
+            })
+            .collect()
+    }
+
+    fn quarters_cdef(e: &mut Editor) {
+        e.set_input_mode(true);
+        for step in [0, 1, 2, 3] {
+            e.enter_note(step, false);
+        }
+        e.set_input_mode(false);
+    }
+
+    fn select_nth(e: &mut Editor, n: usize) {
+        let ev = &events(e, 0, 0)[n];
+        let id = ev.heads.first().map(|h| h.id).unwrap_or(ev.id);
+        e.select(Some(id));
+    }
+
+    #[test]
+    fn changing_a_selected_notes_duration() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        assert_eq!(rhythm(&e, 0)[..4], ["C5:1", "D5:1", "E5:1", "F5:1"]);
+        // Shorter: D becomes an eighth and an eighth rest takes the rest of its beat.
+        select_nth(&mut e, 1);
+        e.spec.base = edit::BaseDuration::Eighth;
+        e.set_selection_duration();
+        assert_eq!(rhythm(&e, 0)[..5], ["C5:1", "D5:1/2", "r:1/2", "E5:1", "F5:1"]);
+        assert_eq!(e.event_of(e.selection.unwrap()).unwrap().1.duration, f(1, 8), "D stays selected");
+        // Longer: C becomes a half note and overwrites D and the rest.
+        select_nth(&mut e, 0);
+        e.spec.base = edit::BaseDuration::Half;
+        e.set_selection_duration();
+        assert_eq!(rhythm(&e, 0)[..3], ["C5:2", "E5:1", "F5:1"]);
+        // Longer into the middle of a note: E's tail stays as a rest.
+        select_nth(&mut e, 0);
+        e.spec.base = edit::BaseDuration::Half;
+        e.cycle_selection_dots(); // a dotted half: overwrites E, half of nothing else
+        assert_eq!(rhythm(&e, 0)[..2], ["C5:3", "F5:1"]);
+        // Dots cycle: dotted → double-dotted cuts into F, then back to plain.
+        e.cycle_selection_dots();
+        assert_eq!(rhythm(&e, 0)[..2], ["C5:7/2", "r:1/2"]);
+        e.cycle_selection_dots();
+        // The space left is one rest per bar (drawn as the meter wants).
+        assert_eq!(rhythm(&e, 0)[..3], ["C5:2", "r:2", "r:4"]);
+        // Undo walks back each step.
+        e.undo();
+        assert_eq!(rhythm(&e, 0)[..2], ["C5:7/2", "r:1/2"]);
+        // The total stays two bars.
+        let total: Frac = events(&e, 0, 0).iter().fold(Frac::ZERO, |a, ev| a + ev.duration);
+        assert_eq!(total, Frac::int(2));
+    }
+
+    #[test]
+    fn changing_durations_of_a_passage_and_at_the_end() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        // A passage of four quarters becomes four eighths and a half rest.
+        e.select(None);
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: Frac::int(1) });
+        e.spec.base = edit::BaseDuration::Eighth;
+        e.set_selection_duration();
+        assert_eq!(rhythm(&e, 0)[..5], ["C5:1/2", "D5:1/2", "E5:1/2", "F5:1/2", "r:2"]);
+        assert_eq!(e.range.unwrap().to, f(1, 2), "the passage follows the new rhythm");
+        // A note on the last beat made a whole: the movement grows by a bar.
+        e.set_input_mode(true);
+        e.caret = f(7, 4);
+        e.spec.base = edit::BaseDuration::Quarter;
+        e.enter_note(4, false);
+        e.set_input_mode(false);
+        let n = events(&e, 0, 0).len();
+        select_nth(&mut e, n - 1);
+        e.spec.base = edit::BaseDuration::Whole;
+        e.set_selection_duration();
+        assert_eq!(e.movement().unwrap().length, Frac::int(3));
+        assert_eq!(rhythm(&e, 0).last().unwrap(), "G5:4");
+        // In voice 1 the rests between stay one per bar.
+        assert_eq!(rhythm(&e, 0)[4..6], ["r:2".to_string(), "r:3".to_string()]);
+    }
+
+    #[test]
+    fn letters_and_accidentals_change_the_selected_note() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        select_nth(&mut e, 1); // D5
+        e.repitch_selection(6); // B nearest D5 is B4
+        assert_eq!(rhythm(&e, 0)[1], "B4:1");
+        e.set_selection_accidental(-1);
+        assert_eq!(rhythm(&e, 0)[1], "B♭4:1");
+        e.set_selection_accidental(-1); // again: back to the key's
+        assert_eq!(rhythm(&e, 0)[1], "B4:1");
+        // A rest becomes a note.
+        let n = events(&e, 0, 0).len();
+        select_nth(&mut e, n - 1);
+        assert!(events(&e, 0, 0)[n - 1].is_rest());
+        e.repitch_selection(4);
+        assert!(!events(&e, 0, 0)[n - 1].is_rest());
+        assert_eq!(e.event_of(e.selection.unwrap()).unwrap().1.heads.len(), 1);
+    }
+
+    #[test]
+    fn alt_arrows_move_music_by_the_rhythmic_grid() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        assert_eq!(e.grid_value(), f(1, 8), "an eighth grid by default");
+        // D moves an eighth later: an eighth rest opens before it, E loses its first half.
+        select_nth(&mut e, 1);
+        let id = e.selection.unwrap();
+        e.nudge(1);
+        assert_eq!(rhythm(&e, 0)[..5], ["C5:1", "r:1/2", "D5:1", "r:1/2", "F5:1"]);
+        assert_eq!(e.selection, Some(id), "the note stays selected");
+        assert_eq!(e.event_of(id).unwrap().1.start, f(3, 8));
+        // And back: the rests join up again around it.
+        e.nudge(-1);
+        assert_eq!(rhythm(&e, 0)[..4], ["C5:1", "D5:1", "r:1", "F5:1"]);
+        // Not before the start.
+        select_nth(&mut e, 0);
+        e.nudge(-1);
+        assert_eq!(rhythm(&e, 0)[0], "C5:1");
+        assert_eq!(e.status, "Nothing to move there");
+        // A passage moves by a quarter grid.
+        e.grid = 0;
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: f(1, 2) });
+        e.nudge(1);
+        assert_eq!(rhythm(&e, 0)[..4], ["r:1", "C5:1", "D5:1", "F5:1"]);
+        assert_eq!(e.range.map(|r| (r.from, r.to)), Some((f(1, 4), f(3, 4))));
+        // The caret steps by the grid; Alt+] makes it finer.
+        e.step_grid(1);
+        e.caret = Frac::ZERO;
+        e.move_caret(1);
+        assert_eq!(e.caret, f(1, 8));
+    }
+
+    #[test]
+    fn keys_reach_the_selection_outside_note_input() {
+        use crate::keys::{map, Action};
+        use iced::keyboard::{Key, Modifiers};
+        assert_eq!(map(&Key::Character("e".into()), Modifiers::empty(), false), Some(Action::Pitch(2)));
+        assert_eq!(map(&Key::Character("e".into()), Modifiers::empty(), true), Some(Action::Note { step: 2, chord: false }));
     }
 
     #[test]

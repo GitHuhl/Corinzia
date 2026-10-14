@@ -9,7 +9,7 @@ use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
 use corinzia_score::score::{art, BarKind, Key, Part, Pitch, Score};
-use corinzia_score::values::{decompose, NoteValue};
+use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
 #[derive(Clone, Debug)]
@@ -294,6 +294,30 @@ fn measures(s: &Score) -> Vec<Measure> {
     out
 }
 
+/// The beam grouping unit: dotted quarters in compound meters, halves in
+/// 2/2 and 3/2, pairs of eighths in other x/8 meters, else the beat.
+fn beam_beat(num: i64, den: i64) -> Frac {
+    if den == 8 && num % 3 == 0 {
+        Frac::new(3, 8)
+    } else if den <= 2 {
+        Frac::new(1, 2)
+    } else if den >= 8 {
+        Frac::new(2, den)
+    } else {
+        Frac::new(1, den)
+    }
+}
+
+/// The beat rests are split on: the dotted quarter in compound meters,
+/// else the signature's unit.
+fn beat_of(num: i64, den: i64) -> Frac {
+    if den >= 8 && num % 3 == 0 && num > 3 {
+        Frac::new(3, den)
+    } else {
+        Frac::new(1, den.max(1))
+    }
+}
+
 /// A staff's key: the score's, moved for a transposing instrument.
 fn part_key(s: &Score, part: usize, fifths: i32) -> i32 {
     match s.parts.get(part).map(|p| p.key_shift).unwrap_or(0) {
@@ -394,7 +418,13 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     }
                     let rest = e.pitches.is_empty();
                     let whole_bar = rest && a == m.start && b == m.start + m.len && m.phase.is_zero();
-                    let values = if whole_bar { vec![NoteValue { base: 1, dots: 0, triplet: false }] } else { decompose(b - a) };
+                    let values = if whole_bar {
+                        vec![NoteValue { base: 1, dots: 0, triplet: false }]
+                    } else if rest {
+                        decompose_rest(a - m.start + m.phase, b - a, beat_of(m.num, m.den))
+                    } else {
+                        decompose(b - a)
+                    };
                     let mut t = a;
                     for (k, nv) in values.iter().enumerate() {
                         let last_piece = k + 1 == values.len() && b == end;
@@ -633,17 +663,7 @@ impl<'a> Engraver<'a> {
     /// quarters in compound meters, halves in 2/2 and 3/2), except that
     /// beams of eighths only span half a bar in 4/4 and the bar in 3/4.
     fn beam_groups(&mut self) -> Vec<Vec<usize>> {
-        let beat_of = |m: &Measure| {
-            if m.den == 8 && m.num % 3 == 0 {
-                Frac::new(3, 8)
-            } else if m.den <= 2 {
-                Frac::new(1, 2)
-            } else if m.den >= 8 {
-                Frac::new(2, m.den)
-            } else {
-                Frac::new(1, m.den)
-            }
-        };
+        let beat_of = |m: &Measure| beam_beat(m.num, m.den);
         let eighths_span = |m: &Measure| match (m.num, m.den) {
             (4, 4) => Some(Frac::new(1, 2)),
             (3, 4) => Some(Frac::new(3, 4)),

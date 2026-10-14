@@ -13,6 +13,10 @@ pub enum Action {
     Note { step: i32, chord: bool },
     Rest,
     Duration(u8), // 0 = whole .. 6 = 64th
+    Pitch(i32),   // a letter outside note input: the selection's pitch
+    Nudge(i64),   // move the selection by the rhythmic grid
+    Grid(usize),  // choose the rhythmic grid (editor::GRIDS)
+    GridStep(i64), // a coarser (-1) or finer (+1) grid
     Dots,
     Triplet,
     Accidental(i8),
@@ -94,6 +98,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
                     Step { dir, bar: ctrl }
                 }
             }
+            // Alt+arrows move the selection by the rhythmic grid.
+            (Named::ArrowLeft, false, true) => Nudge(-1),
+            (Named::ArrowRight, false, true) => Nudge(1),
             (Named::Home, ..) if !input_mode => Edge { last: false },
             (Named::End, ..) if !input_mode => Edge { last: true },
             (Named::ArrowUp, _, true) => if input_mode { CaretStaff(-1) } else { Staff(-1) },
@@ -115,6 +122,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
         });
     }
     let c = ch?;
+    if alt && !ctrl && (c == '[' || c == ']') {
+        return Some(GridStep(if c == '[' { -1 } else { 1 }));
+    }
     if ctrl {
         return Some(match (c, shift) {
             ('z', false) => Undo,
@@ -165,6 +175,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     Some(match c {
         'n' => ToggleInput,
         _ if input_mode && note.is_some() => Note { step: note.unwrap() as i32, chord: shift },
+        _ if note.is_some() && !shift => Pitch(note.unwrap() as i32),
         '1'..='7' => Duration(7 - (c as u8 - b'0')),
         '.' => Dots,
         ';' => Triplet,
@@ -198,7 +209,10 @@ mod tests {
         assert_eq!(map(&k("c"), none, true), Some(Action::Note { step: 0, chord: false }));
         assert_eq!(map(&k("c"), Modifiers::SHIFT, true), Some(Action::Note { step: 0, chord: true }));
         assert_eq!(map(&k("c"), Modifiers::SHIFT, false), Some(Action::Popover(PopoverKind::Clef)));
-        assert_eq!(map(&k("c"), none, false), None);
+        assert_eq!(map(&k("c"), none, false), Some(Action::Pitch(0)));
+        assert_eq!(map(&Key::Named(Named::ArrowRight), Modifiers::ALT, false), Some(Action::Nudge(1)));
+        assert_eq!(map(&Key::Named(Named::ArrowLeft), Modifiers::ALT, true), Some(Action::Nudge(-1)));
+        assert_eq!(map(&k("]"), Modifiers::ALT, false), Some(Action::GridStep(1)));
         assert_eq!(map(&k("5"), none, false), Some(Action::Duration(2))); // quarter
         assert_eq!(map(&k("r"), none, true), Some(Action::Rest));
         assert_eq!(map(&k("r"), none, false), Some(Action::Repeat));

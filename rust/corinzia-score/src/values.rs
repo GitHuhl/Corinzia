@@ -71,10 +71,65 @@ pub fn decompose(mut d: Frac) -> Vec<NoteValue> {
     out
 }
 
+/// A rest of length `d` starting `pos` into its bar, split as rests are
+/// written: each piece starts on a multiple of its own length, and no piece
+/// longer than a `beat` hides one (a half rest never starts on beat 2 of
+/// 4/4). Dotted rests only fill whole dotted beats (6/8).
+pub fn decompose_rest(mut pos: Frac, mut d: Frac, beat: Frac) -> Vec<NoteValue> {
+    if d.den % 3 == 0 || pos.den % 3 == 0 {
+        return decompose(d);
+    }
+    let compound = beat.num == 3;
+    let multiple = |a: Frac, b: Frac| (a * Frac::new(b.den, b.num)).den == 1;
+    let all = candidates();
+    let mut out = Vec::new();
+    while d > Frac::ZERO && out.len() < 32 {
+        let best = all
+            .iter()
+            .filter(|v| !v.triplet && v.dots <= 1 && v.length() <= d && multiple(pos, v.length()))
+            .filter(|v| match v.dots {
+                0 => v.length() <= beat || multiple(v.length(), beat),
+                _ => compound && multiple(v.length(), beat),
+            })
+            // Off the beat, a rest stops at the next beat.
+            .filter(|v| {
+                let k = pos * Frac::new(beat.den, beat.num);
+                let into = pos - beat * Frac::int(k.num.div_euclid(k.den));
+                into.is_zero() || v.length() <= beat - into
+            })
+            .max_by(|a, b| a.length().cmp(&b.length()));
+        let Some(v) = best else {
+            out.extend(decompose(d));
+            break;
+        };
+        out.push(*v);
+        pos = pos + v.length();
+        d = d - v.length();
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rests_split_on_the_beat() {
+        let q = |n, d| Frac::new(n, d);
+        let names = |v: Vec<NoteValue>| v.iter().map(|v| format!("{}{}", v.base, ".".repeat(v.dots as usize))).collect::<Vec<_>>().join(" ");
+        // 4/4: from the "and" of 2 to the end of the bar.
+        assert_eq!(names(decompose_rest(q(3, 8), q(5, 8), q(1, 4))), "8 2");
+        assert_eq!(names(decompose_rest(q(1, 8), q(7, 8), q(1, 4))), "8 4 2");
+        // 4/4: beat 2 to the end; a half rest only on beat 1 or 3.
+        assert_eq!(names(decompose_rest(q(1, 4), q(3, 4), q(1, 4))), "4 2");
+        assert_eq!(names(decompose_rest(q(0, 1), q(3, 4), q(1, 4))), "2 4");
+        // 3/4: beats 2 and 3 are two quarter rests.
+        assert_eq!(names(decompose_rest(q(1, 4), q(1, 2), q(1, 4))), "4 4");
+        // 6/8: a dotted quarter rest per beat.
+        assert_eq!(names(decompose_rest(q(0, 1), q(3, 4), q(3, 8))), "2.");
+        assert_eq!(names(decompose_rest(q(3, 8), q(3, 4), q(3, 8))), "4. 4.");
+        assert_eq!(names(decompose_rest(q(1, 8), q(5, 8), q(3, 8))), "8 8 4.");
+    }
 
     #[test]
     fn decomposition() {

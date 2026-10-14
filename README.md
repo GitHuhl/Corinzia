@@ -99,6 +99,11 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 
 Press **N** to write notes: A–G enter pitches, 1–7 pick durations
 (5 = quarter), R enters a rest; clicking a staff in input mode places a note.
+Outside note input the same keys edit the selection: 1–7 and `.` change
+the selected notes' durations (longer music overwrites what follows;
+shorter leaves rests), A–G change the pitch, `-` `=` `0` set flat, sharp or
+natural, Alt+←/→ move notes by the rhythmic grid chosen in the status
+bar (Alt+[ / Alt+] change it). Shift+M "pickup 1/4" adds an upbeat bar.
 Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T
 tempo ("Allegro 132"), Shift+B barline (":|"), Shift+C clef, Shift+X /
 Shift+P expression or technique text, Shift+O ornaments, Shift+R endings,

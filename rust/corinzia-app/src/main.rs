@@ -490,7 +490,7 @@ impl App {
     }
 
     fn act(&mut self, a: Action) -> Task<Message> {
-        let audition = matches!(a, Action::Note { .. } | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
+        let audition = matches!(a, Action::Note { .. } | Action::Pitch(_) | Action::Nudge(_) | Action::Accidental(_) | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
         let reveal = matches!(
             a,
             Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste
@@ -540,8 +540,20 @@ impl App {
             }
             Action::Note { step, chord } => ed.enter_note(step, chord),
             Action::Rest => ed.enter_rest(),
-            Action::Duration(d) => ed.spec.base = corinzia_edit::BaseDuration::ALL[d.min(6) as usize],
+            Action::Duration(d) => {
+                ed.spec.base = corinzia_edit::BaseDuration::ALL[d.min(6) as usize];
+                // Outside note input the selected music takes the duration.
+                if !ed.input_mode {
+                    ed.set_selection_duration();
+                }
+            }
+            Action::Dots if !ed.input_mode && ed.has_selection() => ed.cycle_selection_dots(),
             Action::Dots => ed.cycle_dots(),
+            Action::Pitch(step) => ed.repitch_selection(step),
+            Action::Nudge(d) => ed.nudge(d),
+            Action::Grid(i) => ed.grid = i.min(editor::GRIDS.len() - 1),
+            Action::GridStep(d) => ed.step_grid(d),
+            Action::Accidental(x) if !ed.input_mode && ed.has_selection() => ed.set_selection_accidental(x),
             Action::Triplet => ed.spec.triplet = !ed.spec.triplet,
             Action::Accidental(x) => ed.toggle_accidental(x),
             Action::ChordMode => ed.chord_mode = !ed.chord_mode,
@@ -1117,6 +1129,8 @@ impl App {
                 Space::new().width(24),
                 text(middle).size(12),
                 panels::spacer(),
+                grid_picker(ed),
+                Space::new().width(16),
                 text(self.playback.problem.clone().unwrap_or_default()).size(12).style(theme::danger),
                 Space::new().width(16),
                 text(title).size(12),
@@ -1649,4 +1663,20 @@ mod tests {
             std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf, false).unwrap()).unwrap();
         }
     }
+}
+
+/// The status bar's rhythmic grid: what Alt+arrows move music by and the
+/// caret steps by (Alt+[ and Alt+] change it).
+fn grid_picker(ed: &editor::Editor) -> Element<'static, Message> {
+    let mut r = row![text("Grid").size(12).style(theme::dim), Space::new().width(6)].align_y(iced::Alignment::Center);
+    for (i, (_, _, label)) in editor::GRIDS.iter().enumerate() {
+        r = r.push(
+            iced::widget::button(text(*label).size(13).center())
+                .padding([0, 7])
+                .height(22)
+                .style(theme::segment(ed.grid == i))
+                .on_press(Message::Act(Action::Grid(i))),
+        );
+    }
+    r.into()
 }
