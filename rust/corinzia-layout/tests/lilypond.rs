@@ -395,3 +395,39 @@ fn stems_against_lilypond() {
     assert_eq!(dirs, n, "stem directions differ from LilyPond's");
     assert!(mean < 0.2, "stem lengths drifted from LilyPond's");
 }
+
+/// Distance between two staves (centre to centre), LilyPond's and ours.
+#[test]
+fn staff_distances_against_lilypond() {
+    let pairs = [
+        ("c''4 d'' e'' f''", "c4 d e f"),
+        ("c'4 b a g", "c4 d e f"),
+        ("c'4 b a g", "c'4 e' g' c''"),
+        ("g4 f e d", "c''4 e'' g'' c'''"),
+        ("c'4 d' e' f'", "e''4 g'' c''' e'''"),
+        ("c''4 c'' c'' c''", "c4 c c c"),
+    ];
+    let mut worst = 0.0f32;
+    for (top, bottom) in pairs {
+        let ly = format!(
+            r#"\version "2.24.0"
+\paper {{ indent = 0 ragged-right = ##t }}
+\layout {{ \context {{ \Staff \override StaffSymbol.after-line-breaking = #(lambda (g) (format #t "STAFF ~,4f\n" (ly:grob-relative-coordinate g (ly:grob-system g) Y))) }} }}
+<< \new Staff {{ {top} }} \new Staff {{ \clef bass {bottom} }} >>
+"#
+        );
+        let Some(text) = run_lilypond(&ly) else {
+            eprintln!("lilypond not found; skipping");
+            return;
+        };
+        let ys: Vec<f32> = text.lines().filter_map(|l| l.strip_prefix("STAFF ")).map(|v| v.trim().parse().unwrap()).collect();
+        let lily = ys[0] - ys[1];
+        let s = score(&[("treble", &[top]), ("bass", &[bottom])], (4, 4), 0);
+        let l = layout_line(&s, &Options { names: false, ..Options::default() });
+        let ours = l.staves[1].top - l.staves[0].top;
+        eprintln!("{top:20} / {bottom:20}: lilypond {lily:5.2}  ours {ours:5.2}");
+        worst = worst.max((ours - lily).abs());
+    }
+    eprintln!("staff distance vs LilyPond: worst difference {worst:.2} spaces");
+    assert!(worst < 0.25, "staff distances drifted from LilyPond's");
+}

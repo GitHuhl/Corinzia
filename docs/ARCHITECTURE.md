@@ -160,10 +160,14 @@ outwards, stacking instead of colliding, in this order:
 
 Items that join staves (barlines) belong to no staff's skyline.
 
-**Vertical spacing.** A system is engraved, each staff's extent above and
-below is measured, and the system is engraved again with staves moved apart
-where their music would collide. Staves never come closer than the default
-distance.
+**Vertical spacing** follows LilyPond's `staff-staff-spacing`:
+* Staves are 9 spaces apart (`basic-distance`).
+* They move apart only where one staff's music would come within 1 space
+  (`padding`) of the next staff's music.
+* The two staves' skylines are compared box by box where they overlap
+  horizontally. A system is engraved, measured and, if needed, engraved
+  again with the new distances.
+* The spacing test matches LilyPond's staff distances to within 0.1 space.
 
 **Pages.**
 * System breaks follow LilyPond's optimal breaker. A dynamic program over

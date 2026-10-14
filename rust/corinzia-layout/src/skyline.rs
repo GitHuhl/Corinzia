@@ -27,6 +27,26 @@ impl Skyline {
     pub fn top_over(&self, x0: f32, x1: f32) -> f32 {
         self.overlapping(x0, x1).map(|b| b[1]).fold(self.staff_top, f32::min)
     }
+    /// How far below this staff's top line the top line of `below` must be
+    /// so that nothing of either comes closer than `padding` where they
+    /// overlap horizontally (staff lines included).
+    pub fn clearance_above(&self, below: &Skyline, padding: f32) -> f32 {
+        let mut need = 4.0 + padding;
+        for a in &self.boxes {
+            for b in &below.boxes {
+                if a[0] < b[2] && b[0] < a[2] {
+                    need = need.max((a[3] - self.staff_top) - (b[1] - below.staff_top) + padding);
+                }
+            }
+            // Against the staff lines below.
+            need = need.max((a[3] - self.staff_top) + padding);
+        }
+        for b in &below.boxes {
+            // The staff lines above against what reaches up from below.
+            need = need.max(4.0 - (b[1] - below.staff_top) + padding);
+        }
+        need
+    }
     /// The lowest y (largest value) occupied over [x0, x1]; the bottom line at least.
     pub fn bottom_over(&self, x0: f32, x1: f32) -> f32 {
         self.overlapping(x0, x1).map(|b| b[3]).fold(self.staff_top + 4.0, f32::max)

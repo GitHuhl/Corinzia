@@ -14,7 +14,8 @@ use corinzia_score::Frac;
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// Distance between the top lines of adjacent staves, in staff spaces.
+    /// Least distance between adjacent staves (top line to top line), in
+    /// staff spaces: LilyPond's `basic-distance` of `staff-staff-spacing`.
     pub staff_distance: f32,
     pub margin: f32,
     /// Instrument names left of the system.
@@ -22,7 +23,7 @@ pub struct Options {
 }
 impl Default for Options {
     fn default() -> Self {
-        Options { staff_distance: 12.0, margin: 1.0, names: true }
+        Options { staff_distance: 9.0, margin: 1.0, names: true }
     }
 }
 
@@ -1066,13 +1067,13 @@ impl<'a> Engraver<'a> {
                 let mut lp = 6;
                 while lp <= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, 0));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
                     lp += 2;
                 }
                 let mut lp = -6;
                 while lp >= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, 0));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
                     lp -= 2;
                 }
                 self.push(Item::glyph(hg, x, y, h.id));
@@ -1228,6 +1229,7 @@ impl<'a> Engraver<'a> {
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
             let (y0, slope) = self.quant_beam(g, up, bt, gap);
             let beam_y = |x: f32| y0 + slope * (x - xf);
+            let beam_id = self.notes[fi].id;
             // Stems to the beam.
             for &i in g {
                 let n = self.notes[i].clone();
@@ -1239,7 +1241,7 @@ impl<'a> Engraver<'a> {
                 let off = level as f32 * gap * if up { 1.0 } else { -1.0 };
                 let thick = if up { bt } else { -bt };
                 let (a, b) = (beam_y(x0) + off, beam_y(x1) + off);
-                Item::Quad { p: [pt(x0, a), pt(x1, b), pt(x1, b + thick), pt(x0, a + thick)], id: 0 }
+                Item::Quad { p: [pt(x0, a), pt(x1, b), pt(x1, b + thick), pt(x0, a + thick)], id: beam_id }
             };
             let half = d.stem_thickness / 2.0;
             self.push(quad(xf - half, xl + half, 0));
@@ -1583,11 +1585,23 @@ impl<'a> Engraver<'a> {
         for st in &self.out.staves {
             sky[st.part].add([st.left, st.top, st.right, st.top + 4.0]);
         }
+        // Notes and what hangs off them belong to their part.
+        let mut owner: std::collections::HashMap<u64, usize> = Default::default();
+        for n in &self.notes {
+            owner.insert(n.id, n.part);
+            for h in &n.heads {
+                owner.insert(h.id, n.part);
+            }
+        }
         for item in &self.out.items {
             if let Item::Text { anchor: 2, .. } = item {
                 continue; // instrument names live left of the system
             }
             let r = item.bounds(self.font);
+            if let Some(&p) = owner.get(&item.id()).filter(|_| item.id() != 0) {
+                sky[p].add(r);
+                continue;
+            }
             // Barlines and brackets that join staves belong to none of them.
             if (0..sky.len()).filter(|&p| r[1] < self.top(p) + 4.0 && r[3] > self.top(p)).count() >= 2 {
                 continue;
@@ -2097,9 +2111,8 @@ impl<'a> Engraver<'a> {
     }
 
     /// Everything after `prepare`: spacing and drawing.
-    /// The display list and each staff's (above, below) extent relative to
-    /// its top line.
-    fn engrave(mut self) -> (DisplayList, Vec<(f32, f32)>) {
+    /// The display list and each staff's skyline.
+    fn engrave(mut self) -> (DisplayList, Vec<Skyline>) {
         let groups = self.beam_groups();
         self.space();
         self.draw_staves();
@@ -2121,10 +2134,7 @@ impl<'a> Engraver<'a> {
         self.draw_tempo_marks_endings();
         let staves = self.score.parts.len().max(1);
         self.out.height = self.top(staves - 1) + 4.0;
-        // How far each staff's music reaches above and below its top line.
-        let (x0, x1) = (self.left, self.out.width.max(self.left + 1.0));
-        let extents = (0..self.score.parts.len()).map(|p| (self.sky[p].top_over(x0, x1) - self.top(p), self.sky[p].bottom_over(x0, x1) - self.top(p))).collect();
-        (self.out, extents)
+        (self.out, self.sky)
     }
 }
 
@@ -2154,17 +2164,20 @@ pub fn layout_line_at(score: &Score, opt: &Options, width: f32) -> DisplayList {
     engrave_spaced(score, opt, ms, notes, true, Some(width))
 }
 
-/// Clearance between one staff's lowest and the next staff's highest item.
-const STAFF_CLEARANCE: f32 = 1.5;
+/// LilyPond's `staff-staff-spacing` padding: the least room between one
+/// staff's music and the next staff's, where they overlap horizontally.
+const STAFF_PADDING: f32 = 1.0;
 
-/// Engraves, then, where the music of neighbouring staves would collide
-/// (lyrics, chord symbols, high or low notes), moves the staves apart and
-/// engraves again. Staves never come closer than `staff_distance`.
+/// Engraves, then, where the music of neighbouring staves would come closer
+/// than `STAFF_PADDING` (lyrics, chord symbols, high or low notes), moves
+/// the staves apart and engraves again. As in LilyPond, the skylines are
+/// compared column by column, and staves never come closer than
+/// `staff_distance` (`basic-distance`).
 fn engrave_spaced(score: &Score, opt: &Options, ms: Vec<Measure>, notes: Vec<Note>, first: bool, width: Option<f32>) -> DisplayList {
-    let (list, ext) = Engraver::new(score, opt, ms.clone(), notes.clone(), first, width).engrave();
-    let mut tops = vec![0.0f32; ext.len()];
-    for p in 1..ext.len() {
-        let need = ext[p - 1].1 - ext[p].0 + STAFF_CLEARANCE;
+    let (list, sky) = Engraver::new(score, opt, ms.clone(), notes.clone(), first, width).engrave();
+    let mut tops = vec![0.0f32; sky.len()];
+    for p in 1..sky.len() {
+        let need = sky[p - 1].clearance_above(&sky[p], STAFF_PADDING);
         tops[p] = tops[p - 1] + need.max(opt.staff_distance);
     }
     if tops.iter().enumerate().all(|(p, t)| (t - p as f32 * opt.staff_distance).abs() < 0.01) {
