@@ -245,3 +245,36 @@ fn grace_notes_import_and_survive_a_round_trip() {
     let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
     check(&musicxml(out.as_bytes()).unwrap());
 }
+
+#[test]
+fn navigation_marks_import_and_survive_a_round_trip() {
+    use corinzia_model::{Nav, NavTo};
+    let bar = |n: usize, extra: &str| {
+        format!(
+            "<measure number=\"{n}\">{}{extra}<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note></measure>",
+            if n == 1 { "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>" } else { "" }
+        )
+    };
+    let segno = r#"<direction placement="above"><direction-type><segno/></direction-type><sound segno="s1"/></direction>"#;
+    let to_coda = r#"<direction placement="above"><direction-type><words>To Coda</words></direction-type><sound tocoda="c1"/></direction>"#;
+    let ds = r#"<direction placement="above"><direction-type><words>D.S. al Coda</words></direction-type></direction>"#;
+    let coda = r#"<barline location="left"><coda/></barline>"#;
+    // The words come after the note: at the end of their bar.
+    let after = |n: usize, d: &str| bar(n, "").replace("</measure>", &format!("{d}</measure>"));
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list><part id="P1">{}{}{}{}</part></score-partwise>"#,
+        bar(1, ""),
+        after(2, "").replace("<measure number=\"2\">", &format!("<measure number=\"2\">{segno}")).replace("</measure>", &format!("{to_coda}</measure>")),
+        after(3, ds),
+        bar(4, coda),
+    );
+    let check = |p: &Project| {
+        let nav: Vec<(Frac, Nav)> = p.movements[0].navigation.iter().map(|n| (n.at, n.kind)).collect();
+        assert_eq!(nav, [(f(1, 1), Nav::Segno), (f(2, 1), Nav::ToCoda), (f(3, 1), Nav::DalSegno(NavTo::Coda)), (f(3, 1), Nav::Coda)], "{nav:?}");
+        assert!(p.movements[0].lanes[0].texts.is_empty(), "the words became marks, not text");
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    check(&musicxml(out.as_bytes()).unwrap());
+}

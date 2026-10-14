@@ -1497,8 +1497,21 @@ impl Editor {
                 label = if k == TextKind::Expression { "Expression text" } else { "Technique text" }.into();
                 Box::new(move |m, ids| edit::add_text(m, player, target, &text, k, ids))
             }
+            PopoverKind::Ending if edit::parse_nav(&text).is_some() => {
+                let kind = edit::parse_nav(&text).unwrap();
+                // Signs open their bar; words close it.
+                let pos = if kind.at_bar_start() { bars.0 } else { bars.1 };
+                at = pos;
+                let k = kind;
+                label = match kind {
+                    Nav::Segno => "Segno".into(),
+                    Nav::Coda => "Coda".into(),
+                    k => k.text().to_string(),
+                };
+                Box::new(move |m, ids| edit::toggle_nav(m, pos, k, ids))
+            }
             PopoverKind::Ending => {
-                let passes = edit::parse_ending(&text).ok_or("Ending not understood: 1, 2, \"1, 2\" or 1-3")?;
+                let passes = edit::parse_ending(&text).ok_or("Not understood: endings 1, 2, 1-3; or segno, coda, to coda, fine, D.C. al Fine, D.S. al Coda")?;
                 at = bars.0;
                 label = format!("Ending {}", edit::ending_label(passes));
                 Box::new(move |m, ids| edit::set_ending(m, bars.0, bars.1, passes, ids))
@@ -1671,7 +1684,7 @@ impl PopoverKind {
             PopoverKind::Tempo => "Tempo",
             PopoverKind::Expression => "Expression text",
             PopoverKind::Technique => "Technique text",
-            PopoverKind::Ending => "Ending",
+            PopoverKind::Ending => "Ending or jump",
             PopoverKind::Rehearsal => "Rehearsal mark",
             PopoverKind::Ornament => "Ornament",
             PopoverKind::Lyrics => "Lyrics",
@@ -1688,7 +1701,7 @@ impl PopoverKind {
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",
             PopoverKind::Expression => "dolce, espress.",
             PopoverKind::Technique => "pizz., arco, con sord.",
-            PopoverKind::Ending => "1, 2, 1-3",
+            PopoverKind::Ending => "1, 2, 1-3; segno, coda, to coda, fine, D.C. al Fine, D.S. al Coda",
             PopoverKind::Rehearsal => "",
             PopoverKind::Ornament => "tr, mordent, turn, trem, arp, fermata",
             PopoverKind::Lyrics => "Syllable; space = next note, - = hyphen, _ = extender",

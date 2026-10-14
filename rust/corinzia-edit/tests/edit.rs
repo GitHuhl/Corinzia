@@ -172,6 +172,7 @@ fn header() -> Movement {
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
     }
@@ -516,4 +517,39 @@ fn tuplets_follow_edits() {
     let (_, nested) = create(&r.events, &ts, f(1, 4), f(1, 16), 3, 2, None, true, &mut ids).unwrap();
     assert_eq!(nested.len(), 2);
     assert_eq!(nested[1].length, f(1, 12));
+}
+
+#[test]
+fn navigation_marks_parse_toggle_and_move_with_bars() {
+    assert_eq!(parse_nav("Segno"), Some(Nav::Segno));
+    assert_eq!(parse_nav("to coda"), Some(Nav::ToCoda));
+    assert_eq!(parse_nav("Fine"), Some(Nav::Fine));
+    assert_eq!(parse_nav("D.C."), Some(Nav::DaCapo(NavTo::End)));
+    assert_eq!(parse_nav("D.C. al Fine"), Some(Nav::DaCapo(NavTo::Fine)));
+    assert_eq!(parse_nav("ds al coda"), Some(Nav::DalSegno(NavTo::Coda)));
+    assert_eq!(parse_nav("Dal Segno al Fine"), Some(Nav::DalSegno(NavTo::Fine)));
+    assert!(parse_nav("1, 2").is_none() && parse_nav("dc al nowhere").is_none());
+    let mut ids = Ids(900);
+    let mut h = header();
+    toggle_nav(&mut h, f(1, 1), Nav::Segno, &mut ids);
+    toggle_nav(&mut h, f(3, 1), Nav::DalSegno(NavTo::End), &mut ids);
+    assert_eq!(h.navigation.len(), 2);
+    // A bar inserted at bar 2 moves the segno (on its bar's start) but not
+    // a mark ending bar 1.
+    toggle_nav(&mut h, f(1, 1), Nav::Fine, &mut ids);
+    insert_span(&mut h, f(1, 1), f(1, 1));
+    let at = |h: &Movement, k: Nav| h.navigation.iter().find(|n| n.kind == k).map(|n| n.at);
+    assert_eq!(at(&h, Nav::Segno), Some(f(2, 1)));
+    assert_eq!(at(&h, Nav::Fine), Some(f(1, 1)));
+    assert_eq!(at(&h, Nav::DalSegno(NavTo::End)), Some(f(4, 1)));
+    // Deleting that bar again, and toggling the Fine off.
+    delete_span(&mut h, f(1, 1), f(2, 1));
+    assert_eq!(at(&h, Nav::Segno), Some(f(1, 1)));
+    toggle_nav(&mut h, f(1, 1), Nav::Fine, &mut ids);
+    assert_eq!(at(&h, Nav::Fine), None);
+    // By id: described and removed like other structure items.
+    let id = h.navigation[0].id;
+    assert_eq!(describe_item(&h, id).as_deref(), Some("Segno"));
+    assert!(remove_item(&mut h, id).is_some());
+    assert_eq!(h.navigation.len(), 1);
 }

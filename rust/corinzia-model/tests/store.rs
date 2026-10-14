@@ -34,13 +34,14 @@ fn sample() -> Project {
         barlines: vec![Barline { id: 20, at: Frac::int(2), kind: BarKind::RepeatEnd }],
         rehearsal: vec![RehearsalMark { id: 21, at: Frac::int(1) }],
         endings: vec![Ending { id: 22, from: Frac::int(1), to: Frac::int(2), passes: 1 }],
+        navigation: vec![NavMark { id: 30, at: Frac::int(1), kind: Nav::Segno }, NavMark { id: 31, at: Frac::int(5), kind: Nav::DalSegno(NavTo::Coda) }],
         lanes: vec![Lane {
             player: 2,
             changes: vec![InstrumentChange { id: 23, at: Frac::ZERO, instrument: 3 }],
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
             texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
             chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
-            voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![] }],
+            voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![Tuplet { start: Frac::int(5), length: Frac::new(1, 4), actual: 3, normal: 2 }] }],
         }],
     });
     p

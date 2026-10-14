@@ -222,6 +222,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
             .map(|e| sc::Ending { from: e.from, to: e.to, numbers: (1..=8u8).filter(|n| e.passes & (1 << (n - 1)) != 0).collect() })
             .collect(),
         marks: m.rehearsal.iter().map(|r| r.at).collect(),
+        navigation: m.navigation.clone(),
         parts,
     }
 }

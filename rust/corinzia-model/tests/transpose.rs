@@ -44,6 +44,7 @@ fn transposed_view_writes_pitches_and_keys() {
         keys: vec![Key { at: Frac::ZERO, fifths: -2, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes: vec![Lane {
             player: 1,

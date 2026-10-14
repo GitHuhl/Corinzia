@@ -2,7 +2,7 @@
 //! model stores sounding pitch). Events crossing barlines, and durations no
 //! single note value can show, are split into tied notes.
 
-use crate::doc::{art, span, BarKind, Document, Event, Part, Score};
+use crate::doc::{art, span, BarKind, Document, Event, Nav, Part, Score};
 use crate::frac::{lcm, Frac};
 use corinzia_score::values::{candidates, decompose, NoteValue};
 use std::fmt::Write;
@@ -232,6 +232,28 @@ impl<'a> Writer<'a> {
                         esc(&t.text)
                     ),
                 ));
+            }
+            if pi == 0 {
+                for n in s.navigation.iter() {
+                    let here = if n.kind.at_bar_start() { n.at == m.start } else { n.at == end };
+                    if !here {
+                        continue;
+                    }
+                    let (body, sound) = match n.kind {
+                        Nav::Segno => ("<segno/>".to_string(), "<sound segno=\"segno\"/>"),
+                        Nav::Coda => ("<coda/>".to_string(), "<sound coda=\"coda\"/>"),
+                        k => (
+                            format!("<words font-style=\"italic\">{}</words>", esc(k.text())),
+                            match k {
+                                Nav::ToCoda => "<sound tocoda=\"coda\"/>",
+                                Nav::Fine => "<sound fine=\"yes\"/>",
+                                Nav::DaCapo(_) => "<sound dacapo=\"yes\"/>",
+                                _ => "<sound dalsegno=\"segno\"/>",
+                            },
+                        ),
+                    };
+                    directions.push((n.at, format!("      <direction placement=\"above\"><direction-type>{body}</direction-type>{sound}</direction>")));
+                }
             }
             for c in part.chords.iter().filter(|c| c.at >= m.start && c.at < end) {
                 if let Some(h) = harmony_xml(&c.text) {

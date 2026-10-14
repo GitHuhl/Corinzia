@@ -27,6 +27,7 @@ fn project() -> Project {
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes: vec![Lane {
             player: 3,

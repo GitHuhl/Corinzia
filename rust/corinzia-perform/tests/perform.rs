@@ -28,6 +28,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         keys: vec![Key { at: F::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes: vec![Lane {
             player: 2,
@@ -231,4 +232,29 @@ fn grace_notes_play_on_the_beat_and_take_their_time_from_the_note() {
     assert_eq!((ns[0].0, ns[0].1), (74, 0.0));
     assert_eq!((ns[1].0, ns[1].1), (76, 0.125));
     assert_eq!((ns[2].0, ns[2].1, ns[2].2), (72, 0.25, 1.0));
+}
+
+#[test]
+fn da_capo_dal_segno_fine_and_coda() {
+    let bars = |m: &Movement| playback_order(m).iter().map(|&(a, b)| (a.num / a.den, b.num / b.den)).collect::<Vec<_>>();
+    let mut m = movement(F::int(6), vec![]);
+    // Six bars; D.C. al Fine at the end of bar 6, Fine at the end of bar 2.
+    m.navigation = vec![NavMark { id: 1, at: F::int(2), kind: Nav::Fine }, NavMark { id: 2, at: F::int(6), kind: Nav::DaCapo(NavTo::Fine) }];
+    assert_eq!(bars(&m), [(0, 6), (0, 2)]);
+    // D.S. al Coda: segno at bar 2, To Coda at the end of bar 3, coda from bar 5; the jump at bar 5's start.
+    m.navigation = vec![
+        NavMark { id: 1, at: F::int(1), kind: Nav::Segno },
+        NavMark { id: 2, at: F::int(3), kind: Nav::ToCoda },
+        NavMark { id: 3, at: F::int(4), kind: Nav::DalSegno(NavTo::Coda) },
+        NavMark { id: 4, at: F::int(4), kind: Nav::Coda },
+    ];
+    assert_eq!(bars(&m), [(0, 4), (1, 3), (4, 6)]);
+    // With a repeat of bars 1-2 played twice first, but not after the D.C.
+    m.navigation = vec![NavMark { id: 2, at: F::int(6), kind: Nav::DaCapo(NavTo::End) }];
+    m.barlines = vec![Barline { id: 9, at: F::int(2), kind: BarKind::RepeatEnd }];
+    assert_eq!(bars(&m), [(0, 2), (0, 6), (0, 6)]);
+    // First and second endings: after the D.C. only the second.
+    m.barlines = vec![Barline { id: 9, at: F::int(2), kind: BarKind::RepeatEnd }];
+    m.endings = vec![Ending { id: 7, from: F::int(1), to: F::int(2), passes: 1 }, Ending { id: 8, from: F::int(2), to: F::int(3), passes: 2 }];
+    assert_eq!(bars(&m), [(0, 2), (0, 1), (2, 6), (0, 1), (2, 6)]);
 }

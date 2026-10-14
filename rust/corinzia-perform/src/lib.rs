@@ -213,7 +213,78 @@ pub fn playback_order(m: &Movement) -> Vec<(Frac, Frac)> {
     if out.is_empty() {
         out.push((Frac::ZERO, len));
     }
+    navigate(m, out)
+}
+
+/// `[from, to)` played straight through, as after a D.C. or D.S.: repeats
+/// are not taken, and of each run of endings only the last is played.
+fn straight(m: &Movement, from: Frac, to: Frac) -> Vec<(Frac, Frac)> {
+    let mut cut: Vec<(Frac, Frac)> = m
+        .endings
+        .iter()
+        .filter(|e| e.from >= from && e.from < to && m.endings.iter().any(|n| n.from == e.to))
+        .map(|e| (e.from, e.to.min(to)))
+        .collect();
+    cut.sort();
+    let mut out: Vec<(Frac, Frac)> = Vec::new();
+    let mut at = from;
+    for (a, b) in cut {
+        if a > at {
+            out.push((at, a));
+        }
+        at = at.max(b);
+    }
+    if at < to {
+        out.push((at, to));
+    }
     out
+}
+
+/// D.C. and D.S.: the first time the jump is reached, play on from the
+/// start (or the segno) straight through, to Fine, or to "To Coda" and on
+/// from the coda sign to the end.
+fn navigate(m: &Movement, first: Vec<(Frac, Frac)>) -> Vec<(Frac, Frac)> {
+    let Some(jump) = m.navigation.iter().find(|n| matches!(n.kind, Nav::DaCapo(_) | Nav::DalSegno(_))) else { return first };
+    let mut out = Vec::new();
+    let mut reached = false;
+    for &(a, b) in &first {
+        if a < jump.at && jump.at <= b {
+            out.push((a, jump.at));
+            reached = true;
+            break;
+        }
+        out.push((a, b));
+    }
+    if !reached {
+        return first;
+    }
+    let (target, to) = match jump.kind {
+        Nav::DaCapo(to) => (Frac::ZERO, to),
+        Nav::DalSegno(to) => (m.navigation.iter().filter(|n| n.kind == Nav::Segno && n.at < jump.at).map(|n| n.at).last().unwrap_or(Frac::ZERO), to),
+        _ => unreachable!(),
+    };
+    let find = |kind: Nav| m.navigation.iter().find(|n| n.kind == kind && n.at > target).map(|n| n.at);
+    match to {
+        NavTo::End => out.extend(straight(m, target, m.length)),
+        NavTo::Fine => out.extend(straight(m, target, find(Nav::Fine).unwrap_or(m.length))),
+        NavTo::Coda => match (find(Nav::ToCoda), m.navigation.iter().find(|n| n.kind == Nav::Coda).map(|n| n.at)) {
+            (Some(t), Some(c)) => {
+                out.extend(straight(m, target, t));
+                out.extend(straight(m, c, m.length));
+            }
+            _ => out.extend(straight(m, target, m.length)),
+        },
+    }
+    // Join what runs on.
+    let mut joined: Vec<(Frac, Frac)> = Vec::new();
+    for (a, b) in out {
+        match joined.last_mut() {
+            Some(l) if l.1 == a => l.1 = b,
+            _ if b > a => joined.push((a, b)),
+            _ => {}
+        }
+    }
+    joined
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

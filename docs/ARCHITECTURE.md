@@ -52,6 +52,9 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   moves.
 * A meter may be a pickup: a short first bar, written in the following
   meter and numbered 0.
+* Navigation marks: segno and coda signs at the start of their bar; To
+  Coda, Fine and D.C./D.S. (to the end, al Fine, al Coda) at the end of
+  theirs. They move with inserted and deleted bars.
 * An event may carry grace notes (single notes or chords, a written value
   and an optional slash). They belong to the note they precede, take no
   time in the score, and play on the beat, taking a 32nd each (a 64th
@@ -187,6 +190,9 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* Segno and coda signs sit over their barline above the top staff; To
+  Coda (with a small coda sign), Fine and the jumps in italics end at
+  theirs, all stacked against the skyline.
 * Staves of one instrument family next to each other (woodwinds, brass,
   percussion, voices, strings; from the instrument names) share a bracket
   with serifs, as LilyPond's StaffGroup, and their barlines run through.
@@ -265,7 +271,11 @@ Every example score in the W3C MusicXML repository imports and engraves
   to the start repeat (or the beginning) until its passes are done. An
   ending not marked for the current pass is skipped. A repeat with endings
   takes as many passes as its highest ending number; without endings, two.
+  At a D.C. or D.S. the music goes back to the start or the segno and is
+  played straight through, repeats not taken and only the last ending of
+  each set, to Fine, or to To Coda and on from the coda sign.
 * **Notes:**
+  * grace notes play on the beat, taking their time from the note;
   * ties are merged;
   * ornaments are written out (trills in the key, turns, mordents,
     tremolos);

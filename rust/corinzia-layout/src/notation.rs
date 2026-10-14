@@ -287,6 +287,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
         barlines: vec![],
         endings: vec![],
         marks: vec![],
+        navigation: vec![],
         parts,
     }
 }

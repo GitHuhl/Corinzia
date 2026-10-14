@@ -105,7 +105,8 @@ the selected notes' durations (longer music overwrites what follows;
 shorter leaves rests), A–G change the pitch, `-` `=` `0` set flat, sharp or
 natural, Alt+←/→ move notes by the rhythmic grid chosen in the status
 bar (Alt+[ / Alt+] change it). Shift+M "pickup 1/4" adds an upbeat bar.
-`;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
+Shift+R also takes jumps: "segno", "coda", "to coda", "fine", "D.C. al
+Fine", "D.S. al Coda" (played back too). `;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
 type go into them until `:`; with a note selected it starts one. `/` in
 note input types grace notes (slashed; `?` plain) before the next note.
 Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T

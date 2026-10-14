@@ -16,7 +16,7 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace,
+    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, Nav, NavMark, NavTo,
 };
 use corinzia_score::score::{art, span, Lyric};
 use corinzia_score::Frac;
@@ -280,6 +280,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         keys: vec![],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes: vec![],
     };
@@ -357,7 +358,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                         while staves.len() <= staff {
                             staves.push(StaffMusic::default());
                         }
-                        direction(e, at, first, &mut staves[staff], &mut movement, &mut p);
+                        direction(e, at, (bar, bar_end), first, &mut staves[staff], &mut movement, &mut p);
                     }
                     "harmony" => {
                         if let Some(t) = harmony_text(e) {
@@ -441,6 +442,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         movement.tempo.push(Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() });
     }
     movement.meter.sort_by(|a, b| a.at.cmp(&b.at));
+    movement.navigation.sort_by(|a, b| a.at.cmp(&b.at));
     // A short first bar is a pickup in the opening meter.
     if let Some(len) = pickup {
         if movement.meter.len() == 1 || movement.meter[1].at != len {
@@ -463,7 +465,14 @@ fn beats(t: Node) -> Option<i64> {
     s.split('+').map(|x| x.trim().parse::<i64>().ok()).sum()
 }
 
-fn direction(e: Node, at: Frac, first: bool, staff: &mut StaffMusic, movement: &mut Movement, p: &mut Project) {
+/// A navigation mark from the first part (one per kind and position).
+fn add_nav(movement: &mut Movement, p: &mut Project, at: Frac, kind: Nav) {
+    if !movement.navigation.iter().any(|n| n.at == at && n.kind == kind) {
+        movement.navigation.push(NavMark { id: p.allocate_id(), at, kind });
+    }
+}
+
+fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff: &mut StaffMusic, movement: &mut Movement, p: &mut Project) {
     let mut words: Vec<String> = Vec::new();
     let mut bpm: Option<f64> = None;
     for dt in children(e, "direction-type") {
@@ -506,6 +515,8 @@ fn direction(e: Node, at: Frac, first: bool, staff: &mut StaffMusic, movement: &
                         bpm = Some(pm * quarters);
                     }
                 }
+                "segno" if first => add_nav(movement, p, if at >= bar_end { bar_end } else { bar }, Nav::Segno),
+                "coda" if first => add_nav(movement, p, if at >= bar_end { bar_end } else { bar }, Nav::Coda),
                 "rehearsal" if first => {
                     let id = p.allocate_id();
                     if !movement.rehearsal.iter().any(|r| r.at == at) {
@@ -518,6 +529,32 @@ fn direction(e: Node, at: Frac, first: bool, staff: &mut StaffMusic, movement: &
     }
     if bpm.is_none() {
         bpm = child(e, "sound").and_then(|s| s.attribute("tempo")).and_then(|t| t.parse::<f64>().ok());
+    }
+    // Jumps, Fine and To Coda: from the words, else from <sound>; they
+    // happen at the end of their bar.
+    if first {
+        let sound = child(e, "sound");
+        let said = |a: &str| sound.and_then(|s| s.attribute(a)).is_some_and(|v| !v.is_empty() && v != "no");
+        let from_words = words.iter().position(|w| corinzia_edit::parse_nav(w).is_some_and(|n| !n.at_bar_start()));
+        let kind = from_words.and_then(|i| corinzia_edit::parse_nav(&words[i])).or_else(|| {
+            if said("dacapo") {
+                Some(Nav::DaCapo(NavTo::End))
+            } else if said("dalsegno") {
+                Some(Nav::DalSegno(NavTo::End))
+            } else if said("tocoda") {
+                Some(Nav::ToCoda)
+            } else if said("fine") {
+                Some(Nav::Fine)
+            } else {
+                None
+            }
+        });
+        if let Some(k) = kind {
+            if let Some(i) = from_words {
+                words.remove(i);
+            }
+            add_nav(movement, p, if at > bar { bar_end } else { bar }, k);
+        }
     }
     match bpm {
         Some(b) if first => {
@@ -534,6 +571,12 @@ fn direction(e: Node, at: Frac, first: bool, staff: &mut StaffMusic, movement: &
 
 fn barline(e: Node, bar: Frac, bar_end: Frac, open: &mut BTreeMap<String, Frac>, movement: &mut Movement, p: &mut Project) {
     let right = e.attribute("location").unwrap_or("right") == "right";
+    // A sign on a barline starts the bar after it.
+    for (tag, kind) in [("segno", Nav::Segno), ("coda", Nav::Coda)] {
+        if child(e, tag).is_some() {
+            add_nav(movement, p, if right { bar_end } else { bar }, kind);
+        }
+    }
     let at = if right { bar_end } else { bar };
     let style = text_of(e, "bar-style").unwrap_or_default();
     let repeat = child(e, "repeat").and_then(|r| r.attribute("direction").map(String::from));

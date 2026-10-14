@@ -8,7 +8,7 @@
 use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
-use corinzia_score::score::{art, BarKind, Key, Part, Pitch, Score};
+use corinzia_score::score::{art, BarKind, Key, Nav, Part, Pitch, Score};
 use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
@@ -2348,6 +2348,41 @@ impl<'a> Engraver<'a> {
                 self.place(0, Item::line(a.0, a.1, b.0, b.1, t, 0));
             }
             self.place(0, Item::Text { text: letter, at: pt(x, bottom - 0.4), size, italic: false, bold: true, anchor: 1, id: 0 });
+        }
+        // Navigation: the segno and coda signs over their barline; Fine,
+        // "To Coda" and the jumps in italics, ending at their barline.
+        for n in self.score.navigation.clone() {
+            let here = if n.kind.at_bar_start() { n.at >= r0 && n.at < r1 } else { n.at > r0 && n.at <= r1 };
+            if !here {
+                continue;
+            }
+            let x = self.bar_x(n.at);
+            match n.kind {
+                Nav::Segno | Nav::Coda => {
+                    let g = if n.kind == Nav::Segno { Glyph::Segno } else { Glyph::Coda };
+                    let b = self.font.bbox(g);
+                    let x0 = x - b.width() / 2.0;
+                    let y = self.sky[0].top_over(x0, x0 + b.width()) - 0.6 + b.sw.1;
+                    self.place(0, Item::glyph(g, x0, y, n.id));
+                }
+                k => {
+                    let text = k.text();
+                    let w = text_width(text, TEXT_SIZE, false);
+                    // The sign after "To Coda" is the words' size.
+                    const SIGN: f32 = 0.7;
+                    let coda = if k == Nav::ToCoda { self.font.bbox(Glyph::Coda) } else { Default::default() };
+                    let cw = if k == Nav::ToCoda { coda.width() * SIGN + 0.3 } else { 0.0 };
+                    let x1 = x - 0.2;
+                    let x0 = x1 - w - cw;
+                    let y = self.sky[0].top_over(x0, x1) - 0.6;
+                    self.place(0, Item::Text { text: text.into(), at: pt(x0, y), size: TEXT_SIZE, italic: true, bold: false, anchor: 0, id: n.id });
+                    if k == Nav::ToCoda {
+                        // Centred on the words' middle.
+                        let yg = y - 0.6 + (coda.ne.1 + coda.sw.1) / 2.0 * SIGN;
+                        self.place(0, Item::glyph_scaled(Glyph::Coda, x1 - coda.width() * SIGN, yg, SIGN, n.id));
+                    }
+                }
+            }
         }
         // Tempo marks: words (bold) and a metronome mark; repeated only when they change.
         let mut tempo = self.score.tempo.clone();

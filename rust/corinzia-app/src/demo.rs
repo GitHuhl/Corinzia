@@ -72,6 +72,7 @@ pub fn project() -> Project {
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![Barline { id: 70, at: Frac::int(4), kind: BarKind::Double }],
         rehearsal: vec![RehearsalMark { id: 71, at: Frac::int(4) }],
+        navigation: vec![],
         endings: vec![],
         lanes,
     });
@@ -126,6 +127,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
+        navigation: vec![],
         endings: vec![],
         lanes,
     });

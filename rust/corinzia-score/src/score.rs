@@ -19,7 +19,91 @@ pub struct Score {
     pub barlines: Vec<Barline>,
     pub endings: Vec<Ending>,
     pub marks: Vec<Frac>,
+    /// Segno, coda, Fine and the D.C./D.S. jumps.
+    pub navigation: Vec<NavMark>,
     pub parts: Vec<Part>,
+}
+
+/// A navigation mark: the segno and coda signs at the start of their bar;
+/// "To Coda", Fine and the jumps at the end of theirs (`at` is that
+/// barline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Segno,
+    Coda,
+    ToCoda,
+    Fine,
+    /// D.C. / D.S., then `al`: play to the end, to Fine, or to "To Coda"
+    /// and on at the coda.
+    DaCapo(NavTo),
+    DalSegno(NavTo),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavTo {
+    End,
+    Fine,
+    Coda,
+}
+
+impl Nav {
+    /// The words written for it (the signs have none).
+    pub fn text(self) -> &'static str {
+        match self {
+            Nav::Segno | Nav::Coda => "",
+            Nav::ToCoda => "To Coda",
+            Nav::Fine => "Fine",
+            Nav::DaCapo(NavTo::End) => "D.C.",
+            Nav::DaCapo(NavTo::Fine) => "D.C. al Fine",
+            Nav::DaCapo(NavTo::Coda) => "D.C. al Coda",
+            Nav::DalSegno(NavTo::End) => "D.S.",
+            Nav::DalSegno(NavTo::Fine) => "D.S. al Fine",
+            Nav::DalSegno(NavTo::Coda) => "D.S. al Coda",
+        }
+    }
+    /// A short code for files: "segno", "coda", "tocoda", "fine", "dc",
+    /// "dc-fine", "dc-coda", "ds", "ds-fine", "ds-coda".
+    pub fn code(self) -> &'static str {
+        match self {
+            Nav::Segno => "segno",
+            Nav::Coda => "coda",
+            Nav::ToCoda => "tocoda",
+            Nav::Fine => "fine",
+            Nav::DaCapo(NavTo::End) => "dc",
+            Nav::DaCapo(NavTo::Fine) => "dc-fine",
+            Nav::DaCapo(NavTo::Coda) => "dc-coda",
+            Nav::DalSegno(NavTo::End) => "ds",
+            Nav::DalSegno(NavTo::Fine) => "ds-fine",
+            Nav::DalSegno(NavTo::Coda) => "ds-coda",
+        }
+    }
+    pub fn from_code(c: &str) -> Option<Nav> {
+        [
+            Nav::Segno,
+            Nav::Coda,
+            Nav::ToCoda,
+            Nav::Fine,
+            Nav::DaCapo(NavTo::End),
+            Nav::DaCapo(NavTo::Fine),
+            Nav::DaCapo(NavTo::Coda),
+            Nav::DalSegno(NavTo::End),
+            Nav::DalSegno(NavTo::Fine),
+            Nav::DalSegno(NavTo::Coda),
+        ]
+        .into_iter()
+        .find(|n| n.code() == c)
+    }
+    /// Marks at the start of a bar (the signs); the rest end one.
+    pub fn at_bar_start(self) -> bool {
+        matches!(self, Nav::Segno | Nav::Coda)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NavMark {
+    pub id: u64,
+    pub at: Frac,
+    pub kind: Nav,
 }
 
 #[derive(Debug, Clone)]

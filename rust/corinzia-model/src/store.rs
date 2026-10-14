@@ -177,6 +177,7 @@ pub fn load(path: &Path) -> Result<Project> {
             keys: vec![],
             barlines: vec![],
             rehearsal: vec![],
+            navigation: vec![],
             endings: vec![],
             lanes: vec![],
         };
@@ -239,6 +240,11 @@ pub fn load(path: &Path) -> Result<Project> {
             }
             for r in n["marks"].as_array().into_iter().flatten() {
                 m.rehearsal.push(RehearsalMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]) });
+            }
+            for r in n["nav"].as_array().into_iter().flatten() {
+                if let Some(kind) = r["k"].as_str().and_then(Nav::from_code) {
+                    m.navigation.push(NavMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]), kind });
+                }
             }
             for e in n["endings"].as_array().into_iter().flatten() {
                 m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
@@ -502,6 +508,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         let notation = json!({
             "barlines": m.barlines.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "k": b.kind.code()})).collect::<Vec<_>>(),
             "marks": m.rehearsal.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at)})).collect::<Vec<_>>(),
+            "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,

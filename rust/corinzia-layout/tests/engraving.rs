@@ -525,3 +525,28 @@ fn families_are_bracketed_and_their_barlines_joined() {
     assert!(!vertical.iter().any(|v| v.1 == t1 && v.2 > t2 - 0.1), "not on to the next staff");
     preview("brackets", &l);
 }
+
+#[test]
+fn segno_coda_and_jumps_are_written() {
+    use corinzia_score::score::{Nav, NavMark, NavTo};
+    use corinzia_score::Frac;
+    let mut s = score(&[("treble", &["c''1 | d''1 | e''1 | f''1"])], (4, 4), 0);
+    s.navigation = vec![
+        NavMark { id: 501, at: Frac::int(1), kind: Nav::Segno },
+        NavMark { id: 502, at: Frac::int(2), kind: Nav::ToCoda },
+        NavMark { id: 503, at: Frac::int(3), kind: Nav::DalSegno(NavTo::Coda) },
+        NavMark { id: 504, at: Frac::int(3), kind: Nav::Coda },
+    ];
+    let l = layout_line(&s, &Options::default());
+    let segno = glyphs(&l, Glyph::Segno);
+    let coda = glyphs(&l, Glyph::Coda);
+    assert_eq!(segno.len(), 1);
+    assert_eq!(coda.len(), 2, "the coda sign and the one after To Coda");
+    assert!(segno[0].1 < l.staves[0].top, "above the staff");
+    let texts: Vec<(&str, f32)> = l.items.iter().filter_map(|i| match i { Item::Text { text, at, italic: true, .. } => Some((text.as_str(), at.x)), _ => None }).collect();
+    assert!(texts.iter().any(|t| t.0 == "To Coda"));
+    let ds = texts.iter().find(|t| t.0 == "D.S. al Coda").unwrap();
+    // The jump ends at the barline after bar 3; the segno sits over the barline after bar 1.
+    assert!(ds.1 > segno[0].0);
+    preview("navigation", &l);
+}

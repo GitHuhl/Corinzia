@@ -451,6 +451,47 @@ pub fn set_ending(m: &mut Movement, from: Frac, to: Frac, passes: u8, ids: &mut 
     m.endings.push(Ending { id: ids.next(), from, to, passes });
     m.endings.sort_by(|a, b| a.from.cmp(&b.from));
 }
+/// The navigation popover (Shift+R, with endings): "segno", "coda",
+/// "to coda", "fine", "D.C.", "D.C. al Fine", "DS al Coda"...
+pub fn parse_nav(text: &str) -> Option<Nav> {
+    let t: String = text.to_lowercase().chars().filter(|c| c.is_alphanumeric() || *c == ' ').collect();
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let al = |rest: &str| -> Option<NavTo> {
+        match rest.trim() {
+            "" => Some(NavTo::End),
+            "al fine" | "fine" => Some(NavTo::Fine),
+            "al coda" | "coda" => Some(NavTo::Coda),
+            _ => None,
+        }
+    };
+    Some(match t.as_str() {
+        "segno" | "sign" | "s" => Nav::Segno,
+        "coda" => Nav::Coda,
+        "to coda" | "tocoda" => Nav::ToCoda,
+        "fine" => Nav::Fine,
+        _ => {
+            for (prefix, dc) in [("dc", true), ("d c", true), ("da capo", true), ("ds", false), ("d s", false), ("dal segno", false)] {
+                if let Some(rest) = t.strip_prefix(prefix).filter(|r| r.is_empty() || r.starts_with(' ')) {
+                    let to = al(rest)?;
+                    return Some(if dc { Nav::DaCapo(to) } else { Nav::DalSegno(to) });
+                }
+            }
+            return None;
+        }
+    })
+}
+
+/// Puts a navigation mark at `at` (one per kind and position; the same
+/// mark again removes it).
+pub fn toggle_nav(m: &mut Movement, at: Frac, kind: Nav, ids: &mut Ids) {
+    let n = m.navigation.len();
+    m.navigation.retain(|x| !(x.at == at && x.kind == kind));
+    if m.navigation.len() == n {
+        m.navigation.push(NavMark { id: ids.next(), at, kind });
+        m.navigation.sort_by(|a, b| a.at.cmp(&b.at));
+    }
+}
+
 pub fn toggle_rehearsal_mark(m: &mut Movement, at: Frac, ids: &mut Ids) {
     let n = m.rehearsal.len();
     m.rehearsal.retain(|r| r.at != at);
@@ -486,6 +527,13 @@ pub fn describe_item(m: &Movement, id: Id) -> Option<String> {
     if m.rehearsal.iter().any(|r| r.id == id) {
         return Some("Rehearsal mark".into());
     }
+    if let Some(n) = m.navigation.iter().find(|n| n.id == id) {
+        return Some(match n.kind {
+            Nav::Segno => "Segno".into(),
+            Nav::Coda => "Coda".into(),
+            k => k.text().into(),
+        });
+    }
     if let Some(e) = m.endings.iter().find(|e| e.id == id) {
         return Some(format!("Ending {}", ending_label(e.passes)));
     }
@@ -509,6 +557,7 @@ pub fn remove_item(m: &mut Movement, id: Id) -> Option<String> {
     let what = describe_item(m, id)?;
     m.barlines.retain(|x| x.id != id);
     m.rehearsal.retain(|x| x.id != id);
+    m.navigation.retain(|x| x.id != id);
     m.endings.retain(|x| x.id != id);
     for l in m.lanes.iter_mut() {
         l.clefs.retain(|x| x.id != id);
@@ -563,7 +612,7 @@ macro_rules! impl_at {
         fn at_mut(&mut self) -> &mut Frac { &mut self.at }
     })*};
 }
-impl_at!(Tempo, Meter, Key, InstrumentChange, ClefChange, TextItem, ChordSymbol, RehearsalMark, Barline);
+impl_at!(Tempo, Meter, Key, InstrumentChange, ClefChange, TextItem, ChordSymbol, RehearsalMark, Barline, NavMark);
 
 /// Maps (tempo, meter, key, instrument changes) keep their entry at 0 and
 /// hold one entry per position; marks and text are plain items.
@@ -621,6 +670,12 @@ pub fn insert_span(m: &mut Movement, at: Frac, length: Frac) {
         }
     }
     shift_items(&mut m.rehearsal, at, length, Kind::Items);
+    // A mark ending the bar before stays there.
+    for n in m.navigation.iter_mut() {
+        if n.at > at || n.at == at && n.kind.at_bar_start() {
+            n.at = n.at + length;
+        }
+    }
     for e in m.endings.iter_mut() {
         if e.from >= at {
             e.from = e.from + length;
@@ -657,6 +712,12 @@ pub fn delete_span(m: &mut Movement, from: Frac, to: Frac) {
         m.barlines.remove(i); // the moved one comes second
     }
     delete_items(&mut m.rehearsal, from, to, Kind::Items);
+    m.navigation.retain(|n| !(n.at > from && n.at < to || n.at == from && n.kind.at_bar_start() || n.at == to && !n.kind.at_bar_start()));
+    for n in m.navigation.iter_mut() {
+        if n.at >= to {
+            n.at = n.at - (to - from);
+        }
+    }
     let cut = |x: Frac| {
         if x <= from {
             x

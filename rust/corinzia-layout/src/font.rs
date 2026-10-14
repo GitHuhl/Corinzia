@@ -26,7 +26,7 @@ pub enum Glyph {
     Trill, Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot,
     MetNoteQuarterUp, TupletDigit(u8),
     CsymSharp, CsymFlat, CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh,
-    BracketTop, BracketBottom,
+    BracketTop, BracketBottom, Segno, Coda,
 }
 
 impl Glyph {
@@ -107,6 +107,8 @@ impl Glyph {
             CsymMajorSeventh => ("csymMajorSeventh", 0xE873),
             BracketTop => ("bracketTop", 0xE003),
             BracketBottom => ("bracketBottom", 0xE004),
+            Segno => ("segno", 0xE047),
+            Coda => ("coda", 0xE048),
         }
     }
     pub fn name(self) -> &'static str {
@@ -123,7 +125,7 @@ impl Glyph {
             TimeSigCut, AccentAbove, AccentBelow, StaccatoAbove, StaccatoBelow, TenutoAbove, TenutoBelow, StaccatissimoAbove,
             StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow, DynamicP, DynamicM, DynamicF, Trill,
             Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot, MetNoteQuarterUp, CsymSharp, CsymFlat,
-            CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh, BracketTop, BracketBottom,
+            CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh, BracketTop, BracketBottom, Segno, Coda,
         ];
         v.extend((0..10).map(TimeSigDigit));
         v.extend((0..10).map(TupletDigit));
