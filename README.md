@@ -1,8 +1,10 @@
+
 # Corinzia
 
 ## A Hybrid DAW/Music Notation Program with CLAPi and VST3 Instrument Support
 
-<img width="1280" height="860" alt="image-1791952433031" src="https://github.com/user-attachments/assets/8a7336f7-c9c3-4616-8be7-9de70f34ac16" />
+<img width="1280" height="860" alt="image-1792010138652" src="https://github.com/user-attachments/assets/957cb598-5eaf-4b5c-ae24-09278e3d42c7" />
+<img width="1280" height="860" alt="image-1792010442842" src="https://github.com/user-attachments/assets/5c9861a4-19e2-4038-85a9-016a5d3afff5" />
 
 
 
