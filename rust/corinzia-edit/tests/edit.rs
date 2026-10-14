@@ -243,7 +243,7 @@ fn pickup_bars() {
     assert_eq!(parse_pickup("pickup 0/4", q), None);
 
     let mut h = header();
-    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] };
+    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] };
     Arc::make_mut(&mut h.lanes[0].voices[0].events).push(n(f(1, 1)));
     set_pickup(&mut h, Some(f(1, 4)));
     assert_eq!(pickup(&h), Some(f(1, 4)));

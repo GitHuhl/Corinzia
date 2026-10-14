@@ -15,7 +15,8 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
   marquee, Shift-click or Ctrl+A; copy/paste/repeat; articulations,
-  ornaments, dynamics, slurs, hairpins and ties; key, time, clef, tempo,
+  ornaments, dynamics, slurs, hairpins and ties; tuplets of any ratio and
+  grace notes; key, time (with pickups), clef, tempo,
   barlines, repeat endings, rehearsal marks and text through popovers and
   the Structure panel. Every action is one undo step.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
@@ -105,7 +106,8 @@ shorter leaves rests), A–G change the pitch, `-` `=` `0` set flat, sharp or
 natural, Alt+←/→ move notes by the rhythmic grid chosen in the status
 bar (Alt+[ / Alt+] change it). Shift+M "pickup 1/4" adds an upbeat bar.
 `;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
-type go into them until `:`; with a note selected it starts one.
+type go into them until `:`; with a note selected it starts one. `/` in
+note input types grace notes (slashed; `?` plain) before the next note.
 Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T
 tempo ("Allegro 132"), Shift+B barline (":|"), Shift+C clef, Shift+X /
 Shift+P expression or technique text, Shift+O ornaments, Shift+R endings,

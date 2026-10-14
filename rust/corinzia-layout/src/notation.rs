@@ -9,9 +9,11 @@
 //!   \arpeggio \breathe`, dynamics `\pp` … `\ff`;
 //! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings);
 //! * `\ly=Glo-` lyrics (`\ly2=` for verse 2; `-` hyphen, `_` extender);
-//! * `\tuplet 5/4 { … }` tuplets (nestable; durations inside are written).
+//! * `\tuplet 5/4 { … }` tuplets (nestable; durations inside are written);
+//! * `\grace c''16`, `\acciaccatura d''8`, `\grace { c''16 d'' }`: grace
+//!   notes before the next note.
 
-use corinzia_score::score::{art, span, Event, Meter, Part, Pitch, Score, Tuplet, Voice};
+use corinzia_score::score::{art, span, Event, Grace, Meter, Part, Pitch, Score, Tuplet, Voice};
 use corinzia_score::Frac;
 
 fn parse_pitch(tok: &str) -> Option<(Pitch, &str)> {
@@ -82,6 +84,10 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
     let mut tuplets: Vec<Tuplet> = Vec::new();
     let mut open: Vec<(Frac, i64, i64)> = Vec::new(); // (start, actual, normal)
     let mut pending: Option<(i64, i64)> = None;
+    // Grace notes: `\grace`/`\acciaccatura` arms the next note or group.
+    let mut grace_next: Option<bool> = None; // Some(slash)
+    let mut grace_group: Option<bool> = None;
+    let mut graces: Vec<Grace> = Vec::new();
     // Re-glue chord closings with their duration/marks: "> 2~" -> ">2~"
     let mut tokens: Vec<String> = Vec::new();
     let mut in_chord = false;
@@ -111,10 +117,20 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
             }
             continue;
         }
+        if t == "\\grace" || t == "\\acciaccatura" || t == "\\appoggiatura" {
+            grace_next = Some(t == "\\acciaccatura");
+            continue;
+        }
         if t == "{" {
             if let Some((a, n)) = pending.take() {
                 open.push((at, a, n));
+            } else if let Some(slash) = grace_next.take() {
+                grace_group = Some(slash);
             }
+            continue;
+        }
+        if t == "}" && grace_group.is_some() {
+            grace_group = None;
             continue;
         }
         if t == "}" {
@@ -180,9 +196,21 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
             dur = d;
             rest = r.to_string();
         }
+        // A grace note waits for the next note.
+        if let Some(slash) = grace_next.take().or(grace_group) {
+            let base = (Frac::new(1, 1) * Frac::new(dur.den, dur.num)).num.clamp(8, 64) as u8;
+            let mut ps = pitches.clone();
+            for p in ps.iter_mut() {
+                p.id = *next_id;
+                *next_id += 1;
+            }
+            graces.push(Grace { id: *next_id, pitches: ps, base, slash });
+            *next_id += 1;
+            continue;
+        }
         // Sounding time inside tuplets.
         let scale = open.iter().fold(Frac::int(1), |f, &(_, a, n)| f * Frac::new(n, a));
-        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![] };
+        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces) };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;

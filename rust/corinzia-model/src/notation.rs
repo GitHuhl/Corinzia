@@ -115,6 +115,25 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                                 dynamic: e.dynamic.map(|d| DYNAMICS[(d as usize).min(7)].to_string()),
                                 spans: e.spans,
                                 lyrics: e.lyrics.clone(),
+                                graces: {
+                                    let by = interval_at(e.start);
+                                    e.graces
+                                        .iter()
+                                        .map(|g| sc::Grace {
+                                            id: g.id,
+                                            pitches: g
+                                                .heads
+                                                .iter()
+                                                .map(|h| {
+                                                    let p = h.pitch.transposed(by);
+                                                    sc::Pitch { id: h.id, step: p.step as u8, alter: p.alter, octave: p.octave, tie: false }
+                                                })
+                                                .collect(),
+                                            base: g.base,
+                                            slash: g.slash,
+                                        })
+                                        .collect()
+                                },
                             })
                             .collect(),
                     })

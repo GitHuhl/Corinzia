@@ -40,6 +40,16 @@ pub fn project() -> Project {
                 dynamic: e.dynamic.as_deref().and_then(|d| DYNAMICS.iter().position(|x| *x == d)).map(|i| i as u8),
                 spans: e.spans,
                 lyrics: e.lyrics,
+                graces: e
+                    .graces
+                    .iter()
+                    .map(|g| Grace {
+                        id: g.id,
+                        heads: g.pitches.iter().map(|h| Head { id: h.id, pitch: Pitch { step: h.step as i8, alter: h.alter, octave: h.octave }, tie: false, velocity: 0 }).collect(),
+                        base: g.base,
+                        slash: g.slash,
+                    })
+                    .collect(),
             })
             .collect();
         lanes.push(Lane {
@@ -90,7 +100,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)
-                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] })
+                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] })
                 .collect();
             let (change, voice) = (p.allocate_id(), p.allocate_id());
             let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: clef.to_string() }] };

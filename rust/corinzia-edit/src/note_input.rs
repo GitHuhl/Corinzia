@@ -1,7 +1,7 @@
 //! Note input and range edits on one voice's events.
 
 use crate::Ids;
-use corinzia_model::{Event, EventKind, Head, Id, Pitch};
+use corinzia_model::{Event, EventKind, Grace, Head, Id, Pitch};
 use corinzia_score::score::span;
 use corinzia_score::Frac;
 
@@ -113,7 +113,7 @@ pub fn make_event(ids: &mut Ids, start: Frac, duration: Frac, pitches: &[Pitch],
         1 => EventKind::Note,
         _ => EventKind::Chord,
     };
-    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0, lyrics: vec![] }
+    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] }
 }
 
 fn rest_of(ids: &mut Ids, start: Frac, dur: Frac) -> Event {
@@ -154,8 +154,14 @@ fn clear_range(out: &mut Vec<Event>, input: &[Event], s: Frac, t: Frac, fill: bo
 }
 
 /// Overwrite-insert `ev`. `fill`: the voice-1 policy.
-pub fn insert_event(list: &[Event], ev: Event, fill: bool, ids: &mut Ids) -> EditResult {
+pub fn insert_event(list: &[Event], mut ev: Event, fill: bool, ids: &mut Ids) -> EditResult {
     let (s, t) = (ev.start, ev.end());
+    // Grace notes typed before the note (on the event it replaces) stay.
+    if ev.graces.is_empty() {
+        if let Some(old) = list.iter().find(|e| e.start == s && !e.graces.is_empty()) {
+            ev.graces = old.graces.clone();
+        }
+    }
     let mut out = Vec::with_capacity(list.len() + 3);
     clear_range(&mut out, list, s, t, fill, ids);
     let mut from = s;
@@ -187,9 +193,65 @@ pub fn add_to_chord(list: &[Event], pos: Frac, pitch: Pitch, ids: &mut Ids) -> O
     Some(EditResult { events: out, focus: Some(id), from, to, caret: to })
 }
 
+/// Adds a grace note before the event starting at `pos` (`None` if there
+/// is none). `base`: 8 eighth, 16 sixteenth…; `slash`: acciaccatura.
+pub fn add_grace(list: &[Event], pos: Frac, pitches: &[Pitch], base: u8, slash: bool, ids: &mut Ids) -> Option<EditResult> {
+    let mut out = list.to_vec();
+    let e = out.iter_mut().find(|e| e.start == pos)?;
+    let id = ids.next();
+    let heads: Vec<Head> = pitches.iter().map(|&p| Head { id: ids.next(), pitch: p, tie: false, velocity: 0 }).collect();
+    let focus = heads.first().map(|h| h.id).unwrap_or(id);
+    e.graces.push(Grace { id, heads, base: base.max(8), slash });
+    let (from, to) = (e.start, e.end());
+    Some(EditResult { events: out, focus: Some(focus), from, to, caret: pos })
+}
+
+/// The grace note (event index, grace index, head index) holding `element`.
+pub fn find_grace(list: &[Event], element: Id) -> Option<(usize, usize, Option<usize>)> {
+    list.iter().enumerate().find_map(|(ei, e)| {
+        e.graces.iter().enumerate().find_map(|(gi, g)| {
+            if g.id == element {
+                Some((ei, gi, None))
+            } else {
+                g.heads.iter().position(|h| h.id == element).map(|hi| (ei, gi, Some(hi)))
+            }
+        })
+    })
+}
+
+/// Applies `f` to a grace note's heads (one head if `element` is a head).
+pub fn modify_grace(list: &[Event], element: Id, mut f: impl FnMut(&mut Head)) -> Option<EditResult> {
+    let (ei, gi, hi) = find_grace(list, element)?;
+    let mut out = list.to_vec();
+    let g = &mut out[ei].graces[gi];
+    match hi {
+        Some(h) => f(&mut g.heads[h]),
+        None => g.heads.iter_mut().for_each(f),
+    }
+    g.heads.sort_by_key(|h| h.pitch.midi_key());
+    let (from, to) = (out[ei].start, out[ei].end());
+    Some(EditResult { events: out, focus: Some(element), from, to, caret: from })
+}
+
 /// Deletes a head (from a chord) or a whole event. A single note or a
-/// chord's last head becomes a rest when `fill`, otherwise a hole.
+/// chord's last head becomes a rest when `fill`, otherwise a hole. A grace
+/// note (or one head of a grace chord) goes alone.
 pub fn delete_element(list: &[Event], element: Id, fill: bool, ids: &mut Ids) -> Option<EditResult> {
+    if let Some((ei, gi, hi)) = find_grace(list, element) {
+        let mut out = list.to_vec();
+        let e = &mut out[ei];
+        match hi {
+            Some(h) if e.graces[gi].heads.len() > 1 => {
+                e.graces[gi].heads.remove(h);
+            }
+            _ => {
+                e.graces.remove(gi);
+            }
+        }
+        let focus = e.heads.first().map(|h| h.id).unwrap_or(e.id);
+        let (from, to) = (e.start, e.end());
+        return Some(EditResult { events: out, focus: Some(focus), from, to, caret: from });
+    }
     let mut out = Vec::with_capacity(list.len());
     let mut res: Option<EditResult> = None;
     for e in list {
@@ -228,15 +290,18 @@ pub fn modify_event(list: &[Event], element: Id, f: impl FnOnce(&mut Event, Opti
     Some(EditResult { events: out, focus: Some(element), from, to, caret: to })
 }
 
-/// The event containing `element` and, if it is a head, the head's index.
+/// The event containing `element` and, if it is a head, the head's index
+/// (a grace note's element gives its event, without a head).
 pub fn find_event(list: &[Event], element: Id) -> Option<(&Event, Option<usize>)> {
-    list.iter().find_map(|e| {
-        if e.id == element {
-            Some((e, None))
-        } else {
-            e.heads.iter().position(|h| h.id == element).map(|i| (e, Some(i)))
-        }
-    })
+    list.iter()
+        .find_map(|e| {
+            if e.id == element {
+                Some((e, None))
+            } else {
+                e.heads.iter().position(|h| h.id == element).map(|i| (e, Some(i)))
+            }
+        })
+        .or_else(|| find_grace(list, element).map(|(ei, _, _)| (&list[ei], None)))
 }
 
 /// The event sounding at `pos`.
@@ -333,6 +398,12 @@ pub fn paste_events(list: &[Event], clip: &[Event], at: Frac, length: Frac, fill
         e.start = at + c.start;
         for h in e.heads.iter_mut() {
             h.id = ids.next();
+        }
+        for g in e.graces.iter_mut() {
+            g.id = ids.next();
+            for h in g.heads.iter_mut() {
+                h.id = ids.next();
+            }
         }
         first.get_or_insert(first_focus(&e));
         out.push(e);

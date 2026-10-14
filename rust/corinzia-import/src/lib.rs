@@ -16,7 +16,7 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS,
+    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace,
 };
 use corinzia_score::score::{art, span, Lyric};
 use corinzia_score::Frac;
@@ -169,6 +169,8 @@ struct StaffMusic {
     /// (start, actual, normal).
     tuplets: BTreeMap<String, Vec<Tuplet>>,
     open_tuplets: BTreeMap<String, Vec<(Frac, i64, i64)>>,
+    /// MusicXML voice name -> grace notes waiting for their note.
+    graces: BTreeMap<String, Vec<Grace>>,
     /// Dynamics and hairpins waiting for the next event at or after a time.
     dynamics: Vec<(Frac, u8)>,
     wedges: Vec<(Frac, u8)>,
@@ -369,7 +371,16 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                     }
                     "barline" if first => barline(e, bar, bar_end, &mut open_endings, &mut movement, &mut p),
                     "note" => {
-                        if child(e, "grace").is_some() || child(e, "cue").is_some() {
+                        if child(e, "cue").is_some() {
+                            continue;
+                        }
+                        if child(e, "grace").is_some() {
+                            let staff = num::<usize>(e, "staff").unwrap_or(1).max(1) - 1;
+                            while staves.len() <= staff {
+                                staves.push(StaffMusic::default());
+                            }
+                            let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
+                            grace_note(e, &mut staves[staff], voice, to_concert, &mut p);
                             continue;
                         }
                         let dur = q(int(e, "duration").unwrap_or(0), divisions);
@@ -563,22 +574,49 @@ fn barline(e: Node, bar: Frac, bar_end: Frac, open: &mut BTreeMap<String, Frac>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, voice: String, to_concert: corinzia_model::Interval, p: &mut Project) {
-    let rest = child(e, "rest").is_some();
+/// A `<grace>` note: waits in its voice for the next note (a `<chord/>`
+/// grace joins the one before).
+fn grace_note(e: Node, staff: &mut StaffMusic, voice: String, to_concert: corinzia_model::Interval, p: &mut Project) {
+    let Some(pitch) = note_pitch(e, to_concert) else { return };
+    let pending = staff.graces.entry(voice).or_default();
+    let head = Head { id: p.allocate_id(), pitch, tie: false, velocity: 0 };
+    if child(e, "chord").is_some() {
+        if let Some(g) = pending.last_mut() {
+            g.heads.push(head);
+            g.heads.sort_by_key(|h| h.pitch.diatonic());
+            return;
+        }
+    }
+    let base = match text_of(e, "type").as_deref() {
+        Some("16th") => 16,
+        Some("32nd") => 32,
+        Some("64th") => 64,
+        _ => 8,
+    };
+    let slash = child(e, "grace").and_then(|g| g.attribute("slash")) == Some("yes");
+    pending.push(Grace { id: p.allocate_id(), heads: vec![head], base, slash });
+}
+
+/// A note's pitch (unpitched notes at their display position), at concert pitch.
+fn note_pitch(e: Node, to_concert: corinzia_model::Interval) -> Option<Pitch> {
     let pitch = child(e, "pitch").map(|pn| {
         let step = text_of(pn, "step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(0) as i8;
         let alter = text_of(pn, "alter").and_then(|a| a.parse::<f64>().ok()).map(|a| a.round() as i8).unwrap_or(0).clamp(-2, 2);
         let octave = num::<i8>(pn, "octave").unwrap_or(4);
         Pitch { step, alter, octave }.transposed(to_concert)
     });
-    // Unpitched notes sound at their display position.
-    let pitch = pitch.or_else(|| {
+    pitch.or_else(|| {
         child(e, "unpitched").map(|u| Pitch {
             step: text_of(u, "display-step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(6) as i8,
             alter: 0,
             octave: num::<i8>(u, "display-octave").unwrap_or(4),
         })
-    });
+    })
+}
+
+fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, voice: String, to_concert: corinzia_model::Interval, p: &mut Project) {
+    let rest = child(e, "rest").is_some();
+    let pitch = note_pitch(e, to_concert);
     let tie = children(e, "tie").any(|t| t.attribute("type") == Some("start"))
         || child(e, "notations").is_some_and(|n| children(n, "tied").any(|t| t.attribute("type") == Some("start")));
     let mut arts = 0u16;
@@ -631,6 +669,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
             Some(Lyric { verse, text, hyphen: syl == "begin" || syl == "middle", extend: child(l, "extend").is_some() })
         })
         .collect();
+    let graces = if chord { vec![] } else { staff.graces.remove(&voice).unwrap_or_default() };
     let events = staff.voices.entry(voice).or_default();
     if chord && !rest {
         if let (Some(last), Some(pitch)) = (events.last_mut(), pitch) {
@@ -651,12 +690,9 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         _ => vec![],
     };
     let kind = if heads.is_empty() { EventKind::Rest } else { EventKind::Note };
-    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics });
+    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces });
 }
 
-/// A staff's lane: voices numbered in order of appearance (at most four;
-/// further ones join the fourth), voice 1 filled with rests where it is
-/// silent; dynamics and hairpins on the next note.
 /// `<tuplet type="start|stop">` on a note (nested ones too): the ratio
 /// from `<tuplet-actual>`/`<tuplet-normal>`, else `<time-modification>`.
 fn tuplet_marks(e: Node, start: Frac, dur: Frac, voice: &str, s: &mut StaffMusic) {
@@ -675,6 +711,9 @@ fn tuplet_marks(e: Node, start: Frac, dur: Frac, voice: &str, s: &mut StaffMusic
     }
 }
 
+/// A staff's lane: voices numbered in order of appearance (at most four;
+/// further ones join the fourth), voice 1 filled with rests where it is
+/// silent; dynamics and hairpins on the next note.
 fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut Project) -> Lane {
     let mut voices: Vec<Vec<Event>> = Vec::new();
     let mut tuplets: Vec<Vec<Tuplet>> = Vec::new();
@@ -753,5 +792,5 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
 }
 
 fn rest(p: &mut Project, start: Frac, duration: Frac) -> Event {
-    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] }
+    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] }
 }

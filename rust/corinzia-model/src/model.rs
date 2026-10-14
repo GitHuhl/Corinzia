@@ -100,6 +100,19 @@ pub struct Event {
     pub dynamic: Option<u8>, // 0 = ppp .. 7 = fff
     pub spans: u8,           // corinzia_score::score::span bits
     pub lyrics: Vec<Lyric>,  // one syllable per verse
+    /// Grace notes before it, in order; they take no time of their own.
+    pub graces: Vec<Grace>,
+}
+
+/// A grace note (or chord): written small before its event.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grace {
+    pub id: Id,
+    pub heads: Vec<Head>,
+    /// Written value: 8 = eighth, 16 = sixteenth.
+    pub base: u8,
+    /// Acciaccatura: a slashed stem, played as short as possible.
+    pub slash: bool,
 }
 impl Event {
     pub fn end(&self) -> Frac {

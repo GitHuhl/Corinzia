@@ -340,6 +340,21 @@ fn key_at(s: &Score, at: Frac) -> i32 {
 }
 
 // ------------------------------------------------------------------- pieces --
+/// A grace note before a note: small heads on one stem.
+#[derive(Clone, Debug)]
+struct GraceGeom {
+    id: u64,
+    heads: Vec<Head>, // bottom to top
+    base: u8,
+    slash: bool,
+}
+
+/// Grace notes are drawn at LilyPond's grace size (font-size -3).
+const GRACE_SCALE: f32 = 0.707;
+/// Between grace notes, and from the last one to its main note.
+const GRACE_GAP: f32 = 0.35;
+const GRACE_TO_MAIN: f32 = 1.0;
+
 #[derive(Clone, Debug)]
 struct Head {
     id: u64,
@@ -371,6 +386,7 @@ struct Note {
     dynamic: Option<String>,
     lyrics: Vec<corinzia_score::score::Lyric>, // on the first piece only
     tuplets: Vec<usize>, // the explicit tuplets around it (`tuplet_list`), outermost first
+    graces: Vec<GraceGeom>, // grace notes before it (first piece only)
     // layout
     stem_up: bool,
     beamed: bool,
@@ -470,6 +486,33 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             })
                             .collect();
                         heads.sort_by_key(|h| h.dia);
+                        let graces: Vec<GraceGeom> = if first && k == 0 {
+                            e.graces
+                                .iter()
+                                .map(|g| {
+                                    let mut hs: Vec<Head> = g
+                                        .pitches
+                                        .iter()
+                                        .map(|p| Head {
+                                            id: p.id,
+                                            pos: diatonic(p) - middle,
+                                            step: p.step,
+                                            alter: p.alter,
+                                            dia: diatonic(p),
+                                            tie_out: false,
+                                            tied_in: false,
+                                            accidental: None,
+                                            acc_x: 0.0,
+                                            shift: 0.0,
+                                        })
+                                        .collect();
+                                    hs.sort_by_key(|h| h.dia);
+                                    GraceGeom { id: g.id, heads: hs, base: g.base.max(8), slash: g.slash }
+                                })
+                                .collect()
+                        } else {
+                            vec![]
+                        };
                         let dur = if whole_bar { m.len } else { nv.length() * Frac::new(ratio.den, ratio.num) };
                         out.push(Note {
                             part: pi,
@@ -487,6 +530,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             dynamic: e.dynamic.clone(),
                             lyrics: if first { e.lyrics.clone() } else { vec![] },
                             tuplets: around.clone(),
+                            graces,
                             stem_up: true,
                             beamed: false,
                             stem_x: 0.0,
@@ -520,6 +564,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     dynamic: None,
                     lyrics: vec![],
                     tuplets: vec![],
+                    graces: vec![],
                     stem_up: true,
                     beamed: false,
                     stem_x: 0.0,
@@ -627,6 +672,17 @@ impl<'a> Engraver<'a> {
             last_start = Some((part, start));
             let fifths = part_key(self.score, part, key_at(self.score, start));
             let voice = self.notes[i].voice;
+            // Grace notes come first and count for the bar.
+            for g in self.notes[i].graces.iter_mut() {
+                for h in g.heads.iter_mut() {
+                    let key = (part, measure, h.dia);
+                    let current = *state.get(&key).unwrap_or(&key_alter(fifths, h.step));
+                    if h.alter != current {
+                        h.accidental = Some(accidental_glyph(h.alter));
+                    }
+                    state.insert(key, h.alter);
+                }
+            }
             for h in self.notes[i].heads.iter_mut() {
                 let key = (part, measure, h.dia);
                 let current = *state.get(&key).unwrap_or(&key_alter(fifths, h.step));
@@ -757,8 +813,25 @@ impl<'a> Engraver<'a> {
     }
 
     // ------------------------------------------------------------- spacing --
+    /// The width the grace notes before `n` take, right to left: each
+    /// grace's accidentals, head and gap.
+    fn grace_widths(&self, n: &Note) -> Vec<f32> {
+        // A lone grace's flag sticks out to the right of its stem.
+        let flag = if n.graces.len() == 1 && n.voice % 2 == 1 { 0.55 } else { 0.0 };
+        n.graces
+            .iter()
+            .map(|g| {
+                let acc = g.heads.iter().filter_map(|h| h.accidental).map(|a| self.width(a) * GRACE_SCALE + 0.1).fold(0.0f32, f32::max);
+                acc + HEAD_W * GRACE_SCALE + GRACE_GAP + flag
+            })
+            .collect()
+    }
+
     fn note_extents(&self, n: &Note) -> (f32, f32) {
-        let left = n.heads.iter().map(|h| if h.accidental.is_some() { -h.acc_x } else { -h.shift.min(0.0) }).fold(0.0f32, f32::max);
+        let mut left = n.heads.iter().map(|h| if h.accidental.is_some() { -h.acc_x } else { -h.shift.min(0.0) }).fold(0.0f32, f32::max);
+        if !n.graces.is_empty() {
+            left += GRACE_TO_MAIN - GRACE_GAP + self.grace_widths(n).iter().sum::<f32>();
+        }
         let mut right = if n.rest { self.width(rest_glyph(n.value.base)) } else { spacing_head_width(n.head_glyph()).unwrap_or(HEAD_W) };
         right += n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
         if n.value.dots > 0 {
@@ -1239,6 +1312,119 @@ impl<'a> Engraver<'a> {
             if n.beams() > 0 {
                 let f = flag_glyph(n.value.base, n.stem_up);
                 self.push(Item::glyph(f, stem_x - st / 2.0, to, n.id));
+            }
+        }
+    }
+
+    /// Grace notes: small heads left of their note (and its accidentals),
+    /// stems up (down in voices 2 and 4), a flag each or one beam over a
+    /// group, a slash through the first stem of an acciaccatura.
+    fn draw_graces(&mut self) {
+        let d = self.font.defaults;
+        let s = GRACE_SCALE;
+        for i in 0..self.notes.len() {
+            let n = self.notes[i].clone();
+            if n.graces.is_empty() {
+                continue;
+            }
+            let up = n.voice % 2 == 1;
+            let main_left = n.heads.iter().map(|h| if h.accidental.is_some() { -h.acc_x } else { -h.shift.min(0.0) }).fold(0.0f32, f32::max);
+            let widths = self.grace_widths(&n);
+            let mut x = n.x - main_left - (GRACE_TO_MAIN - GRACE_GAP) - widths.iter().sum::<f32>();
+            let st = d.stem_thickness * s.max(0.8);
+            let head_w = HEAD_W * s;
+            // (stem x, attach y, natural tip y) per grace.
+            let mut stems: Vec<(f32, f32, f32)> = Vec::new();
+            let flag = if n.graces.len() == 1 && up { 0.55 } else { 0.0 };
+            for (g, w) in n.graces.iter().zip(&widths) {
+                let acc_w = w - head_w - GRACE_GAP - flag;
+                let hx = x + acc_w;
+                for h in &g.heads {
+                    let y = self.y(n.part, h.pos);
+                    let ext = d.leger_line_extension * s;
+                    let mut lp = 6;
+                    while lp <= h.pos {
+                        let ly = self.y(n.part, lp);
+                        self.push(Item::line(hx - ext, ly, hx + head_w + ext, ly, d.leger_line_thickness, h.id));
+                        lp += 2;
+                    }
+                    let mut lp = -6;
+                    while lp >= h.pos {
+                        let ly = self.y(n.part, lp);
+                        self.push(Item::line(hx - ext, ly, hx + head_w + ext, ly, d.leger_line_thickness, h.id));
+                        lp -= 2;
+                    }
+                    self.push(Item::glyph_scaled(Glyph::NoteheadBlack, hx, y, s, h.id));
+                    if let Some(a) = h.accidental {
+                        self.push(Item::glyph_scaled(a, hx - self.width(a) * s - 0.1, y, s, h.id));
+                    }
+                }
+                let (lo, hi) = (g.heads[0].pos, g.heads[g.heads.len() - 1].pos);
+                let stem = 3.5 * s;
+                let (sx, attach, tip) = if up {
+                    (hx + head_w - st / 2.0, self.y(n.part, lo) - 0.12, self.y(n.part, hi) - stem)
+                } else {
+                    (hx + st / 2.0, self.y(n.part, hi) + 0.12, self.y(n.part, lo) + stem)
+                };
+                stems.push((sx, attach, tip));
+                x += w;
+            }
+            let beamed = n.graces.len() > 1;
+            let beams = |base: u8| match base {
+                0..=8 => 1,
+                16 => 2,
+                32 => 3,
+                _ => 4,
+            };
+            if beamed {
+                // A straight beam from the first tip to the last, moved out
+                // until every stem is long enough.
+                let (x0, x1) = (stems[0].0, stems[stems.len() - 1].0);
+                let (mut y0, mut y1) = (stems[0].2, stems[stems.len() - 1].2);
+                let slope = ((y1 - y0) / (x1 - x0).max(0.1)).clamp(-0.25, 0.25);
+                y1 = y0 + slope * (x1 - x0);
+                let need = stems
+                    .iter()
+                    .map(|&(sx, _, tip)| {
+                        let at = y0 + slope * (sx - x0);
+                        if up { at - tip } else { tip - at }
+                    })
+                    .fold(0.0f32, f32::max);
+                if up {
+                    y0 -= need;
+                    y1 -= need;
+                } else {
+                    y0 += need;
+                    y1 += need;
+                }
+                let at = |sx: f32| y0 + (y1 - y0) * (sx - x0) / (x1 - x0).max(0.1);
+                for (k, &(sx, attach, _)) in stems.iter().enumerate() {
+                    self.push(Item::line(sx, attach, sx, at(sx), st, n.graces[k].id));
+                }
+                let bt = d.beam_thickness * s;
+                let gap = (d.beam_spacing + d.beam_thickness) * s;
+                let id = n.graces[0].id;
+                for b in 0..beams(n.graces.iter().map(|g| g.base).min().unwrap_or(8)) {
+                    let off = b as f32 * gap * if up { 1.0 } else { -1.0 };
+                    let (a, c) = (at(x0 - st / 2.0) + off, at(x1 + st / 2.0) + off);
+                    let th = if up { bt } else { -bt };
+                    self.push(Item::Quad { p: [pt(x0 - st / 2.0, a), pt(x1 + st / 2.0, c), pt(x1 + st / 2.0, c + th), pt(x0 - st / 2.0, a + th)], id });
+                }
+                if n.graces[0].slash {
+                    let (sx, _, _) = stems[0];
+                    let y = at(sx) + if up { 1.1 } else { -1.1 };
+                    self.push(Item::line(sx - 0.55, y + if up { 0.45 } else { -0.45 }, sx + 0.75, y - if up { 0.45 } else { -0.45 }, st * 1.1, id));
+                }
+            } else {
+                let (sx, attach, tip) = stems[0];
+                let g = &n.graces[0];
+                self.push(Item::line(sx, attach, sx, tip, st, g.id));
+                let f = flag_glyph(g.base as i64, up);
+                self.push(Item::glyph_scaled(f, sx - st / 2.0, tip, s, g.id));
+                if g.slash {
+                    let y = tip + if up { 1.0 } else { -1.0 };
+                    self.push(Item::line(sx - 0.5, y + if up { 0.45 } else { -0.45 }, sx + 0.8, y - if up { 0.5 } else { -0.5 }, st * 1.1, g.id));
+                }
             }
         }
     }
@@ -2302,6 +2488,7 @@ impl<'a> Engraver<'a> {
         self.draw_measure_furniture();
         self.draw_clef_changes();
         self.draw_notes();
+        self.draw_graces();
         self.draw_beams(&groups);
         self.draw_ties();
         self.draw_marks();

@@ -483,6 +483,31 @@ impl<'a> Writer<'a> {
                 *wedge_open = true;
             }
         }
+        // Grace notes before the event (no duration).
+        if event_start {
+            for g in &e.graces {
+                let ty = match g.base {
+                    16 => "16th",
+                    32 => "32nd",
+                    64 => "64th",
+                    _ => "eighth",
+                };
+                for (hi, h) in g.pitches.iter().enumerate() {
+                    let mut s = String::from("      <note>");
+                    s.push_str(if g.slash { "<grace slash=\"yes\"/>" } else { "<grace/>" });
+                    if hi > 0 {
+                        s.push_str("<chord/>");
+                    }
+                    let step = b"CDEFGAB"[h.step.min(6) as usize] as char;
+                    let _ = write!(s, "<pitch><step>{step}</step>");
+                    if h.alter != 0 {
+                        let _ = write!(s, "<alter>{}</alter>", h.alter);
+                    }
+                    let _ = write!(s, "<octave>{}</octave></pitch><voice>{voice}</voice><type>{ty}</type><stem>up</stem></note>", h.octave);
+                    self.line(&s);
+                }
+            }
+        }
         let continues_after = !piece_last || !p.event_last; // more of this event follows (tie)
         let continued_before = !piece_first || !p.event_first;
         let heads: Vec<Option<&crate::doc::Pitch>> = if is_rest { vec![None] } else { e.pitches.iter().map(Some).collect() };

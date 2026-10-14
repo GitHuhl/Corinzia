@@ -213,3 +213,22 @@ fn exports_midi_and_musicxml_from_the_model() {
     let xml = musicxml(&project, &m).unwrap();
     assert!(xml.contains("<score-partwise") && xml.contains("Flute"));
 }
+
+#[test]
+fn grace_notes_play_on_the_beat_and_take_their_time_from_the_note() {
+    let mut ids = Ids(100);
+    let mut main = make_event(&mut ids, F::ZERO, f(1, 4), &[p(0, 0, 5)], 0);
+    main.graces = vec![
+        Grace { id: 900, heads: vec![Head { id: 901, pitch: p(1, 0, 5), tie: false, velocity: 0 }], base: 16, slash: false },
+        Grace { id: 902, heads: vec![Head { id: 903, pitch: p(2, 0, 5), tie: false, velocity: 0 }], base: 16, slash: false },
+    ];
+    let m = movement(F::int(1), vec![main, make_event(&mut ids, f(1, 4), f(3, 4), &[], 0)]);
+    let perf = perform(&m);
+    let mut ns: Vec<(i32, f64, f64)> = perf.notes.iter().map(|n| (n.key, n.on_q, n.full_off_q)).collect();
+    ns.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    // D and E, a 32nd (1/8 quarter) each from the beat; C after them.
+    assert_eq!(ns.len(), 3);
+    assert_eq!((ns[0].0, ns[0].1), (74, 0.0));
+    assert_eq!((ns[1].0, ns[1].1), (76, 0.125));
+    assert_eq!((ns[2].0, ns[2].1, ns[2].2), (72, 0.25, 1.0));
+}

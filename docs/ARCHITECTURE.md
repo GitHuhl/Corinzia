@@ -52,6 +52,10 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   moves.
 * A meter may be a pickup: a short first bar, written in the following
   meter and numbered 0.
+* An event may carry grace notes (single notes or chords, a written value
+  and an optional slash). They belong to the note they precede, take no
+  time in the score, and play on the beat, taking a 32nd each (a 64th
+  slashed, at most half the note) from the note.
 * Every object has a persistent element id. The id is used in the file, in
   the engraving (hit testing) and in playback (highlighting).
 * `notation::score` converts a movement into the engraver's input
@@ -98,6 +102,10 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   the tuplet at the caret, a new one starting when it fills, until `:`.
   On a selected note it makes a tuplet in that note's value, the note
   first.
+* **Grace notes**: `/` (slashed) or `?` (plain) in note input; letters then
+  add grace notes before the note at the caret, and the main note typed
+  next keeps them. Backspace removes the last one; a selected grace note
+  transposes or deletes alone.
 * **Structure** covers:
   * popover parsing: key ("Eb", "f#" minor), time, clef, barline, tempo
     ("Allegro 132", "q=96"), endings ("1, 2"), ornaments, chord symbols
@@ -179,6 +187,10 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* Grace notes are drawn at LilyPond's grace size (0.707) left of their
+  note and its accidentals, with their own accidentals and ledger lines,
+  stems up in voices 1 and 3, a flag or a beam over a group, and the
+  acciaccatura's slash; the spacing keeps room for them.
 
 **Marks around the staff.** Each staff has a skyline: the boxes of
 everything drawn so far. Outer marks are placed against it from the staff

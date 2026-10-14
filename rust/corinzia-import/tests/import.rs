@@ -219,3 +219,29 @@ fn tuplets_import_and_survive_a_round_trip() {
     assert!(out.contains("<actual-notes>5</actual-notes><normal-notes>4</normal-notes>"), "{out}");
     check(&musicxml(out.as_bytes()).unwrap());
 }
+
+#[test]
+fn grace_notes_import_and_survive_a_round_trip() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+<note><grace slash="yes"/><pitch><step>D</step><octave>5</octave></pitch><voice>1</voice><type>eighth</type></note>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
+<note><grace/><pitch><step>E</step><octave>5</octave></pitch><voice>1</voice><type>16th</type></note>
+<note><grace/><chord/><pitch><step>G</step><octave>5</octave></pitch><voice>1</voice><type>16th</type></note>
+<note><grace/><pitch><step>F</step><octave>5</octave></pitch><voice>1</voice><type>16th</type></note>
+<note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
+</measure></part></score-partwise>"#;
+    let check = |p: &Project| {
+        let v = &p.movements[0].lanes[0].voices[0].events;
+        assert_eq!(names(v), ["C5", "D5"]);
+        let g0: Vec<(String, u8, bool)> = v[0].graces.iter().map(|g| (names(&[Event { heads: g.heads.clone(), ..v[0].clone() }])[0].clone(), g.base, g.slash)).collect();
+        assert_eq!(g0, [("D5".to_string(), 8, true)]);
+        let g1: Vec<String> = v[1].graces.iter().map(|g| names(&[Event { heads: g.heads.clone(), ..v[1].clone() }])[0].clone()).collect();
+        assert_eq!(g1, ["E5+G5", "F5"]);
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    check(&musicxml(out.as_bytes()).unwrap());
+}

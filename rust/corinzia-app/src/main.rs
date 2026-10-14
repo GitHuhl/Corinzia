@@ -567,6 +567,7 @@ impl App {
             Action::GridStep(d) => ed.step_grid(d),
             Action::Accidental(x) if !ed.input_mode && ed.has_selection() => ed.set_selection_accidental(x),
             Action::Triplet => ed.toggle_triplets(),
+            Action::GraceInput(slash) => ed.toggle_grace_input(slash),
             Action::TupletOff => {
                 ed.tuplet_input = None;
                 ed.status = "Tuplet input off".into();

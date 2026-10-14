@@ -297,6 +297,26 @@ struct StoredEvent {
     h: Vec<StoredHead>,
     #[serde(default)]
     ly: Vec<StoredLyric>,
+    #[serde(default)]
+    g: Vec<StoredGrace>,
+}
+#[derive(Deserialize)]
+struct StoredGrace {
+    id: u64,
+    #[serde(default)]
+    h: Vec<StoredHead>,
+    #[serde(default)]
+    b: u8,
+    #[serde(default)]
+    sl: bool,
+}
+impl StoredHead {
+    fn head(&self) -> Head {
+        Head { id: self.id, pitch: Pitch { step: self.p[0] as i8, alter: self.p[1] as i8, octave: self.p[2] as i8 }, tie: self.t != 0, velocity: self.v as u8 }
+    }
+}
+fn head_json(h: &Head) -> Value {
+    json!({"id": h.id, "p": [h.pitch.step, h.pitch.alter, h.pitch.octave], "t": h.tie as i32, "v": h.velocity})
 }
 #[derive(Deserialize)]
 struct StoredLyric {
@@ -319,20 +339,12 @@ impl StoredEvent {
             },
             start: Frac::new(self.s[0], self.s[1].max(1)),
             duration: Frac::new(self.d[0], self.d[1].max(1)),
-            heads: self
-                .h
-                .into_iter()
-                .map(|h| Head {
-                    id: h.id,
-                    pitch: Pitch { step: h.p[0] as i8, alter: h.p[1] as i8, octave: h.p[2] as i8 },
-                    tie: h.t != 0,
-                    velocity: h.v as u8,
-                })
-                .collect(),
+            heads: self.h.iter().map(StoredHead::head).collect(),
             articulations: self.a,
             dynamic: self.dynamic,
             spans: self.sp,
             lyrics: self.ly.into_iter().map(|l| Lyric { verse: l.v.max(1), text: l.t, hyphen: l.h, extend: l.x }).collect(),
+            graces: self.g.iter().map(|g| Grace { id: g.id, heads: g.h.iter().map(StoredHead::head).collect(), base: if g.b == 0 { 8 } else { g.b }, slash: g.sl }).collect(),
         }
     }
 }
@@ -344,10 +356,11 @@ fn event_json(e: &Event) -> Value {
         "s": jfrac(e.start),
         "d": jfrac(e.duration),
         "a": e.articulations,
-        "h": e.heads.iter().map(|h| json!({
-            "id": h.id, "p": [h.pitch.step, h.pitch.alter, h.pitch.octave], "t": h.tie as i32, "v": h.velocity
-        })).collect::<Vec<_>>(),
+        "h": e.heads.iter().map(head_json).collect::<Vec<_>>(),
     });
+    if !e.graces.is_empty() {
+        o["g"] = Value::Array(e.graces.iter().map(|g| json!({"id": g.id, "h": g.heads.iter().map(head_json).collect::<Vec<_>>(), "b": g.base, "sl": g.slash})).collect());
+    }
     if let Some(d) = e.dynamic {
         o["dyn"] = json!(d);
     }

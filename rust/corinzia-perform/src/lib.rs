@@ -349,6 +349,32 @@ pub fn perform(m: &Movement) -> Performance {
                         continue;
                     }
                     let Some(inst) = lane.instrument_at(ev.start) else { continue };
+                    // Grace notes play on the beat and take their time from
+                    // the note: a 32nd each (a 64th for a slashed one), never
+                    // more than half the note.
+                    let vel_main = shape[ei].velocity;
+                    let mut steal = Frac::ZERO;
+                    if !ev.graces.is_empty() {
+                        let each = if ev.graces.iter().all(|g| g.slash) { Frac::new(1, 64) } else { Frac::new(1, 32) };
+                        let total = (each * Frac::int(ev.graces.len() as i64)).min(ev.duration * Frac::new(1, 2));
+                        let one = total * Frac::new(1, ev.graces.len() as i64);
+                        for (gi, g) in ev.graces.iter().enumerate() {
+                            let on = ev.start + one * Frac::int(gi as i64);
+                            for h in &g.heads {
+                                notes.push(PerformedNote {
+                                    instrument: inst,
+                                    element: h.id,
+                                    key: h.pitch.midi_key(),
+                                    velocity: (vel_main * 0.9).min(1.0),
+                                    on_q: to_q(on),
+                                    full_off_q: to_q(on + one),
+                                    gate: 0.95,
+                                    roll_sec: 0.0,
+                                });
+                            }
+                        }
+                        steal = total;
+                    }
                     for h in &ev.heads {
                         if consumed.contains(&h.id) {
                             continue;
@@ -381,7 +407,7 @@ pub fn perform(m: &Movement) -> Performance {
                             let rank = ev.heads.iter().filter(|o| o.pitch.midi_key() < h.pitch.midi_key()).count();
                             roll = (rank as f64 * 0.03).min((tempo.seconds_at(to_q(end)) - tempo.seconds_at(to_q(ev.start))) / 2.0);
                         }
-                        let figure = ornament_figure(h.pitch, end - ev.start, ev.articulations, key_at(ev.start));
+                        let figure = ornament_figure(h.pitch, end - ev.start - steal, ev.articulations, key_at(ev.start));
                         let n = figure.len();
                         for (fi, f) in figure.into_iter().enumerate() {
                             notes.push(PerformedNote {
@@ -389,8 +415,8 @@ pub fn perform(m: &Movement) -> Performance {
                                 element: h.id,
                                 key: f.pitch.midi_key(),
                                 velocity: vel.min(1.0),
-                                on_q: to_q(ev.start + f.offset),
-                                full_off_q: to_q(ev.start + f.offset + f.length),
+                                on_q: to_q(ev.start + steal + f.offset),
+                                full_off_q: to_q(ev.start + steal + f.offset + f.length),
                                 gate: if fi + 1 < n { 0.95 } else { gate },
                                 roll_sec: if fi == 0 { roll } else { 0.0 },
                             });

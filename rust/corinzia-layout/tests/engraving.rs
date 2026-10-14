@@ -467,3 +467,33 @@ fn tuplets_show_their_number_and_a_bracket_without_a_beam() {
     assert_eq!(glyphs(&l, Glyph::NoteheadBlack).len(), 3 + 3 + 5 + 1 + 3);
     preview("tuplets", &l);
 }
+
+#[test]
+fn grace_notes_are_small_and_take_room_before_their_note() {
+    let plain = score(&[("treble", &["c''4 d''4 e''4 f''4"])], (4, 4), 0);
+    let s = score(&[("treble", &["c''4 \\acciaccatura e''8 d''4 \\grace { f''16 g'' } e''4 \\grace bes'8 f''4"])], (4, 4), 0);
+    let (a, b) = (layout_line(&plain, &Options::default()), layout_line(&s, &Options::default()));
+    // Small heads: one slashed eighth, two beamed sixteenths, one with a flat.
+    let small: Vec<f32> = b
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Glyph { glyph, scale, at, .. } if *glyph == Glyph::NoteheadBlack.codepoint() && *scale < 1.0 => Some(at.x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(small.len(), 4);
+    assert!(b.items.iter().any(|i| matches!(i, Item::Glyph { glyph, scale, .. } if *glyph == Glyph::Flat.codepoint() && *scale < 1.0)));
+    // Each sits before its main note and the line gets wider.
+    let heads = glyphs(&b, Glyph::NoteheadBlack);
+    let mains: Vec<f32> = heads.iter().map(|h| h.0).filter(|x| !small.contains(x)).collect();
+    assert_eq!(mains.len(), 4);
+    assert!(small[0] > mains[0] && small[0] < mains[1]);
+    assert!(small[1] > mains[1] && small[2] < mains[2]);
+    assert!(small[3] > mains[2] && small[3] < mains[3]);
+    let width = |l: &corinzia_layout::DisplayList| glyphs(l, Glyph::NoteheadBlack).iter().map(|h| h.0).fold(0.0f32, f32::max);
+    assert!(width(&b) > width(&a) + 2.0);
+    // The two sixteenths share two small beams.
+    assert_eq!(b.items.iter().filter(|i| matches!(i, Item::Quad { .. })).count(), 2);
+    preview("graces", &b);
+}

@@ -55,6 +55,9 @@ pub struct Editor {
     /// Tuplet input (actual, normal): notes entered go into a tuplet, a new
     /// one starting whenever the caret is outside one.
     pub tuplet_input: Option<(i64, i64)>,
+    /// Grace note input: letters add grace notes (slashed if true) before
+    /// the note at the caret.
+    pub grace_input: Option<bool>,
     pub selection: Option<Id>,
     pub range: Option<Range>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -171,6 +174,7 @@ impl Editor {
             transposed: false,
             grid: 1,
             tuplet_input: None,
+            grace_input: None,
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -345,6 +349,10 @@ impl Editor {
             return;
         }
         self.input_mode = on;
+        if !on {
+            self.grace_input = None;
+            self.tuplet_input = None;
+        }
         // Entering input mode starts at the selected item.
         if on {
             if let Some((loc, e)) = self.selection.and_then(|id| self.event_of(id)) {
@@ -375,6 +383,10 @@ impl Editor {
 
     // ------------------------------------------------------------- entry --
     pub fn enter_note(&mut self, step: i32, add_to_chord: bool) {
+        if let Some(slash) = self.grace_input {
+            self.enter_grace(step, slash);
+            return;
+        }
         let step = step.rem_euclid(7);
         let (lane, voice, caret, spec, alter, chord) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from), add_to_chord || self.chord_mode);
         let tuplet = self.tuplet_input;
@@ -430,6 +442,61 @@ impl Editor {
             }
         }
         self.accidental = None; // accidentals apply to one note
+    }
+
+    /// A grace note before the note at the caret (a rest is put there
+    /// first if the voice has nothing starting at the caret). The caret
+    /// stays, so the main note can follow.
+    fn enter_grace(&mut self, step: i32, slash: bool) {
+        let (lane, voice, caret, spec, alter) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from));
+        let by = self.written_interval(lane, caret);
+        let mut focus = None;
+        self.transact("Grace note", |m, ids| {
+            if m.lanes.is_empty() {
+                return false;
+            }
+            let lane = lane.min(m.lanes.len() - 1);
+            let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
+            let mut evs = m.lanes[lane].voices[vi].events.to_vec();
+            if !evs.iter().any(|e| e.start == caret) {
+                let r = edit::insert_event(&evs, edit::make_event(ids, caret, spec.value(), &[], 0), voice == 1, ids);
+                extend_to(m, r.to);
+                evs = r.events;
+            }
+            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            // Next to the last grace typed here, else the previous note.
+            let reference = evs
+                .iter()
+                .find(|e| e.start == caret)
+                .and_then(|e| e.graces.last())
+                .and_then(|g| g.heads.first())
+                .map(|h| h.pitch)
+                .or_else(|| edit::previous_pitch(&evs, caret))
+                .unwrap_or(Pitch { step: 6, alter: 0, octave: 4 })
+                .transposed(by);
+            let p = edit::nearest_pitch(step.rem_euclid(7), alter, fifths, reference).transposed(by.inverse());
+            let base = 1u8 << (spec.base as u8).clamp(3, 6);
+            let Some(r) = edit::add_grace(&evs, caret, &[p], base, slash, ids) else { return false };
+            set_events(m, lane, vi, &r);
+            focus = r.focus;
+            true
+        });
+        if focus.is_some() {
+            self.selection = focus;
+            self.range = None;
+        }
+        self.accidental = None;
+    }
+
+    /// `/` (slashed) or `?` (plain) in note input: grace note input on or off.
+    pub fn toggle_grace_input(&mut self, slash: bool) {
+        self.grace_input = if self.grace_input == Some(slash) { None } else { Some(slash) };
+        self.status = match self.grace_input {
+            Some(true) => "Grace notes (slashed): letters add them before the next note · / again ends",
+            Some(false) => "Grace notes: letters add them before the next note · ? again ends",
+            None => "Grace notes off",
+        }
+        .into();
     }
 
     pub fn enter_rest(&mut self) {
@@ -527,6 +594,21 @@ impl Editor {
         let (lane, voice, caret) = (self.caret_lane, self.voice, self.caret);
         let Some(m) = self.movement() else { return };
         let Some(v) = m.lanes.get(lane).and_then(|l| l.voices.iter().find(|v| v.index == voice)) else { return };
+        // Grace notes just typed at the caret go first, last one first.
+        if let Some(g) = v.events.iter().find(|e| e.start == caret).and_then(|e| e.graces.last()).map(|g| g.id) {
+            self.transact("Delete grace note", |m, ids| {
+                let Some(vi) = voice_slot(m, lane, voice, false, ids) else { return false };
+                let evs = m.lanes[lane].voices[vi].events.clone();
+                match edit::delete_element(&evs, g, voice == 1, ids) {
+                    Some(r) => {
+                        set_events(m, lane, vi, &r);
+                        true
+                    }
+                    None => false,
+                }
+            });
+            return;
+        }
         let Some(prev) = v.events.iter().filter(|e| e.start < caret && e.end() <= caret).last().cloned() else { return };
         // A voice-1 rest is already "empty": just step over it.
         if !(prev.kind == EventKind::Rest && voice == 1) {
@@ -1118,6 +1200,9 @@ impl Editor {
             return;
         }
         self.edit_selected("Transpose", |evs, id, _, _| {
+            if edit::find_grace(evs, id).is_some() {
+                return edit::modify_grace(evs, id, |h| h.pitch = edit::from_diatonic(edit::diatonic(h.pitch) + steps, h.pitch.alter as i32));
+            }
             edit::modify_event(evs, id, |e, head| {
                 let mv = |h: &mut Head| h.pitch = edit::from_diatonic(edit::diatonic(h.pitch) + steps, h.pitch.alter as i32);
                 match head {
@@ -1880,6 +1965,43 @@ mod tests {
         e.caret = Frac::ZERO;
         e.insert_bars(1);
         assert_eq!(tuplets(&e)[0].start, f(5, 4));
+    }
+
+    #[test]
+    fn grace_notes_are_typed_before_their_note() {
+        let mut e = blank();
+        e.set_input_mode(true);
+        e.enter_note(0, false); // C5
+        e.spec.base = edit::BaseDuration::Sixteenth;
+        e.toggle_grace_input(true);
+        e.enter_note(4, false); // grace G
+        e.enter_note(5, false); // grace A
+        assert_eq!(e.caret, f(1, 4), "graces leave the caret where it is");
+        e.toggle_grace_input(true);
+        e.spec.base = edit::BaseDuration::Quarter;
+        e.enter_note(6, false); // the main note B, after its graces
+        let ev = &events(&e, 0, 0)[1];
+        assert_eq!(pitch_name(ev.heads[0].pitch), "B4");
+        let g: Vec<String> = ev.graces.iter().map(|g| pitch_name(g.heads[0].pitch)).collect();
+        assert_eq!(g, ["G4", "A4"]);
+        assert!(ev.graces.iter().all(|g| g.slash && g.base == 16));
+        // A grace selected transposes alone; Backspace on the caret removes the last grace.
+        let a = ev.graces[1].heads[0].id;
+        e.set_input_mode(false);
+        e.select(Some(a));
+        e.transpose_selection(1);
+        assert_eq!(pitch_name(events(&e, 0, 0)[1].graces[1].heads[0].pitch), "B4");
+        e.set_input_mode(true);
+        e.caret = f(1, 4);
+        e.backspace();
+        assert_eq!(events(&e, 0, 0)[1].graces.len(), 1);
+        // Delete with the remaining grace selected removes it, not its note.
+        e.set_input_mode(false);
+        let g = events(&e, 0, 0)[1].graces[0].id;
+        e.select(Some(g));
+        e.delete_selection();
+        assert!(events(&e, 0, 0)[1].graces.is_empty());
+        assert!(!events(&e, 0, 0)[1].is_rest());
     }
 
     #[test]

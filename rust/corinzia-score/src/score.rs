@@ -144,6 +144,16 @@ pub struct Event {
     pub dynamic: Option<String>, // "pp" .. "fff"
     pub spans: u8,
     pub lyrics: Vec<Lyric>,
+    /// Grace notes before it.
+    pub graces: Vec<Grace>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Grace {
+    pub id: u64,
+    pub pitches: Vec<Pitch>,
+    pub base: u8,
+    pub slash: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
