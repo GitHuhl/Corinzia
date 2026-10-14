@@ -335,6 +335,13 @@ impl App {
         let mut sel = HashSet::new();
         if let Some(id) = self.editor.selection {
             sel.insert(id);
+            // A selected chord (or note by its event) shows all its heads.
+            if let Some(loc) = self.editor.locate(id) {
+                let v = &self.editor.movement().unwrap().lanes[loc.lane].voices[loc.voice];
+                if let Some((e, None)) = corinzia_edit::find_event(&v.events, id) {
+                    sel.extend(e.heads.iter().map(|h| h.id));
+                }
+            }
         }
         if let (Some(r), Some(m)) = (self.editor.range, self.editor.movement()) {
             for l in m.lanes.iter().skip(r.lane_from).take(r.lane_to + 1 - r.lane_from) {
@@ -392,7 +399,7 @@ impl App {
     }
 
     fn act(&mut self, a: Action) -> Task<Message> {
-        let audition = matches!(a, Action::Note { .. } | Action::Transpose(_));
+        let audition = matches!(a, Action::Note { .. } | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
         let task = self.act_inner(a);
         if audition && self.playback.problem.is_none() && !self.playback.is_playing() {
             self.audition();
@@ -446,6 +453,10 @@ impl App {
             Action::Repeat => ed.repeat_selection(),
             Action::CaretBy(d) => ed.move_caret(d),
             Action::CaretStaff(d) => ed.move_caret_staff(d),
+            Action::Step { dir, bar } => ed.select_step(dir, bar),
+            Action::Extend(d) => ed.extend_step(d),
+            Action::Edge { last } => ed.select_edge(last),
+            Action::Staff(d) => ed.select_staff(d),
             Action::Transpose(s) => ed.transpose_selection(s),
             Action::Backspace => ed.backspace(),
             Action::Delete => ed.delete_selection(),

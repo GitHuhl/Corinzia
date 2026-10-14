@@ -45,6 +45,9 @@ pub struct Editor {
     pub caret: Frac,
     pub selection: Option<Id>,
     pub range: Option<Range>,
+    /// The fixed end of a passage grown with Shift+arrows (the other end
+    /// moves).
+    range_anchor: Option<(usize, Frac)>,
     clip: Option<Clip>,
     undo: Vec<(Project, String)>,
     redo: Vec<(Project, String)>,
@@ -116,6 +119,7 @@ impl Editor {
             caret: Frac::ZERO,
             selection: None,
             range: None,
+            range_anchor: None,
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -469,6 +473,126 @@ impl Editor {
         self.caret = prev.start;
     }
 
+    // --------------------------------------------------------- navigation --
+    /// What arrow keys select for an event: a single note's head, else the
+    /// event (a chord or a rest).
+    fn nav_id(e: &Event) -> Id {
+        if e.heads.len() == 1 { e.heads[0].id } else { e.id }
+    }
+
+    /// The voice the arrows walk: the selection's, else the caret's.
+    fn nav_voice(&self) -> Option<(usize, usize)> {
+        if let Some(loc) = self.selection.and_then(|id| self.locate(id)) {
+            return Some((loc.lane, loc.voice));
+        }
+        let m = self.movement()?;
+        let lane = m.lanes.get(self.caret_lane)?;
+        let vi = lane.voices.iter().position(|v| v.index == self.voice).or_else(|| (!lane.voices.is_empty()).then_some(0))?;
+        Some((self.caret_lane, vi))
+    }
+
+    /// Left/Right: the previous or next note or rest in the selected voice;
+    /// with nothing selected, the one at the caret (or a passage's edge).
+    /// `bar` steps to the first event of the previous or next bar.
+    pub fn select_step(&mut self, dir: i64, bar: bool) {
+        if let Some(r) = self.range.filter(|_| self.selection.is_none()) {
+            // Collapse a passage to its first or last event.
+            self.caret_lane = r.lane_from;
+            self.caret = if dir < 0 { r.from } else { r.to };
+            self.range = None;
+            self.range_anchor = None;
+        }
+        let Some((lane, vi)) = self.nav_voice() else { return };
+        let Some(m) = self.movement() else { return };
+        let evs = &m.lanes[lane].voices[vi].events;
+        if evs.is_empty() {
+            return;
+        }
+        let current = self.selection.and_then(|id| evs.iter().position(|e| e.id == id || e.heads.iter().any(|h| h.id == id)));
+        let target = match (current, bar) {
+            (Some(i), false) => (i as i64 + dir).clamp(0, evs.len() as i64 - 1) as usize,
+            (_, true) => {
+                let at = current.map(|i| evs[i].start).unwrap_or(self.caret);
+                let bars = edit::bar_starts(m);
+                let goal = if dir < 0 {
+                    // The start of this bar, or of the previous one when already there.
+                    bars.iter().copied().rev().find(|&b| b < at).unwrap_or(Frac::ZERO)
+                } else {
+                    bars.iter().copied().find(|&b| b > at).unwrap_or(m.length)
+                };
+                evs.iter().position(|e| e.start >= goal).unwrap_or(evs.len() - 1)
+            }
+            (None, false) => {
+                let at = self.caret;
+                evs.iter().position(|e| e.start <= at && at < e.end()).or_else(|| evs.iter().rposition(|e| e.start < at)).unwrap_or(0)
+            }
+        };
+        let id = Self::nav_id(&evs[target]);
+        self.range_anchor = None;
+        self.select(Some(id));
+    }
+
+    /// Home/End: the first or last event of the selected (or caret's) voice.
+    pub fn select_edge(&mut self, last: bool) {
+        let Some((lane, vi)) = self.nav_voice() else { return };
+        let Some(m) = self.movement() else { return };
+        let evs = &m.lanes[lane].voices[vi].events;
+        let Some(e) = (if last { evs.last() } else { evs.first() }) else { return };
+        let id = Self::nav_id(e);
+        self.range_anchor = None;
+        self.select(Some(id));
+    }
+
+    /// Alt+Up/Down: the event sounding at the same time on the staff above
+    /// or below (the caret staff when nothing is selected).
+    pub fn select_staff(&mut self, dir: i64) {
+        let Some((lane, at)) = self.selection.and_then(|id| self.event_of(id)).map(|(loc, e)| (loc.lane, e.start)) else {
+            self.move_caret_staff(dir);
+            return;
+        };
+        let Some(m) = self.movement() else { return };
+        let to = lane as i64 + dir;
+        if to < 0 || to as usize >= m.lanes.len() {
+            return;
+        }
+        let l = &m.lanes[to as usize];
+        let Some(v) = l.voices.iter().find(|v| v.index == 1).or(l.voices.first()) else { return };
+        let Some(e) = v.events.iter().find(|e| e.start <= at && at < e.end()).or(v.events.last()) else { return };
+        let id = Self::nav_id(e);
+        self.select(Some(id));
+    }
+
+    /// Shift+Left/Right: grows or shrinks a passage by one event on the
+    /// caret's staff, from the selection (or the caret) as anchor.
+    pub fn extend_step(&mut self, dir: i64) {
+        let (lane, anchor, mut focus) = match (self.range, self.range_anchor) {
+            (Some(r), Some((lane, a))) => (lane, a, if a == r.from { r.to } else { r.from }),
+            _ => match self.selection.and_then(|id| self.event_of(id)).map(|(loc, e)| (loc.lane, e.start, e.end())) {
+                Some((lane, a, b)) => (lane, if dir > 0 { a } else { b }, if dir > 0 { b } else { a }),
+                None => (self.caret_lane, self.caret, self.caret),
+            },
+        };
+        let Some(m) = self.movement() else { return };
+        let Some(l) = m.lanes.get(lane) else { return };
+        // Event boundaries on the staff (all voices).
+        let mut edges: Vec<Frac> = l.voices.iter().flat_map(|v| v.events.iter().flat_map(|e| [e.start, e.end()])).collect();
+        edges.sort();
+        edges.dedup();
+        let next = if dir > 0 { edges.iter().copied().find(|&t| t > focus) } else { edges.iter().copied().rev().find(|&t| t < focus) };
+        let Some(next) = next else { return };
+        focus = next;
+        if focus == anchor {
+            // Never collapse to nothing: step past the anchor.
+            let past = if dir > 0 { edges.iter().copied().find(|&t| t > anchor) } else { edges.iter().copied().rev().find(|&t| t < anchor) };
+            let Some(p) = past else { return };
+            focus = p;
+        }
+        let (from, to) = (anchor.min(focus), anchor.max(focus));
+        self.set_range(Range { lane_from: lane, lane_to: lane, from, to });
+        self.range_anchor = Some((lane, anchor));
+        self.caret = focus;
+    }
+
     // ---------------------------------------------------------- selection --
     pub fn select(&mut self, id: Option<Id>) {
         self.selection = id;
@@ -484,6 +608,7 @@ impl Editor {
     pub fn clear_selection(&mut self) {
         self.selection = None;
         self.range = None;
+        self.range_anchor = None;
     }
 
     pub fn select_all(&mut self) {
@@ -1166,6 +1291,55 @@ mod tests {
     }
     fn notes(e: &Editor, lane: usize) -> Vec<String> {
         events(e, lane, 0).iter().map(|e| if e.is_rest() { "r".into() } else { e.heads.iter().map(|h| pitch_name(h.pitch)).collect::<Vec<_>>().join("+") }).collect()
+    }
+
+    #[test]
+    fn arrow_keys_walk_notes_bars_staves_and_passages() {
+        let mut e = blank();
+        e.set_input_mode(true);
+        for step in [0, 1, 2, 3, 4, 5, 6, 0] {
+            e.enter_note(step, false); // two bars of quarters: C D E F | G A B C
+        }
+        e.set_input_mode(false);
+        e.clear_selection();
+        e.caret = Frac::ZERO;
+        let name = |e: &Editor| {
+            let id = e.selection.unwrap();
+            let (_, ev) = e.event_of(id).unwrap();
+            pitch_name(ev.heads[0].pitch)
+        };
+        e.select_step(1, false); // nothing selected: the note at the caret
+        assert_eq!(name(&e), "C5");
+        e.select_step(1, false);
+        e.select_step(1, false);
+        assert_eq!(name(&e), "E5");
+        e.select_step(-1, false);
+        assert_eq!(name(&e), "D5");
+        e.select_step(1, true); // next bar's first note
+        assert_eq!(name(&e), "G5");
+        e.select_step(-1, true); // back to this bar's start... already there: the previous bar's
+        assert_eq!(name(&e), "C5");
+        e.select_edge(true);
+        assert_eq!(e.event_of(e.selection.unwrap()).unwrap().1.start, events(&e, 0, 0).last().unwrap().start);
+        e.select_edge(false);
+        assert_eq!(name(&e), "C5");
+        // Shift+Right grows a passage by notes, Shift+Left shrinks it.
+        e.extend_step(1);
+        e.extend_step(1);
+        let r = e.range.unwrap();
+        assert_eq!((r.from, r.to), (Frac::ZERO, f(3, 4)));
+        e.extend_step(-1);
+        assert_eq!(e.range.unwrap().to, f(1, 2));
+        // Right collapses the passage to its end.
+        e.select_step(1, false);
+        assert!(e.range.is_none() && e.selection.is_some());
+        // Alt+Down: the cello's event at the same time (its whole-bar rest);
+        // Alt+Up from there: the flute's note where that rest starts.
+        e.select(Some(events(&e, 0, 0)[1].heads[0].id));
+        e.select_staff(1);
+        assert_eq!(e.locate(e.selection.unwrap()).unwrap().lane, 1);
+        e.select_staff(-1);
+        assert_eq!(name(&e), "C5");
     }
 
     #[test]

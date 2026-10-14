@@ -25,6 +25,14 @@ pub enum Action {
     Repeat,
     CaretBy(i64),
     CaretStaff(i64),
+    /// Select the previous/next note or rest (`bar`: the next bar's first).
+    Step { dir: i64, bar: bool },
+    /// Grow or shrink the passage by an event.
+    Extend(i64),
+    /// Select the first/last event of the voice.
+    Edge { last: bool },
+    /// Select on the staff above/below.
+    Staff(i64),
     Transpose(i32),
     Backspace,
     Delete,
@@ -68,10 +76,21 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
         return Some(match (n, ctrl, alt) {
             (Named::Escape, ..) => Escape,
             (Named::Space, false, false) => PlayStop,
-            (Named::ArrowLeft, false, false) => CaretBy(-1),
-            (Named::ArrowRight, false, false) => CaretBy(1),
-            (Named::ArrowUp, _, true) => CaretStaff(-1),
-            (Named::ArrowDown, _, true) => CaretStaff(1),
+            // Input mode moves the caret; otherwise the arrows walk notes.
+            (Named::ArrowLeft | Named::ArrowRight, _, false) => {
+                let dir = if *n == Named::ArrowLeft { -1 } else { 1 };
+                if input_mode {
+                    CaretBy(dir)
+                } else if shift {
+                    Extend(dir)
+                } else {
+                    Step { dir, bar: ctrl }
+                }
+            }
+            (Named::Home, ..) if !input_mode => Edge { last: false },
+            (Named::End, ..) if !input_mode => Edge { last: true },
+            (Named::ArrowUp, _, true) => if input_mode { CaretStaff(-1) } else { Staff(-1) },
+            (Named::ArrowDown, _, true) => if input_mode { CaretStaff(1) } else { Staff(1) },
             (Named::ArrowUp, true, _) => Transpose(7),
             (Named::ArrowDown, true, _) => Transpose(-7),
             (Named::ArrowUp, ..) => Transpose(1),
@@ -176,7 +195,13 @@ mod tests {
         assert_eq!(map(&k("r"), none, false), Some(Action::Repeat));
         assert_eq!(map(&k("z"), Modifiers::CTRL, false), Some(Action::Undo));
         assert_eq!(map(&k("z"), Modifiers::CTRL | Modifiers::SHIFT, false), Some(Action::Redo));
-        assert_eq!(map(&Key::Named(Named::ArrowUp), Modifiers::ALT, false), Some(Action::CaretStaff(-1)));
+        assert_eq!(map(&Key::Named(Named::ArrowUp), Modifiers::ALT, false), Some(Action::Staff(-1)));
+        assert_eq!(map(&Key::Named(Named::ArrowUp), Modifiers::ALT, true), Some(Action::CaretStaff(-1)));
+        assert_eq!(map(&Key::Named(Named::ArrowRight), none, false), Some(Action::Step { dir: 1, bar: false }));
+        assert_eq!(map(&Key::Named(Named::ArrowLeft), Modifiers::CTRL, false), Some(Action::Step { dir: -1, bar: true }));
+        assert_eq!(map(&Key::Named(Named::ArrowRight), Modifiers::SHIFT, false), Some(Action::Extend(1)));
+        assert_eq!(map(&Key::Named(Named::ArrowRight), none, true), Some(Action::CaretBy(1)));
+        assert_eq!(map(&Key::Named(Named::End), none, false), Some(Action::Edge { last: true }));
         assert_eq!(map(&Key::Named(Named::ArrowUp), Modifiers::CTRL, false), Some(Action::Transpose(7)));
         assert_eq!(map(&Key::Named(Named::Backspace), Modifiers::CTRL | Modifiers::SHIFT, false), Some(Action::DeleteBars));
         assert_eq!(map(&k("h"), Modifiers::SHIFT, false), Some(Action::Hairpin { crescendo: false }));
