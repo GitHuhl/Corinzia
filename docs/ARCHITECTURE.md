@@ -98,12 +98,32 @@ The app's canvas, the PDF writer (`pdf.rs`, glyph and text outlines with no
 fonts embedded) and the tiny-skia previews in the tests all draw the same
 list.
 
-**Spacing.**
-* Spacing is logarithmic in duration, on rhythmic columns shared by all
-  staves.
-* Columns widen where accidentals, dots, flags or arpeggios need room.
+**Spacing** follows LilyPond's model and defaults, on rhythmic columns
+shared by all staves:
+* The movement's *common shortest duration* is the shortest note most bars
+  have, capped at a dotted eighth (`base-shortest-duration`).
+* A note of that duration gets 2 increments of 1.2 spaces
+  (`shortest-duration-space`, `spacing-increment`); each doubling of
+  duration adds one increment.
+* As in LilyPond, the distance runs from the left note's head: one increment
+  is replaced by the head's width. The head widths are LilyPond's, so bars
+  are as wide as LilyPond's, though the heads are drawn in Bravura.
+* Optical corrections:
+  * facing stems (up, then down) get room in proportion to their overlap,
+    and lose it the other way round;
+  * stems in the same direction gain or lose a quarter space for a leap of a
+    third or more;
+  * stems next to barlines are corrected by how much of the stem lies inside
+    the staff;
+  * a bar holding a single note gets an extra space before it.
+* Minimum distances keep accidentals, dots and flags apart.
 * Lyric syllables and chord symbols also widen columns, so they never
   collide horizontally.
+
+`tests/lilypond.rs` checks this against LilyPond itself. It writes each
+test score as a `.ly` file, has LilyPond report every notehead and rest
+position (`-dbackend=null`), and compares the gaps. The current corpus has
+106 gaps, with a mean error of 0.4 % and a worst case of 7.3 %.
 
 **Notes.**
 * Notes are split at barlines into tied, notatable values.
@@ -253,5 +273,7 @@ output), automation, plugin GUIs.
   stream to a null sink.
 * **The real app:** `scripts/screenshot.sh out.png [--keys "…"]` runs it
   headless (Xvfb and Mesa lavapipe) and saves a screenshot.
+* **LilyPond** is the reference for engraving: the spacing test compares
+  note positions with LilyPond's (from the dev shell, and in `nix build`).
 * **MusicXML** is checked against LilyPond's `musicxml2ly` from the dev
   shell.

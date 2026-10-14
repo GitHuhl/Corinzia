@@ -102,11 +102,108 @@ fn accidental_glyph(alter: i8) -> Glyph {
     }
 }
 
-/// Ideal space after a note of duration `d` (whole notes): logarithmic, so
-/// each doubling adds a constant (≈ the proportions of engraved scores).
-fn ideal_space(d: Frac) -> f32 {
-    let w = d.num as f64 / d.den as f64;
-    (1.8 + 1.6 * (1.0 + w * 16.0).log2()) as f32
+// Horizontal spacing follows LilyPond's documented model and defaults
+// (SpacingSpanner): the movement's common shortest note gets
+// `shortest-duration-space` increments, and each doubling of duration adds
+// one `spacing-increment`.
+const SHORTEST_DURATION_SPACE: f64 = 2.0;
+const SPACING_INCREMENT: f64 = 1.2;
+/// `base-shortest-duration`: the reference never exceeds a dotted eighth.
+const BASE_SHORTEST: Frac = Frac { num: 3, den: 16 };
+
+/// Ideal space after a note of duration `d` when `shortest` is the
+/// movement's common shortest duration.
+fn ideal_space(d: Frac, shortest: Frac) -> f32 {
+    let r = (d.num as f64 / d.den as f64) / (shortest.num as f64 / shortest.den as f64);
+    (SPACING_INCREMENT * (SHORTEST_DURATION_SPACE + r.log2())) as f32
+}
+
+/// Fixed distances around barlines and between columns, measured from
+/// LilyPond's output (BarLine `space-alist`, NoteSpacing, separation rods).
+const BAR_TO_NOTE: f32 = 0.995; // barline centre to the next notehead
+const BAR_TO_ACCIDENTAL: f32 = 0.695; // barline centre to an accidental
+const BAR_HALF_WIDTH: f32 = 0.095;
+/// Before a barline an up-stem gains, and a down-stem loses, this much per
+/// stem length inside the staff (unless it has a flag); after a barline a
+/// down-stem gains `STEM_AFTER_BAR` per stem length.
+const STEM_BEFORE_BAR: f32 = 0.25;
+const STEM_AFTER_BAR: f32 = 0.185;
+/// Notehead widths of LilyPond's font, used for spacing so that bars come
+/// out as wide as LilyPond's (the heads are drawn in Bravura).
+const SPACING_HEAD_WIDTHS: [(Glyph, f32); 3] = [(Glyph::NoteheadBlack, 1.304), (Glyph::NoteheadHalf, 1.377), (Glyph::NoteheadWhole, 1.962)];
+/// The stretchable half of the barline-to-note distance (LilyPond's
+/// `semi-fixed-space`).
+const BAR_TO_NOTE_STRETCH: f32 = 0.45;
+/// A bar holding a single note column gets this much more before it.
+const LONE_NOTE_SPACE: f32 = 1.0;
+/// Least room between a column's right side (heads, dots, flags) and the
+/// next one's left side: an accidental, or else the heads.
+const ROD_PADDING_ACCIDENTAL: f32 = 0.6;
+const ROD_PADDING: f32 = 0.45;
+/// NoteSpacing's optical corrections: facing stems (up, then down) get room
+/// in proportion to their vertical overlap, and lose it the other way round;
+/// stems in the same direction gain (rising) or lose (falling) a fixed
+/// amount for steps of a third or more.
+const STEM_SPACING_CORRECTION: f32 = 0.5;
+const SAME_DIRECTION_CORRECTION: f32 = 0.25;
+const STEM_LENGTH: f32 = 3.5;
+/// How far from the head's centre a stem's overlap starts counting.
+const STEM_ATTACH: f32 = 0.193;
+
+/// The stretchability left of `x`, from the (x, stretchability) points of
+/// a line, interpolated between them.
+fn stretch_at(breaks: &[(f32, f32)], x: f32) -> f32 {
+    let i = breaks.partition_point(|b| b.0 <= x);
+    match (i.checked_sub(1).map(|j| breaks[j]), breaks.get(i)) {
+        (None, _) => 0.0,
+        (Some(a), None) => a.1,
+        (Some(a), Some(b)) if b.0 > a.0 => a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0),
+        (Some(a), Some(_)) => a.1,
+    }
+}
+
+fn spacing_head_width(g: Glyph) -> Option<f32> {
+    SPACING_HEAD_WIDTHS.iter().find(|h| h.0 == g).map(|h| h.1)
+}
+
+/// A stem for the optical spacing corrections; y in spaces up from the
+/// middle line.
+#[derive(Clone, Copy, Debug)]
+struct StemInfo {
+    part: usize,
+    up: bool,
+    attach: f32, // the head the stem leaves
+    tip: f32,
+    flag: bool,
+}
+impl StemInfo {
+    /// The stem's extent, from just off its head to its tip.
+    fn span(&self) -> (f32, f32) {
+        if self.up { (self.attach + STEM_ATTACH, self.tip) } else { (self.tip, self.attach - STEM_ATTACH) }
+    }
+    /// Stem length inside the staff (next to a barline).
+    fn in_staff(&self) -> f32 {
+        overlap(self.span(), (-2.0, 2.0))
+    }
+}
+fn overlap((l1, h1): (f32, f32), (l2, h2): (f32, f32)) -> f32 {
+    (h1.min(h2) - l1.max(l2)).max(0.0)
+}
+
+/// The movement's common shortest duration: the shortest note of each bar,
+/// the one most bars have (the shorter on a tie), capped at
+/// `BASE_SHORTEST`.
+fn common_shortest(ms: &[Measure], notes: &[Note]) -> Frac {
+    let mut count: Vec<(Frac, usize)> = Vec::new();
+    for mi in 0..ms.len() {
+        let Some(d) = notes.iter().filter(|n| n.measure == mi && !n.whole_bar).map(|n| n.dur).min() else { continue };
+        match count.iter_mut().find(|c| c.0 == d) {
+            Some(c) => c.1 += 1,
+            None => count.push((d, 1)),
+        }
+    }
+    let best = count.iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))).map(|c| c.0);
+    best.map_or(BASE_SHORTEST, |d| d.min(BASE_SHORTEST))
 }
 
 // ----------------------------------------------------------------- measures --
@@ -121,6 +218,7 @@ struct Measure {
     x0: f32,          // after the opening barline
     x1: f32,          // closing barline
     last: bool,       // the movement's last bar (final barline)
+    shortest: Frac,   // the movement's common shortest duration (spacing)
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
@@ -148,7 +246,7 @@ fn measures(s: &Score) -> Vec<Measure> {
             (Some(p), Some(k)) if k.at > p.start => Some(k),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
@@ -426,7 +524,7 @@ impl<'a> Engraver<'a> {
             // accidental if it clears the others in it by a sixth.
             let left_edge = note.heads.iter().map(|h| h.shift).fold(0.0f32, f32::min);
             let mut columns: Vec<(f32, Vec<i32>)> = Vec::new(); // (x of the column's left edge, positions)
-            let mut x_cursor = left_edge - 0.2;
+            let mut x_cursor = left_edge - 0.23; // LilyPond: 0.35 from accidental to head
             for j in (0..k).rev() {
                 let Some(g) = note.heads[j].accidental else { continue };
                 let w = Font::bravura().bbox(g).width();
@@ -497,7 +595,7 @@ impl<'a> Engraver<'a> {
     // ------------------------------------------------------------- spacing --
     fn note_extents(&self, n: &Note) -> (f32, f32) {
         let left = n.heads.iter().map(|h| if h.accidental.is_some() { -h.acc_x } else { -h.shift.min(0.0) }).fold(0.0f32, f32::max);
-        let mut right = if n.rest { self.width(rest_glyph(n.value.base)) } else { HEAD_W };
+        let mut right = if n.rest { self.width(rest_glyph(n.value.base)) } else { spacing_head_width(n.head_glyph()).unwrap_or(HEAD_W) };
         right += n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
         if n.value.dots > 0 {
             right += 0.4 + n.value.dots as f32 * 0.5;
@@ -511,6 +609,61 @@ impl<'a> Engraver<'a> {
         (left, right)
     }
 
+    /// Width of the widest head (or rest) in a column.
+    fn column_head_width(&self, col: &[&Note]) -> f32 {
+        col.iter()
+            .map(|n| {
+                if n.rest {
+                    return self.width(rest_glyph(n.value.base));
+                }
+                let g = n.head_glyph();
+                let w = spacing_head_width(g).unwrap_or_else(|| self.width(g));
+                w + n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max)
+            })
+            .fold(0.0f32, f32::max)
+    }
+
+    /// Per staff with a single stemmed note in the column.
+    fn stems(&self, col: &[&Note]) -> Vec<StemInfo> {
+        let mut out = Vec::new();
+        for pi in 0..self.score.parts.len() {
+            let ns: Vec<&&Note> = col.iter().filter(|n| n.part == pi && !n.rest).collect();
+            let [n] = ns.as_slice() else { continue };
+            if !n.has_stem() || n.heads.is_empty() {
+                continue;
+            }
+            let (lo, hi) = (n.heads[0].pos as f32 * 0.5, n.heads[n.heads.len() - 1].pos as f32 * 0.5);
+            let flag = !n.beamed && n.beams() > 0;
+            out.push(if n.stem_up {
+                StemInfo { part: pi, up: true, attach: lo, tip: (hi + STEM_LENGTH).max(0.0), flag }
+            } else {
+                StemInfo { part: pi, up: false, attach: hi, tip: (lo - STEM_LENGTH).min(0.0), flag }
+            });
+        }
+        out
+    }
+
+    /// LilyPond's optical stem correction between two neighbouring columns
+    /// (the largest over the staves).
+    fn stem_correction(&self, a: &[&Note], b: &[&Note]) -> f32 {
+        let sb = self.stems(b);
+        self.stems(a)
+            .into_iter()
+            .filter_map(|x| {
+                let y = sb.iter().find(|s| s.part == x.part)?;
+                Some(match (x.up, y.up) {
+                    (true, false) => STEM_SPACING_CORRECTION * overlap(x.span(), y.span()) / STEM_LENGTH,
+                    (false, true) => -STEM_SPACING_CORRECTION * overlap(x.span(), y.span()) / STEM_LENGTH,
+                    _ => {
+                        let d = y.attach - x.attach;
+                        if d.abs() >= 1.0 { SAME_DIRECTION_CORRECTION * d.signum() } else { 0.0 }
+                    }
+                })
+            })
+            .reduce(f32::max)
+            .unwrap_or(0.0)
+    }
+
     fn space(&mut self) {
         let mut x = self.left;
         // System start: clef, key, time.
@@ -522,6 +675,12 @@ impl<'a> Engraver<'a> {
         // Right edge of the last chord symbol per part.
         let mut chord_edge: std::collections::HashMap<usize, f32> = Default::default();
         let mut pending_chords: Vec<(usize, f32)> = Vec::new();
+        // How much of the line stretches when it is justified: (x, the
+        // stretchability of the springs left of x), as in LilyPond, where a
+        // note's spring stretches by its duration space and fixed distances
+        // (signatures, padding) do not.
+        let mut breaks: Vec<(f32, f32)> = Vec::new();
+        let mut stretch = 0.0f32;
         for mi in 0..nms {
             if mi > 0 {
                 x += 0.0;
@@ -548,7 +707,26 @@ impl<'a> Engraver<'a> {
             }
             let mut xs = Vec::with_capacity(cols.len());
             let mut prev_right = 0.0f32;
-            let mut cx = x + 1.0;
+            let mut prev_here: Vec<&Note> = Vec::new();
+            let mut cx = x;
+            // The spring from the column at `t0` over `gap`: LilyPond measures
+            // it from the left note's head, so a duration's space loses one
+            // increment and gains the head's width. (length, stretchability)
+            let ideal = |t0: Frac, gap: Frac, col: &[&Note]| -> Option<(f32, f32)> {
+                let dmin = self
+                    .notes
+                    .iter()
+                    .filter(|n| n.measure == mi && n.start <= t0 && n.start + n.dur > t0 && !n.whole_bar)
+                    .map(|n| n.dur)
+                    .min()
+                    .unwrap_or(gap);
+                if gap <= Frac::ZERO || dmin <= Frac::ZERO {
+                    return None;
+                }
+                let space = ideal_space(dmin, m.shortest) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
+                let stretch = (space - SPACING_INCREMENT as f32).max(0.0);
+                Some((stretch + self.column_head_width(col), stretch))
+            };
             for (j, &t) in cols.iter().enumerate() {
                 let here: Vec<&Note> = self.notes.iter().filter(|n| n.measure == mi && n.start == t && !n.whole_bar).collect();
                 // Syllables here must clear the previous ones of their verse.
@@ -566,19 +744,23 @@ impl<'a> Engraver<'a> {
                     left += self.clef_change_width() + 0.5;
                 }
                 if j == 0 {
-                    cx += left;
+                    // From the barline (or the system's opening signatures).
+                    cx += if left > 0.0 {
+                        BAR_TO_ACCIDENTAL + left
+                    } else {
+                        BAR_TO_NOTE + self.stems(&here).iter().filter(|s| !s.up).map(|s| STEM_AFTER_BAR * s.in_staff() / STEM_LENGTH).fold(0.0f32, f32::max)
+                    };
+                    if cols.len() == 1 && !here.is_empty() {
+                        cx += LONE_NOTE_SPACE;
+                    }
+                    if mi > 0 {
+                        stretch += BAR_TO_NOTE_STRETCH;
+                    }
                 } else {
-                    let tprev = cols[j - 1];
-                    let gap = t - tprev;
-                    let dmin = self
-                        .notes
-                        .iter()
-                        .filter(|n| n.measure == mi && n.start <= tprev && n.start + n.dur > tprev && !n.whole_bar)
-                        .map(|n| n.dur)
-                        .min()
-                        .unwrap_or(gap);
-                    let ideal = ideal_space(dmin) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
-                    cx += ideal.max(prev_right + left + 0.4);
+                    let (spring, k) = ideal(cols[j - 1], t - cols[j - 1], &prev_here).unwrap_or((0.0, 0.0));
+                    stretch += k;
+                    let spring = spring + self.stem_correction(&prev_here, &here);
+                    cx += spring.max(prev_right + left + if left > 0.0 { ROD_PADDING_ACCIDENTAL } else { ROD_PADDING });
                 }
                 // A chord symbol here must clear the previous one on its staff.
                 for (pi, part) in self.score.parts.iter().enumerate() {
@@ -601,26 +783,28 @@ impl<'a> Engraver<'a> {
                     }
                 }
                 xs.push(cx);
+                breaks.push((cx, stretch));
                 prev_right = right;
+                prev_here = here;
             }
+            // To the closing barline (its centre): the last column's spring,
+            // corrected for the side its stems are on.
             let tlast = *cols.last().unwrap();
-            let gap = end - tlast;
-            let dmin = self
-                .notes
+            let bar_corr = self
+                .stems(&prev_here)
                 .iter()
-                .filter(|n| n.measure == mi && n.start <= tlast && n.start + n.dur > tlast && !n.whole_bar)
-                .map(|n| n.dur)
-                .min()
-                .unwrap_or(gap);
-            let mut x1 = cx
-                + if gap > Frac::ZERO && dmin > Frac::ZERO {
-                    (ideal_space(dmin) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32)).max(prev_right + 0.8)
-                } else {
-                    prev_right + 0.8
-                };
+                .filter(|s| !s.flag)
+                .map(|s| STEM_BEFORE_BAR * s.in_staff() / STEM_LENGTH * if s.up { 1.0 } else { -1.0 })
+                .reduce(f32::max)
+                .unwrap_or(0.0);
+            let (spring, k) = ideal(tlast, end - tlast, &prev_here).map(|(s, k)| (s + bar_corr + BAR_HALF_WIDTH, k)).unwrap_or((0.0, 0.0));
+            stretch += k;
+            let mut x1 = cx + spring.max(prev_right + 0.8);
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
+                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0);
             }
+            breaks.push((x1, stretch));
             for n in self.notes.iter_mut().filter(|n| n.measure == mi) {
                 let j = cols.iter().position(|&t| t == n.start).unwrap_or(0);
                 n.x = xs[j];
@@ -633,13 +817,12 @@ impl<'a> Engraver<'a> {
         }
         let end = self.ms.last().map(|m| m.start + m.len).unwrap_or(Frac::ZERO);
         self.out.columns.push(Column { quarter: end.num as f64 / end.den as f64 * 4.0, x, system: 0 });
-        // Justify: stretch everything after the system's opening prefix.
+        // Justify: the springs share the extra room by their stretchability.
         if let Some(w) = self.width {
-            let cs = self.ms.first().map(|m| m.x0).unwrap_or(self.left);
             let target = w - self.opt.margin;
-            if x > cs + 1.0 && target > x {
-                let k = (target - cs) / (x - cs);
-                let f = |v: f32| if v >= cs { cs + (v - cs) * k } else { v };
+            if stretch > 0.0 && target > x {
+                let k = (target - x) / stretch;
+                let f = |v: f32| v + k * stretch_at(&breaks, v);
                 for n in self.notes.iter_mut() {
                     n.x = f(n.x);
                 }
@@ -1819,8 +2002,12 @@ impl<'a> Engraver<'a> {
 
 /// Notes split and prepared (stems, accidentals) for the whole movement.
 fn prepared(score: &Score, opt: &Options) -> (Vec<Measure>, Vec<Note>) {
-    let ms = measures(score);
+    let mut ms = measures(score);
     let notes = split(score, &ms);
+    let shortest = common_shortest(&ms, &notes);
+    for m in ms.iter_mut() {
+        m.shortest = shortest;
+    }
     let mut e = Engraver::new(score, opt, ms, notes, true, None);
     e.prepare();
     (e.ms, e.notes)
@@ -1830,6 +2017,13 @@ fn prepared(score: &Score, opt: &Options) -> (Vec<Measure>, Vec<Note>) {
 pub fn layout_line(score: &Score, opt: &Options) -> DisplayList {
     let (ms, notes) = prepared(score, opt);
     engrave_spaced(score, opt, ms, notes, true, None)
+}
+
+/// Lays the whole movement out on one system justified to `width` (staff
+/// spaces, margins included).
+pub fn layout_line_at(score: &Score, opt: &Options, width: f32) -> DisplayList {
+    let (ms, notes) = prepared(score, opt);
+    engrave_spaced(score, opt, ms, notes, true, Some(width))
 }
 
 /// Clearance between one staff's lowest and the next staff's highest item.
@@ -2018,11 +2212,9 @@ mod tests {
     }
 
     #[test]
-    fn spacing_grows_logarithmically() {
-        let q = ideal_space(Frac::new(1, 4));
-        let h = ideal_space(Frac::new(1, 2));
-        let e = ideal_space(Frac::new(1, 8));
-        assert!(e < q && q < h);
-        assert!(h / q < 1.5 && q / e < 1.5);
+    fn spacing_follows_lilypond_defaults() {
+        let s = Frac::new(1, 8);
+        let (e, q, h) = (ideal_space(Frac::new(1, 8), s), ideal_space(Frac::new(1, 4), s), ideal_space(Frac::new(1, 2), s));
+        assert!((e - 2.4).abs() < 1e-4 && (q - e - 1.2).abs() < 1e-4 && (h - q - 1.2).abs() < 1e-4);
     }
 }

@@ -32,6 +32,8 @@
         # bindgenHook: libclang for the PipeWire bindings (pipewire-rs).
         nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper pkgs.rustPlatform.bindgenHook ];
         buildInputs = [ pkgs.sqlite pkgs.pipewire ];
+        # The engraver's spacing is checked against LilyPond's.
+        nativeCheckInputs = [ pkgs.lilypond ];
         # The engraving tests measure text with the real font.
         preCheck = ''
           export CORINZIA_TEXT_FONT=${textFont pkgs}
@@ -57,7 +59,8 @@
           buildInputs = with pkgs; [ sqlite pipewire ];
           # xvfb-run + mesa: headless screenshots (scripts/screenshot.sh);
           # wireplumber: the live PipeWire test (scripts/run_with_pipewire.sh);
-          # lilypond: musicxml2ly, an independent check of MusicXML export.
+          # lilypond: the reference for the engraver's spacing tests, and
+          # musicxml2ly, an independent check of MusicXML export.
           packages = with pkgs; [ sqlite-interactive xvfb-run mesa wireplumber lilypond ] ++ guiLibs pkgs;
           shellHook = ''
             export CORINZIA_TEXT_FONT=${textFont pkgs}

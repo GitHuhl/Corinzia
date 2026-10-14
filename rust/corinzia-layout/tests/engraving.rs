@@ -327,15 +327,15 @@ fn lyrics_and_chord_symbols() {
 #[test]
 fn spanners_continue_across_system_breaks() {
     use corinzia_layout::{layout_pages, PageSpec};
-    // 16 bars of quarters: several systems. A slur and a crescendo from bar 3 to bar 14.
+    // 24 bars of quarters: several systems. A slur and a crescendo from bar 3 to bar 22.
     let mut music = String::new();
-    for bar in 0..16 {
+    for bar in 0..24 {
         for beat in 0..4 {
             let mut n = String::from(["c''4", "d''4", "e''4", "f''4"][beat]);
             if bar == 2 && beat == 0 {
                 n.push_str("(\\cr");
             }
-            if bar == 13 && beat == 0 {
+            if bar == 21 && beat == 0 {
                 n.push_str(")\\f");
             }
             music.push_str(&n);

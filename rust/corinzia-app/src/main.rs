@@ -1062,7 +1062,7 @@ mod tests {
         assert!(a.pages[0].height > a.pages[0].width, "A4 portrait");
         let b = app(View::Panorama);
         assert_eq!(b.pages.len(), 1);
-        assert!(b.pages[0].width > b.pages[0].height * 4.0, "one long system");
+        assert!(b.pages[0].width > b.pages[0].height * 3.0, "one long system");
     }
 
     #[test]

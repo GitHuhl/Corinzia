@@ -17,4 +17,4 @@ pub mod pdf;
 pub mod raster;
 
 pub use display::DisplayList;
-pub use layout::{layout_line, layout_pages, Options, PageSpec};
+pub use layout::{layout_line, layout_line_at, layout_pages, Options, PageSpec};
