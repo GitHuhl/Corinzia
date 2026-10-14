@@ -59,6 +59,8 @@ pub enum Action {
     ShowMix,
     /// Zoom so the page fills the width.
     FitWidth,
+    /// Concert pitch / transposed score.
+    Transposed,
     /// Show or hide the keyboard shortcuts.
     Help,
     // Panel-only actions.
@@ -128,6 +130,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('n', _) => New,
             ('=' | '+', _) => ZoomIn,
             ('0', _) => FitWidth,
+            ('t', _) => Transposed,
             ('-', _) => ZoomOut,
             ('l', false) => Lyrics(1),
             ('l', true) => Lyrics(2),

@@ -207,6 +207,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
             texts: vec![],
             chords: vec![],
             brace: false,
+            key_shift: 0,
             voices: voices.iter().enumerate().map(|(vi, v)| voice(v, vi as u8 + 1, &mut id)).collect(),
         })
         .collect();

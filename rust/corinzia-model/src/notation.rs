@@ -5,13 +5,61 @@
 use crate::model::*;
 use corinzia_score::score as sc;
 
+/// The movement at concert pitch.
 pub fn score(project: &Project, m: &Movement) -> sc::Score {
+    score_as(project, m, false)
+}
+
+/// Chord-symbol text moved by an interval: its root and bass letters
+/// ("Bb7/D" up a M2 is "C7/E").
+pub fn transpose_chord_text(text: &str, by: Interval) -> String {
+    let spell = |letter: char, rest: &str| -> (String, usize) {
+        let step = "CDEFGAB".find(letter).unwrap() as i8;
+        let acc: String = rest.chars().take_while(|c| matches!(c, '#' | 'b' | '♯' | '♭')).collect();
+        let alter = acc.chars().map(|c| if c == '#' || c == '♯' { 1 } else { -1 }).sum::<i8>();
+        let p = Pitch { step, alter, octave: 4 }.transposed(by);
+        let name = format!("{}{}", "CDEFGAB".as_bytes()[p.step as usize] as char, match p.alter {
+            a if a > 0 => "#".repeat(a as usize),
+            a if a < 0 => "b".repeat((-a) as usize),
+            _ => String::new(),
+        });
+        (name, acc.len())
+    };
+    let mut out = String::new();
+    let mut chars = text.char_indices().peekable();
+    let mut at_root = true;
+    while let Some((i, c)) = chars.next() {
+        if at_root && "CDEFGAB".contains(c) {
+            let (name, skip) = spell(c, &text[i + c.len_utf8()..]);
+            out.push_str(&name);
+            for _ in 0..skip {
+                chars.next();
+            }
+            at_root = false;
+        } else {
+            at_root = c == '/';
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The movement for the engraver: at concert pitch, or `transposed` with
+/// each transposing instrument's notes, key and chord symbols as written.
+pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score {
     let parts = m
         .lanes
         .iter()
         .enumerate()
         .map(|(li, lane)| {
             let first = lane.changes.first().and_then(|c| project.instrument(c.instrument));
+            // The interval each event is written at.
+            let interval_at = |at: corinzia_score::Frac| -> Interval {
+                if !transposed {
+                    return Interval::default();
+                }
+                lane.instrument_at(at).and_then(|i| project.instrument(i)).map(|i| i.transposition).unwrap_or_default()
+            };
             let name = first.map(|i| i.name.clone()).or_else(|| project.player(lane.player).map(|p| p.name.clone())).unwrap_or_default();
             let mut texts: Vec<sc::Text> = lane
                 .texts
@@ -29,7 +77,15 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                 clef: first.map(|i| i.clef.clone()).unwrap_or_else(|| "treble".into()),
                 clefs: lane.clefs.iter().map(|c| sc::ClefChange { at: c.at, clef: c.clef.clone() }).collect(),
                 texts,
-                chords: lane.chords.iter().map(|c| sc::ChordSymbol { at: c.at, text: c.text.clone(), id: c.id }).collect(),
+                chords: lane
+                    .chords
+                    .iter()
+                    .map(|c| {
+                        let by = interval_at(c.at);
+                        let text = if by.is_zero() { c.text.clone() } else { transpose_chord_text(&c.text, by) };
+                        sc::ChordSymbol { at: c.at, text, id: c.id }
+                    })
+                    .collect(),
                 voices: lane
                     .voices
                     .iter()
@@ -45,9 +101,13 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                                 pitches: if e.is_rest() {
                                     vec![]
                                 } else {
+                                    let by = interval_at(e.start);
                                     e.heads
                                         .iter()
-                                        .map(|h| sc::Pitch { id: h.id, step: h.pitch.step as u8, alter: h.pitch.alter, octave: h.pitch.octave, tie: h.tie })
+                                        .map(|h| {
+                                            let p = h.pitch.transposed(by);
+                                            sc::Pitch { id: h.id, step: p.step as u8, alter: p.alter, octave: p.octave, tie: h.tie }
+                                        })
                                         .collect()
                                 },
                                 art: e.articulations,
@@ -59,6 +119,7 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                     })
                     .collect(),
                 brace: m.lanes.get(li + 1).is_some_and(|next| next.player == lane.player),
+                key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
             }
         })
         .collect();

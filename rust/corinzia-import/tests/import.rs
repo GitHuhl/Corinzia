@@ -154,3 +154,22 @@ fn corpus_imports_and_engraves() {
         eprintln!("  {f}");
     }
 }
+
+#[test]
+fn transposing_parts_come_in_at_concert_pitch() {
+    // A B-flat clarinet written in D major: written E5 sounds D5.
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Clarinet in Bb</part-name></score-part></part-list>
+<part id="P1"><measure number="1">
+  <attributes><divisions>1</divisions><key><fifths>2</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>
+    <clef><sign>G</sign><line>2</line></clef><transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose></attributes>
+  <harmony><root><root-step>E</root-step></root><kind>minor</kind></harmony>
+  <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
+</measure></part></score-partwise>"#;
+    let p = musicxml(xml.as_bytes()).unwrap();
+    let m = &p.movements[0];
+    assert_eq!(p.instruments[0].transposition, corinzia_model::Interval::new(1, 2));
+    assert_eq!(m.keys[0].fifths, 0, "D major written is C major at concert pitch");
+    assert_eq!(names(&m.lanes[0].voices[0].events), ["D5"]);
+    assert_eq!(m.lanes[0].chords[0].text, "Dm");
+}

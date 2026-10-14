@@ -109,6 +109,8 @@ struct App {
     help: bool,
     /// See [`SAVING_ENABLED`] (tests turn it on).
     saving_enabled: bool,
+    /// The Export menu is open.
+    export_menu: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +136,7 @@ enum Message {
     Opened(Option<PathBuf>),
     /// A file dropped on the window.
     Dropped(PathBuf),
+    ExportMenu(bool),
     Resized(Size),
     SaveTo(Option<PathBuf>),
     Export(files::Format),
@@ -296,6 +299,7 @@ impl App {
             window: Size::new(1280.0, 860.0),
             help: false,
             saving_enabled: SAVING_ENABLED,
+            export_menu: false,
         };
         app.sync();
         app
@@ -315,7 +319,7 @@ impl App {
             return;
         };
         let t = Instant::now();
-        let score = corinzia_model::notation::score(&self.editor.project, m);
+        let score = corinzia_model::notation::score_as(&self.editor.project, m, self.editor.transposed);
         let opt = Options::default();
         self.pages = match self.view {
             View::Page => layout_pages(&score, &opt, &PageSpec::default()),
@@ -524,8 +528,9 @@ impl App {
             Action::ToggleInput => ed.set_input_mode(!ed.input_mode),
             Action::SetInput(on) => ed.set_input_mode(on),
             Action::Escape => {
-                if self.help {
+                if self.help || self.export_menu {
                     self.help = false;
+                    self.export_menu = false;
                 } else if self.popover.take().is_some() {
                 } else if ed.input_mode {
                     ed.set_input_mode(false)
@@ -552,6 +557,11 @@ impl App {
             Action::CaretStaff(d) => ed.move_caret_staff(d),
             Action::Step { dir, bar } => ed.select_step(dir, bar),
             Action::FitWidth => self.fit_width(),
+            Action::Transposed => {
+                ed.transposed = !ed.transposed;
+                ed.status = if ed.transposed { "Transposed score: written pitches; letters you type are written pitches" } else { "Concert pitch" }.into();
+                self.engraved = None;
+            }
             Action::Help => self.help = !self.help,
             Action::Extend(d) => ed.extend_step(d),
             Action::Edge { last } => ed.select_edge(last),
@@ -742,6 +752,7 @@ impl App {
             },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
+            Message::ExportMenu(open) => self.export_menu = open,
             Message::Dropped(path) => {
                 if path.extension().is_some_and(|e| e == "project") || files::is_musicxml(&path) {
                     return Task::done(Message::Guarded(Box::new(Message::Opened(Some(path)))));
@@ -757,6 +768,7 @@ impl App {
                 self.zoom = z;
             }
             Message::Canvas(ViewEvent::Click { hit, at, shift }) => {
+                self.export_menu = false;
                 self.editor.status.clear();
                 self.click(hit, at, shift)
             }
@@ -883,6 +895,7 @@ impl App {
                 self.save(path);
             }
             Message::Export(format) => {
+                self.export_menu = false;
                 let name = files::sibling(self.path.as_deref(), &self.editor.project.title, format.extension());
                 let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
                 return Task::perform(
@@ -901,7 +914,7 @@ impl App {
             }
             Message::ExportTo(format, Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
-                self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, &path) {
+                self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
                     Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
                     Err(e) => format!("Export failed: {e}"),
                 };
@@ -980,6 +993,10 @@ impl App {
                     "Note input (N)",
                 ))
                 .push(segmented(vec![("Page", self.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama))]))
+                .push(panels::tip(
+                    button(text("Transposed").size(13)).padding([5, 10]).style(theme::tool(ed.transposed)).on_press(Message::Act(Action::Transposed)),
+                    "Transposed score (Ctrl+T); off: concert pitch",
+                ))
                 .push(rule())
                 .push(panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"))
                 .push(text(format!("{:.0}%", self.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center))
@@ -995,11 +1012,7 @@ impl App {
                 flat("Save", self.saving_enabled, Message::Act(Action::Save)),
                 if self.saving_enabled { "Save (Ctrl+S)" } else { "Saving is turned off in this preview build" },
             ))
-            .push(rule())
-            .push(text("Export").size(12).style(theme::faint))
-            .push(panels::tip(flat("PDF", true, Message::Export(files::Format::Pdf)), "Export the movement as PDF"))
-            .push(panels::tip(flat("MIDI", true, Message::Export(files::Format::Midi)), "Export as a MIDI file"))
-            .push(panels::tip(flat("XML", true, Message::Export(files::Format::MusicXml)), "Export as MusicXML"));
+            .push(button(text("Export ▾").size(13)).padding([5, 9]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
         let caret = ed.input_mode.then(|| Caret { part: ed.caret_lane, quarter: quarters(ed.caret) });
@@ -1067,6 +1080,24 @@ impl App {
 
         if self.help {
             desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
+        }
+        if self.export_menu {
+            let item = |label: &'static str, hint: &'static str, f: files::Format| {
+                button(column![text(label).size(13), text(hint).size(11).style(theme::dim)].spacing(1)).width(Length::Fill).padding([6, 10]).style(theme::flat(false)).on_press(Message::Export(f))
+            };
+            let what = if ed.transposed { "as shown (transposed)" } else { "as shown (concert pitch)" };
+            let menu = container(
+                column![
+                    item("PDF…", what, files::Format::Pdf),
+                    item("MIDI…", "the performance, track by track", files::Format::Midi),
+                    item("MusicXML…", "for other notation programs", files::Format::MusicXml),
+                ]
+                .spacing(2)
+                .width(250),
+            )
+            .padding(6)
+            .style(theme::card);
+            desk = desk.push(container(iced::widget::opaque(menu)).padding([6, 10]).width(Length::Fill).align_x(iced::Alignment::End));
         }
 
         let tabs = container(segmented(vec![
@@ -1174,6 +1205,7 @@ fn help_card() -> Element<'static, Message> {
                 ("Space", "Play / stop"),
                 ("Ctrl+= −", "Zoom in / out"),
                 ("Ctrl+0", "Fit the page width"),
+                ("Ctrl+T", "Transposed / concert pitch"),
             ],
         ),
         (
@@ -1257,7 +1289,7 @@ fn main() -> iced::Result {
                 std::process::exit(2);
             }
         };
-        match files::export_to(&app.editor.project, app.editor.movement, format, &out) {
+        match files::export_to(&app.editor.project, app.editor.movement, format, app.editor.transposed, &out) {
             Ok(()) => println!("exported {}", out.display()),
             Err(e) => {
                 eprintln!("export failed: {e}");
@@ -1608,13 +1640,13 @@ mod tests {
         key(&mut a, "del");
         assert_eq!(a.editor.movement().unwrap().lanes[1].chords.len(), 1);
         // Both reach MusicXML.
-        let xml = String::from_utf8(files::export(&a.editor.project, 0, files::Format::MusicXml).unwrap()).unwrap();
+        let xml = String::from_utf8(files::export(&a.editor.project, 0, files::Format::MusicXml, false).unwrap()).unwrap();
         assert!(xml.contains("<lyric number=\"1\"><syllabic>begin</syllabic><text>Glo</text></lyric>"));
         assert!(xml.contains("<syllabic>end</syllabic><text>a</text>"));
         assert!(xml.contains("<harmony><root><root-step>C</root-step></root><kind text=\"\">major</kind></harmony>"));
         if let Ok(dir) = std::env::var("CORINZIA_EXPORT_DIR") {
             std::fs::write(std::path::Path::new(&dir).join("lyrics.musicxml"), &xml).unwrap();
-            std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf).unwrap()).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf, false).unwrap()).unwrap();
         }
     }
 }

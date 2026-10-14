@@ -47,7 +47,16 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
 * Every object has a persistent element id. The id is used in the file, in
   the engraving (hit testing) and in playback (highlighting).
 * `notation::score` converts a movement into the engraver's input
-  (`corinzia_score::score::Score`).
+  (`corinzia_score::score::Score`), at concert pitch. `notation::score_as`
+  can instead give a transposed score:
+  * Music is stored at concert pitch. Each instrument has a transposition,
+    an interval of steps and semitones (written minus sounding).
+  * The transposed score writes each transposing instrument's notes and
+    chord symbols at that interval.
+  * Its key moves round the circle of fifths. It is kept within seven
+    accidentals, so C♯ major for a B♭ instrument becomes E♭ major.
+  * In the transposed view, typed letters are written pitches. Playback,
+    MIDI and MusicXML stay at concert pitch; PDF follows the view.
 
 **Storage** (`store.rs`, `schema/project.sql`):
 

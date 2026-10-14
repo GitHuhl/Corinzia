@@ -134,7 +134,7 @@ pub fn load(path: &Path) -> Result<Project> {
             p.players.push(Player { id, name, instruments: vec![] });
         }
         let mut s = db.prepare(
-            "SELECT id, player_id, name, engraver_name, transposition, clef, track_id FROM instrument ORDER BY player_id, ordinal",
+            "SELECT id, player_id, name, engraver_name, transposition_steps, transposition_semitones, clef, track_id FROM instrument ORDER BY player_id, ordinal",
         )?;
         let rows = s.query_map([], |r| {
             Ok(Instrument {
@@ -142,9 +142,9 @@ pub fn load(path: &Path) -> Result<Project> {
                 player: r.get::<_, i64>(1)? as u64,
                 name: r.get(2)?,
                 engraver_name: r.get(3)?,
-                transposition: r.get::<_, i64>(4)? as i32,
-                clef: r.get(5)?,
-                track: r.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+                transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
+                clef: r.get(6)?,
+                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
             })
         })?;
         for i in rows {
@@ -438,10 +438,22 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         for (iord, iid) in pl.instruments.iter().enumerate() {
             let Some(i) = project.instrument(*iid) else { continue };
             tx.execute(
-                "INSERT INTO instrument(id, player_id, ordinal, name, engraver_name, transposition, clef, track_id) VALUES (?,?,?,?,?,?,?,?) \
+                "INSERT INTO instrument(id, player_id, ordinal, name, engraver_name, transposition_steps, transposition_semitones, clef, track_id) \
+                 VALUES (?,?,?,?,?,?,?,?,?) \
                  ON CONFLICT(id) DO UPDATE SET player_id=excluded.player_id, ordinal=excluded.ordinal, name=excluded.name, \
-                 engraver_name=excluded.engraver_name, transposition=excluded.transposition, clef=excluded.clef, track_id=excluded.track_id",
-                params![i.id as i64, pl.id as i64, iord as i64, i.name, i.engraver_name, i.transposition, i.clef, i.track.map(|v| v as i64)],
+                 engraver_name=excluded.engraver_name, transposition_steps=excluded.transposition_steps, \
+                 transposition_semitones=excluded.transposition_semitones, clef=excluded.clef, track_id=excluded.track_id",
+                params![
+                    i.id as i64,
+                    pl.id as i64,
+                    iord as i64,
+                    i.name,
+                    i.engraver_name,
+                    i.transposition.steps,
+                    i.transposition.semitones,
+                    i.clef,
+                    i.track.map(|v| v as i64)
+                ],
             )?;
         }
     }

@@ -74,6 +74,9 @@ pub struct Part {
     /// This staff and the next are one instrument's (a piano's): joined by
     /// a brace and barlines, named once.
     pub brace: bool,
+    /// The staff's key differs from the score's by this many fifths (a
+    /// transposing instrument in a transposed score).
+    pub key_shift: i32,
 }
 
 /// A chord symbol: written root, quality and bass, e.g. "F♯m7♭5/E".

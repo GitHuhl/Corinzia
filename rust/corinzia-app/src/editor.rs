@@ -43,6 +43,9 @@ pub struct Editor {
     pub lyric_verse: u8,
     pub caret_lane: usize,
     pub caret: Frac,
+    /// The score shows written pitches: letters typed are written pitches
+    /// of the caret staff's instrument.
+    pub transposed: bool,
     pub selection: Option<Id>,
     pub range: Option<Range>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -120,6 +123,7 @@ impl Editor {
             selection: None,
             range: None,
             range_anchor: None,
+            transposed: false,
             clip: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -326,6 +330,8 @@ impl Editor {
     pub fn enter_note(&mut self, step: i32, add_to_chord: bool) {
         let step = step.rem_euclid(7);
         let (lane, voice, caret, spec, alter, chord) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from), add_to_chord || self.chord_mode);
+        let transposed = self.transposed;
+        let instruments: std::collections::HashMap<Id, Interval> = self.project.instruments.iter().map(|i| (i.id, i.transposition)).collect();
         let mut out: Option<EditResult> = None;
         let mut added_to_chord = false;
         self.transact("Note input", |m, ids| {
@@ -335,23 +341,29 @@ impl Editor {
             let lane = lane.min(m.lanes.len() - 1);
             let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
             let evs = m.lanes[lane].voices[vi].events.clone();
-            let fifths = key_fifths_at(m, caret);
+            // In a transposed score the letter is a written pitch: choose it in
+            // the written key next to the written previous note, then store it
+            // at concert pitch.
+            let by = if transposed { m.lanes[lane].instrument_at(caret).and_then(|i| instruments.get(&i).copied()).unwrap_or_default() } else { Interval::default() };
+            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            let concert = |p: Pitch| p.transposed(by.inverse());
             // Chord: add above the event just entered (the one ending at the caret).
             let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
             let r = if let (true, Some(last)) = (chord, last) {
-                let top = last.heads.last().unwrap().pitch;
+                let top = last.heads.last().unwrap().pitch.transposed(by);
                 let mut p = edit::nearest_pitch(step, alter, fifths, top);
                 if edit::diatonic(p) <= edit::diatonic(top) {
                     p = edit::from_diatonic(edit::diatonic(p) + 7, p.alter as i32);
                 }
+                let p = concert(p);
                 added_to_chord = true;
                 match edit::add_to_chord(&evs, last.start, p, ids) {
                     Some(r) => r,
                     None => return false,
                 }
             } else {
-                let reference = edit::previous_pitch(&evs, caret).unwrap_or(Pitch { step: 6, alter: 0, octave: 4 });
-                let p = edit::nearest_pitch(step, alter, fifths, reference);
+                let reference = edit::previous_pitch(&evs, caret).map(|p| p.transposed(by)).unwrap_or(Pitch { step: 6, alter: 0, octave: 4 });
+                let p = concert(edit::nearest_pitch(step, alter, fifths, reference));
                 let r = edit::insert_event(&evs, edit::make_event(ids, caret, spec.value(), &[p], 0), voice == 1, ids);
                 extend_to(m, r.to);
                 r
@@ -1291,6 +1303,21 @@ mod tests {
     }
     fn notes(e: &Editor, lane: usize) -> Vec<String> {
         events(e, lane, 0).iter().map(|e| if e.is_rest() { "r".into() } else { e.heads.iter().map(|h| pitch_name(h.pitch)).collect::<Vec<_>>().join("+") }).collect()
+    }
+
+    #[test]
+    fn transposed_input_types_written_pitches() {
+        let mut e = Editor::new(crate::files::new_project("T", "Clarinet", 2).unwrap());
+        e.transposed = true;
+        e.set_input_mode(true);
+        // Concert C major is D major for the clarinet: a typed C follows the
+        // written key (C#5) and sounds a major second lower (B4).
+        e.enter_note(0, false);
+        e.enter_note(1, false); // written D5 sounds C5
+        assert_eq!(notes(&e, 0)[..2], ["B4", "C5"]);
+        e.transposed = false;
+        e.enter_note(0, false); // concert C, next to C5
+        assert_eq!(notes(&e, 0)[2], "C5");
     }
 
     #[test]

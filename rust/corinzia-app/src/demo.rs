@@ -20,7 +20,7 @@ pub fn project() -> Project {
         let player = 20 + k as u64;
         let inst = 30 + k as u64;
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: k as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clef.to_string(), track: Some(track) });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track) });
         p.players.push(Player { id: player, name: format!("Player {}", k + 1), instruments: vec![inst] });
         let v = notation::voice(music, 1, &mut id);
         let events = v
@@ -71,15 +71,22 @@ pub fn project() -> Project {
 
 /// A new, empty project: these instruments (name, abbreviation, clef), each
 /// on its own player, over `bars` bars of 4/4 filled with whole-bar rests.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Project {
+    let with: Vec<(&str, &str, &str, Interval)> = instruments.iter().map(|(a, b, c)| (*a, *b, *c, Interval::default())).collect();
+    blank_with(title, &with, bars)
+}
+
+/// As [`blank`], with each instrument's transposition.
+pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bars: i64) -> Project {
     let mut p = Project { title: title.into(), sample_rate: 48000.0, next_id: 1, ..Default::default() };
     let mut lanes = Vec::new();
-    for (k, (name, abbr, clefs)) in instruments.iter().enumerate() {
+    for (k, (name, abbr, clefs, transposition)) in instruments.iter().enumerate() {
         // "treble+bass": a grand staff, one staff per clef.
         let clefs: Vec<&str> = clefs.split('+').collect();
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (k % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clefs[0].to_string(), track: Some(track) });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track) });
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)

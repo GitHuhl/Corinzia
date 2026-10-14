@@ -6,7 +6,7 @@ use std::sync::Arc;
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false });
-    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: 0, clef: "treble".into(), track: Some(1) });
+    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1) });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
         id,

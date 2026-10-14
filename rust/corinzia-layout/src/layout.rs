@@ -278,6 +278,23 @@ fn measures(s: &Score) -> Vec<Measure> {
     out
 }
 
+/// A staff's key: the score's, moved for a transposing instrument.
+fn part_key(s: &Score, part: usize, fifths: i32) -> i32 {
+    match s.parts.get(part).map(|p| p.key_shift).unwrap_or(0) {
+        0 => fifths,
+        by => {
+            let mut f = fifths + by;
+            while f > 7 {
+                f -= 12;
+            }
+            while f < -7 {
+                f += 12;
+            }
+            f
+        }
+    }
+}
+
 fn key_at(s: &Score, at: Frac) -> i32 {
     s.keys.iter().filter(|k| k.at <= at).max_by(|a, b| a.at.cmp(&b.at)).map(|k| k.fifths).unwrap_or(0)
 }
@@ -533,7 +550,7 @@ impl<'a> Engraver<'a> {
                 tied_into.extend(next_tied.drain(..));
             }
             last_start = Some((part, start));
-            let fifths = key_at(self.score, start);
+            let fifths = part_key(self.score, part, key_at(self.score, start));
             let voice = self.notes[i].voice;
             for h in self.notes[i].heads.iter_mut() {
                 let key = (part, measure, h.dia);
@@ -771,8 +788,15 @@ impl<'a> Engraver<'a> {
             let bar_stretch = stretch;
             // Key and time shown at this barline.
             if let Some(k) = m.key {
-                let prev = if mi == 0 { 0 } else { key_at(self.score, self.ms[mi - 1].start) };
-                let count = k.fifths.unsigned_abs().max(if mi > 0 { prev.unsigned_abs() } else { 0 });
+                // The widest staff's signature (transposing staves differ).
+                let prev_global = if mi == 0 { 0 } else { key_at(self.score, self.ms[mi - 1].start) };
+                let count = (0..self.score.parts.len().max(1))
+                    .map(|pi| {
+                        let (now, prev) = (part_key(self.score, pi, k.fifths), part_key(self.score, pi, prev_global));
+                        now.unsigned_abs().max(if mi > 0 { prev.unsigned_abs() } else { 0 })
+                    })
+                    .max()
+                    .unwrap_or(0);
                 if count > 0 || mi == 0 {
                     x += count as f32 * 1.1 + if count > 0 { 0.8 } else { 0.0 };
                 }
@@ -983,9 +1007,10 @@ impl<'a> Engraver<'a> {
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
                 if let Some(k) = m.key {
+                    let k = Key { fifths: part_key(self.score, pi, k.fifths), ..k };
                     // Cancel the previous key's accidentals with naturals when it changes to fewer/other.
                     if mi > 0 {
-                        let prev = key_at(self.score, self.ms[mi - 1].start);
+                        let prev = part_key(self.score, pi, key_at(self.score, self.ms[mi - 1].start));
                         if prev != 0 && (k.fifths == 0 || k.fifths.signum() != prev.signum()) {
                             for (pos, _) in key_positions(prev, &clef) {
                                 let y = self.y(pi, pos);

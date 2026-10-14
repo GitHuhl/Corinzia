@@ -286,6 +286,9 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         let mut staves: Vec<StaffMusic> = vec![StaffMusic::default()];
         let mut divisions: i64 = 1;
         let mut open_endings: BTreeMap<String, Frac> = BTreeMap::new();
+        // A transposing part is written: <transpose> says what turns its
+        // written pitches into sounding ones.
+        let mut to_concert = corinzia_model::Interval::default();
         for (mi, m) in children(*part, "measure").enumerate() {
             let Some(&bar) = bar_starts.get(mi) else { break };
             let bar_end = bar_starts.get(mi + 1).copied().unwrap_or(end);
@@ -306,13 +309,19 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                                 staves.push(StaffMusic::default());
                             }
                         }
+                        if let Some(t) = child(e, "transpose") {
+                            let oct = int(t, "octave-change").unwrap_or(0) as i32;
+                            to_concert = corinzia_model::Interval::new(int(t, "diatonic").unwrap_or(0) as i32 + 7 * oct, int(t, "chromatic").unwrap_or(0) as i32 + 12 * oct);
+                        }
                         if first {
                             if let Some(k) = child(e, "key") {
                                 if let Some(f) = int(k, "fifths") {
                                     let minor = text_of(k, "mode").as_deref() == Some("minor");
                                     let at = if mi == 0 { Frac::ZERO } else { at };
+                                    // The written key of a transposing part, at concert pitch.
+                                    let f = corinzia_model::shift_key(f.clamp(-7, 7) as i32, to_concert.fifths());
                                     movement.keys.retain(|x| x.at != at);
-                                    movement.keys.push(Key { at, fifths: f.clamp(-7, 7) as i32, minor });
+                                    movement.keys.push(Key { at, fifths: f, minor });
                                 }
                             }
                             if let Some(t) = child(e, "time") {
@@ -354,6 +363,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                             while staves.len() <= staff {
                                 staves.push(StaffMusic::default());
                             }
+                            let t = if to_concert.is_zero() { t } else { corinzia_model::notation::transpose_chord_text(&t, to_concert) };
                             staves[staff].chords.push((at, t));
                         }
                     }
@@ -377,7 +387,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                             staves.push(StaffMusic::default());
                         }
                         let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
-                        note(e, start, dur, chord, &mut staves[staff], voice, &mut p);
+                        note(e, start, dur, chord, &mut staves[staff], voice, to_concert, &mut p);
                     }
                     _ => {}
                 }
@@ -391,7 +401,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         let clef0 = staves[0].clef.clone().unwrap_or_else(|| "treble".into());
         p.tracks.push(Track { id: track, name: name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (pi % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: 0, clef: clef0, track: Some(track) });
+        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track) });
         p.players.push(Player { id: player, name, instruments: vec![inst] });
         for mut staff in staves {
             // A staff starting in another clef than the instrument's (a
@@ -540,13 +550,14 @@ fn barline(e: Node, bar: Frac, bar_end: Frac, open: &mut BTreeMap<String, Frac>,
     }
 }
 
-fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, voice: String, p: &mut Project) {
+#[allow(clippy::too_many_arguments)]
+fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, voice: String, to_concert: corinzia_model::Interval, p: &mut Project) {
     let rest = child(e, "rest").is_some();
     let pitch = child(e, "pitch").map(|pn| {
         let step = text_of(pn, "step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(0) as i8;
         let alter = text_of(pn, "alter").and_then(|a| a.parse::<f64>().ok()).map(|a| a.round() as i8).unwrap_or(0).clamp(-2, 2);
         let octave = num::<i8>(pn, "octave").unwrap_or(4);
-        Pitch { step, alter, octave }
+        Pitch { step, alter, octave }.transposed(to_concert)
     });
     // Unpitched notes sound at their display position.
     let pitch = pitch.or_else(|| {

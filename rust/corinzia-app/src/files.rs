@@ -3,7 +3,7 @@
 //! here is synchronous and UI-free; the app runs dialogs around it.
 
 use corinzia_layout::{layout_pages, Options, PageSpec};
-use corinzia_model::Project;
+use corinzia_model::{Interval, Project};
 use std::path::Path;
 
 /// Known instruments: names (lower case, with aliases), display name,
@@ -14,13 +14,18 @@ const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["flute", "fl"], "Flute", "Fl.", "treble"),
     (&["oboe", "ob"], "Oboe", "Ob.", "treble"),
     (&["cor anglais", "english horn"], "Cor anglais", "C. a.", "treble"),
-    (&["clarinet", "cl"], "Clarinet", "Cl.", "treble"),
+    (&["clarinet", "cl", "clarinet in bb", "bb clarinet"], "Clarinet in B♭", "Cl.", "treble"),
+    (&["clarinet in a", "a clarinet"], "Clarinet in A", "Cl.", "treble"),
     (&["bass clarinet"], "Bass clarinet", "B. Cl.", "bass"),
     (&["bassoon", "bsn"], "Bassoon", "Bsn.", "bass"),
     (&["contrabassoon"], "Contrabassoon", "Cbsn.", "bass_8"),
-    (&["saxophone", "alto sax", "sax"], "Alto saxophone", "A. Sax.", "treble"),
-    (&["horn", "french horn", "hn"], "Horn", "Hn.", "treble"),
-    (&["trumpet", "tpt"], "Trumpet", "Tpt.", "treble"),
+    (&["soprano saxophone", "soprano sax"], "Soprano saxophone", "S. Sax.", "treble"),
+    (&["saxophone", "alto saxophone", "alto sax", "sax"], "Alto saxophone", "A. Sax.", "treble"),
+    (&["tenor saxophone", "tenor sax"], "Tenor saxophone", "T. Sax.", "treble"),
+    (&["baritone saxophone", "baritone sax", "bari sax"], "Baritone saxophone", "Bar. Sax.", "bass"),
+    (&["horn", "french horn", "hn", "horn in f"], "Horn in F", "Hn.", "treble"),
+    (&["trumpet", "tpt", "trumpet in bb", "bb trumpet"], "Trumpet in B♭", "Tpt.", "treble"),
+    (&["trumpet in c", "c trumpet"], "Trumpet in C", "Tpt.", "treble"),
     (&["trombone", "tbn"], "Trombone", "Tbn.", "bass"),
     (&["bass trombone"], "Bass trombone", "B. Tbn.", "bass"),
     (&["tuba"], "Tuba", "Tba.", "bass"),
@@ -41,6 +46,25 @@ const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["cello", "violoncello", "vc"], "Cello", "Vc.", "bass"),
     (&["double bass", "contrabass", "db", "cb"], "Double bass", "D.B.", "bass_8"),
 ];
+
+/// Transposing instruments: display name -> written minus sounding.
+/// (Octave-transposing ones use octave clefs instead, e.g. "treble_8".)
+const TRANSPOSITIONS: &[(&str, Interval)] = &[
+    ("Clarinet in B♭", Interval::new(1, 2)),
+    ("Clarinet in A", Interval::new(2, 3)),
+    ("Bass clarinet", Interval::new(1, 2)),
+    ("Cor anglais", Interval::new(4, 7)),
+    ("Soprano saxophone", Interval::new(1, 2)),
+    ("Alto saxophone", Interval::new(5, 9)),
+    ("Tenor saxophone", Interval::new(8, 14)),
+    ("Baritone saxophone", Interval::new(12, 21)),
+    ("Horn in F", Interval::new(4, 7)),
+    ("Trumpet in B♭", Interval::new(1, 2)),
+];
+
+pub fn transposition_of(name: &str) -> Interval {
+    TRANSPOSITIONS.iter().find(|(n, _)| name.starts_with(n)).map(|t| t.1).unwrap_or_default()
+}
 
 /// A comma-separated instrument list ("Flute, 2 Violin, Cello") ->
 /// (name, abbreviation, clef) per staff. A leading count repeats an
@@ -75,8 +99,8 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
 
 pub fn new_project(title: &str, instruments: &str, bars: i64) -> Result<Project, String> {
     let list = parse_instruments(instruments)?;
-    let refs: Vec<(&str, &str, &str)> = list.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str())).collect();
-    Ok(crate::demo::blank(title, &refs, bars))
+    let refs: Vec<(&str, &str, &str, Interval)> = list.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str(), transposition_of(a))).collect();
+    Ok(crate::demo::blank_with(title, &refs, bars))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +127,9 @@ impl Format {
 }
 
 /// The current movement in a format, as bytes.
-pub fn export(project: &Project, movement: usize, format: Format) -> Result<Vec<u8>, String> {
+/// PDF follows the view (`transposed`: written pitches); MIDI and MusicXML
+/// are written at concert pitch.
+pub fn export(project: &Project, movement: usize, format: Format, transposed: bool) -> Result<Vec<u8>, String> {
     let m = project.movements.get(movement).ok_or("No movement to export")?;
     match format {
         Format::Pdf => {
@@ -111,7 +137,7 @@ pub fn export(project: &Project, movement: usize, format: Format) -> Result<Vec<
             if corinzia_layout::display::text_fonts().0.is_none() {
                 crate::load_text_fonts();
             }
-            let score = corinzia_model::notation::score(project, m);
+            let score = corinzia_model::notation::score_as(project, m, transposed);
             let pages = layout_pages(&score, &Options::default(), &PageSpec::default());
             let title = if project.title.is_empty() { m.title.as_str() } else { project.title.as_str() };
             Ok(corinzia_layout::pdf::to_pdf(&pages, title))
@@ -121,8 +147,8 @@ pub fn export(project: &Project, movement: usize, format: Format) -> Result<Vec<
     }
 }
 
-pub fn export_to(project: &Project, movement: usize, format: Format, path: &Path) -> Result<(), String> {
-    let bytes = export(project, movement, format)?;
+pub fn export_to(project: &Project, movement: usize, format: Format, transposed: bool, path: &Path) -> Result<(), String> {
+    let bytes = export(project, movement, format, transposed)?;
     std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -166,12 +192,12 @@ mod tests {
     #[test]
     fn exports_every_format() {
         let p = crate::demo::project();
-        let pdf = export(&p, 0, Format::Pdf).unwrap();
+        let pdf = export(&p, 0, Format::Pdf, false).unwrap();
         assert!(pdf.starts_with(b"%PDF"));
-        let mid = export(&p, 0, Format::Midi).unwrap();
+        let mid = export(&p, 0, Format::Midi, false).unwrap();
         assert_eq!(&mid[..4], b"MThd");
         assert_eq!(mid.windows(4).filter(|w| w == b"MTrk").count(), 3, "tempo track + flute + cello");
-        let xml = String::from_utf8(export(&p, 0, Format::MusicXml).unwrap()).unwrap();
+        let xml = String::from_utf8(export(&p, 0, Format::MusicXml, false).unwrap()).unwrap();
         assert!(xml.contains("<part-name>Flute</part-name>") && xml.contains("<part-name>Cello</part-name>"));
         assert_eq!(sibling(Some(Path::new("/x/song.project")), "", "pdf"), Path::new("/x/song.pdf"));
         assert_eq!(sibling(None, "Serenade (demo)", "mid"), Path::new("Serenade__demo_.mid"));

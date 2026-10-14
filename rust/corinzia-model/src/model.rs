@@ -23,6 +23,57 @@ impl Pitch {
     }
 }
 
+/// An interval: diatonic steps and semitones (a major second up = 1, 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Interval {
+    pub steps: i32,
+    pub semitones: i32,
+}
+impl Interval {
+    pub const fn new(steps: i32, semitones: i32) -> Self {
+        Interval { steps, semitones }
+    }
+    pub fn is_zero(self) -> bool {
+        self.steps == 0 && self.semitones == 0
+    }
+    pub fn inverse(self) -> Self {
+        Interval { steps: -self.steps, semitones: -self.semitones }
+    }
+    /// How far along the circle of fifths it moves a key (M2 up: +2).
+    pub fn fifths(self) -> i32 {
+        // C transposed by the interval, as a position on the line of fifths.
+        let p = Pitch { step: 0, alter: 0, octave: 4 }.transposed(self);
+        const LINE: [i32; 7] = [0, 2, 4, -1, 1, 3, 5];
+        LINE[p.step as usize] + 7 * p.alter as i32
+    }
+}
+
+/// A key moved along the circle of fifths, kept within seven accidentals
+/// (enharmonically: C# major up a M2 is E-flat major, not D# major).
+pub fn shift_key(fifths: i32, by: i32) -> i32 {
+    let mut f = fifths + by;
+    while f > 7 {
+        f -= 12;
+    }
+    while f < -7 {
+        f += 12;
+    }
+    f
+}
+
+impl Pitch {
+    /// The pitch moved by an interval, spelt diatonically (C up a M2 is D,
+    /// E up a M2 is F#).
+    pub fn transposed(self, by: Interval) -> Pitch {
+        const SEMIS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+        let dia = self.step as i32 + 7 * self.octave as i32 + by.steps;
+        let (step, octave) = (dia.rem_euclid(7), dia.div_euclid(7));
+        let midi = self.midi_key() + by.semitones;
+        let natural = (octave + 1) * 12 + SEMIS[step as usize];
+        Pitch { step: step as i8, alter: (midi - natural).clamp(-2, 2) as i8, octave: octave as i8 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Head {
     pub id: Id,
@@ -204,7 +255,8 @@ pub struct Instrument {
     pub player: Id,
     pub name: String,
     pub engraver_name: String,
-    pub transposition: i32,
+    /// Written minus sounding (a B-flat clarinet: a major second up).
+    pub transposition: Interval,
     pub clef: String,
     pub track: Option<Id>,
 }

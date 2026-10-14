@@ -81,7 +81,9 @@ CREATE TABLE IF NOT EXISTS instrument (
     ordinal        INTEGER NOT NULL,
     name           TEXT    NOT NULL,
     engraver_name  TEXT    NOT NULL DEFAULT '',
-    transposition  INTEGER NOT NULL DEFAULT 0,
+    -- Written minus sounding, as an interval (a B-flat clarinet: 1 step, 2 semitones).
+    transposition_steps     INTEGER NOT NULL DEFAULT 0,
+    transposition_semitones INTEGER NOT NULL DEFAULT 0,
     clef           TEXT    NOT NULL DEFAULT 'treble',
     track_id       INTEGER REFERENCES track(id) ON DELETE SET NULL
 );
