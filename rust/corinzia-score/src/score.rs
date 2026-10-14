@@ -84,6 +84,9 @@ pub struct Part {
     /// The staff's key differs from the score's by this many fifths (a
     /// transposing instrument in a transposed score).
     pub key_shift: i32,
+    /// Staves next to each other with the same non-zero group share a
+    /// bracket (an instrument family) and barlines.
+    pub group: u32,
 }
 
 /// A chord symbol: written root, quality and bass, e.g. "F♯m7♭5/E".

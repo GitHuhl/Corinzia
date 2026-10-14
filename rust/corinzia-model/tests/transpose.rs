@@ -62,3 +62,27 @@ fn transposed_view_writes_pitches_and_keys() {
     assert_eq!((concert.parts[0].key_shift, written.parts[0].key_shift), (0, 2));
     assert_eq!(written.parts[0].chords[0].text, "C");
 }
+
+#[test]
+fn instrument_families_for_brackets() {
+    use corinzia_model::notation::family;
+    for (name, fam) in [
+        ("Flute", Some("woodwinds")),
+        ("Bass Clarinet in Bb", Some("woodwinds")),
+        ("English Horn", Some("woodwinds")),
+        ("Horn in F", Some("brass")),
+        ("Bass Trombone", Some("brass")),
+        ("Timpani", Some("percussion")),
+        ("Bass Drum", Some("percussion")),
+        ("Violin I", Some("strings")),
+        ("Violoncello", Some("strings")),
+        ("Double Bass", Some("strings")),
+        ("Soprano", Some("voices")),
+        ("Bass", Some("voices")),
+        ("Alto Saxophone", Some("woodwinds")),
+        ("Piano", None),
+        ("Harp", None),
+    ] {
+        assert_eq!(family(name), fam, "{name}");
+    }
+}

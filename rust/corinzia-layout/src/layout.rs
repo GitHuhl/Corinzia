@@ -602,6 +602,25 @@ const BAR_NUMBER_SIZE: f32 = 1.6;
 /// The brace before a grand staff, and its gap to the system's barline.
 const BRACE_WIDTH: f32 = 1.3;
 const BRACE_GAP: f32 = 0.4;
+/// A family's bracket: LilyPond's SystemStartBracket thickness, its gap to
+/// the system's barline, and the room it takes with its serifs.
+const BRACKET_THICK: f32 = 0.45;
+const BRACKET_GAP: f32 = 0.35;
+const BRACKET_ROOM: f32 = 1.5;
+
+/// Room left of the system's barline for braces and brackets.
+fn decoration_width(score: &Score) -> f32 {
+    let brace = if score.parts.iter().any(|p| p.brace) { BRACE_WIDTH + BRACE_GAP } else { 0.0 };
+    let bracket = if score.parts.iter().any(|p| p.group != 0) { BRACKET_ROOM } else { 0.0 };
+    brace.max(bracket)
+}
+
+/// Barlines run on from staff `pi` to the next: a grand staff, or a family
+/// under one bracket.
+fn joined_to_next(score: &Score, pi: usize) -> bool {
+    let (Some(a), Some(b)) = (score.parts.get(pi), score.parts.get(pi + 1)) else { return false };
+    a.brace || a.group != 0 && a.group == b.group
+}
 
 /// A brace from `top` to `bottom` whose right edge is at `right`: two
 /// filled halves meeting at a point in the middle, thickest half-way along
@@ -1118,8 +1137,8 @@ impl<'a> Engraver<'a> {
             let second = pi > 0 && self.score.parts[pi - 1].brace;
             let name = self.part_name(pi);
             if self.opt.names && !name.is_empty() && !second {
-                let (x, y) = if braced { (self.left - BRACE_WIDTH - BRACE_GAP - 1.0, (top + self.top(pi + 1) + 4.0) / 2.0 + 0.7) } else { (self.left - 1.0, top + 2.7) };
-                let x = if self.score.parts.iter().any(|p| p.brace) && !braced { x - BRACE_WIDTH - BRACE_GAP } else { x };
+                let y = if braced { (top + self.top(pi + 1) + 4.0) / 2.0 + 0.7 } else { top + 2.7 };
+                let x = self.left - decoration_width(self.score) - 1.0;
                 self.push(Item::Text { text: name, at: pt(x, y), size: NAME_SIZE, italic: false, bold: false, anchor: 2, id: 0 });
             }
             if braced {
@@ -1128,6 +1147,23 @@ impl<'a> Engraver<'a> {
                     self.push(item);
                 }
             }
+        }
+        // Family brackets: a thick line with serifs at both ends.
+        let mut pi = 0;
+        while pi < self.score.parts.len() {
+            let g = self.score.parts[pi].group;
+            let mut last = pi;
+            while g != 0 && last + 1 < self.score.parts.len() && self.score.parts[last + 1].group == g {
+                last += 1;
+            }
+            if g != 0 && last > pi {
+                let (top, bottom) = (self.top(pi), self.top(last) + 4.0);
+                let x = self.left - BRACKET_GAP - BRACKET_THICK;
+                self.push(Item::line(x + BRACKET_THICK / 2.0, top - 0.25, x + BRACKET_THICK / 2.0, bottom + 0.25, BRACKET_THICK, 0));
+                self.push(Item::glyph(Glyph::BracketTop, x, top - 0.25, 0));
+                self.push(Item::glyph(Glyph::BracketBottom, x, bottom + 0.25, 0));
+            }
+            pi = last + 1;
         }
         // System barline at the left edge.
         if let Some(last) = self.score.parts.len().checked_sub(1) {
@@ -1189,8 +1225,8 @@ impl<'a> Engraver<'a> {
             let last = m.last;
             let start_repeat = self.score.barlines.iter().any(|b| b.at == m.start && matches!(b.kind, BarKind::RepeatStart | BarKind::RepeatBoth));
             for pi in 0..self.score.parts.len() {
-                // Barlines run through a grand staff.
-                let joined = self.score.parts[pi].brace && pi + 1 < self.score.parts.len();
+                // Barlines run through a grand staff and a bracketed family.
+                let joined = joined_to_next(self.score, pi);
                 let (top, bot) = (self.top(pi), if joined { self.top(pi + 1) } else { self.top(pi) + 4.0 });
                 let x1 = m.x1;
                 match (kind, last) {
@@ -2446,8 +2482,7 @@ impl<'a> Engraver<'a> {
         );
         let name = |p: &Part| if first_system || p.abbr.is_empty() { p.name.clone() } else { p.abbr.clone() };
         let names_w = if opt.names { score.parts.iter().map(|p| text_width(&name(p), NAME_SIZE, false)).fold(0.0f32, f32::max) } else { 0.0 };
-        let brace_w = if score.parts.iter().any(|p| p.brace) { BRACE_WIDTH + BRACE_GAP } else { 0.0 };
-        let left = opt.margin + if names_w > 0.0 { names_w + 1.5 } else { 0.0 } + brace_w;
+        let left = opt.margin + if names_w > 0.0 { names_w + 1.5 } else { 0.0 } + decoration_width(score);
         let mut clef_changes: Vec<(usize, Frac, String)> = score
             .parts
             .iter()

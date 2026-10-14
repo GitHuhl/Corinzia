@@ -497,3 +497,31 @@ fn grace_notes_are_small_and_take_room_before_their_note() {
     assert_eq!(b.items.iter().filter(|i| matches!(i, Item::Quad { .. })).count(), 2);
     preview("graces", &b);
 }
+
+#[test]
+fn families_are_bracketed_and_their_barlines_joined() {
+    let mut s = score(&[("treble", &["c''1"]), ("treble", &["e'1"]), ("treble", &["g'1"]), ("bass", &["c1"])], (4, 4), 0);
+    // Two woodwinds (bracketed together), then a lone piano-like pair without.
+    s.parts[0].group = 1;
+    s.parts[1].group = 1;
+    let l = layout_line(&s, &Options::default());
+    let left = l.staves[0].left;
+    // Serifs at both ends of the bracket, left of the system.
+    let top = glyphs(&l, Glyph::BracketTop);
+    let bottom = glyphs(&l, Glyph::BracketBottom);
+    assert_eq!((top.len(), bottom.len()), (1, 1));
+    assert!(top[0].0 < left && top[0].1 < l.staves[0].top && bottom[0].1 > l.staves[1].top + 4.0);
+    // The final barline runs from staff 1 to staff 2 in one stroke, and not on to staff 3.
+    let vertical: Vec<(f32, f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Line { from, to, .. } if from.x == to.x && from.x > left + 5.0 => Some((from.x, from.y, to.y)),
+            _ => None,
+        })
+        .collect();
+    let (t0, t1, t2) = (l.staves[0].top, l.staves[1].top, l.staves[2].top);
+    assert!(vertical.iter().any(|v| v.1 == t0 && v.2 == t1), "joined through the family");
+    assert!(!vertical.iter().any(|v| v.1 == t1 && v.2 > t2 - 0.1), "not on to the next staff");
+    preview("brackets", &l);
+}
