@@ -106,6 +106,12 @@ bool AppController::applyPopover(const QString& kind, const QString& input) {
         edit::addText(h, m.lanes[t.lane].player, at, text,
                       kind == u"expression" ? model::TextKind::Expression : model::TextKind::Technique, ids);
         label = kind == u"expression" ? QStringLiteral("Expression text") : QStringLiteral("Technique text");
+    } else if (kind == u"ending") {
+        const auto passes = edit::parseEnding(text);
+        if (!passes) return fail(QStringLiteral("Ending not understood: 1, 2, \"1, 2\" or 1-3"));
+        const auto [from, to] = selectedBars(h, t.at);
+        edit::setEnding(h, at = from, to, *passes, ids);
+        label = QStringLiteral("Ending %1").arg(QString::fromStdString(edit::endingLabel(*passes)));
     } else if (kind == u"rehearsal") {
         const std::size_t before = h.rehearsal.size();
         edit::toggleRehearsalMark(h, at = bar, ids);
@@ -116,6 +122,38 @@ bool AppController::applyPopover(const QString& kind, const QString& input) {
     push(std::make_unique<model::EditMovementHeader>(m.id, std::move(h), label.toStdString()));
     setStatus(QStringLiteral("%1 · bar %2").arg(label).arg(barNumber(m, std::min(at, m.length))));
     return true;
+}
+
+// Whole bars covering the passage selection, else the bar at `at`.
+std::pair<Fraction, Fraction> AppController::selectedBars(const model::MovementHeader& h, Fraction at) const {
+    const Fraction from = edit::barStartAtOrBefore(h, range_.active ? range_.from : at);
+    Fraction to = from + edit::barLength(h, from);
+    if (range_.active && range_.to > to) {
+        to = edit::barStartAtOrBefore(h, range_.to);
+        if (to < range_.to) to = to + edit::barLength(h, to);
+    }
+    return {from, std::min(to, h.length)};
+}
+
+void AppController::addFirstSecondEndings() {
+    const auto t = structureTarget();
+    if (!t.movement) return;
+    model::Movement& m = *t.movement;
+    model::MovementHeader h = model::captureHeader(m);
+    auto ids = edit::IdAlloc([this] { return project_.allocateId(); });
+    const auto [from, to] = selectedBars(h, t.at);
+    // 1st ending = the selected bars, closed by an end repeat; 2nd ending = as
+    // many bars after it (as far as the movement goes).
+    const Fraction to2 = std::min(to + (to - from), h.length);
+    if (!(to < to2)) {
+        setStatus(QStringLiteral("No room for a 2nd ending after the selection"));
+        return;
+    }
+    edit::setEnding(h, from, to, 1, ids);
+    edit::setEnding(h, to, to2, 2, ids);
+    edit::setBarline(h, to, model::BarlineKind::RepeatEnd, ids);
+    push(std::make_unique<model::EditMovementHeader>(m.id, std::move(h), "1st and 2nd endings"));
+    setStatus(QStringLiteral("1st and 2nd endings · bars %1–%2").arg(barNumber(m, from)).arg(barNumber(m, to2 - Fraction(1, 1024))));
 }
 
 void AppController::insertBars(int count) {
@@ -145,14 +183,7 @@ void AppController::deleteBars() {
     if (!t.movement) return;
     model::Movement& m = *t.movement;
     model::MovementHeader h = model::captureHeader(m);
-    // Whole bars covering the passage, or the bar holding the caret/selection.
-    const Fraction from = edit::barStartAtOrBefore(h, t.at);
-    Fraction to = from + edit::barLength(h, from);
-    if (range_.active && range_.to > to) {
-        to = edit::barStartAtOrBefore(h, range_.to);
-        if (to < range_.to) to = to + edit::barLength(h, to);
-    }
-    to = std::min(to, h.length);
+    const auto [from, to] = selectedBars(h, t.at);
     if (from >= to || (to - from) >= h.length) {
         setStatus(QStringLiteral("A movement needs at least one bar"));
         return;

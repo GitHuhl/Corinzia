@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS movement (
     tempo       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"bpm":120,"ramp":false}]
     meter       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"num":4,"den":4}]
     keys        BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
-    -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}],
+    -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}], "endings":[{"id","from","to","n":passes bitmask}],
     --        "clefs":[{"id","p":player,"at","c":"bass"}], "texts":[{"id","p","at","t":"dolce","k":"x"|"t"}]}
     notation    BLOB
 );

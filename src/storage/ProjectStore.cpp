@@ -323,6 +323,10 @@ bool ProjectStore::saveMovement(const model::Movement& m, const std::vector<Voic
         notation += ",\"marks\":" + jarray(m.rehearsal, [](const model::RehearsalMark& r) {
             return "{\"id\":" + std::to_string(r.id.id.value) + ",\"at\":" + jfrac(r.at) + "}";
         });
+        notation += ",\"endings\":" + jarray(m.endings, [](const model::Ending& e) {
+            return "{\"id\":" + std::to_string(e.id.id.value) + ",\"from\":" + jfrac(e.from) + ",\"to\":" + jfrac(e.to) +
+                   ",\"n\":" + std::to_string(int(e.passes)) + "}";
+        });
         std::vector<std::string> clefs, texts;
         for (const auto& l : m.lanes) {
             for (const auto& c : l.clefs)
@@ -630,6 +634,13 @@ bool ProjectStore::load(model::Project& p, std::string* error) {
                          "FROM movement m, json_each(m.notation, '$.marks') j WHERE m.id = ? ORDER BY j.key");
             nm.bind(1, mid);
             while (nm.step()) m->rehearsal.push_back({{eid(nm, 0)}, Fraction(nm.i64(1), nm.i64(2))});
+            Stmt ne(db_, "SELECT j.value->>'id', j.value->>'$.from[0]', j.value->>'$.from[1]', j.value->>'$.to[0]', "
+                         "j.value->>'$.to[1]', j.value->>'n' "
+                         "FROM movement m, json_each(m.notation, '$.endings') j WHERE m.id = ? ORDER BY j.key");
+            ne.bind(1, mid);
+            while (ne.step())
+                m->endings.push_back({{eid(ne, 0)}, Fraction(ne.i64(1), ne.i64(2)), Fraction(ne.i64(3), ne.i64(4)),
+                                      std::uint8_t(ne.i64(5))});
             Stmt nc(db_, "SELECT j.value->>'id', j.value->>'p', j.value->>'$.at[0]', j.value->>'$.at[1]', j.value->>'c' "
                          "FROM movement m, json_each(m.notation, '$.clefs') j WHERE m.id = ? ORDER BY j.key");
             nc.bind(1, mid);

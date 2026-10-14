@@ -128,6 +128,9 @@ struct KeyEvent   { Fraction at; int fifths = 0; bool minor = false; };
 enum class BarlineKind : std::uint8_t { Double, Final, RepeatStart, RepeatEnd, RepeatBoth };
 struct BarlineMark { EventId id; Fraction at; BarlineKind kind = BarlineKind::Double; };
 struct RehearsalMark { EventId id; Fraction at; };                     // lettered A, B, C … automatically
+// Volta bracket ("1.", "2.", "1.–3."): played only on the passes in `passes`
+// (bit n-1 = pass n) of the repeat it belongs to.
+struct Ending { EventId id; Fraction from, to; std::uint8_t passes = 1; };
 struct ClefChange { EventId id; Fraction at; std::string clef; };       // per staff: "treble", "bass", "alto" …
 enum class TextKind : std::uint8_t { Expression, Technique };          // below italic ("dolce") / above ("pizz.")
 struct TextItem { EventId id; Fraction at; std::string text; TextKind kind = TextKind::Expression; };
@@ -217,6 +220,7 @@ struct Movement {
     std::vector<KeyEvent> keys{{Fraction{0}, 0, false}};
     std::vector<BarlineMark> barlines;       // special barlines (double, final, repeats) at bar positions
     std::vector<RehearsalMark> rehearsal;
+    std::vector<Ending> endings;             // sorted by `from`, non-overlapping
     std::vector<PlayerLane> lanes;
     std::vector<AutomationLane> automation;
     Fraction length{1};               // total duration in whole notes
@@ -237,6 +241,7 @@ struct MovementHeader {
     std::vector<RehearsalMark> rehearsal;
     Fraction length{1};
     std::vector<LaneHeader> lanes;
+    std::vector<Ending> endings;
 };
 MovementHeader captureHeader(const Movement& m);
 void applyHeader(Movement& m, const MovementHeader& h);

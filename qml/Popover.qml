@@ -20,6 +20,7 @@ Rectangle {
         tempo:      { title: "Tempo",          hint: "Allegro  ·  Andante 84  ·  q=96  ·  72" },
         expression: { title: "Expression",     hint: "dolce, espressivo, sempre legato … (below the staff, italic)" },
         technique:  { title: "Playing technique", hint: "pizz., arco, con sord., sul pont. … (above the staff)" },
+        ending:     { title: "Repeat ending",  hint: "1  2  \"1, 2\"  1-3  ·  over the selected bars" },
         ornament:   { title: "Ornament",       hint: "tr  mordent  turn  trem  arp  ,  //  (toggles on the selection)" }
     })
 

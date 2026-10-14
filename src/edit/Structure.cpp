@@ -174,6 +174,56 @@ std::optional<TempoSpec> parseTempo(std::string text) {
     return TempoSpec{words, *bpm};
 }
 
+std::optional<std::uint8_t> parseEnding(std::string text) {
+    text = trim(text);
+    if (text.empty()) return std::nullopt;
+    unsigned mask = 0;
+    int prev = 0;
+    bool range = false;
+    for (std::size_t i = 0; i < text.size();) {
+        const char c = text[i];
+        if (std::isdigit((unsigned char)c)) {
+            const int n = c - '0';
+            if (n < 1 || n > 8 || (i + 1 < text.size() && std::isdigit((unsigned char)text[i + 1]))) return std::nullopt;
+            if (range) {
+                if (n < prev) return std::nullopt;
+                for (int k = prev; k <= n; ++k) mask |= 1u << (k - 1);
+                range = false;
+            }
+            mask |= 1u << (n - 1);
+            prev = n;
+            ++i;
+        } else if (c == '-' && prev) {
+            range = true;
+            ++i;
+        } else if (c == '.' || c == ',' || c == ' ') {
+            ++i;
+        } else if (text.compare(i, 3, "–") == 0 && prev) {   // en dash
+            range = true;
+            i += 3;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (range || !mask) return std::nullopt;
+    return std::uint8_t(mask);
+}
+
+std::string endingLabel(std::uint8_t passes) {
+    std::string out;
+    for (int n = 1; n <= 8;) {
+        if (!(passes & (1u << (n - 1)))) { ++n; continue; }
+        int last = n;
+        while (last < 8 && (passes & (1u << last))) ++last;
+        if (!out.empty()) out += ", ";
+        out += std::to_string(n) + ".";
+        if (last - n >= 2) out += "–" + std::to_string(last) + ".";
+        else if (last > n) out += ", " + std::to_string(last) + ".";
+        n = last + 1;
+    }
+    return out;
+}
+
 std::optional<std::uint16_t> parseOrnament(std::string text) {
     text = lower(trim(text));
     static const std::map<std::string, std::uint16_t> kOrn = {
@@ -227,6 +277,12 @@ void setTempo(MovementHeader& h, Fraction at, const TempoSpec& t) {
 void setBarline(MovementHeader& h, Fraction at, BarlineKind kind, IdAlloc& ids) {
     replaceAt(h.barlines, at, model::BarlineMark{{ids()}, at, kind});
 }
+void setEnding(MovementHeader& h, Fraction from, Fraction to, std::uint8_t passes, IdAlloc& ids) {
+    std::erase_if(h.endings, [&](const model::Ending& e) { return e.from < to && from < e.to; });
+    h.endings.push_back({{ids()}, from, to, passes});
+    std::sort(h.endings.begin(), h.endings.end(), [](const auto& a, const auto& b) { return a.from < b.from; });
+}
+
 void toggleRehearsalMark(MovementHeader& h, Fraction at, IdAlloc& ids) {
     if (std::erase_if(h.rehearsal, [&](const model::RehearsalMark& r) { return r.at == at; })) return;
     replaceAt(h.rehearsal, at, model::RehearsalMark{{ids()}, at});
@@ -247,6 +303,7 @@ std::optional<std::string> describeItem(const MovementHeader& h, ElementId id) {
     static const char* kBar[] = {"Double barline", "Final barline", "Start repeat", "End repeat", "End/start repeat"};
     for (const auto& b : h.barlines) if (b.id.id == id) return std::string(kBar[int(b.kind)]);
     for (const auto& r : h.rehearsal) if (r.id.id == id) return std::string("Rehearsal mark");
+    for (const auto& e : h.endings) if (e.id.id == id) return "Ending " + endingLabel(e.passes);
     for (const auto& l : h.lanes) {
         for (const auto& c : l.clefs) if (c.id.id == id) return "Clef " + c.clef;
         for (const auto& t : l.texts)
@@ -261,6 +318,7 @@ std::optional<std::string> removeItem(MovementHeader& h, ElementId id) {
     auto match = [&](const auto& x) { return x.id.id == id; };
     std::erase_if(h.barlines, match);
     std::erase_if(h.rehearsal, match);
+    std::erase_if(h.endings, match);
     for (auto& l : h.lanes) {
         std::erase_if(l.clefs, match);
         std::erase_if(l.texts, match);
@@ -307,6 +365,10 @@ void insertSpan(MovementHeader& h, Fraction at, Fraction length) {
     for (auto& b : h.barlines)
         if (b.at > at || (b.at == at && b.kind == BarlineKind::RepeatStart)) b.at = b.at + length;
     shiftItems(h.rehearsal, at, length, Kind::Items);
+    for (auto& e : h.endings) {   // spanners: inserting inside one lengthens it
+        if (e.from >= at) e.from = e.from + length;
+        if (e.to > at) e.to = e.to + length;
+    }
     for (auto& l : h.lanes) {
         shiftItems(l.changes, at, length, Kind::Map);
         shiftItems(l.clefs, at, length, Kind::Items);
@@ -332,6 +394,13 @@ void deleteSpan(MovementHeader& h, Fraction from, Fraction to) {
             break;
         }
     deleteItems(h.rehearsal, from, to, Kind::Items);
+    const Fraction gap = to - from;
+    auto cut = [&](Fraction x) { return x <= from ? x : x >= to ? x - gap : from; };
+    for (auto& e : h.endings) {   // spanners are clipped; ones left empty go
+        e.from = cut(e.from);
+        e.to = cut(e.to);
+    }
+    std::erase_if(h.endings, [](const model::Ending& e) { return !(e.from < e.to); });
     for (auto& l : h.lanes) {
         deleteItems(l.changes, from, to, Kind::Map);
         deleteItems(l.clefs, from, to, Kind::Items);

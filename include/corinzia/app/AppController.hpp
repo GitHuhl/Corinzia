@@ -127,6 +127,7 @@ public:
     Q_INVOKABLE QString popoverPosition();          // "Bar 3", shown in the popover
     Q_INVOKABLE void insertBars(int count);         // before the bar at the selection/caret
     Q_INVOKABLE void deleteBars();                  // the selected bars, or the caret's bar
+    Q_INVOKABLE void addFirstSecondEndings();       // selected bars = 1st ending + end repeat, then a 2nd
 
     bool inputMode() const noexcept { return inputMode_; }
     void setInputMode(bool on);
@@ -212,6 +213,7 @@ private:
     void refreshArrange();
     struct StructureTarget { model::Movement* movement = nullptr; std::size_t lane = 0; Fraction at{0}; };
     StructureTarget structureTarget();
+    std::pair<Fraction, Fraction> selectedBars(const model::MovementHeader& h, Fraction at) const;
     bool deleteStructureItem();
 
     Options opt_;

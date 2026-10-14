@@ -41,7 +41,7 @@ ApplicationWindow {
         if (shift && !alt) {
             const pops = { [Qt.Key_K]: "key", [Qt.Key_M]: "time", [Qt.Key_T]: "tempo", [Qt.Key_X]: "expression", [Qt.Key_P]: "technique",
                            [Qt.Key_O]: "ornament" }
-            if (!App.inputMode) { pops[Qt.Key_C] = "clef"; pops[Qt.Key_B] = "barline" }
+            if (!App.inputMode) { pops[Qt.Key_C] = "clef"; pops[Qt.Key_B] = "barline"; pops[Qt.Key_R] = "ending" }
             if (pops[k] !== undefined) { popover.open(pops[k]); event.accepted = true; return }
             if (!App.inputMode && k === Qt.Key_A) { App.applyPopover("rehearsal", ""); event.accepted = true; return }
         }

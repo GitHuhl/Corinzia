@@ -24,6 +24,11 @@ std::optional<model::BarlineKind> parseBarline(std::string text);
 // "Allegro 132", "q=96", "♩=96", "96", "Adagio" (word -> conventional tempo).
 struct TempoSpec { std::string text; double bpm; };
 std::optional<TempoSpec> parseTempo(std::string text);
+// Ending (volta) numbers: "1", "2.", "1,2", "1-3", "1.2." -> pass bitmask.
+std::optional<std::uint8_t> parseEnding(std::string text);
+// "1." / "1., 2." / "1.–3." as engraved.
+std::string endingLabel(std::uint8_t passes);
+
 // Ornament / articulation popover: "tr", "mordent", "turn", "trem", "arp",
 // "breath" (or ","), "caesura" (or "//"), "staccatissimo", "fermata" ...
 // -> model::Articulation bit.
@@ -42,6 +47,8 @@ void setKey(model::MovementHeader& h, Fraction at, KeySig key);
 void setMeter(model::MovementHeader& h, Fraction at, int num, int den);
 void setTempo(model::MovementHeader& h, Fraction at, const TempoSpec& t);
 void setBarline(model::MovementHeader& h, Fraction at, model::BarlineKind kind, IdAlloc& ids);
+// Replaces any ending overlapping [from, to).
+void setEnding(model::MovementHeader& h, Fraction from, Fraction to, std::uint8_t passes, IdAlloc& ids);
 void toggleRehearsalMark(model::MovementHeader& h, Fraction at, IdAlloc& ids);
 void setClef(model::MovementHeader& h, PlayerId lane, Fraction at, const std::string& clef, IdAlloc& ids);
 void addText(model::MovementHeader& h, PlayerId lane, Fraction at, const std::string& text, model::TextKind kind, IdAlloc& ids);

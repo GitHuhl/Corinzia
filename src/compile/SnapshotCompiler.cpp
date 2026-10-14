@@ -137,31 +137,104 @@ std::vector<FigureNote> ornamentFigure(const model::Pitch& main, Fraction length
     return out;
 }
 
+// Plays the movement like a performer: an end repeat jumps back to the last
+// start repeat (or the start) until the repeat's passes are done; an ending
+// (volta) not marked for the current pass is skipped, together with the end
+// repeat at its end. A repeat with endings takes as many passes as its
+// highest ending number; without endings, two.
 std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m) {
+    using K = model::BarlineKind;
     std::vector<model::BarlineMark> bars = m.barlines;
     std::sort(bars.begin(), bars.end(), [](const auto& x, const auto& y) { return x.at < y.at; });
-    std::vector<std::pair<Fraction, Fraction>> out;
-    Fraction pos{0}, repeatFrom{0};
-    for (const auto& b : bars) {
-        if (b.at > m.length) break;
-        using K = model::BarlineKind;
-        if (b.kind == K::RepeatStart) {
-            repeatFrom = b.at;
-        } else if ((b.kind == K::RepeatEnd || b.kind == K::RepeatBoth) && b.at > repeatFrom) {
-            if (b.at > pos) out.push_back({pos, b.at});
-            out.push_back({repeatFrom, b.at});
-            pos = repeatFrom = b.at;
+    std::vector<model::Ending> ends = m.endings;
+    std::sort(ends.begin(), ends.end(), [](const auto& x, const auto& y) { return x.from < y.from; });
+    const Fraction len = m.length;
+
+    auto barAt = [&](Fraction at) -> const model::BarlineMark* {
+        for (const auto& b : bars) if (b.at == at) return &b;
+        return nullptr;
+    };
+    auto endingAt = [&](Fraction at) -> const model::Ending* {
+        for (const auto& e : ends) if (e.from == at && e.from < e.to) return &e;
+        return nullptr;
+    };
+    // Passes of the repeat starting at `from` and ending at `end`: the chain of
+    // consecutive endings beginning inside it decides.
+    auto passesFor = [&](Fraction from, Fraction end) {
+        int passes = 2;
+        for (const auto& e : ends) {
+            if (e.from < from || e.from >= end) continue;
+            int top = 0;
+            for (const model::Ending* c = &e; c; c = endingAt(c->to))
+                for (int n = 1; n <= 8; ++n)
+                    if (c->passes & (1u << (n - 1))) top = std::max(top, n);
+            passes = std::max(2, top);
+            break;
         }
+        return passes;
+    };
+
+    std::vector<std::pair<Fraction, Fraction>> out;
+    Fraction cur{0}, segStart{0}, repeatFrom{0}, resetAt{-1};
+    int pass = 1;
+    bool jumped = false, skipped = false;
+    auto flush = [&](Fraction to) {
+        if (to > segStart) {
+            if (!out.empty() && out.back().second == segStart) out.back().second = to;
+            else out.push_back({segStart, to});
+        }
+    };
+    for (int guard = 0; cur <= len && guard < 100000; ++guard) {   // `len` too: a final end repeat
+        const model::BarlineMark* bar = barAt(cur);
+        if (cur == resetAt && !skipped) {   // the last ending of a repeat is done
+            pass = 1;
+            repeatFrom = cur;
+            resetAt = Fraction{-1};
+        }
+        // End repeat (only when reached by playing up to it).
+        if (bar && !jumped && !skipped && (bar->kind == K::RepeatEnd || bar->kind == K::RepeatBoth) && cur > repeatFrom) {
+            if (pass < passesFor(repeatFrom, cur)) {
+                flush(cur);
+                ++pass;
+                cur = segStart = repeatFrom;
+                jumped = true;
+                continue;
+            }
+            pass = 1;
+            repeatFrom = cur;
+        }
+        if (bar && !jumped && (bar->kind == K::RepeatStart || bar->kind == K::RepeatBoth)) {
+            repeatFrom = cur;
+            pass = 1;
+        }
+        if (const model::Ending* e = endingAt(cur)) {
+            if (!(e->passes & (1u << std::min(pass - 1, 7)))) {   // not this pass: skip it
+                flush(cur);
+                cur = segStart = std::min(e->to, len);
+                skipped = true;
+                jumped = false;
+                if (!endingAt(cur)) resetAt = cur, pass = 1, repeatFrom = cur;   // skipped the last one
+                continue;
+            }
+            const model::BarlineMark* eb = barAt(e->to);
+            if (!(eb && (eb->kind == K::RepeatEnd || eb->kind == K::RepeatBoth)))
+                resetAt = e->to;   // an ending that does not repeat is the last: the repeat is over after it
+        }
+        if (cur >= len) break;
+        // Advance to the next point of interest.
+        Fraction next = len;
+        for (const auto& b : bars) if (b.at > cur) { next = std::min(next, b.at); break; }
+        for (const auto& e : ends) {
+            if (e.from > cur) next = std::min(next, e.from);
+            if (e.to > cur) next = std::min(next, e.to);
+        }
+        if (resetAt > cur) next = std::min(next, resetAt);
+        cur = next;
+        jumped = skipped = false;
     }
-    if (m.length > pos) out.push_back({pos, m.length});
-    if (out.empty()) out.push_back({Fraction{0}, m.length});
-    // Join spans that continue each other (e.g. a start repeat with no end).
-    std::vector<std::pair<Fraction, Fraction>> merged;
-    for (const auto& sp : out) {
-        if (!merged.empty() && merged.back().second == sp.first) merged.back().second = sp.second;
-        else merged.push_back(sp);
-    }
-    return merged;
+    flush(len);
+    if (out.empty()) out.push_back({Fraction{0}, len});
+    return out;
 }
 
 std::vector<EventShape> expressiveShape(const model::EventList& evs) {

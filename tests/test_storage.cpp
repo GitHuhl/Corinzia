@@ -52,6 +52,7 @@ TEST(storage_roundtrip) {
         mv.tempo[0].text = "Allegro";
         mv.barlines.push_back({{p.allocateId()}, Fraction{1}, model::BarlineKind::RepeatEnd});
         mv.rehearsal.push_back({{p.allocateId()}, Fraction{1}});
+        mv.endings.push_back({{p.allocateId()}, Fraction(1, 2), Fraction{1}, 3});
         mv.lanes[0].clefs.push_back({{p.allocateId()}, Fraction{1}, "bass"});
         mv.lanes[0].texts.push_back({{p.allocateId()}, Fraction{1, 2}, "dolce \"quasi\" niente", model::TextKind::Expression});
         mv.lanes[0].texts.push_back({{p.allocateId()}, Fraction{1}, "pizz.", model::TextKind::Technique});
@@ -111,6 +112,8 @@ TEST(storage_roundtrip) {
     CHECK(b.tempo[0].text == "Allegro");
     CHECK(b.barlines.size() == 1 && b.barlines[0].kind == model::BarlineKind::RepeatEnd && b.barlines[0].at == Fraction{1});
     CHECK(b.rehearsal.size() == 1 && b.rehearsal[0].id == a.rehearsal[0].id);
+    CHECK(b.endings.size() == 1 && b.endings[0].id == a.endings[0].id && b.endings[0].from == Fraction(1, 2) &&
+          b.endings[0].to == Fraction{1} && b.endings[0].passes == 3);
     CHECK(b.lanes[0].clefs.size() == 1 && b.lanes[0].clefs[0].clef == "bass");
     CHECK(b.lanes[0].texts.size() == 2 && b.lanes[0].texts[0].text == "dolce \"quasi\" niente" &&
           b.lanes[0].texts[1].kind == model::TextKind::Technique);

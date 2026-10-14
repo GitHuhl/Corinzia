@@ -346,3 +346,47 @@ TEST(compile_plays_ornaments_and_rolls_chords) {
     CHECK(eOn == 2 * q && gOn == 2 * q + SamplePos(0.03 * 48000));   // rolled upwards by 30 ms
     CHECK(trillOn == 7);                                                // 32nd alternation
 }
+
+TEST(compile_playback_order_with_endings) {
+    using K = model::BarlineKind;
+    using F = Fraction;
+    model::Movement m;
+    m.length = F{6};
+    auto bar = [&](F at, K k) { m.barlines.push_back({{ElementId{900 + m.barlines.size()}}, at, k}); };
+    auto end = [&](F from, F to, std::uint8_t passes) { m.endings.push_back({{ElementId{950 + m.endings.size()}}, from, to, passes}); };
+    using Order = std::vector<std::pair<Fraction, Fraction>>;
+    // Bars 1-2 | 1. bar 3 :| 2. bar 4 | bars 5-6   ->  1 2 3 1 2 4 5 6
+    bar(F{3}, K::RepeatEnd);
+    end(F{2}, F{3}, 1);
+    end(F{3}, F{4}, 2);
+    CHECK(compile::playbackOrder(m) == (Order{{F{0}, F{3}}, {F{0}, F{2}}, {F{3}, F{6}}}));
+    // With a start repeat at bar 2:  1 2 3 2 4 5 6
+    bar(F{1}, K::RepeatStart);
+    CHECK(compile::playbackOrder(m) == (Order{{F{0}, F{3}}, {F{1}, F{2}}, {F{3}, F{6}}}));
+    // Three endings: |: 2 [1. 3 :|] [2. 4 :|] [3. 5] 6  ->  1 2 3 2 4 2 5 6
+    m.barlines.clear();
+    m.endings.clear();
+    bar(F{1}, K::RepeatStart);
+    bar(F{3}, K::RepeatEnd);
+    bar(F{4}, K::RepeatEnd);
+    end(F{2}, F{3}, 1);
+    end(F{3}, F{4}, 2);
+    end(F{4}, F{5}, 4);
+    CHECK(compile::playbackOrder(m) == (Order{{F{0}, F{3}}, {F{1}, F{2}}, {F{3}, F{4}}, {F{1}, F{2}}, {F{4}, F{6}}}));
+    // "1., 2." then "3.": |: 2 [1.2. 3 :|] [3. 4] 5 6  ->  1 2 3 2 3 2 4 5 6
+    m.barlines.clear();
+    m.endings.clear();
+    bar(F{1}, K::RepeatStart);
+    bar(F{3}, K::RepeatEnd);
+    end(F{2}, F{3}, 3);
+    end(F{3}, F{4}, 4);
+    CHECK(compile::playbackOrder(m) == (Order{{F{0}, F{3}}, {F{1}, F{3}}, {F{1}, F{2}}, {F{3}, F{6}}}));
+    // A later plain repeat still works after an ending group:  ... :| at 6 jumps back to 4 (after the 2nd ending).
+    m.barlines.clear();
+    m.endings.clear();
+    bar(F{2}, K::RepeatEnd);
+    end(F{1}, F{2}, 1);
+    end(F{2}, F{3}, 2);
+    bar(F{6}, K::RepeatEnd);
+    CHECK(compile::playbackOrder(m) == (Order{{F{0}, F{2}}, {F{0}, F{1}}, {F{2}, F{6}}, {F{3}, F{6}}}));
+}

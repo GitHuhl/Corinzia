@@ -1,4 +1,5 @@
 #include "corinzia/engrave/LilyPondEmitter.hpp"
+#include "corinzia/edit/Structure.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -140,11 +141,32 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
     std::vector<model::RehearsalMark> marks = m.rehearsal;
     std::sort(marks.begin(), marks.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
     static const char* kBar[] = {"||", "|.", ".|:", ":|.", ":|.|:"};
+    std::vector<model::Ending> endings = m.endings;
+    std::sort(endings.begin(), endings.end(), [](const auto& a, const auto& b) { return a.from < b.from; });
+    std::size_t endIdx = 0;
+    bool voltaOpen = false;
+    Fraction voltaEnd{0};
     auto emitBarlines = [&] {
         while (bi < bars.size() && bars[bi].at <= pos) {
             if (bars[bi].at == pos) o << "  \\bar \"" << kBar[int(bars[bi].kind)] << "\"\n";
             ++bi;
         }
+        // Volta brackets: close the open one, open the next (one command when they touch).
+        std::string cmds;
+        if (voltaOpen && voltaEnd <= pos) {
+            cmds += "(volta #f) ";
+            voltaOpen = false;
+        }
+        while (endIdx < endings.size() && endings[endIdx].from <= pos) {
+            const auto& e = endings[endIdx++];
+            if (e.from < pos || !(e.from < e.to)) continue;
+            o << "  \\once \\override Score.VoltaBracket.output-attributes = #'((id . \"" << e.id.id.toSvgId()
+              << "\") (class . \"ending\"))\n";
+            cmds += "(volta \"" + escape(edit::endingLabel(e.passes)) + "\") ";
+            voltaOpen = true;
+            voltaEnd = e.to;
+        }
+        if (!cmds.empty()) o << "  \\set Score.repeatCommands = #'(" << cmds << ")\n";
     };
     int printedBpm = -1;
     while (pos < m.length) {
@@ -176,6 +198,8 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
         if (ti < m.tempo.size()) next = std::min(next, m.tempo[ti].at);
         if (bi < bars.size()) next = std::min(next, std::max(bars[bi].at, pos));
         if (ri < marks.size()) next = std::min(next, std::max(marks[ri].at, pos));
+        if (endIdx < endings.size()) next = std::min(next, std::max(endings[endIdx].from, pos));
+        if (voltaOpen) next = std::min(next, std::max(voltaEnd, pos));
         if (next > pos) o << "  s" << lilyDuration(next - pos) << "\n";
         else if (next == pos && next < m.length) next = m.length;   // safety: never loop
         pos = next;

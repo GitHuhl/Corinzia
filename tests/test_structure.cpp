@@ -197,3 +197,24 @@ TEST(structure_parse_ornament) {
     CHECK(parseOrnament("arp") == std::uint16_t(model::ArtArpeggio));
     CHECK(!parseOrnament("glissando"));
 }
+
+TEST(structure_endings) {
+    CHECK(parseEnding("1") == std::uint8_t(1));
+    CHECK(parseEnding("2.") == std::uint8_t(2));
+    CHECK(parseEnding("1, 2") == std::uint8_t(3));
+    CHECK(parseEnding("1-3") == std::uint8_t(7));
+    CHECK(parseEnding("1.2.") == std::uint8_t(3));
+    CHECK(!parseEnding("0") && !parseEnding("12") && !parseEnding("x") && !parseEnding("3-1") && !parseEnding("1-"));
+    CHECK(endingLabel(1) == "1." && endingLabel(3) == "1., 2." && endingLabel(7) == "1.–3." && endingLabel(5) == "1., 3.");
+    Ids ids;
+    auto h = header();
+    setEnding(h, Fraction{3}, Fraction{4}, 1, ids.fn);
+    setEnding(h, Fraction{4}, Fraction{5}, 2, ids.fn);
+    setEnding(h, Fraction{3}, Fraction{4}, 3, ids.fn);   // replaces the first
+    CHECK(h.endings.size() == 2 && h.endings[0].passes == 3 && h.endings[1].from == Fraction{4});
+    insertSpan(h, Fraction(7, 2), Fraction{1});          // inside ending 1: it grows
+    CHECK(h.endings[0].from == Fraction{3} && h.endings[0].to == Fraction{5} && h.endings[1].from == Fraction{5});
+    deleteSpan(h, Fraction{4}, Fraction{6});             // clips ending 1, removes ending 2
+    CHECK(h.endings.size() == 1 && h.endings[0].to == Fraction{4});
+    CHECK(describeItem(h, h.endings[0].id.id) == std::string("Ending 1., 2."));
+}

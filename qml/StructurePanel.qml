@@ -60,6 +60,17 @@ Pane {
                 }
             }
             PanelButton {
+                objectName: "endingsButton"
+                text: "1st / 2nd ending"
+                tip: "Selected bars become the 1st ending (with an end repeat); the same number of bars after them the 2nd"
+                onClicked: App.addFirstSecondEndings()
+            }
+            PanelButton {
+                text: "Ending…"
+                tip: "Any ending over the selected bars: 1, 2, \"1, 2\", 1-3 (Shift+R outside note input)"
+                onClicked: panel.openPopover("ending")
+            }
+            PanelButton {
                 objectName: "rehearsalButton"
                 text: "Rehearsal mark"
                 tip: "Add or remove a lettered mark at this bar (Shift+A outside note input)"

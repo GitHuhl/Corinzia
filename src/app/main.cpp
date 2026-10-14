@@ -21,6 +21,7 @@
 #include <QTimer>
 #include <QtQml>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -455,6 +456,26 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
         app.undo();
         check(mov().length == len && mov().rehearsal.size() == 1 && mov().keys.size() == 2 && mov().lanes[0].texts.size() == 1,
               "undo restores the deleted bar");
+
+        // Repeat endings: the panel's 1st/2nd button over bar 3, and the Shift+R popover.
+        app.selectElements({bar3Id}, false);
+        check(clickItem("endingsButton") && mov().endings.size() == 2 && mov().endings[0].from == cz::Fraction{2} &&
+                  mov().endings[0].to == cz::Fraction{3} && mov().endings[1].passes == 2 &&
+                  std::any_of(mov().barlines.begin(), mov().barlines.end(),
+                              [](const auto& b) { return b.at == cz::Fraction{3} && b.kind == cz::model::BarlineKind::RepeatEnd; }),
+              "1st/2nd ending button: bar 3 = 1st ending + end repeat, bar 4 = 2nd ending");
+        key(Qt::Key_R, Qt::ShiftModifier, QStringLiteral("R"));
+        type(QStringLiteral("1-3"));
+        key(Qt::Key_Return);
+        check(pop && !pop->isVisible() && mov().endings.size() == 2 && mov().endings[0].passes == 7,
+              "Shift+R \"1-3\" replaces the 1st ending with 1.–3.");
+        const int beforeEnd = app.engraveCount();
+        check(waitFor([&] { return app.engraveCount() > beforeEnd && canvas->engraving() &&
+                                   canvas->engraving()->index->find(mov().endings[0].id.id); }, 60000),
+              "endings engraved and clickable");
+        app.undo();
+        app.undo();
+        check(mov().endings.empty(), "undo removes the endings");
 
         // Ornaments: Shift+O popover and the Notes panel, on the selected passage.
         app.selectElements({bar3Id}, false);

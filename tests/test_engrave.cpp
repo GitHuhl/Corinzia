@@ -146,6 +146,8 @@ TEST(lily_structure_and_text_compile) {
     m.barlines = {{{p.allocateId()}, Fraction{1}, K::RepeatEnd}, {{p.allocateId()}, m.length, K::Final}};
     const ElementId markId = p.allocateId(), textId = p.allocateId();
     m.rehearsal = {{{markId}, Fraction{1}}};
+    const ElementId voltaId = p.allocateId();
+    m.endings = {{{voltaId}, Fraction(0), Fraction{1}, 1}, {{p.allocateId()}, Fraction{1}, m.length, 6}};
     m.lanes[0].clefs = {{{p.allocateId()}, Fraction(3, 2), "bass"}};
     m.lanes[0].texts = {{{textId}, Fraction{0}, "dolce", model::TextKind::Expression},
                         {{p.allocateId()}, Fraction(1, 2), "pizz.", model::TextKind::Technique}};
@@ -154,6 +156,8 @@ TEST(lily_structure_and_text_compile) {
     CHECK(ly.find("\\tempo \"Allegro \\\"vivo\\\"\" 4 = 120") != std::string::npos);
     CHECK(ly.find("\\bar \":|.\"") != std::string::npos && ly.find("\\bar \"|.\"") != std::string::npos);
     CHECK(ly.find("\\mark \\default") != std::string::npos);
+    CHECK(ly.find("repeatCommands = #'((volta \"1.\") )") != std::string::npos);
+    CHECK(ly.find("((volta #f) (volta \"2., 3.\") )") != std::string::npos);
     CHECK(ly.find("\\clef \"bass\"") != std::string::npos);
     CHECK(ly.find("\\italic \"dolce\"") != std::string::npos && ly.find("^\\markup \"pizz.\"") != std::string::npos);
     if (const char* lily = std::getenv("CORINZIA_LILYPOND")) {
@@ -168,6 +172,7 @@ TEST(lily_structure_and_text_compile) {
         svg << std::ifstream(base + ".svg").rdbuf();
         CHECK(svg.str().find(markId.toSvgId()) != std::string::npos);   // clickable mark and text
         CHECK(svg.str().find(textId.toSvgId()) != std::string::npos);
+        CHECK(svg.str().find(voltaId.toSvgId()) != std::string::npos);
     }
 }
 
