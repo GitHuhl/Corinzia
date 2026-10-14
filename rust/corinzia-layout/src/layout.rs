@@ -1439,7 +1439,7 @@ impl<'a> Engraver<'a> {
             let y = (self.sky[0].top_over(x, x + total) - 0.6).min(self.top(0) - 2.0);
             if !words.is_empty() {
                 let item = Item::Text { text: words.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: true, anchor: 0, id: 0 };
-                x += text_width(&words, TEMPO_SIZE, true) + 0.2;
+                x += text_width(&words, TEMPO_SIZE, true) + 0.35;
                 self.place(0, item);
             }
             self.place(0, Item::glyph_scaled(Glyph::MetNoteQuarterUp, x, y - 0.1, 0.6, 0));

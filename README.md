@@ -68,6 +68,11 @@ the Bravura font, in both Page and Panorama view. Re-engraving takes tens of
 milliseconds instead of seconds. PDF export still uses LilyPond. See §5.5f of the architecture document for the plan
 towards a full native engraver and an iced front end.
 
+A new front end written in Rust with iced is growing alongside the Qt one
+(`nix run .#iced [file.project]`). It opens and saves the same project files
+and draws the native engraving on the GPU. For now it views and selects;
+editing and playback come next.
+
 **Export ▾** in the toolbar writes PDF (LilyPond), MIDI (sounds like playback,
 one track per mixer track) and MusicXML 4.0. MIDI and MusicXML come from a
 small Rust crate (`rust/corinzia-export`) built by the same Nix flake.

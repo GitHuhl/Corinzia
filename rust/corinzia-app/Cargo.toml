@@ -1,0 +1,18 @@
+[package]
+name = "corinzia-app"
+description = "Corinzia's iced front end"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "corinzia-iced"
+path = "src/main.rs"
+
+[dependencies]
+corinzia-score.workspace = true
+corinzia-model.workspace = true
+corinzia-layout.workspace = true
+iced = { version = "0.14", features = ["canvas", "advanced"] }
+ttf-parser = "0.25"
+png = "0.17"

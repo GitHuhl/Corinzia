@@ -685,7 +685,7 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
 | 2 | Panorama view in the app engraved natively ("⚡ Native") | done |
 | 3 | slurs, hairpins, text/tempo/marks, collision avoidance, voice polish | done |
 | 4 | system and page breaking; native Page view | done (incremental per-bar cache: later) |
-| 5 | `corinzia-render` (wgpu) and the iced front end | next |
+| 5 | the iced front end (`corinzia-app`): viewer done; editing, playback and the remaining tools next | in progress |
 
 * **Workspace** `rust/`:
   * `corinzia-score`: fractions, the notation JSON shared with C++ (now with
@@ -748,6 +748,39 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
 * **Bravura 1.392** (SIL OFL) and its SMuFL metadata are vendored in
   `assets/fonts/bravura`. Glyph outlines come from the font itself, so zoom
   is exact.
+
+### 5.5g Moving the application to Rust and iced
+
+The Qt application keeps working while a Rust application grows beside it.
+When the iced app reaches parity, the Qt app and the C++ code only it uses
+are retired. Both apps open and save the same `.project` files throughout.
+
+| Piece | C++ (today) | Rust | State |
+|---|---|---|---|
+| Export (MIDI, MusicXML) | — | `corinzia-export` | Rust only |
+| Engraving | LilyPond emitter (print/PDF) | `corinzia-layout` (screen; Page + Panorama) | both |
+| Project model + `.project` storage | `model/`, `storage/` | `corinzia-model` | both; byte-compatible, proven by the C++ round-trip test run through the Rust store |
+| UI | Qt Quick / QML | `corinzia-app` (iced, wgpu) | iced: viewing, selection, pan/zoom, save |
+| Editing (note input, structure, undo) | `edit/`, `model/Commands` | — | next |
+| Playback, CLAP hosting, PipeWire | `audio/`, `compile/` | — | later; reused through a C interface first |
+
+* **`corinzia-app`** (`nix run .#iced [file.project]`, or `cargo run -p
+  corinzia-app` in the dev shell):
+  * a canvas draws the engraver's display lists as vector geometry (Bravura
+    glyph outlines, text shaped and converted to paths), cached until the
+    engraving or view changes;
+  * Page and Panorama, Ctrl+wheel zoom anchored at the cursor, drag to pan,
+    click to select a note or rest.
+
+  A Qt-saved project engraves in about 3 ms (release build). Stroke widths
+  are given in screen pixels, because iced transforms path points but not
+  widths.
+* **Text metrics**: the engraver measures text with the same font files the
+  app draws with (`display::set_text_font`, regular and bold), so tempo marks
+  and text are spaced exactly.
+* **Headless checks**: `scripts/iced-screenshot.sh out.png [args]` runs the
+  app under Xvfb with Mesa's software Vulkan (lavapipe) and saves a
+  screenshot.
 
 ### 5.6 Two workspaces: Score and Mix
 

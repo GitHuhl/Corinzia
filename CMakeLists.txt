@@ -121,11 +121,11 @@ if(CORINZIA_BUILD_TESTS)
     target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins"
                                                       CORINZIA_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
-    # The Rust workspace's own tests: score types, export, native engraver
-    # (Cargo; vendored crates in the sandbox).
+    # The Rust workspace's own tests: score types, model, export, native engraver
+    # (Cargo; vendored crates in the sandbox). The iced app is its own flake package.
     find_program(CARGO_EXECUTABLE cargo REQUIRED)
     add_test(NAME corinzia_rust
-             COMMAND ${CARGO_EXECUTABLE} test --quiet --workspace --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
+             COMMAND ${CARGO_EXECUTABLE} test --quiet --workspace --exclude corinzia-app --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
                      --target-dir ${CMAKE_BINARY_DIR}/cargo-test)
     if(PIPEWIRE_FOUND)
         add_executable(corinzia_pw_tests tests/test_pipewire.cpp)

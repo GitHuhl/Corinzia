@@ -1,0 +1,68 @@
+//! A small built-in project, so the app opens with music (`corinzia-iced`
+//! without a file): two players over eight bars, written in the engraver's
+//! test notation and converted into the model.
+
+use corinzia_layout::notation;
+use corinzia_model::*;
+use corinzia_score::Frac;
+use std::sync::Arc;
+
+pub fn project() -> Project {
+    let mut p = Project { title: "Serenade (demo)".into(), composer: "Corinzia".into(), sample_rate: 48000.0, next_id: 1, ..Default::default() };
+    let staves = [
+        ("Flute", "Fl.", "treble", "e''4(\\mp d''8 c'' b'4 c''8 d'' e''2 g''4 e'') d''4.( c''8 b'4 a' g'2.) r4 c'''4(\\f b''8 a'' g''4 e'' f''2 d''4 b') c''1\\fermata"),
+        ("Cello", "Vc.", "bass", "c2\\p g, a, e, f, c f, g, c4( e g c') a,( c e a) f,2 g, c1\\fermata"),
+    ];
+    let mut lanes = Vec::new();
+    let mut id = 1000u64;
+    for (k, (name, abbr, clef, music)) in staves.iter().enumerate() {
+        let track = 10 + k as u64;
+        let player = 20 + k as u64;
+        let inst = 30 + k as u64;
+        p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: k as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clef.to_string(), track: Some(track) });
+        p.players.push(Player { id: player, name: format!("Player {}", k + 1), instruments: vec![inst] });
+        let v = notation::voice(music, 1, &mut id);
+        let events = v
+            .events
+            .into_iter()
+            .map(|e| Event {
+                id: e.id,
+                kind: if e.pitches.is_empty() { EventKind::Rest } else if e.pitches.len() > 1 { EventKind::Chord } else { EventKind::Note },
+                start: e.start,
+                duration: e.dur,
+                heads: e
+                    .pitches
+                    .iter()
+                    .map(|h| Head { id: h.id, pitch: Pitch { step: h.step as i8, alter: h.alter, octave: h.octave }, tie: h.tie, velocity: 0 })
+                    .collect(),
+                articulations: e.art,
+                dynamic: e.dynamic.as_deref().and_then(|d| DYNAMICS.iter().position(|x| *x == d)).map(|i| i as u8),
+                spans: e.spans,
+            })
+            .collect();
+        lanes.push(Lane {
+            player,
+            changes: vec![InstrumentChange { id: 40 + k as u64, at: Frac::ZERO, instrument: inst }],
+            clefs: vec![],
+            texts: if k == 0 { vec![TextItem { id: 50, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }] } else { vec![] },
+            voices: vec![Voice { id: 60 + k as u64, index: 1, events: Arc::new(events) }],
+        });
+    }
+    p.movements.push(Movement {
+        id: 2,
+        ordinal: 0,
+        title: "I. Andante".into(),
+        length: Frac::int(8),
+        revision: 0,
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 84.0, ramp: false, text: "Andante".into() }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }],
+        keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
+        barlines: vec![Barline { id: 70, at: Frac::int(4), kind: BarKind::Double }],
+        rehearsal: vec![RehearsalMark { id: 71, at: Frac::int(4) }],
+        endings: vec![],
+        lanes,
+    });
+    p.next_id = id + 1;
+    p
+}

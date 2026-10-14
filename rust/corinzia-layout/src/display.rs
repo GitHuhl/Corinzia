@@ -75,9 +75,33 @@ pub struct DisplayList {
     pub columns: Vec<Column>,
 }
 
-/// Estimated advance of `text` (staff spaces) in the score's serif text font.
-/// The engraver needs it for spacing and collisions; renderers use real metrics.
+static TEXT_FONT: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+static TEXT_FONT_BOLD: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+/// The text fonts the renderer draws with (.ttf/.otf; the bold cut is
+/// optional). With them, text widths are measured exactly instead of
+/// estimated. Set once, at startup.
+pub fn set_text_font(regular: Vec<u8>, bold: Option<Vec<u8>>) -> bool {
+    let ok = ttf_parser::Face::parse(&regular, 0).is_ok() && TEXT_FONT.set(regular).is_ok();
+    if let Some(b) = bold.filter(|b| ttf_parser::Face::parse(b, 0).is_ok()) {
+        let _ = TEXT_FONT_BOLD.set(b);
+    }
+    ok
+}
+
+/// Advance of `text` (staff spaces) in the score's serif text font: measured
+/// when the renderer's font is known (`set_text_font`), else estimated.
 pub fn text_width(text: &str, size: f32, bold: bool) -> f32 {
+    let bold_face = if bold { TEXT_FONT_BOLD.get() } else { None };
+    if let Some(face) = bold_face.or(TEXT_FONT.get()).and_then(|b| ttf_parser::Face::parse(b, 0).ok()) {
+        let k = size / face.units_per_em() as f32;
+        let w: f32 = text
+            .chars()
+            .map(|c| face.glyph_index(c).and_then(|g| face.glyph_hor_advance(g)).unwrap_or(face.units_per_em() / 2) as f32 * k)
+            .sum();
+        // Without the bold cut, bold is ~7 % wider than regular.
+        return if bold && bold_face.is_none() { w * 1.07 } else { w };
+    }
     let per = if bold { 0.56 } else { 0.5 };
     text.chars().map(|c| if c == ' ' { 0.28 } else if c.is_uppercase() { per * 1.25 } else { per }).sum::<f32>() * size
 }
