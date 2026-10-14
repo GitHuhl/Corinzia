@@ -82,10 +82,14 @@ pub extern "C" fn cz_export_musicxml(json: *const u8, len: usize, path: *const c
 struct LayoutDoc {
     version: u32,
     score: Score,
+    /// "line" (default): one system; "pages": A4 pages.
+    #[serde(default)]
+    mode: String,
 }
 
-/// Engraves the score of a document (`{"version":1,"score":{...}}`) on one
-/// system with the native engraver and returns it as SVG in `*out`.
+/// Engraves the score of a document (`{"version":1,"score":{...},"mode":…}`)
+/// with the native engraver: one system, or A4 pages (`"mode":"pages"`, SVGs
+/// separated by form feeds). The result goes to `*out`.
 #[no_mangle]
 pub extern "C" fn cz_layout_svg(json: *const u8, len: usize, out: *mut *mut c_char, err: *mut c_char, err_len: usize) -> i32 {
     if out.is_null() {
@@ -97,8 +101,13 @@ pub extern "C" fn cz_layout_svg(json: *const u8, len: usize, out: *mut *mut c_ch
         if doc.version != 1 {
             return Err(format!("layout document version {} not supported", doc.version));
         }
-        let list = corinzia_layout::layout_line(&doc.score, &corinzia_layout::Options::default());
-        Ok(corinzia_layout::svg::to_svg(&list))
+        let opt = corinzia_layout::Options::default();
+        if doc.mode == "pages" {
+            let pages = corinzia_layout::layout_pages(&doc.score, &opt, &corinzia_layout::PageSpec::default());
+            Ok(pages.iter().map(corinzia_layout::svg::page_to_svg).collect::<Vec<_>>().join("\u{c}"))
+        } else {
+            Ok(corinzia_layout::svg::to_svg(&corinzia_layout::layout_line(&doc.score, &opt)))
+        }
     });
     match svg.and_then(|s| CString::new(s).ok()) {
         Some(c) => {

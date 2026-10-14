@@ -684,8 +684,8 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
 | 1 | `corinzia-layout`: SMuFL (Bravura) metrics, single-system layout into a display list, reference tests | done |
 | 2 | Panorama view in the app engraved natively ("⚡ Native") | done |
 | 3 | slurs, hairpins, text/tempo/marks, collision avoidance, voice polish | done |
-| 4 | system and page breaking, incremental per-measure cache; native Page view | next |
-| 5 | `corinzia-render` (wgpu) and the iced front end | |
+| 4 | system and page breaking; native Page view | done (incremental per-bar cache: later) |
+| 5 | `corinzia-render` (wgpu) and the iced front end | next |
 
 * **Workspace** `rust/`:
   * `corinzia-score`: fractions, the notation JSON shared with C++ (now with
@@ -725,6 +725,21 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
   over the notes in between. Instrument names sit left of the system, and
   clef changes are drawn at 80 % size. A test asserts that no two outer marks
   overlap.
+* **Pages** (`layout_pages`):
+  * breaking: natural bar widths come from one unjustified line; system
+    breaks are chosen by dynamic programming over bar boundaries, minimizing
+    the summed squared stretch (a bar too wide for the line gets a system of
+    its own);
+  * systems: each is laid out from the already prepared notes and justified
+    to the line (the last stays ragged when under 70 % full). Each system
+    restates its clef and key, and uses abbreviated names after the first;
+  * ties across a break are drawn as an outgoing and an incoming half;
+    endings crossing a break are clipped;
+  * pages: systems are stacked by their real extents (skyline marks
+    included) onto A4 (132.3 × 187.1 staff spaces at an 18 pt staff), with
+    the title on page 1.
+
+  "⚡ Native" now applies to Page view too; PDF export still uses LilyPond.
 * **In the app** the native engraving is written as SVG shaped like
   LilyPond's (`svg.rs`), so vector tiles, the hit index, the instant-feedback
   layer and the playhead work unchanged. A full engraving takes about 57 ms,

@@ -30,8 +30,10 @@ std::string exportDocument(const model::Project& project, const model::Movement&
 std::string writeMidi(const model::Project& project, const model::Movement& movement, const std::string& path);
 std::string writeMusicXml(const model::Project& project, const model::Movement& movement, const std::string& path);
 
-// The native engraver (rust/corinzia-layout): the movement on one system, as
-// SVG shaped like LilyPond's (staves, element-id groups). Empty on error.
-std::string engraveNativeSvg(const model::Movement& movement, const PartResolver& resolve, std::string& error);
+// The native engraver (rust/corinzia-layout): the movement on one system, or
+// on A4 pages, as SVG shaped like LilyPond's (staves, element-id groups).
+// Empty on error.
+std::vector<std::string> engraveNativeSvg(const model::Movement& movement, const PartResolver& resolve, bool pages,
+                                          std::string& error);
 
 }  // namespace corinzia::exporter

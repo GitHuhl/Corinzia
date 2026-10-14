@@ -16,4 +16,4 @@ pub mod raster;
 pub mod svg;
 
 pub use display::DisplayList;
-pub use layout::{layout_line, Options};
+pub use layout::{layout_line, layout_pages, Options, PageSpec};

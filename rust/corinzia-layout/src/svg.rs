@@ -63,7 +63,17 @@ fn is_hit_target(codepoint: u32) -> bool {
         .any(|g| g.codepoint() == codepoint)
 }
 
+/// One system (Panorama): padded above and below for marks.
 pub fn to_svg(list: &DisplayList) -> String {
+    render(list, TOP_PAD, list.width, list.height + TOP_PAD + BOTTOM_PAD)
+}
+
+/// One page: already in page coordinates.
+pub fn page_to_svg(page: &DisplayList) -> String {
+    render(page, 0.0, page.width, page.height)
+}
+
+fn render(list: &DisplayList, oy: f32, w: f32, h: f32) -> String {
     let face = ttf_parser::Face::parse(FONT_DATA, 0).expect("font");
     let ups = Font::bravura().units_per_space;
     let mut paths: HashMap<u32, String> = HashMap::new();
@@ -79,8 +89,6 @@ pub fn to_svg(list: &DisplayList) -> String {
             })
             .clone()
     };
-    let oy = TOP_PAD;
-    let (w, h) = (list.width, list.height + TOP_PAD + BOTTOM_PAD);
     let mut o = String::with_capacity(list.items.len() * 160);
     let _ = writeln!(
         o,

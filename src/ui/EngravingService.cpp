@@ -164,12 +164,12 @@ std::shared_ptr<EngraveResult> EngravingService::runJob(QString lilypond, model:
     if (ctx.nativeEngraver) {
         // Native engraver (Rust): milliseconds, in this thread.
         std::string err;
-        const std::string svg = exporter::engraveNativeSvg(*snap.movement, contextResolver(ctx), err);
-        if (svg.empty()) {
+        const auto svgs = exporter::engraveNativeSvg(*snap.movement, contextResolver(ctx), !ctx.panorama, err);
+        if (svgs.empty()) {
             r->log = QString::fromStdString(err);
             return r;
         }
-        pageSvgs.push_back(QByteArray::fromStdString(svg));
+        for (const auto& svg : svgs) pageSvgs.push_back(QByteArray::fromStdString(svg));
     } else {
         switch (runLilyPond(lilypond, snap, ctx, latest, *r, pageSvgs)) {
             case LilyOutcome::Cancelled: return nullptr;

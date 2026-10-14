@@ -367,6 +367,22 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
             QString nativePng = png;
             nativePng.replace(QStringLiteral(".png"), QStringLiteral("-native.png"));
             window->grabWindow().save(nativePng);
+            // Native Page view: systems broken and justified onto A4 pages.
+            const int beforePage = app.engraveCount();
+            check(clickItem("pageViewButton") && app.viewMode() == QStringLiteral("page"), "Page view with the native engraver");
+            check(waitFor([&] { return app.engraveCount() > beforePage; }, 20000), "native pages engraved");
+            if (auto pe = canvas->engraving()) {
+                std::printf("  native pages: %zu, %lld ms\n", pe->pages.size(), (long long)pe->compileMs);
+                check(!pe->pages.empty() && pe->pages[0].size.height() > pe->pages[0].size.width() && pe->index->find(firstHead),
+                      "native pages are A4 portrait with clickable notes");
+            }
+            waitFor([&] { return canvas->tilesSettled(); }, 3000);
+            waitFor([] { return false; }, 150);
+            QString pagePng = png;
+            pagePng.replace(QStringLiteral(".png"), QStringLiteral("-native-page.png"));
+            window->grabWindow().save(pagePng);
+            const int beforeBack = app.engraveCount();
+            check(clickItem("panoramaViewButton") && waitFor([&] { return app.engraveCount() > beforeBack; }, 20000), "back to native panorama");
             check(clickItem("nativeEngraverButton") && !app.nativeEngraver(), "Native off again");
             const int beforeLily = app.engraveCount();
             check(waitFor([&] { return app.engraveCount() > beforeLily; }, 60000), "LilyPond panorama again");

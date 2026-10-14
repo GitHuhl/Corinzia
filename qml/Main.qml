@@ -153,10 +153,9 @@ ApplicationWindow {
                         text: "⚡ Native"
                         checkable: true
                         checked: App.nativeEngraver
-                        enabled: App.viewMode === "panorama"
                         focusPolicy: Qt.NoFocus
                         onToggled: App.nativeEngraver = checked
-                        ToolTip.text: "Panorama with the native engraver: instant re-engraving after every edit (preview: no text, slurs or hairpins yet)"
+                        ToolTip.text: "Engrave with Corinzia's native engraver (Page and Panorama): re-engraving in milliseconds. PDF export still uses LilyPond."
                         ToolTip.visible: hovered
                     }
                     ToolSeparator {}

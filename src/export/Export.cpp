@@ -198,17 +198,26 @@ std::string writeMusicXml(const model::Project& project, const model::Movement& 
     return call(cz_export_musicxml, exportDocument(project, movement), path);
 }
 
-std::string engraveNativeSvg(const model::Movement& movement, const PartResolver& resolve, std::string& error) {
-    const std::string doc = "{\"version\":1,\"score\":" + scoreJson(movement, resolve) + "}";
+std::vector<std::string> engraveNativeSvg(const model::Movement& movement, const PartResolver& resolve, bool pages,
+                                          std::string& error) {
+    const std::string doc = "{\"version\":1,\"mode\":\"" + std::string(pages ? "pages" : "line") + "\",\"score\":" +
+                            scoreJson(movement, resolve) + "}";
     char err[512] = {0};
     char* out = nullptr;
     if (cz_layout_svg(reinterpret_cast<const unsigned char*>(doc.data()), doc.size(), &out, err, sizeof err) != 0 || !out) {
         error = err[0] ? err : "native engraving failed";
         return {};
     }
-    std::string svg(out);
+    std::vector<std::string> result;
+    std::string all(out);
     cz_free_string(out);
-    return svg;
+    for (std::size_t from = 0;;) {   // pages are separated by form feeds
+        const std::size_t ff = all.find('\f', from);
+        result.push_back(all.substr(from, ff == std::string::npos ? std::string::npos : ff - from));
+        if (ff == std::string::npos) break;
+        from = ff + 1;
+    }
+    return result;
 }
 
 }  // namespace corinzia::exporter

@@ -83,6 +83,19 @@ pub fn text_width(text: &str, size: f32, bold: bool) -> f32 {
 }
 
 impl Item {
+    pub fn translated(self, dx: f32, dy: f32) -> Item {
+        let m = |p: Point| pt(p.x + dx, p.y + dy);
+        match self {
+            Item::Glyph { glyph, at, scale, id } => Item::Glyph { glyph, at: m(at), scale, id },
+            Item::Text { text, at, size, italic, bold, anchor, id } => Item::Text { text, at: m(at), size, italic, bold, anchor, id },
+            Item::Line { from, to, width, id } => Item::Line { from: m(from), to: m(to), width, id },
+            Item::Quad { p, id } => Item::Quad { p: p.map(m), id },
+            Item::Crescent { from, c1, c2, to, d1, d2, id } => {
+                Item::Crescent { from: m(from), c1: m(c1), c2: m(c2), to: m(to), d1: m(d1), d2: m(d2), id }
+            }
+        }
+    }
+
     /// Bounding box (x0, y0, x1, y1), y down; control points make curves conservative.
     pub fn bounds(&self, font: &crate::font::Font) -> [f32; 4] {
         let span = |pts: &[Point]| {

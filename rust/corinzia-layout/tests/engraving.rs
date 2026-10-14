@@ -205,3 +205,62 @@ fn outer_marks_avoid_each_other() {
     // The staves start after the instrument names.
     assert!(l.staves[0].left > 6.0);
 }
+
+#[test]
+fn pages_break_into_justified_systems() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    // 24 bars of mixed rhythms on two staves, a tie over every 6th barline.
+    let bar = "c''8 d'' e'' f'' g''4 a''8 b'' c'''4 g''2. a''4~ a''1 g''8 f'' e'' d'' c''2";
+    let low = "c2 g, c1 e4 g c' e c'1 g,1 c2 g,";
+    let treble = std::iter::repeat_n(bar, 4).collect::<Vec<_>>().join(" ");
+    let bass = std::iter::repeat_n(low, 4).collect::<Vec<_>>().join(" ");
+    let mut s = score(&[("treble", &[treble.as_str()]), ("bass", &[bass.as_str()])], (4, 4), 2);
+    s.title = "Étude".into();
+    s.parts[0].name = "Violin".into();
+    s.parts[0].abbr = "Vln.".into();
+    s.parts[1].name = "Cello".into();
+    s.parts[1].abbr = "Vc.".into();
+    let spec = PageSpec::default();
+    let pages = layout_pages(&s, &Options::default(), &spec);
+    assert!(!pages.is_empty());
+    let mut systems = 0;
+    for (pi, p) in pages.iter().enumerate() {
+        preview(&format!("page{}", pi + 1), p);
+        // Staves come in pairs (one system = 2 staves); every staff ends at the right margin
+        // except possibly the last system's.
+        let tops: Vec<f32> = p.staves.iter().filter(|st| st.part == 0).map(|st| st.top).collect();
+        systems += tops.len();
+        for st in &p.staves {
+            assert!(st.right <= spec.width - spec.margin_x + 0.01, "staff past the margin: {}", st.right);
+            assert!(st.left >= spec.margin_x - 0.01);
+        }
+        // Systems don't overlap: consecutive tops are at least a system apart.
+        for w in tops.windows(2) {
+            assert!(w[1] - w[0] > 16.0, "systems too close: {w:?}");
+        }
+        assert!(p.items.iter().all(|i| { let r = i.bounds(corinzia_layout::font::Font::bravura()); r[3] <= spec.height + 0.01 && r[1] >= -0.01 }));
+    }
+    assert!(systems >= 3, "24 bars break into several systems ({systems})");
+    // Justified: all but the last system end at the right margin.
+    let ends: Vec<f32> = pages.iter().flat_map(|p| p.staves.iter().filter(|st| st.part == 0).map(|st| st.right)).collect();
+    for e in &ends[..ends.len() - 1] {
+        assert!((e - (spec.width - spec.margin_x)).abs() < 0.6, "system not justified: {e}");
+    }
+    // Abbreviated names after the first system.
+    let texts: Vec<&str> = pages.iter().flat_map(|p| p.items.iter()).filter_map(|i| match i { Item::Text { text, .. } => Some(text.as_str()), _ => None }).collect();
+    assert!(texts.contains(&"Violin") && texts.contains(&"Vln.") && texts.contains(&"Étude"));
+}
+
+#[test]
+fn ties_cross_system_breaks_as_halves() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    // Narrow pages: one long tied note per system boundary.
+    let s = score(&[("treble", &["g'1~ g'1~ g'1~ g'1"])], (4, 4), 0);
+    let narrow = PageSpec { width: 40.0, ..PageSpec::default() };
+    let pages = layout_pages(&s, &Options::default(), &narrow);
+    let systems: usize = pages.iter().map(|p| p.staves.len()).sum();
+    let ties: usize = pages.iter().map(|p| p.items.iter().filter(|i| matches!(i, Item::Crescent { .. })).count()).sum();
+    assert!(systems >= 2);
+    // Three ties; each crossing a break is drawn twice (outgoing + incoming half).
+    assert_eq!(ties, 3 + (systems - 1));
+}
