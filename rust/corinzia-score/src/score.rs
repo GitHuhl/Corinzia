@@ -71,6 +71,9 @@ pub struct Part {
     /// Chord symbols above the staff.
     pub chords: Vec<ChordSymbol>,
     pub voices: Vec<Voice>,
+    /// This staff and the next are one instrument's (a piano's): joined by
+    /// a brace and barlines, named once.
+    pub brace: bool,
 }
 
 /// A chord symbol: written root, quality and bass, e.g. "F♯m7♭5/E".

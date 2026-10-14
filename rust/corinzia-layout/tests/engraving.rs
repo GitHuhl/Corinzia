@@ -367,3 +367,25 @@ fn spanners_continue_across_system_breaks() {
     }
     assert!((openings.last().unwrap().1 - 1.0).abs() < 1e-3, "ends fully open");
 }
+
+#[test]
+fn grand_staff_has_a_brace_joined_barlines_and_one_name() {
+    let mut s = score(&[("treble", &["c''4 e'' g'' c'''"]), ("bass", &["c2 g,2"])], (4, 4), 0);
+    s.parts[0].name = "Piano".into();
+    s.parts[1].name = "Piano".into();
+    s.parts[0].brace = true;
+    let l = layout_line(&s, &Options::default());
+    let (top0, top1) = (l.staves[0].top, l.staves[1].top);
+    // The brace: two halves from the first staff's top to the second's bottom.
+    let crescents: Vec<_> = l.items.iter().filter(|i| matches!(i, Item::Crescent { id: 0, .. })).filter_map(|i| match i { Item::Crescent { from, to, .. } => Some((*from, *to)), _ => None }).collect();
+    let brace: Vec<_> = crescents.iter().filter(|(f, _)| f.x < l.staves[0].left).collect();
+    assert_eq!(brace.len(), 2);
+    assert!((brace[0].0.y - top0).abs() < 1e-3 && (brace[1].0.y - (top1 + 4.0)).abs() < 1e-3);
+    // Barlines run from the top staff's top line to the bottom staff's top line.
+    let joined = l.items.iter().any(|i| matches!(i, Item::Line { from, to, .. } if (from.y - top0).abs() < 1e-3 && (to.y - top1).abs() < 1e-3 && from.x > l.staves[0].left + 1.0));
+    assert!(joined, "barlines join the staves");
+    // One name.
+    let names = l.items.iter().filter(|i| matches!(i, Item::Text { text, .. } if text == "Piano")).count();
+    assert_eq!(names, 1);
+    preview("grand_staff", &l);
+}

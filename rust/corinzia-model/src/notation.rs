@@ -9,7 +9,8 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
     let parts = m
         .lanes
         .iter()
-        .map(|lane| {
+        .enumerate()
+        .map(|(li, lane)| {
             let first = lane.changes.first().and_then(|c| project.instrument(c.instrument));
             let name = first.map(|i| i.name.clone()).or_else(|| project.player(lane.player).map(|p| p.name.clone())).unwrap_or_default();
             let mut texts: Vec<sc::Text> = lane
@@ -57,6 +58,7 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                             .collect(),
                     })
                     .collect(),
+                brace: m.lanes.get(li + 1).is_some_and(|next| next.player == lane.player),
             }
         })
         .collect();

@@ -462,6 +462,31 @@ struct Engraver<'a> {
 }
 
 const HEAD_W: f32 = 1.18;
+/// The brace before a grand staff, and its gap to the system's barline.
+const BRACE_WIDTH: f32 = 1.3;
+const BRACE_GAP: f32 = 0.4;
+
+/// A brace from `top` to `bottom` whose right edge is at `right`: two
+/// filled halves meeting at a point in the middle, thickest half-way along
+/// each.
+fn brace(right: f32, top: f32, bottom: f32) -> [Item; 2] {
+    let (h, mid) = ((bottom - top) / 2.0, (top + bottom) / 2.0);
+    let w = BRACE_WIDTH.min(0.08 * (bottom - top) + 0.4);
+    let xl = right - w;
+    let t = (0.09 * h).clamp(0.2, 0.55); // the stroke's thickness at its widest
+    // Each half is an S: it leaves its end heading left, runs down the
+    // middle, and turns left again into the point.
+    let half = |y0: f32, dir: f32| Item::Crescent {
+        from: pt(right, y0),
+        c1: pt(xl - 0.15 * w, y0 + 0.1 * h * dir),
+        c2: pt(right + 0.15 * w, mid - 0.1 * h * dir),
+        to: pt(xl, mid),
+        d1: pt(xl - 0.15 * w + t, y0 + 0.1 * h * dir),
+        d2: pt(right + 0.15 * w + t, mid - 0.1 * h * dir),
+        id: 0,
+    };
+    [half(top, 1.0), half(bottom, -1.0)]
+}
 
 impl<'a> Engraver<'a> {
     fn top(&self, part: usize) -> f32 {
@@ -925,9 +950,20 @@ impl<'a> Engraver<'a> {
             let clef = self.clef_at(pi, self.range.0);
             let (g, dy) = clef_glyph(&clef);
             self.push(Item::glyph(g, self.left + 0.8, top + dy, 0));
+            // A grand staff is named once, between its staves, left of its brace.
+            let braced = self.score.parts[pi].brace && pi + 1 < self.score.parts.len();
+            let second = pi > 0 && self.score.parts[pi - 1].brace;
             let name = self.part_name(pi);
-            if self.opt.names && !name.is_empty() {
-                self.push(Item::Text { text: name, at: pt(self.left - 1.0, top + 2.7), size: NAME_SIZE, italic: false, bold: false, anchor: 2, id: 0 });
+            if self.opt.names && !name.is_empty() && !second {
+                let (x, y) = if braced { (self.left - BRACE_WIDTH - BRACE_GAP - 1.0, (top + self.top(pi + 1) + 4.0) / 2.0 + 0.7) } else { (self.left - 1.0, top + 2.7) };
+                let x = if self.score.parts.iter().any(|p| p.brace) && !braced { x - BRACE_WIDTH - BRACE_GAP } else { x };
+                self.push(Item::Text { text: name, at: pt(x, y), size: NAME_SIZE, italic: false, bold: false, anchor: 2, id: 0 });
+            }
+            if braced {
+                let bottom = self.top(pi + 1) + 4.0;
+                for item in brace(self.left - BRACE_GAP, top, bottom) {
+                    self.push(item);
+                }
             }
         }
         // System barline at the left edge.
@@ -989,7 +1025,9 @@ impl<'a> Engraver<'a> {
             let last = m.last;
             let start_repeat = self.score.barlines.iter().any(|b| b.at == m.start && matches!(b.kind, BarKind::RepeatStart | BarKind::RepeatBoth));
             for pi in 0..self.score.parts.len() {
-                let (top, bot) = (self.top(pi), self.top(pi) + 4.0);
+                // Barlines run through a grand staff.
+                let joined = self.score.parts[pi].brace && pi + 1 < self.score.parts.len();
+                let (top, bot) = (self.top(pi), if joined { self.top(pi + 1) } else { self.top(pi) + 4.0 });
                 let x1 = m.x1;
                 match (kind, last) {
                     (Some(BarKind::Final), _) | (None, true) => {
@@ -2085,7 +2123,8 @@ impl<'a> Engraver<'a> {
         );
         let name = |p: &Part| if first_system || p.abbr.is_empty() { p.name.clone() } else { p.abbr.clone() };
         let names_w = if opt.names { score.parts.iter().map(|p| text_width(&name(p), NAME_SIZE, false)).fold(0.0f32, f32::max) } else { 0.0 };
-        let left = opt.margin + if names_w > 0.0 { names_w + 1.5 } else { 0.0 };
+        let brace_w = if score.parts.iter().any(|p| p.brace) { BRACE_WIDTH + BRACE_GAP } else { 0.0 };
+        let left = opt.margin + if names_w > 0.0 { names_w + 1.5 } else { 0.0 } + brace_w;
         let mut clef_changes: Vec<(usize, Frac, String)> = score
             .parts
             .iter()

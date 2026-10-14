@@ -74,23 +74,28 @@ pub fn project() -> Project {
 pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Project {
     let mut p = Project { title: title.into(), sample_rate: 48000.0, next_id: 1, ..Default::default() };
     let mut lanes = Vec::new();
-    for (k, (name, abbr, clef)) in instruments.iter().enumerate() {
+    for (k, (name, abbr, clefs)) in instruments.iter().enumerate() {
+        // "treble+bass": a grand staff, one staff per clef.
+        let clefs: Vec<&str> = clefs.split('+').collect();
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (k % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clef.to_string(), track: Some(track) });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clefs[0].to_string(), track: Some(track) });
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
-        let rests: Vec<Event> = (0..bars)
-            .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] })
-            .collect();
-        let (change, voice) = (p.allocate_id(), p.allocate_id());
-        lanes.push(Lane {
-            player,
-            changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
-            clefs: vec![],
-            texts: vec![],
-            chords: vec![],
-            voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests) }],
-        });
+        for (si, clef) in clefs.iter().enumerate() {
+            let rests: Vec<Event> = (0..bars)
+                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] })
+                .collect();
+            let (change, voice) = (p.allocate_id(), p.allocate_id());
+            let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: clef.to_string() }] };
+            lanes.push(Lane {
+                player,
+                changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
+                clefs: clef_changes,
+                texts: vec![],
+                chords: vec![],
+                voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests) }],
+            });
+        }
     }
     let id = p.allocate_id();
     p.movements.push(Movement {

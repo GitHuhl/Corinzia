@@ -60,6 +60,10 @@ use the flake below, or `appimage-run`.
 default output device (WASAPI). CLAP instruments are found in
 `%LOCALAPPDATA%\Programs\Common\CLAP` and `%COMMONPROGRAMFILES%\CLAP`.
 
+**This is a preview:** saving projects is turned off while the file format
+is still changing. Open and import scores, edit, play, and export to PDF,
+MIDI or MusicXML.
+
 Found a bug? Please [open an issue](https://github.com/githuhl/corinzia/issues).
 
 ## Run, build & test (Nix only)

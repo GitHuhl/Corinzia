@@ -67,6 +67,11 @@ enum Tab {
 }
 
 /// Live audio output (PipeWire) for the windowed app; tests and --export run without.
+/// Saving projects (Save, Save As, autosave). Off while Corinzia is a
+/// preview not ready for real-world projects: the button is grayed out and
+/// the shortcuts explain; export still works.
+const SAVING_ENABLED: bool = false;
+
 static LIVE_AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct App {
@@ -102,6 +107,8 @@ struct App {
     window: Size,
     /// The keyboard shortcut overview (F1).
     help: bool,
+    /// See [`SAVING_ENABLED`] (tests turn it on).
+    saving_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +295,7 @@ impl App {
             frames: 0,
             window: Size::new(1280.0, 860.0),
             help: false,
+            saving_enabled: SAVING_ENABLED,
         };
         app.sync();
         app
@@ -342,7 +350,7 @@ impl App {
             self.engrave();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
-        if self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
+        if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
             self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
         let mut sel = HashSet::new();
@@ -560,6 +568,9 @@ impl App {
             Action::FirstSecondEndings => ed.add_first_second_endings(),
             Action::Undo => ed.undo(),
             Action::Redo => ed.redo(),
+            Action::Save | Action::SaveAs if !self.saving_enabled => {
+                ed.status = "Saving is turned off in this preview build · export to PDF, MIDI or MusicXML instead".into();
+            }
             Action::Save if self.path.is_some() => self.save(self.path.clone().unwrap()),
             Action::Save | Action::SaveAs => return self.ask_save_path(),
             Action::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
@@ -980,7 +991,10 @@ impl App {
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open (Ctrl+O)"))
-            .push(panels::tip(flat("Save", true, Message::Act(Action::Save)), "Save (Ctrl+S)"))
+            .push(panels::tip(
+                flat("Save", self.saving_enabled, Message::Act(Action::Save)),
+                if self.saving_enabled { "Save (Ctrl+S)" } else { "Saving is turned off in this preview build" },
+            ))
             .push(rule())
             .push(text("Export").size(12).style(theme::faint))
             .push(panels::tip(flat("PDF", true, Message::Export(files::Format::Pdf)), "Export the movement as PDF"))
@@ -1343,11 +1357,27 @@ mod tests {
     }
 
     #[test]
+    fn saving_is_off_in_the_preview() {
+        let dir = std::env::temp_dir().join(format!("corinzia-nosave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("demo.project");
+        let mut a = app(View::Page);
+        a.path = Some(path.clone());
+        key(&mut a, "ctrl+a");
+        key(&mut a, "[");
+        let _ = a.update(Message::Act(Action::Save));
+        assert!(a.editor.status.starts_with("Saving is turned off"), "{}", a.editor.status);
+        assert!(a.autosave_at.is_none() && !path.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn saves_a_project_both_apps_can_open() {
         let dir = std::env::temp_dir().join(format!("corinzia-app-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("demo.project");
         let mut a = app(View::Page);
+        a.saving_enabled = true;
         a.path = Some(path.clone());
         let _ = a.update(Message::Act(Action::Save));
         assert!(a.editor.status.starts_with("Saved"), "{}", a.editor.status);
@@ -1517,6 +1547,7 @@ mod tests {
         let path = dir.join("a.project");
         corinzia_model::store::save(&demo::project(), &path).unwrap();
         let mut a = App::new(corinzia_model::store::load(&path).unwrap(), Some(path.clone()), View::Page, String::new());
+        a.saving_enabled = true;
         assert!(a.autosave_at.is_none(), "nothing to save after opening");
         key(&mut a, "ctrl+a");
         key(&mut a, "[");

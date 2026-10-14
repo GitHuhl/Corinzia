@@ -7,7 +7,8 @@ use corinzia_model::Project;
 use std::path::Path;
 
 /// Known instruments: names (lower case, with aliases), display name,
-/// abbreviation, clef. Scores are written at concert pitch.
+/// abbreviation, clef ("treble+bass": a grand staff, one staff per clef).
+/// Scores are written at concert pitch.
 const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["piccolo"], "Piccolo", "Picc.", "treble"),
     (&["flute", "fl"], "Flute", "Fl.", "treble"),
@@ -25,10 +26,10 @@ const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["tuba"], "Tuba", "Tba.", "bass"),
     (&["timpani", "timp"], "Timpani", "Timp.", "bass"),
     (&["percussion", "perc"], "Percussion", "Perc.", "percussion"),
-    (&["harp"], "Harp", "Hp.", "treble"),
-    (&["piano", "pno", "piano rh"], "Piano", "Pno.", "treble"),
-    (&["piano lh"], "Piano (LH)", "Pno.", "bass"),
-    (&["celesta"], "Celesta", "Cel.", "treble"),
+    (&["harp"], "Harp", "Hp.", "treble+bass"),
+    (&["piano", "pno"], "Piano", "Pno.", "treble+bass"),
+    (&["organ", "org"], "Organ", "Org.", "treble+bass"),
+    (&["celesta"], "Celesta", "Cel.", "treble+bass"),
     (&["guitar", "gtr"], "Guitar", "Gtr.", "treble_8"),
     (&["soprano", "s"], "Soprano", "S.", "treble"),
     (&["alto", "a", "mezzo"], "Alto", "A.", "treble"),
@@ -151,6 +152,15 @@ mod tests {
         let p = new_project("Quartet", "violin, violin, viola, cello", 4).unwrap();
         assert_eq!(p.movements[0].lanes.len(), 4);
         assert_eq!(p.instruments[2].clef, "alto");
+        // A piano is a grand staff: two staves of one player, bass below.
+        let p = new_project("Duo", "Flute, Piano", 4).unwrap();
+        let m = &p.movements[0];
+        assert_eq!(m.lanes.len(), 3);
+        assert_eq!(p.players.len(), 2);
+        assert_eq!(m.lanes[1].player, m.lanes[2].player);
+        assert_eq!(m.lanes[2].clefs[0].clef, "bass");
+        let s = corinzia_model::notation::score(&p, m);
+        assert!(!s.parts[0].brace && s.parts[1].brace && !s.parts[2].brace);
     }
 
     #[test]
@@ -181,7 +191,7 @@ pub fn load(path: &std::path::Path) -> Result<(corinzia_model::Project, Option<s
         let p = corinzia_import::musicxml(&bytes)?;
         let staves: usize = p.movements.iter().map(|m| m.lanes.len()).sum();
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let msg = format!("Imported {name} · {staves} staves · Save keeps it as a project");
+        let msg = format!("Imported {name} · {staves} staves");
         return Ok((p, None, msg));
     }
     let p = corinzia_model::store::load(path).map_err(|e| e.to_string())?;
