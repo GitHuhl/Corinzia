@@ -1,6 +1,6 @@
 # Corinzia
 
-## A LilyPond-backed DAW/Music Notation Hybrid Program with CLAPi and VST3 Instrument Support for Linux
+## A Hybrid DAW/Music Notation Program with CLAPi and VST3 Instrument Support
 
 <img width="1280" height="860" alt="image-1791952433031" src="https://github.com/user-attachments/assets/8a7336f7-c9c3-4616-8be7-9de70f34ac16" />
 
