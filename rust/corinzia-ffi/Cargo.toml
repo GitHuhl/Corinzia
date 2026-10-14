@@ -14,3 +14,4 @@ serde_json.workspace = true
 corinzia-score.workspace = true
 corinzia-export.workspace = true
 corinzia-layout.workspace = true
+corinzia-model.workspace = true

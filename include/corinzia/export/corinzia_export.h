@@ -19,6 +19,10 @@ int cz_export_musicxml(const unsigned char* json, size_t len, const char* path, 
 int cz_layout_svg(const unsigned char* json, size_t len, char** out, char* err, size_t err_len);
 void cz_free_string(char* s);
 
+/* Loads a .project with the Rust model and saves it to out_path (may equal
+ * in_path): proves the C++ and Rust stores read and write the same files. */
+int cz_project_resave(const char* in_path, const char* out_path, char* err, size_t err_len);
+
 #ifdef __cplusplus
 }
 #endif

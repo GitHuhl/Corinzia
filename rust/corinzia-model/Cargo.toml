@@ -1,0 +1,12 @@
+[package]
+name = "corinzia-model"
+description = "Corinzia's project model in Rust: players, instruments, tracks, movements and their music; .project (SQLite) storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+corinzia-score.workspace = true
+rusqlite = "0.37"

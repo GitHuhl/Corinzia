@@ -127,3 +127,31 @@ pub extern "C" fn cz_free_string(s: *mut c_char) {
         drop(unsafe { CString::from_raw(s) });
     }
 }
+
+/// Loads a .project with the Rust model and saves it to `out_path` (which
+/// may equal `in_path`). Lets the C++ tests prove both stores agree.
+#[no_mangle]
+pub extern "C" fn cz_project_resave(in_path: *const c_char, out_path: *const c_char, err: *mut c_char, err_len: usize) -> i32 {
+    if in_path.is_null() || out_path.is_null() {
+        report(err, err_len, "null path");
+        return 1;
+    }
+    // SAFETY: NUL-terminated by contract.
+    let (a, b) = unsafe { (CStr::from_ptr(in_path), CStr::from_ptr(out_path)) };
+    let (Ok(a), Ok(b)) = (a.to_str(), b.to_str()) else {
+        report(err, err_len, "path is not UTF-8");
+        return 1;
+    };
+    let r = catch_unwind(|| -> Result<(), String> {
+        let p = corinzia_model::store::load(std::path::Path::new(a)).map_err(|e| e.to_string())?;
+        corinzia_model::store::save(&p, std::path::Path::new(b)).map_err(|e| e.to_string())
+    })
+    .unwrap_or_else(|_| Err("internal error (panic)".into()));
+    match r {
+        Ok(()) => 0,
+        Err(e) => {
+            report(err, err_len, &e);
+            1
+        }
+    }
+}

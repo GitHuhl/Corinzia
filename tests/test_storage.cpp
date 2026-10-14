@@ -1,6 +1,7 @@
 #include "Fixture.hpp"
 #include "Test.hpp"
 
+#include "corinzia/export/corinzia_export.h"
 #include "corinzia/storage/ProjectStore.hpp"
 
 #include <sqlite3.h>
@@ -43,7 +44,10 @@ void addLateEvents(model::Project& p, fixture::Ids& ids) {
 
 }  // namespace
 
-TEST(storage_roundtrip) {
+// viaRust: after the C++ save, the Rust model (rust/corinzia-model) loads
+// the file and saves it back in place; the C++ load must still see exactly
+// the same project, plugin state, graph and automation included.
+void roundtrip(bool viaRust) {
     model::Project p;
     auto ids = fixture::makeProject(p);
     addLateEvents(p, ids);
@@ -76,6 +80,11 @@ TEST(storage_roundtrip) {
         CHECK(store->save(fullBatch(p), &err));
         CHECK(store->countRows("voice_chunk") == 2);
         CHECK(store->countRows("automation_chunk") == 1);
+    }
+    if (viaRust) {
+        char rerr[512] = {0};
+        CHECK(cz_project_resave(path.c_str(), path.c_str(), rerr, sizeof rerr) == 0);
+        if (rerr[0]) std::printf("  rust: %s\n", rerr);
     }
 
     model::Project q;
@@ -121,6 +130,9 @@ TEST(storage_roundtrip) {
     // Point-and-click index is rebuilt on load.
     CHECK(q.locate(eb[2].heads[1].id.id) != nullptr);
 }
+
+TEST(storage_roundtrip) { roundtrip(false); }
+TEST(storage_roundtrip_through_rust_model) { roundtrip(true); }
 
 TEST(storage_incremental_save_touches_one_chunk) {
     model::Project p;
