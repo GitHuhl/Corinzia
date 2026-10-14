@@ -155,10 +155,16 @@ where their music would collide. Staves never come closer than the default
 distance.
 
 **Pages.**
-* System breaks are chosen by dynamic programming over bar boundaries,
-  minimising the summed squared stretch.
-* Systems are justified; the last one stays ragged when it is under 70 %
-  full.
+* System breaks follow LilyPond's optimal breaker. A dynamic program over
+  bar boundaries minimises, over all lines, each line's force squared plus a
+  fixed per-line cost. Force is the room a line must gain or give up,
+  divided by its stretchability.
+* Lines may be compressed as well as stretched.
+* Justification shares the room out by each spring's stretchability, as
+  LilyPond does. Every line is justified, the last one included (LilyPond's
+  `ragged-last = ##f`).
+* `tests/lilypond.rs` also checks justified lines and system breaks against
+  LilyPond. The breaks match at 23 of 30 line widths.
 * Ties and endings that cross a break are split.
 * Systems are stacked by their real extents onto A4 pages (132.3 × 187.1
   staff spaces), with the title on page 1.

@@ -134,6 +134,12 @@ const SPACING_HEAD_WIDTHS: [(Glyph, f32); 3] = [(Glyph::NoteheadBlack, 1.304), (
 /// The stretchable half of the barline-to-note distance (LilyPond's
 /// `semi-fixed-space`).
 const BAR_TO_NOTE_STRETCH: f32 = 0.45;
+/// Each line's fixed cost in the breaker, against the square of its force:
+/// LilyPond prefers fewer, slightly compressed lines to more stretched ones.
+const LINE_PENALTY: f32 = 0.2;
+/// How far a line may be compressed, as a force: each spring gives up at
+/// most this share of its stretchability.
+const MAX_COMPRESSION: f32 = -0.9;
 /// A bar holding a single note column gets this much more before it.
 const LONE_NOTE_SPACE: f32 = 1.0;
 /// Least room between a column's right side (heads, dots, flags) and the
@@ -219,6 +225,7 @@ struct Measure {
     x1: f32,          // closing barline
     last: bool,       // the movement's last bar (final barline)
     shortest: Frac,   // the movement's common shortest duration (spacing)
+    stretch: f32,     // the stretchability of the bar's springs
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
@@ -246,7 +253,7 @@ fn measures(s: &Score) -> Vec<Measure> {
             (Some(p), Some(k)) if k.at > p.start => Some(k),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0 });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
@@ -686,6 +693,7 @@ impl<'a> Engraver<'a> {
                 x += 0.0;
             }
             let m = self.ms[mi].clone();
+            let bar_stretch = stretch;
             // Key and time shown at this barline.
             if let Some(k) = m.key {
                 let prev = if mi == 0 { 0 } else { key_at(self.score, self.ms[mi - 1].start) };
@@ -805,6 +813,7 @@ impl<'a> Engraver<'a> {
                 stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0);
             }
             breaks.push((x1, stretch));
+            self.ms[mi].stretch = stretch - bar_stretch;
             for n in self.notes.iter_mut().filter(|n| n.measure == mi) {
                 let j = cols.iter().position(|&t| t == n.start).unwrap_or(0);
                 n.x = xs[j];
@@ -820,8 +829,9 @@ impl<'a> Engraver<'a> {
         // Justify: the springs share the extra room by their stretchability.
         if let Some(w) = self.width {
             let target = w - self.opt.margin;
-            if stretch > 0.0 && target > x {
-                let k = (target - x) / stretch;
+            if stretch > 0.0 && (target - x).abs() > 1e-3 {
+                // Compressed lines stop short of the springs' minimum.
+                let k = ((target - x) / stretch).max(MAX_COMPRESSION);
                 let f = |v: f32| v + k * stretch_at(&breaks, v);
                 for n in self.notes.iter_mut() {
                     n.x = f(n.x);
@@ -2087,24 +2097,28 @@ impl Default for PageSpec {
     }
 }
 
-/// System breaks by dynamic programming over bar boundaries: minimise the
-/// sum of squared stretch over all systems (a bar wider than the line gets
-/// a system to itself; the last system may stay short).
-fn break_systems(natural: &[f32], prefix: impl Fn(usize) -> f32, line: f32) -> Vec<(usize, usize)> {
+/// System breaks by dynamic programming over bar boundaries, as LilyPond's
+/// optimal breaker does: each line costs the square of its force (the room
+/// it must gain or give up, over its stretchability). Lines may be
+/// compressed down to `MAX_COMPRESSION`; a bar wider than the line gets a
+/// system to itself. Like LilyPond (`ragged-last = ##f`), the last line is
+/// justified too.
+fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32) -> Vec<(usize, usize)> {
     let n = natural.len();
     let mut best = vec![f32::INFINITY; n + 1];
     let mut from = vec![0usize; n + 1];
     best[0] = 0.0;
     for b in 1..=n {
-        let mut sum = 0.0;
+        let (mut sum, mut k) = (0.0, 0.0);
         for a in (0..b).rev() {
             sum += natural[a];
+            k += stretch[a];
             let width = prefix(a) + sum;
-            if width > line && b - a > 1 {
+            let force = (line - width) / k.max(1e-3);
+            if force < MAX_COMPRESSION && b - a > 1 {
                 break;
             }
-            let stretch = (line - width).max(0.0) / sum.max(1.0);
-            let cost = if b == n && width < line { 0.0 } else { stretch * stretch * 100.0 } + 1.0;
+            let cost = force * force + LINE_PENALTY;
             if best[a] + cost < best[b] {
                 best[b] = best[a] + cost;
                 from[b] = a;
@@ -2146,7 +2160,8 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         let clef_w = score.parts.iter().map(|p| e.width(clef_glyph(&p.clef).0)).fold(0.0f32, f32::max);
         e.left + 0.8 + clef_w + 0.8 + 3.0
     };
-    let systems = break_systems(&natural, |a| if a == 0 { first_prefix } else { later_prefix }, line);
+    let stretch: Vec<f32> = natural_line.ms.iter().map(|m| m.stretch).collect();
+    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line);
 
     // Lay out each system, then stack them on pages by their real extents.
     let mut pages: Vec<DisplayList> = Vec::new();
@@ -2157,11 +2172,8 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         cur.items.push(Item::Text { text: score.title.clone(), at: pt(page.width / 2.0, y + 3.0), size: 3.2, italic: false, bold: true, anchor: 1, id: 0 });
         y += 7.0;
     }
-    let count = systems.len();
-    for (k, &(a, b)) in systems.iter().enumerate() {
-        let natural_w: f32 = natural[a..b].iter().sum::<f32>() + if a == 0 { first_prefix } else { later_prefix };
-        let ragged = k + 1 == count && natural_w < line * 0.7;
-        let sys = system(score, opt, &ms, &notes, a, b, if ragged { None } else { Some(line + opt.margin) });
+    for &(a, b) in &systems {
+        let sys = system(score, opt, &ms, &notes, a, b, Some(line + opt.margin));
         let font = Font::bravura();
         let (mut y0, mut y1) = (0.0f32, sys.height);
         for it in &sys.items {

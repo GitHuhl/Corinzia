@@ -70,7 +70,7 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
           (x (ly:grob-relative-coordinate grob sys X))
           (y (ly:grob-relative-coordinate grob sys Y))
           (id (ly:assoc-get 'cz-id (ly:grob-property grob 'details) 0)))
-     (if (> id 0) (format #t "NH ~a ~a ~,4f ~,4f\n" id (ly:grob-property sys 'rank 0) x y))))
+     (if (> id 0) (format #t "NH ~a ~a ~,4f ~,4f\n" id 0 x y))))
 @PAPER@
 \layout { \context { \Voice
   \override NoteHead.after-line-breaking = #report
@@ -237,4 +237,72 @@ fn spacing_against_lilypond() {
     let mean = all.iter().map(err).sum::<f32>() / all.len() as f32;
     eprintln!("spacing vs LilyPond: mean error {:.1} %, worst {:.1} % over {} gaps", mean * 100.0, worst * 100.0, all.len());
     assert!(mean < 0.015 && worst < 0.10, "spacing drifted from LilyPond's");
+}
+
+/// Bars that start each system, LilyPond's and ours, for one line width.
+fn breaks(s: &Score, line_sp: f32) -> Option<(Vec<i64>, Vec<i64>)> {
+    // LilyPond's default staff space: 20 pt staff / 4 = 1.7638 mm.
+    let lily = lilypond_positions(&to_ly(s, Some(line_sp * 1.7638)).replace("ragged-right = ##f", "ragged-right = ##f ragged-last = ##f"))?;
+    let bar = s.meter.first().map(|m| Frac::new(m.num, m.den)).unwrap_or(Frac::int(1));
+    let bar_of = |t: Frac| (t.num * bar.den) / (t.den * bar.num);
+    // A system starts where x falls back (LilyPond's System rank is not
+    // reachable from Scheme here).
+    let mut ly: Vec<i64> = Vec::new();
+    let mut last_x = f32::INFINITY;
+    for e in &s.parts[0].voices[0].events {
+        let id = e.pitches.first().map_or(e.id, |p| p.id);
+        if let Some(&(_, x, _)) = lily.get(&id) {
+            if x < last_x {
+                ly.push(bar_of(e.start));
+            }
+            last_x = x;
+        }
+    }
+    let opt = Options { names: false, ..Options::default() };
+    let spec = corinzia_layout::PageSpec { width: line_sp + 2.0 * 8.0 - opt.margin, height: 10_000.0, ..Default::default() };
+    let pages = corinzia_layout::layout_pages(s, &opt, &spec);
+    let mut ours: Vec<i64> = Vec::new();
+    for p in &pages {
+        let systems = p.columns.iter().map(|c| c.system).max().map_or(0, |m| m + 1);
+        for k in 0..systems {
+            let q = p.columns.iter().filter(|c| c.system == k).map(|c| c.quarter).fold(f64::INFINITY, f64::min);
+            ours.push((q / 4.0 * bar.den as f64 / bar.num as f64).round() as i64);
+        }
+    }
+    Some((ly, ours))
+}
+
+#[test]
+fn line_breaks_against_lilypond() {
+    let tune = "c''4 d''8 e''8 f''4 g''4 | a''2 g''4 f''4 | e''8 d''8 c''8 d''8 e''2 | d''1 | \
+                e''4. f''8 g''4 e''4 | c''2 r4 g'4 | a'8 b'8 c''8 d''8 e''4 c''4 | g'1 | \
+                c''16 d'' e'' f'' g''8 e''8 c''2 | f''4 a''4 g''4 f''4 | e''2 d''2 | c''1";
+    let waltz = "g'4 c''4 e''4 | g''2 e''4 | f''4 d''4 b'4 | c''2. | e''8 f''8 g''4 g''4 | a''4. g''8 f''4 | \
+                 e''4 d''4 c''4 | d''2 r4 | b'4 d''4 g''4 | f''2 d''4 | c''8 b'8 a'4 b'4 | c''2.";
+    let mut a = String::new();
+    let mut b = String::new();
+    for _ in 0..3 {
+        a.push_str(tune);
+        a.push_str(" | ");
+        b.push_str(waltz);
+        b.push_str(" | ");
+    }
+    let pieces = [("4/4 tune", score(&[("treble", &[a.as_str()])], (4, 4), 0)), ("waltz", score(&[("treble", &[b.as_str()])], (3, 4), 0))];
+    let (mut same, mut total) = (0, 0);
+    for (name, s) in &pieces {
+        for w in [45.0, 50.0, 55.0, 60.0, 64.0, 68.0, 72.0, 75.0, 78.0, 82.0, 86.0, 90.0, 95.0, 100.0, 105.0] {
+            let Some((ly, ours)) = breaks(s, w) else {
+                eprintln!("lilypond not found; skipping");
+                return;
+            };
+            total += 1;
+            if ly == ours {
+                same += 1;
+            } else {
+                eprintln!("{name}, line {w}: lilypond {ly:?}\n                ours     {ours:?}");
+            }
+        }
+    }
+    eprintln!("same system breaks as LilyPond at {same} of {total} line widths");
+    assert!(same * 4 >= total * 3, "line breaking drifted from LilyPond's: {same} of {total}");
 }
