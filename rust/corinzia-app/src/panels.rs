@@ -121,7 +121,7 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     let mut dynamics: Vec<_> = DYN.iter().enumerate().map(|(i, (g, hint))| tool(g, true, false, hint, Action::Dynamic(Some(i as u8)))).collect();
     dynamics.push(tool("✕", false, false, "Remove dynamic", Action::Dynamic(None)));
     let lines = vec![
-        tool("⌒", false, false, "Slur (S)", Action::Slur),
+        tool("◠", false, false, "Slur (S)", Action::Slur),
         tool("\u{E53E}", true, false, "Crescendo (H)", Action::Hairpin { crescendo: true }),
         tool("\u{E53F}", true, false, "Diminuendo (Shift+H)", Action::Hairpin { crescendo: false }),
         tool("‿", false, false, "Tie (T)", Action::Tie),
@@ -129,9 +129,9 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     let editing = vec![
         tool("▲", false, false, "Transpose up (↑, Ctrl+↑ octave)", Action::Transpose(1)),
         tool("▼", false, false, "Transpose down (↓, Ctrl+↓ octave)", Action::Transpose(-1)),
-        tool("⧉", false, false, "Copy (Ctrl+C)", Action::Copy),
+        tool("❐", false, false, "Copy (Ctrl+C)", Action::Copy),
         tool("✂", false, false, "Cut (Ctrl+X)", Action::Cut),
-        tool("⎘", false, ed.has_clip(), "Paste (Ctrl+V)", Action::Paste),
+        tool("❏", false, ed.has_clip(), "Paste (Ctrl+V)", Action::Paste),
         tool("↻", false, false, "Repeat selection (R)", Action::Repeat),
         tool("⌫", false, false, "Delete (Del)", Action::Delete),
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),

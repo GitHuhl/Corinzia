@@ -3,7 +3,7 @@
 //! (needs `wireplumber` on PATH for the session).
 //! Skipped unless CORINZIA_PW is set.
 
-#![cfg(feature = "pipewire")]
+#![cfg(all(feature = "pipewire", target_os = "linux"))]
 
 use corinzia_audio::engine::{self, Command};
 use corinzia_audio::pool::PluginPool;

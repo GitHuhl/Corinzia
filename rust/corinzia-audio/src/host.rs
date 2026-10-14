@@ -378,10 +378,22 @@ impl Drop for Plugin {
     }
 }
 
-/// Where CLAP plugins live: CLAP_PATH, ~/.clap, /usr/lib/clap, and the NixOS
-/// profile directories.
+/// Where CLAP plugins live: CLAP_PATH, then the platform's places. On
+/// Linux ~/.clap, /usr/lib/clap and the NixOS profile directories; on
+/// Windows %LOCALAPPDATA%\Programs\Common\CLAP and
+/// %COMMONPROGRAMFILES%\CLAP (the CLAP specification's).
 pub fn search_paths() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::env::var("CLAP_PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    if cfg!(windows) {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            v.push(PathBuf::from(local).join("Programs").join("Common").join("CLAP"));
+        }
+        if let Ok(common) = std::env::var("COMMONPROGRAMFILES") {
+            v.push(PathBuf::from(common).join("CLAP"));
+        }
+        v.dedup();
+        return v;
+    }
     if let Ok(home) = std::env::var("HOME") {
         v.push(PathBuf::from(&home).join(".clap"));
         v.push(PathBuf::from(&home).join(".nix-profile/lib/clap"));

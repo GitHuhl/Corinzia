@@ -1,4 +1,4 @@
-//! Playback for the app: the engine handle, the PipeWire output, plugin
+//! Playback for the app: the engine handle, the audio output, plugin
 //! instances, and the plan kept in step with the editor (rebuilt when the
 //! music changes, mixer settings sent live otherwise).
 
@@ -34,7 +34,7 @@ pub struct Playback {
 }
 
 impl Playback {
-    /// Starts audio output (PipeWire) unless `live` is false.
+    /// Starts audio output (PipeWire, or WASAPI on Windows) unless `live` is false.
     pub fn new(live: bool) -> Playback {
         let (handle, eng) = engine::new(SAMPLE_RATE, MAX_FRAMES);
         let mut offline = Some(eng);
@@ -47,7 +47,7 @@ impl Playback {
                 Ok(o) => output = Some(o),
                 Err(e) => {
                     eprintln!("corinzia: no audio output: {e}");
-                    problem = Some("No audio output (PipeWire unavailable)".into());
+                    problem = Some(if cfg!(windows) { "No audio output (no audio device)" } else { "No audio output (PipeWire unavailable)" }.into());
                 }
             }
             #[cfg(not(feature = "audio-out"))]

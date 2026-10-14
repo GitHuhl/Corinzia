@@ -19,7 +19,7 @@
 
       corinzia = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia";
-        version = "0.1.0";
+        version = "0.1.1";
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -66,7 +66,7 @@
         target = "x86_64-unknown-linux-gnu";
       in pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia-appimage";
-        version = "0.1.0";
+        version = "0.1.1";
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -111,9 +111,62 @@
           runHook postInstall
         '';
       };
+      # Windows (x86-64): a zip with corinzia.exe and its fonts. Built with
+      # the official Rust 1.95 binaries that nixpkgs carries for
+      # bootstrapping, the matching official Windows standard library, and
+      # nixpkgs' mingw-w64 GCC as linker. Audio through WASAPI.
+      windows = pkgs: let
+        prebuilt = pkgs.rust.packages.prebuilt;
+        mingw = pkgs.pkgsCross.mingwW64;
+        target = "x86_64-pc-windows-gnu";
+        rustStd = pkgs.fetchurl {
+          url = "https://static.rust-lang.org/dist/rust-std-${prebuilt.rustc.version}-${target}.tar.xz";
+          hash = "sha256-9X4EUBagQTASX7QyldlfmtK+vClhUOrbAx2/UWetEr0=";
+        };
+        # The compiler's own sysroot plus the Windows standard library.
+        sysroot = pkgs.runCommand "rust-sysroot-windows" { nativeBuildInputs = [ prebuilt.rustc ]; } ''
+          mkdir -p $out/lib/rustlib
+          for d in $(rustc --print sysroot)/lib/rustlib/*; do ln -s $d $out/lib/rustlib/; done
+          tar -xJf ${rustStd}
+          cp -r rust-std-*/rust-std-${target}/lib/rustlib/${target} $out/lib/rustlib/
+        '';
+        rustPlatform = pkgs.makeRustPlatform { rustc = prebuilt.rustc; cargo = prebuilt.cargo; };
+        fonts = "${pkgs.dejavu_fonts}/share/fonts/truetype";
+      in rustPlatform.buildRustPackage {
+        pname = "corinzia-windows";
+        version = "0.1.1";
+        src = self;
+        cargoRoot = "rust";
+        buildAndTestSubdir = "rust";
+        cargoLock.lockFile = ./rust/Cargo.lock;
+        nativeBuildInputs = [ mingw.stdenv.cc pkgs.zip ];
+        doCheck = false; # the Linux package runs the tests
+        dontFixup = true;
+        buildPhase = ''
+          runHook preBuild
+          cd rust
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+          export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
+          # Static C runtime; winpthreads for the standard library.
+          export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="--sysroot ${sysroot} -C target-feature=+crt-static -L native=${mingw.windows.pthreads}/lib"
+          cargo build --offline --release -p corinzia-app --features portable --target ${target}
+          cd ..
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          dir=$TMPDIR/Corinzia
+          mkdir -p $dir/fonts $out
+          x86_64-w64-mingw32-strip -o $dir/corinzia.exe rust/target/${target}/release/corinzia.exe
+          for f in DejaVuSerif DejaVuSerif-Bold DejaVuSans DejaVuSans-Bold; do cp ${fonts}/$f.ttf $dir/fonts/; done
+          cp packaging/windows/README.txt $dir/README.txt
+          (cd $TMPDIR && zip -qr9 $out/Corinzia-x86_64-windows.zip Corinzia)
+          runHook postInstall
+        '';
+      };
     in {
       packages = forAll (pkgs: { default = corinzia pkgs; }
-        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") { appimage = appimage pkgs; });
+        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") { appimage = appimage pkgs; windows = windows pkgs; });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

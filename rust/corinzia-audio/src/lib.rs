@@ -5,11 +5,15 @@
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
 //! * [`engine`]: the realtime core and its UI handle (wait-free queues);
-//! * [`backend`]: PipeWire output (feature `pipewire`) and offline rendering.
+//! * [`backend`]: live output: PipeWire on Linux (feature `pipewire`),
+//!   WASAPI on Windows (feature `wasapi`).
 
 pub mod engine;
 pub mod host;
 pub mod pool;
 pub mod snapshot;
-#[cfg(feature = "pipewire")]
+#[cfg(all(feature = "pipewire", target_os = "linux"))]
+pub mod backend;
+#[cfg(all(feature = "wasapi", windows))]
+#[path = "backend_wasapi.rs"]
 pub mod backend;

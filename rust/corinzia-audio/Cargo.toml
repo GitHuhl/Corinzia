@@ -13,9 +13,16 @@ corinzia-score.workspace = true
 corinzia-model.workspace = true
 corinzia-perform.workspace = true
 corinzia-sine.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.8", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+cpal = { version = "0.16", optional = true }
+
 [features]
-default = ["pipewire"]
-# Live output through PipeWire (needs libpipewire; bindgen at build time).
+default = ["pipewire", "wasapi"]
+# Live output through PipeWire on Linux (needs libpipewire; bindgen at build time).
 pipewire = ["dep:pipewire"]
+# Live output through WASAPI on Windows.
+wasapi = ["dep:cpal"]

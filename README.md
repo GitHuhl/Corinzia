@@ -36,9 +36,9 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
 
 **Read the design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-## Download (any Linux distribution)
+## Download
 
-Get `Corinzia-…-x86_64.AppImage` from the
+**Linux:** get `Corinzia-…-x86_64.AppImage` from the
 [Releases](https://github.com/githuhl/corinzia/releases) page, then:
 
 ```sh
@@ -52,6 +52,11 @@ Debian 11, Fedora 32 and later). It uses your system's graphics driver
 or `/usr/lib/clap`. Without PipeWire it still runs, without sound. On NixOS
 use the flake below, or `appimage-run`.
 
+**Windows (x86-64):** get `Corinzia-…-x86_64-windows.zip`, unzip it and run
+`corinzia.exe`, keeping the `fonts` folder next to it. Audio goes to the
+default output device (WASAPI). CLAP instruments are found in
+`%LOCALAPPDATA%\Programs\Common\CLAP` and `%COMMONPROGRAMFILES%\CLAP`.
+
 Found a bug? Please [open an issue](https://github.com/githuhl/corinzia/issues).
 
 ## Run, build & test (Nix only)
@@ -61,6 +66,7 @@ nix run                                       # the app (a demo score)
 nix run . -- score.project                    # open a project
 nix build                                     # sandboxed build running every test
 nix build .#appimage                          # the portable AppImage (x86-64)
+nix build .#windows                           # the Windows zip (cross-compiled)
 
 nix develop                                   # pinned nixos-26.05 toolchain
 cd rust && cargo test --workspace             # all crates

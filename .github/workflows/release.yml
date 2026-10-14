@@ -1,9 +1,10 @@
-# Builds the AppImage with Nix and publishes it as a GitHub release.
+# Builds the Linux AppImage and the Windows zip with Nix and publishes them
+# as a GitHub release.
 #
 # A push to main publishes release v<version> (the workspace version in
 # rust/Cargo.toml) if there is none yet: bump the version to make a new
 # release. Pushing a v* tag publishes that tag. "Run workflow" builds
-# without publishing (the AppImage is kept as a workflow artifact).
+# without publishing (the files are kept as a workflow artifact).
 name: Release
 
 on:
@@ -39,18 +40,22 @@ jobs:
           echo "release $tag, publish: $publish"
       - uses: cachix/install-nix-action@v31
         if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
-      - name: Build the AppImage
+      - name: Build the AppImage and the Windows zip
         if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          nix build .#appimage -L
-          cp result/Corinzia-x86_64.AppImage "Corinzia-${{ steps.release.outputs.tag }}-x86_64.AppImage"
-          sha256sum Corinzia-*.AppImage > SHA256SUMS
+          tag="${{ steps.release.outputs.tag }}"
+          nix build .#appimage -L -o appimage
+          cp appimage/Corinzia-x86_64.AppImage "Corinzia-${tag}-x86_64.AppImage"
+          nix build .#windows -L -o windows
+          cp windows/Corinzia-x86_64-windows.zip "Corinzia-${tag}-x86_64-windows.zip"
+          sha256sum Corinzia-*.AppImage Corinzia-*.zip > SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
         with:
-          name: appimage
+          name: corinzia
           path: |
             Corinzia-*.AppImage
+            Corinzia-*.zip
             SHA256SUMS
       - name: Publish the release
         if: steps.release.outputs.publish == 'true'
@@ -61,6 +66,7 @@ jobs:
           name: Corinzia ${{ steps.release.outputs.tag }}
           files: |
             Corinzia-*.AppImage
+            Corinzia-*.zip
             SHA256SUMS
           generate_release_notes: true
           prerelease: ${{ startsWith(steps.release.outputs.tag, 'v0.') }}

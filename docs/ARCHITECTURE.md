@@ -21,7 +21,7 @@ rust/
 | Thread | Does | Never |
 |---|---|---|
 | UI (iced) | editing, engraving (milliseconds), plan building, plugin main-thread calls | blocks on audio |
-| Audio (PipeWire's RT thread) | `Engine::process`: notes, plugins, mixing | allocates, locks, touches the model |
+| Audio (PipeWire's RT thread; WASAPI's on Windows) | `Engine::process`: notes, plugins, mixing | allocates, locks, touches the model |
 | Worker (iced executor) | autosave, file dialogs | — |
 
 Engraving runs on the UI thread because it is fast: the demo score engraves
@@ -242,8 +242,10 @@ scores for the engraving tests.
     bar, time signature), and mixes with equal-power pan, mute and solo.
   * Atomics carry the playhead back to the UI.
   * `render_offline` drives the same code for tests.
-* **`backend`** is a PipeWire playback stream (32-bit float, stereo) on its
-  own thread. Its realtime callback runs `Engine::process`.
+* **`backend`** is the live output, on its own thread, whose realtime
+  callback runs `Engine::process` (32-bit float, stereo):
+  * on Linux, a PipeWire playback stream;
+  * on Windows, the default WASAPI device through `cpal`.
 
 Not yet: buses and plugin delay compensation (tracks mix straight to the
 output), automation, plugin GUIs.
@@ -276,7 +278,7 @@ output), automation, plugin GUIs.
 
 ## 8. Packaging
 
-`nix build .#appimage` builds `Corinzia-x86_64.AppImage` for other
+`nix build .#appimage` builds `Corinzia-x86_64.AppImage` for other Linux
 distributions:
 * The binary is compiled with `cargo-zigbuild` against glibc 2.31, with
   SQLite compiled in (the `portable` feature). It links only the system's
@@ -286,7 +288,16 @@ distributions:
   a stand-in `libpipewire` (`packaging/pipewire-stub.c`) when the system has
   none, so Corinzia runs without sound instead of failing to start.
 * The squashfs image is appended to the pinned AppImage type-2 runtime.
-* `.github/workflows/release.yml` builds it on GitHub and publishes it:
+`nix build .#windows` builds `Corinzia-x86_64-windows.zip`:
+* It is cross-compiled with the official Rust binaries that nixpkgs carries
+  for bootstrapping, plus the matching official Windows standard library.
+  nixpkgs' mingw-w64 GCC links it, with a static C runtime.
+* Audio goes through WASAPI (`cpal`, the `wasapi` feature).
+* CLAP plugins are found in the CLAP specification's Windows folders.
+* The interface and score fonts (DejaVu) ship in `fonts/` next to the
+  executable.
+
+`.github/workflows/release.yml` builds both on GitHub and publishes them:
   * a push to `main` creates release `v<version>` (the workspace version)
     if it doesn't exist yet, so bumping the version makes a new release;
   * a pushed `v*` tag is published as well.

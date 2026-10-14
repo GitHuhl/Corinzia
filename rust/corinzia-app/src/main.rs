@@ -6,6 +6,8 @@
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
 //! as vector geometry; playback runs through corinzia-audio.
 
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod arrange;
 mod demo;
 mod editor;
@@ -984,7 +986,9 @@ fn save_png(path: &std::path::Path, shot: &iced::window::Screenshot) -> Result<(
 /// package wrapper). The engraver measures text with the fonts that draw
 /// it; the returned bytes are for the window.
 fn load_text_fonts() -> Vec<Vec<u8>> {
-    let Ok(path) = std::env::var("CORINZIA_TEXT_FONT") else { return vec![] };
+    // Else fonts/DejaVuSerif.ttf next to the executable (the Windows zip).
+    let beside = || std::env::current_exe().ok()?.parent().map(|d| d.join("fonts").join("DejaVuSerif.ttf")).filter(|p| p.is_file());
+    let Some(path) = std::env::var("CORINZIA_TEXT_FONT").ok().or_else(|| beside().map(|p| p.to_string_lossy().into_owned())) else { return vec![] };
     let bold = std::fs::read(path.replace(".ttf", "-Bold.ttf").replace(".otf", "-Bold.otf")).ok();
     let Ok(regular) = std::fs::read(&path) else { return vec![] };
     corinzia_layout::display::set_text_font(regular.clone(), bold.clone());
@@ -1025,6 +1029,17 @@ fn main() -> iced::Result {
     LIVE_AUDIO.store(true, std::sync::atomic::Ordering::Relaxed);
     for font in load_text_fonts() {
         app = app.font(font);
+    }
+    // A packaged interface font (fonts/DejaVuSans.ttf next to the
+    // executable, as in the Windows zip) replaces the system's sans-serif.
+    let ui_font = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("fonts")));
+    if let Some(dir) = ui_font.filter(|d| d.join("DejaVuSans.ttf").is_file()) {
+        for name in ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"] {
+            if let Ok(bytes) = std::fs::read(dir.join(name)) {
+                app = app.font(bytes);
+            }
+        }
+        app = app.default_font(iced::Font::with_name("DejaVu Sans"));
     }
     app.run()
 }
