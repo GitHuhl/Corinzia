@@ -86,11 +86,12 @@ fn accidentals_follow_key_and_bar() {
 }
 
 #[test]
-fn eighths_are_beamed_by_beat() {
-    let s = score(&[("treble", &["c''8 d'' e'' f'' g'4 a'8 b'"])], (4, 4), 0);
+fn eighths_are_beamed_as_lilypond_does() {
+    // 4/4: eighths in half bars (LilyPond's default), sixteenths by beat.
+    let s = score(&[("treble", &["c''8 d'' e'' f'' g'4 a'8 b' | c''16 d'' e'' f'' g''16 a'' b'' c''' c''2"])], (4, 4), 0);
     let l = layout_line(&s, &Options::default());
     let beams = l.items.iter().filter(|i| matches!(i, Item::Quad { .. })).count();
-    assert_eq!(beams, 3, "two pairs in beats 1-2 and one in beat 4");
+    assert_eq!(beams, 2 + 2 * 2, "one beam over beats 1-2, one in beat 4; two double beams");
     assert!(glyphs(&l, Glyph::Flag8thUp).is_empty() && glyphs(&l, Glyph::Flag8thDown).is_empty());
     preview("beams", &l);
 }

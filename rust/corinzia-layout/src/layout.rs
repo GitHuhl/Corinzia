@@ -196,6 +196,21 @@ fn overlap((l1, h1): (f32, f32), (l2, h2): (f32, f32)) -> f32 {
     (h1.min(h2) - l1.max(l2)).max(0.0)
 }
 
+/// Beams (LilyPond's Stem and Beam details): ideal beamed stem lengths (to
+/// the outer beam) by number of beams, the least free stem below the
+/// innermost beam, the slope damping, and the demerit weights of the
+/// quanting.
+const BEAMED_LENGTHS: [f32; 3] = [3.26, 3.5, 3.6];
+const BEAMED_MIN_FREE: [f32; 3] = [1.83, 1.5, 1.25];
+const BEAM_SLOPE_DAMPING: f32 = 0.6;
+const BEAM_SLOPE_FACTOR: f32 = 10.0;
+const BEAM_FLAT_PENALTY: f32 = 800.0;
+const BEAM_DIRECTION_PENALTY: f32 = 400.0;
+const STEM_LENGTH_DEMERIT: f32 = 5.0;
+/// Stems shorter than ideal cost more than longer ones.
+const BEAM_SHORT_FACTOR: f32 = 2.0;
+const BEAM_CONCAVE_DAMPING: f32 = 3.0;
+
 /// The movement's common shortest duration: the shortest note of each bar,
 /// the one most bars have (the shorter on a tie), capped at
 /// `BASE_SHORTEST`.
@@ -553,32 +568,66 @@ impl<'a> Engraver<'a> {
     }
 
     /// Beat groups -> beamed runs; their stem direction is the group's.
+    /// Beam groups by LilyPond's defaults: one beam per beat (dotted
+    /// quarters in compound meters, halves in 2/2 and 3/2), except that
+    /// beams of eighths only span half a bar in 4/4 and the bar in 3/4.
     fn beam_groups(&mut self) -> Vec<Vec<usize>> {
-        let mut groups = Vec::new();
-        let mut cur: Vec<usize> = Vec::new();
-        let mut cur_key = None;
-        for i in 0..self.notes.len() {
-            let n = &self.notes[i];
-            let m = &self.ms[n.measure];
-            let beat = if m.den == 8 && m.num % 3 == 0 { Frac::new(3, 8) } else if m.den >= 8 { Frac::new(1, m.den) * Frac::int(2) } else { Frac::new(1, 4) };
-            let rel = (n.start - m.start) * Frac::new(beat.den, beat.num);
-            let key = (n.part, n.voice, n.measure, rel.num / rel.den);
-            let beamable = !n.rest && n.value.base >= 8;
-            if !beamable || cur_key != Some(key) {
-                if cur.len() >= 2 {
-                    groups.push(std::mem::take(&mut cur));
-                }
-                cur.clear();
-            }
-            if beamable {
-                cur.push(i);
-                cur_key = Some(key);
+        let beat_of = |m: &Measure| {
+            if m.den == 8 && m.num % 3 == 0 {
+                Frac::new(3, 8)
+            } else if m.den <= 2 {
+                Frac::new(1, 2)
+            } else if m.den >= 8 {
+                Frac::new(2, m.den)
             } else {
-                cur_key = None;
+                Frac::new(1, m.den)
             }
-        }
-        if cur.len() >= 2 {
-            groups.push(cur);
+        };
+        let eighths_span = |m: &Measure| match (m.num, m.den) {
+            (4, 4) => Some(Frac::new(1, 2)),
+            (3, 4) => Some(Frac::new(3, 4)),
+            _ => None,
+        };
+        // Notes in the same window of `span` (per voice and bar) share a beam.
+        let group = |this: &Self, idx: &[usize], span: &dyn Fn(&Measure) -> Frac| -> Vec<Vec<usize>> {
+            let mut groups = Vec::new();
+            let mut cur: Vec<usize> = Vec::new();
+            let mut cur_key = None;
+            for &i in idx {
+                let n = &this.notes[i];
+                let m = &this.ms[n.measure];
+                let w = span(m);
+                let rel = (n.start - m.start) * Frac::new(w.den, w.num);
+                let key = (n.part, n.voice, n.measure, rel.num / rel.den);
+                let beamable = !n.rest && n.value.base >= 8;
+                if !beamable || cur_key != Some(key) {
+                    if cur.len() >= 2 {
+                        groups.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                }
+                if beamable {
+                    cur.push(i);
+                    cur_key = Some(key);
+                } else {
+                    cur_key = None;
+                }
+            }
+            if cur.len() >= 2 {
+                groups.push(cur);
+            }
+            groups
+        };
+        let all: Vec<usize> = (0..self.notes.len()).collect();
+        let wide = group(self, &all, &|m: &Measure| eighths_span(m).unwrap_or_else(|| beat_of(m)));
+        // A wide beam holding shorter notes than eighths goes back to beats.
+        let mut groups = Vec::new();
+        for g in wide {
+            if g.iter().any(|&i| self.notes[i].beams() > 1) {
+                groups.extend(group(self, &g, &beat_of));
+            } else {
+                groups.push(g);
+            }
         }
         for g in &groups {
             let poly = {
@@ -1084,6 +1133,91 @@ impl<'a> Engraver<'a> {
         }
     }
 
+    /// The beam of a group, placed as LilyPond does: ideal stem ends
+    /// fitted by least squares, the slope damped (0.6 tanh), flat for
+    /// concave groups, then the best of the allowed positions (in the staff,
+    /// on a line or 0.19 off it) by stem-length and slope demerits.
+    /// Returns the outer edge at the first stem and the slope, page y down.
+    fn quant_beam(&self, g: &[usize], up: bool, bt: f32, gap: f32) -> (f32, f32) {
+        let dir = if up { 1.0 } else { -1.0 };
+        let part = self.notes[g[0]].part;
+        let mid = self.top(part) + 2.0;
+        // Per stem: x, the head the stem ends nearest (y up from the middle
+        // line), its number of beams.
+        let stems: Vec<(f32, f32, u32)> = g
+            .iter()
+            .map(|&i| {
+                let n = &self.notes[i];
+                let (lo, hi) = (n.heads[0].pos as f32 * 0.5, n.heads[n.heads.len() - 1].pos as f32 * 0.5);
+                (n.stem_x, if up { hi } else { lo }, n.beams().max(1))
+            })
+            .collect();
+        let x0 = stems[0].0;
+        let outer_len = |b: u32| BEAMED_LENGTHS[(b.min(3) - 1) as usize];
+        // Ideal beam centre lines over each stem, and their least-squares line.
+        let ideal: Vec<(f32, f32)> = stems.iter().map(|&(x, h, b)| (x - x0, h + dir * (outer_len(b) - bt / 2.0))).collect();
+        let k = ideal.len() as f32;
+        let (mx, my) = (ideal.iter().map(|p| p.0).sum::<f32>() / k, ideal.iter().map(|p| p.1).sum::<f32>() / k);
+        let sxx: f32 = ideal.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
+        let sxy: f32 = ideal.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+        let ls = if sxx > 1e-6 { sxy / sxx } else { 0.0 };
+        // Equal outer notes give a flat beam.
+        let level = (stems[0].1 - stems[stems.len() - 1].1).abs() < 1e-4;
+        // Concaveness (how far the inner notes reach towards the beam beyond
+        // the line joining the outer ones) damps the slope further.
+        let n = stems.len();
+        let (first, last) = (stems[0].1 * dir, stems[n - 1].1 * dir);
+        let excess: Vec<f32> = (1..n.saturating_sub(1)).map(|i| stems[i].1 * dir - (first + (last - first) * i as f32 / (n - 1) as f32)).collect();
+        let concave = if excess.is_empty() { 0.0 } else { excess.iter().map(|e| e.max(0.0)).sum::<f32>() / excess.len() as f32 };
+        let damped = if level { 0.0 } else { BEAM_SLOPE_DAMPING * ls.tanh() / (1.0 + BEAM_CONCAVE_DAMPING * concave) };
+        let dx = stems[stems.len() - 1].0 - x0;
+        let ideal_dy = damped * dx;
+        // Candidate centre positions near the damped line through the centroid.
+        let left0 = my - damped * mx;
+        let quants = |c: f32| -> Vec<f32> {
+            let mut q = Vec::new();
+            let lo = (c - 2.0).floor() as i32;
+            for k in lo..=lo + 5 {
+                for off in [0.0, 0.19, 0.81] {
+                    // The beam centre on a line, or sitting on / hanging from it.
+                    q.push(k as f32 + off);
+                }
+            }
+            q
+        };
+        let (mut best, mut best_score) = ((left0, left0 + ideal_dy), f32::INFINITY);
+        for &l in &quants(left0) {
+            for &r in &quants(left0 + ideal_dy) {
+                let dy = r - l;
+                let mut score = BEAM_SLOPE_FACTOR * (dy - ideal_dy).abs();
+                if ideal_dy == 0.0 && dy != 0.0 {
+                    score += BEAM_FLAT_PENALTY;
+                } else if dy * ideal_dy < 0.0 {
+                    score += BEAM_DIRECTION_PENALTY * dy.abs();
+                }
+                for &(x, h, b) in &stems {
+                    let centre = l + if dx > 0.0 { dy * (x - x0) / dx } else { 0.0 };
+                    let len = dir * (centre - h) + bt / 2.0;
+                    let d = len - outer_len(b);
+                    score += STEM_LENGTH_DEMERIT * if d < 0.0 { -d * BEAM_SHORT_FACTOR } else { d };
+                    let free = len - (b - 1) as f32 * gap - bt;
+                    if free < BEAMED_MIN_FREE[(b.min(3) - 1) as usize] {
+                        score += 5000.0;
+                    }
+                }
+                if score < best_score {
+                    best_score = score;
+                    best = (l, r);
+                }
+            }
+        }
+        let (l, r) = best;
+        // Back to page coordinates: the outer edge, y down.
+        let edge = |c: f32| mid - (c + dir * bt / 2.0);
+        let slope = if dx > 0.0 { (edge(r) - edge(l)) / dx } else { 0.0 };
+        (edge(l), slope)
+    }
+
     fn draw_beams(&mut self, groups: &[Vec<usize>]) {
         let d = self.font.defaults;
         let (bt, gap) = (d.beam_thickness, d.beam_thickness + d.beam_spacing);
@@ -1091,24 +1225,8 @@ impl<'a> Engraver<'a> {
             let up = self.notes[g[0]].stem_up;
             let (fi, li) = (g[0], *g.last().unwrap());
             let (xf, xl) = (self.notes[fi].stem_x, self.notes[li].stem_x);
-            let (yf, yl) = (self.notes[fi].stem_end, self.notes[li].stem_end);
-            // Slope from the outer notes, gentle; then shifted so no stem is shorter than 3 spaces.
-            let slope = if xl > xf { ((yl - yf) / (xl - xf)).clamp(-0.2, 0.2) } else { 0.0 };
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
-            let min_len = 2.75 + (levels.saturating_sub(1)) as f32 * gap;
-            let mut y0 = yf;
-            for &i in g {
-                let n = &self.notes[i];
-                let yb = y0 + slope * (n.stem_x - xf);
-                let (lo, hi) = (self.y(n.part, n.heads[0].pos), self.y(n.part, n.heads[n.heads.len() - 1].pos));
-                if up {
-                    let need = hi - min_len;
-                    if yb > need { y0 -= yb - need }
-                } else {
-                    let need = lo + min_len;
-                    if yb < need { y0 += need - yb }
-                }
-            }
+            let (y0, slope) = self.quant_beam(g, up, bt, gap);
             let beam_y = |x: f32| y0 + slope * (x - xf);
             // Stems to the beam.
             for &i in g {

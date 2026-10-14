@@ -130,8 +130,19 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
 * Stems follow the furthest-head rule, or the voice in polyphony.
 * Seconds in chords are offset. Accidentals follow key and bar, and stack
   in columns.
-* Also drawn: ledger lines, dots, flags, beams by beat (with secondary
-  beams and hooks), rests and whole-bar rests.
+* Beams are grouped with LilyPond's defaults: one beam per beat (dotted
+  quarters in compound meters). Groups of only eighths span half a bar in
+  4/4 and the whole bar in 3/4.
+* Beams are placed as in LilyPond's quanting:
+  * ideal stem ends (LilyPond's beamed stem lengths) are fitted by least
+    squares;
+  * the slope is damped (0.6·tanh), and further for concave groups;
+  * the best allowed position wins, scored on stem length and slope. Allowed
+    positions put the beam centre on a staff line or 0.19 off it.
+  Stems match LilyPond's in direction everywhere in the test corpus. Their
+  lengths are within 0.15 spaces on average.
+* Also drawn: ledger lines, dots, flags, secondary beams and hooks, rests
+  and whole-bar rests.
 
 **Marks around the staff.** Each staff has a skyline: the boxes of
 everything drawn so far. Outer marks are placed against it from the staff

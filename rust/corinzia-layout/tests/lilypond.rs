@@ -70,7 +70,11 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
           (x (ly:grob-relative-coordinate grob sys X))
           (y (ly:grob-relative-coordinate grob sys Y))
           (id (ly:assoc-get 'cz-id (ly:grob-property grob 'details) 0)))
-     (if (> id 0) (format #t "NH ~a ~a ~,4f ~,4f\n" id 0 x y))))
+     (if (> id 0) (format #t "NH ~a ~a ~,4f ~,4f\n" id 0 x y))
+     (let ((st (ly:grob-object grob 'stem)))
+       (if (and (> id 0) (ly:grob? st) (not (equal? (ly:grob-extent st sys Y) '(+inf.0 . -inf.0))))
+           (let ((dir (ly:grob-property st 'direction)) (ext (ly:grob-extent st sys Y)))
+             (format #t "ST ~a ~a ~,4f ~,4f ~a\n" id dir y (if (> dir 0) (cdr ext) (car ext)) (if (ly:grob? (ly:grob-object st 'beam)) 1 0)))))))
 @PAPER@
 \layout { \context { \Voice
   \override NoteHead.after-line-breaking = #report
@@ -103,15 +107,34 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
     ly
 }
 
-/// id -> (system, x, y) from LilyPond; None without LilyPond.
-fn lilypond_positions(ly: &str) -> Option<HashMap<u64, (u32, f32, f32)>> {
-    let dir = std::env::temp_dir().join(format!("corinzia-ly-{}-{}", std::process::id(), ly.len()));
+/// LilyPond's stdout for the input; None without LilyPond.
+fn run_lilypond(ly: &str) -> Option<String> {
+    static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("corinzia-ly-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
-    let file = dir.join("t.ly");
-    std::fs::write(&file, ly).ok()?;
+    std::fs::write(dir.join("t.ly"), ly).ok()?;
     let out = std::process::Command::new("lilypond").current_dir(&dir).args(["-dbackend=null", "-s", "t.ly"]).output().ok()?;
     std::fs::remove_dir_all(&dir).ok();
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Head id -> (stem up, head y, stem tip y, beamed) from LilyPond, y up.
+fn lilypond_stems(ly: &str) -> Option<HashMap<u64, (bool, f32, f32, bool)>> {
+    let text = run_lilypond(ly)?;
+    Some(
+        text.lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.len() == 6 && f[0] == "ST").then(|| (f[1].parse().unwrap(), (f[2] == "1", f[3].parse().unwrap(), f[4].parse().unwrap(), f[5] == "1")))
+            })
+            .collect(),
+    )
+}
+
+/// id -> (system, x, y) from LilyPond; None without LilyPond.
+fn lilypond_positions(ly: &str) -> Option<HashMap<u64, (u32, f32, f32)>> {
+    let text = run_lilypond(ly)?;
     let mut map: HashMap<u64, (u32, f32, f32)> = HashMap::new();
     for l in text.lines() {
         let f: Vec<&str> = l.split_whitespace().collect();
@@ -122,7 +145,7 @@ fn lilypond_positions(ly: &str) -> Option<HashMap<u64, (u32, f32, f32)>> {
             e.1 = e.1.min(x);
         }
     }
-    assert!(!map.is_empty(), "LilyPond reported nothing:\n{}\n{}", String::from_utf8_lossy(&out.stderr), ly);
+    assert!(!map.is_empty(), "LilyPond reported nothing:\n{ly}");
     Some(map)
 }
 
@@ -305,4 +328,70 @@ fn line_breaks_against_lilypond() {
     }
     eprintln!("same system breaks as LilyPond at {same} of {total} line widths");
     assert!(same * 4 >= total * 3, "line breaking drifted from LilyPond's: {same} of {total}");
+}
+
+/// Our stems: head id -> (stem up, tip relative to the first head, y up).
+fn our_stems(s: &Score, list: &corinzia_layout::DisplayList) -> HashMap<u64, (bool, f32)> {
+    let heads: HashMap<u64, f32> = list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Glyph { at, id, .. } => Some((*id, at.y)),
+            _ => None,
+        })
+        .collect();
+    let mut out = HashMap::new();
+    for e in s.parts.iter().flat_map(|p| p.voices.iter().flat_map(|v| v.events.iter())) {
+        let Some(p) = e.pitches.first() else { continue };
+        let Some(&hy) = heads.get(&p.id) else { continue };
+        let stem = list.items.iter().find_map(|i| match i {
+            Item::Line { from, to, id, .. } if *id == e.id && (from.x - to.x).abs() < 1e-4 => Some((*from, *to)),
+            _ => None,
+        });
+        if let Some((from, to)) = stem {
+            out.insert(p.id, (to.y < from.y, hy - to.y));
+        }
+    }
+    out
+}
+
+/// Stem directions and lengths, unbeamed and beamed.
+#[test]
+fn stems_against_lilypond() {
+    let pieces = [
+        ("unbeamed", score(&[("treble", &["c'4 d'4 e'4 f'4 | g'4 a'4 b'4 c''4 | d''4 e''4 f''4 g''4 | a''4 b''4 c'''4 d'''4 | a4 g4 e'''4 g'''4"])], (4, 4), 0)),
+        ("chords", score(&[("treble", &["<c' e' g'>4 <e' g' c''>4 <g' c'' e''>4 <c'' e'' g''>4 | <a' c''>2 <f' d''>2"])], (4, 4), 0)),
+        ("flags", score(&[("treble", &["c'8 r8 g'16 r16 r8 d''8 r8 a''16 r16 r8"])], (4, 4), 0)),
+        ("beams", score(&[("treble", &["c'8 d'8 e'8 f'8 g'8 a'8 b'8 c''8 | c''8 b'8 a'8 g'8 f'8 e'8 d'8 c'8 | e''8 c''8 g'8 c''8 a'8 f''8 d''8 b'8"])], (4, 4), 0)),
+        ("sixteenths", score(&[("treble", &["c''16 d'' e'' f'' g''16 f'' e'' d'' c'16 e' g' c'' a'16 f' d' b"])], (4, 4), 0)),
+        ("beam shapes", score(&[("treble", &["e''8 c'' g' c'' c'8 g' c' g' | e'8 g' e' g' c'8 c'' c' c'' | c'8 e' d' f' c'8 e' e' f' | c'8 f' f' f' c'8 g' g' f' | c'8 a' g' c' g'8 c' c' g' | c'8 d' d' c' c'8 f' d' c' | f'8 a' d'' a' a''8 f'' f'' f'' | a''8 d'' d'' f'' e''8 c'' g' d'' | e''8 c'' a' c'' e''8 d'' a' c'' | c'8 e' a' e' c'8 e' g' e' | c'8 d' a' e' c'8 e' b' f' | c'16 d' e' f' g'16 a' b' c''"])], (4, 4), 0)),
+        ("beam pairs", score(&[("treble", &["c'8 d' r4 c'8 e' r4 | c'8 f' r4 c'8 g' r4 | c'8 c'' r4 g'8 a' r4 | g'8 b' r4 a'8 c'' r4 | c''8 d'' r4 c''8 e'' r4 | d''8 a'' r4 e'8 e' r4 | f'8 f' r4 g'8 g' r4 | a'8 a' r4 r8 r8 r4"])], (4, 4), 0)),
+    ];
+    let (mut n, mut dirs, mut err_sum, mut worst) = (0, 0, 0.0f32, 0.0f32);
+    for (name, s) in pieces {
+        let Some(lily) = lilypond_stems(&to_ly(&s, None)) else {
+            eprintln!("lilypond not found; skipping");
+            return;
+        };
+        let ours = our_stems(&s, &layout_line(&s, &Options::default()));
+        eprintln!("{name}:");
+        for e in &s.parts[0].voices[0].events {
+            let Some(p) = e.pitches.first() else { continue };
+            let (Some(&(lup, hy, tip, beamed)), Some(&(oup, olen))) = (lily.get(&p.id), ours.get(&p.id)) else { continue };
+            let llen = tip - hy;
+            n += 1;
+            if lup == oup {
+                dirs += 1;
+                err_sum += (olen - llen).abs();
+                worst = worst.max((olen - llen).abs());
+            }
+            let name = ["c", "d", "e", "f", "g", "a", "b"][p.step as usize];
+            let dir = |up: bool| if up { "up" } else { "dn" };
+            eprintln!("  {name}{}: lilypond {} {llen:5.2}  ours {} {olen:5.2}{}", p.octave, dir(lup), dir(oup), if beamed { "  (beamed)" } else { "" });
+        }
+    }
+    let mean = err_sum / dirs.max(1) as f32;
+    eprintln!("stems vs LilyPond: {dirs} of {n} directions agree; length error mean {mean:.2}, worst {worst:.2} spaces");
+    assert_eq!(dirs, n, "stem directions differ from LilyPond's");
+    assert!(mean < 0.2, "stem lengths drifted from LilyPond's");
 }
