@@ -85,6 +85,8 @@ struct Writer<'a> {
     score: &'a Score,
     divisions: i64, // per quarter note
     out: String,
+    /// Inside a hyphenated word, per (voice, verse): for <syllabic>.
+    in_word: std::collections::HashMap<(u8, u8), bool>,
 }
 
 impl<'a> Writer<'a> {
@@ -210,6 +212,11 @@ impl<'a> Writer<'a> {
                         esc(&t.text)
                     ),
                 ));
+            }
+            for c in part.chords.iter().filter(|c| c.at >= m.start && c.at < end) {
+                if let Some(h) = harmony_xml(&c.text) {
+                    directions.push((c.at, h));
+                }
             }
             for c in part.clefs.iter().filter(|c| c.at >= m.start && c.at < end && c.at > Frac::ZERO) {
                 directions.push((c.at, format!("      <attributes>{}</attributes>", clef_xml(&c.clef))));
@@ -516,6 +523,18 @@ impl<'a> Writer<'a> {
             if !n.is_empty() {
                 let _ = write!(s, "<notations>{n}</notations>");
             }
+            if event_start && hi == 0 && !is_rest {
+                for l in &e.lyrics {
+                    let was = self.in_word.insert((voice, l.verse), l.hyphen).unwrap_or(false);
+                    let syllabic = match (was, l.hyphen) {
+                        (false, false) => "single",
+                        (false, true) => "begin",
+                        (true, true) => "middle",
+                        (true, false) => "end",
+                    };
+                    let _ = write!(s, "<lyric number=\"{}\"><syllabic>{syllabic}</syllabic><text>{}</text>{}</lyric>", l.verse, esc(&l.text), if l.extend { "<extend/>" } else { "" });
+                }
+            }
             s.push_str("</note>");
             self.line(&s);
         }
@@ -529,6 +548,65 @@ struct Piece<'a> {
     event_first: bool, // the piece starts the event
     event_last: bool,  // the piece ends the event
     tied_in: bool,     // the previous event ties into this one
+}
+
+/// A chord symbol ("F♯m7♭5/E") as a MusicXML <harmony>: root, kind (with
+/// the symbol's own spelling as text) and bass.
+fn harmony_xml(text: &str) -> Option<String> {
+    fn note(s: &str) -> Option<(char, i32, &str)> {
+        let mut cs = s.chars();
+        let step = cs.next()?;
+        if !('A'..='G').contains(&step) {
+            return None;
+        }
+        let rest = cs.as_str();
+        Some(match rest.chars().next() {
+            Some('♯') | Some('#') => (step, 1, &rest[rest.chars().next().unwrap().len_utf8()..]),
+            Some('♭') => (step, -1, &rest['♭'.len_utf8()..]),
+            Some('b') if !rest.starts_with("b5") => (step, -1, &rest[1..]),
+            _ => (step, 0, rest),
+        })
+    }
+    let (main, bass) = match text.rsplit_once('/') {
+        Some((m, b)) if b.chars().next().is_some_and(|c| ('A'..='G').contains(&c)) => (m, Some(b)),
+        _ => (text, None),
+    };
+    let (step, alter, quality) = note(main)?;
+    let q = quality.replace('♭', "b").replace('♯', "#");
+    let kind = match q.as_str() {
+        "" => "major",
+        "m" | "min" | "-" => "minor",
+        "7" => "dominant",
+        "maj7" | "M7" | "Δ" | "Δ7" => "major-seventh",
+        "m7" | "min7" | "-7" => "minor-seventh",
+        "°" | "dim" => "diminished",
+        "°7" | "dim7" => "diminished-seventh",
+        "ø" | "ø7" | "m7b5" => "half-diminished",
+        "+" | "aug" => "augmented",
+        "sus" | "sus4" => "suspended-fourth",
+        "sus2" => "suspended-second",
+        "6" => "major-sixth",
+        "m6" => "minor-sixth",
+        "9" => "dominant-ninth",
+        "maj9" => "major-ninth",
+        "m9" => "minor-ninth",
+        "11" => "dominant-11th",
+        "13" => "dominant-13th",
+        "mmaj7" | "m(maj7)" => "major-minor",
+        _ => "other",
+    };
+    let alter_xml = |a: i32, tag: &str| if a != 0 { format!("<{tag}>{a}</{tag}>") } else { String::new() };
+    let mut x = format!(
+        "      <harmony><root><root-step>{step}</root-step>{}</root><kind text=\"{}\">{kind}</kind>",
+        alter_xml(alter, "root-alter"),
+        esc(quality)
+    );
+    if let Some(b) = bass {
+        let (bs, ba, _) = note(b)?;
+        let _ = write!(x, "<bass><bass-step>{bs}</bass-step>{}</bass>", alter_xml(ba, "bass-alter"));
+    }
+    x.push_str("</harmony>");
+    Some(x)
 }
 
 pub fn write(doc: &Document) -> Result<String, String> {
@@ -567,7 +645,7 @@ pub fn write(doc: &Document) -> Result<String, String> {
         return Err("positions too fine to export".into());
     }
 
-    let mut w = Writer { score: s, divisions: div, out: String::new() };
+    let mut w = Writer { score: s, divisions: div, out: String::new(), in_word: Default::default() };
     w.line("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
     w.line("<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" \"http://www.musicxml.org/dtds/partwise.dtd\">");
     w.line("<score-partwise version=\"4.0\">");
@@ -609,5 +687,16 @@ mod tests {
         assert_eq!(rehearsal_letter(0), "A");
         assert_eq!(rehearsal_letter(25), "Z");
         assert_eq!(rehearsal_letter(26), "AA");
+    }
+
+    #[test]
+    fn chord_symbols_as_harmony() {
+        let h = harmony_xml("F♯m7♭5/E").unwrap();
+        assert!(h.contains("<root-step>F</root-step><root-alter>1</root-alter>"), "{h}");
+        assert!(h.contains("<kind text=\"m7♭5\">half-diminished</kind>"), "{h}");
+        assert!(h.contains("<bass><bass-step>E</bass-step></bass>"), "{h}");
+        assert!(harmony_xml("B♭maj7").unwrap().contains("<root-alter>-1</root-alter></root><kind text=\"maj7\">major-seventh</kind>"));
+        assert!(harmony_xml("C6/9").unwrap().contains(">other</kind>") && !harmony_xml("C6/9").unwrap().contains("<bass>"));
+        assert!(harmony_xml("H7").is_none());
     }
 }

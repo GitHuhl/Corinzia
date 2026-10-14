@@ -39,6 +39,8 @@ pub struct Editor {
     pub accidental: Option<i8>,
     pub chord_mode: bool,
     pub voice: u8,
+    /// The verse lyrics are typed into.
+    pub lyric_verse: u8,
     pub caret_lane: usize,
     pub caret: Frac,
     pub selection: Option<Id>,
@@ -109,6 +111,7 @@ impl Editor {
             accidental: None,
             chord_mode: false,
             voice: 1,
+            lyric_verse: 1,
             caret_lane: 0,
             caret: Frac::ZERO,
             selection: None,
@@ -798,6 +801,53 @@ impl Editor {
         }
     }
 
+    // ------------------------------------------------------ lyrics, chords --
+    /// The note lyrics go on: the selected note, else the first note at the
+    /// popover target in voice 1 of its staff.
+    pub fn lyric_target(&self) -> Option<Id> {
+        if let Some((_, e)) = self.selection.and_then(|s| self.event_of(s)) {
+            if !e.is_rest() {
+                return self.selection;
+            }
+        }
+        let (lane, at) = self.structure_target()?;
+        let v = self.movement()?.lanes.get(lane)?.voices.iter().find(|v| v.index == 1)?;
+        v.events.iter().find(|e| e.start >= at && !e.is_rest()).map(|e| e.heads[0].id)
+    }
+
+    /// Writes a syllable on the target note and moves to the next note.
+    /// Empty text just moves on (a melisma). Returns the next note.
+    pub fn enter_lyric(&mut self, verse: u8, text: &str, hyphen: bool, extend: bool) -> Result<Option<Id>, String> {
+        let target = self.lyric_target().ok_or("Select a note for the lyrics")?;
+        let loc = self.locate(target).ok_or("Select a note for the lyrics")?;
+        if !text.is_empty() {
+            let label = format!("Lyric \"{text}\"");
+            self.transact(&label, |m, _| match edit::set_lyric(&m.lanes[loc.lane].voices[loc.voice].events.clone(), target, verse, text, hyphen, extend) {
+                Some(r) => {
+                    set_events(m, loc.lane, loc.voice, &r);
+                    true
+                }
+                None => false,
+            });
+        }
+        let m = self.movement().ok_or("No movement")?;
+        let next = edit::next_note(&m.lanes[loc.lane].voices[loc.voice].events, target).map(|e| e.heads[0].id);
+        self.selection = next.or(Some(target));
+        self.range = None;
+        Ok(next)
+    }
+
+    /// Moves the popover target to the next event (note or rest) on the staff.
+    pub fn advance_target(&mut self) {
+        let Some((lane, at)) = self.structure_target() else { return };
+        let Some(v) = self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.voices.iter().find(|v| v.index == 1)) else { return };
+        if let Some(e) = v.events.iter().find(|e| e.start > at) {
+            let id = e.heads.first().map(|h| h.id).unwrap_or(e.id);
+            self.selection = Some(id);
+            self.range = None;
+        }
+    }
+
     /// Whole bars covering the passage, else the bar at `at`.
     fn selected_bars(&self, m: &Movement, at: Frac) -> (Frac, Frac) {
         let from = edit::bar_start_at_or_before(m, self.range.map(|r| r.from).unwrap_or(at));
@@ -892,6 +942,15 @@ impl Editor {
                 at = bar;
                 label = if m.rehearsal.iter().any(|r| r.at == bar) { "Remove rehearsal mark" } else { "Rehearsal mark" }.into();
                 Box::new(move |m, ids| edit::toggle_rehearsal_mark(m, bar, ids))
+            }
+            PopoverKind::Chord => {
+                let c = edit::parse_chord(&text).ok_or("Chord symbol not understood: try C, F#m7, Bbmaj7, Dsus4, G7/B")?;
+                label = format!("Chord symbol {c}");
+                Box::new(move |m, ids| edit::set_chord(m, player, target, &c, ids))
+            }
+            PopoverKind::Lyrics => {
+                let verse = self.lyric_verse;
+                return self.enter_lyric(verse, &text, false, false).map(|_| ());
             }
             PopoverKind::Ornament => unreachable!(),
         };
@@ -1031,6 +1090,8 @@ pub enum PopoverKind {
     Ending,
     Rehearsal,
     Ornament,
+    Lyrics,
+    Chord,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -1045,6 +1106,8 @@ impl PopoverKind {
             PopoverKind::Ending => "Ending",
             PopoverKind::Rehearsal => "Rehearsal mark",
             PopoverKind::Ornament => "Ornament",
+            PopoverKind::Lyrics => "Lyrics",
+            PopoverKind::Chord => "Chord symbol",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -1059,6 +1122,8 @@ impl PopoverKind {
             PopoverKind::Ending => "1, 2, 1-3",
             PopoverKind::Rehearsal => "",
             PopoverKind::Ornament => "tr, mordent, turn, trem, arp, fermata",
+            PopoverKind::Lyrics => "Syllable; space = next note, - = hyphen, _ = extender",
+            PopoverKind::Chord => "C, F#m7, Bbmaj7, G7/B; space = next beat",
         }
     }
 }

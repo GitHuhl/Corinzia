@@ -7,7 +7,8 @@
 //! * `<…>` chords, `q` repeats the last chord, `r` rests, `~` ties;
 //! * `-.` `->` `--` `-!` `-^` articulations, `\fermata \trill \mordent \turn
 //!   \arpeggio \breathe`, dynamics `\pp` … `\ff`;
-//! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings).
+//! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings);
+//! * `\ly=Glo-` lyrics (`\ly2=` for verse 2; `-` hyphen, `_` extender).
 
 use corinzia_score::score::{art, span, Event, Meter, Part, Pitch, Score, Voice};
 use corinzia_score::Frac;
@@ -110,6 +111,18 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
                     "cr" => e.spans |= span::CRESC_START,
                     "decr" => e.spans |= span::DIM_START,
                     "!" => e.spans |= span::HAIRPIN_END,
+                    // \ly=syl (verse 1), \ly2=syl; a trailing - joins the next
+                    // syllable, a trailing _ draws an extender.
+                    l if l.starts_with("ly") && l.contains('=') => {
+                        let (head, text) = l.split_once('=').unwrap();
+                        let verse = head[2..].parse().unwrap_or(1);
+                        let (text, hyphen, extend) = match text {
+                            t if t.ends_with('-') => (&t[..t.len() - 1], true, false),
+                            t if t.ends_with('_') => (&t[..t.len() - 1], false, true),
+                            t => (t, false, false),
+                        };
+                        e.lyrics.push(corinzia_score::score::Lyric { verse, text: text.replace('~', " "), hyphen, extend });
+                    }
                     d => e.dynamic = Some(d.to_string()),
                 }
             }
@@ -143,7 +156,7 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
             dur = d;
             rest = r.to_string();
         }
-        let mut e = Event { id: *next_id, start: at, dur, pitches, art: 0, dynamic: None, spans: 0 };
+        let mut e = Event { id: *next_id, start: at, dur, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![] };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;
@@ -192,6 +205,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
             clef: clef.to_string(),
             clefs: vec![],
             texts: vec![],
+            chords: vec![],
             voices: voices.iter().enumerate().map(|(vi, v)| voice(v, vi as u8 + 1, &mut id)).collect(),
         })
         .collect();

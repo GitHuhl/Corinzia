@@ -106,6 +106,10 @@ pub fn export(project: &Project, movement: usize, format: Format) -> Result<Vec<
     let m = project.movements.get(movement).ok_or("No movement to export")?;
     match format {
         Format::Pdf => {
+            // Text is written as outlines of the text font: make sure it is loaded.
+            if corinzia_layout::display::text_fonts().0.is_none() {
+                crate::load_text_fonts();
+            }
             let score = corinzia_model::notation::score(project, m);
             let pages = layout_pages(&score, &Options::default(), &PageSpec::default());
             let title = if project.title.is_empty() { m.title.as_str() } else { project.title.as_str() };

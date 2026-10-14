@@ -34,6 +34,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
             changes: vec![InstrumentChange { id: 3, at: F::ZERO, instrument: 4 }],
             clefs: vec![],
             texts: vec![],
+            chords: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(events) }],
         }],
     }

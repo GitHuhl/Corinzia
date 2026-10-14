@@ -14,8 +14,8 @@ fn project() -> Project {
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: 0, clef: "treble".into(), track: Some(1) });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
-    let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0 };
-    let rest = |id, start: Frac| Event { id, kind: EventKind::Rest, start, duration: Frac::new(1, 2), heads: vec![], articulations: 0, dynamic: None, spans: 0 };
+    let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![] };
+    let rest = |id, start: Frac| Event { id, kind: EventKind::Rest, start, duration: Frac::new(1, 2), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] };
     p.movements.push(Movement {
         id: 9,
         ordinal: 0,
@@ -33,6 +33,7 @@ fn project() -> Project {
             changes: vec![InstrumentChange { id: 4, at: Frac::ZERO, instrument: 2 }],
             clefs: vec![],
             texts: vec![],
+            chords: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(vec![note(10, Frac::ZERO, 0), rest(20, Frac::new(1, 4)), note(30, Frac::new(3, 4), 5)]) }],
         }],
     });

@@ -85,6 +85,12 @@ one. It opens and saves the same `.project` files and has:
   ornaments, dynamics, slurs, hairpins and ties, and the Structure panel and
   popovers (key, time, clef, tempo, barlines, endings, rehearsal marks, text,
   insert/delete bars). Every action is one undo step.
+* **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
+  (Space moves to the next note, `-` hyphenates, `_` draws an extender;
+  Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is
+  engraved as F♯m7♭5/E with SMuFL chord-symbol accidentals). Staves move
+  apart where lyrics or chord symbols need the room. Both export to
+  MusicXML.
 * **Playback:** Space plays from the selection or caret, with a playhead in
   the score. The audio engine is Rust: CLAP hosting, a lock-free realtime
   engine and PipeWire output. Tracks without a plugin play through

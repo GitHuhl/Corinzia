@@ -1,6 +1,7 @@
 //! Model types. Music is immutable-shared per voice (`Arc<Vec<Event>>`), so
 //! snapshots for engraving and playback are cheap, as in the C++ model.
 
+pub use corinzia_score::score::Lyric;
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -47,6 +48,7 @@ pub struct Event {
     pub articulations: u16, // corinzia_score::score::art bits
     pub dynamic: Option<u8>, // 0 = ppp .. 7 = fff
     pub spans: u8,           // corinzia_score::score::span bits
+    pub lyrics: Vec<Lyric>,  // one syllable per verse
 }
 impl Event {
     pub fn end(&self) -> Frac {
@@ -94,12 +96,21 @@ pub struct TextItem {
     pub kind: TextKind,
 }
 
+/// A chord symbol on a staff ("Cmaj7", "F♯m7♭5/E").
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChordSymbol {
+    pub id: Id,
+    pub at: Frac,
+    pub text: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct Lane {
     pub player: Id,
     pub changes: Vec<InstrumentChange>, // sorted; the first at 0
     pub clefs: Vec<ClefChange>,
     pub texts: Vec<TextItem>,
+    pub chords: Vec<ChordSymbol>,
     pub voices: Vec<Voice>,
 }
 impl Lane {

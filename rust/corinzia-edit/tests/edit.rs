@@ -174,7 +174,7 @@ fn header() -> Movement {
         barlines: vec![],
         rehearsal: vec![],
         endings: vec![],
-        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]) }] }],
+        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]) }] }],
     }
 }
 
@@ -380,4 +380,55 @@ fn endings() {
     delete_span(&mut h, f(4, 1), f(6, 1));
     assert!(h.endings.len() == 1 && h.endings[0].to == f(4, 1));
     assert_eq!(describe_item(&h, h.endings[0].id).as_deref(), Some("Ending 1., 2."));
+}
+
+#[test]
+fn chord_symbols() {
+    assert_eq!(parse_chord("C").as_deref(), Some("C"));
+    assert_eq!(parse_chord("f#m7").as_deref(), Some("F♯m7"));
+    assert_eq!(parse_chord("Bbmaj7").as_deref(), Some("B♭maj7"));
+    assert_eq!(parse_chord("Eb7(#9)/G").as_deref(), Some("E♭7(♯9)/G"));
+    assert_eq!(parse_chord("C#m7b5/E").as_deref(), Some("C♯m7♭5/E"));
+    assert_eq!(parse_chord("Bdim7").as_deref(), Some("B°7"));
+    assert_eq!(parse_chord("Cø").as_deref(), Some("Cø"));
+    assert_eq!(parse_chord("Gsus4").as_deref(), Some("Gsus4"));
+    assert_eq!(parse_chord("C6/9").as_deref(), Some("C6/9"));
+    assert_eq!(parse_chord("Dadd9").as_deref(), Some("Dadd9"));
+    for bad in ["H7", "Cxyz", "", "C/H", "7"] {
+        assert!(parse_chord(bad).is_none(), "{bad}");
+    }
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_chord(&mut h, 1, f(1, 2), "F♯m7", &mut ids);
+    set_chord(&mut h, 1, f(1, 2), "D", &mut ids); // replaces
+    set_chord(&mut h, 1, f(3, 1), "G7", &mut ids);
+    assert_eq!(h.lanes[0].chords.len(), 2);
+    let id = h.lanes[0].chords[0].id;
+    assert_eq!(describe_item(&h, id).as_deref(), Some("Chord symbol D"));
+    insert_span(&mut h, Frac::ZERO, f(1, 1));
+    assert_eq!(h.lanes[0].chords[1].at, f(4, 1));
+    delete_span(&mut h, f(1, 1), f(2, 1));
+    assert_eq!(h.lanes[0].chords.len(), 1, "the chord in the deleted bar goes");
+    let g7 = h.lanes[0].chords[0].id;
+    assert_eq!(remove_item(&mut h, g7).as_deref(), Some("Chord symbol G7"));
+}
+
+#[test]
+fn lyrics_on_notes() {
+    let mut ids = Ids(1000);
+    let mut v = two_bars(&mut ids);
+    // Tie d4 into e4 (same pitch for the test): e4 is a continuation.
+    v[1].heads[0].tie = true;
+    v[2].heads[0].pitch = v[1].heads[0].pitch;
+    let r = set_lyric(&v, v[0].heads[0].id, 1, "Glo", true, false).unwrap();
+    assert_eq!(r.events[0].lyrics[0].text, "Glo");
+    assert!(r.events[0].lyrics[0].hyphen);
+    assert_eq!(next_note(&r.events, v[0].heads[0].id).unwrap().id, v[1].id);
+    assert_eq!(next_note(&r.events, v[1].heads[0].id).unwrap().id, v[3].id, "skips the tie continuation");
+    let r2 = set_lyric(&r.events, v[0].id, 2, "Ah", false, false).unwrap();
+    assert_eq!(r2.events[0].lyrics.iter().map(|l| l.verse).collect::<Vec<_>>(), vec![1, 2]);
+    let r3 = set_lyric(&r2.events, v[0].id, 1, "", false, false).unwrap();
+    assert_eq!(r3.events[0].lyrics.len(), 1, "empty text removes the syllable");
+    let rest = make_event(&mut ids, f(2, 1), f(1, 4), &[], 0);
+    assert!(set_lyric(&[rest.clone()], rest.id, 1, "x", false, false).is_none(), "no lyrics on rests");
 }

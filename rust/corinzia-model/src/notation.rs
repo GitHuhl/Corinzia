@@ -28,6 +28,7 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                 clef: first.map(|i| i.clef.clone()).unwrap_or_else(|| "treble".into()),
                 clefs: lane.clefs.iter().map(|c| sc::ClefChange { at: c.at, clef: c.clef.clone() }).collect(),
                 texts,
+                chords: lane.chords.iter().map(|c| sc::ChordSymbol { at: c.at, text: c.text.clone(), id: c.id }).collect(),
                 voices: lane
                     .voices
                     .iter()
@@ -51,6 +52,7 @@ pub fn score(project: &Project, m: &Movement) -> sc::Score {
                                 art: e.articulations,
                                 dynamic: e.dynamic.map(|d| DYNAMICS[(d as usize).min(7)].to_string()),
                                 spans: e.spans,
+                                lyrics: e.lyrics.clone(),
                             })
                             .collect(),
                     })

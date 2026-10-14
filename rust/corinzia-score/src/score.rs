@@ -79,7 +79,37 @@ pub struct Part {
     pub clefs: Vec<ClefChange>,
     #[serde(default)]
     pub texts: Vec<Text>,
+    /// Chord symbols above the staff.
+    #[serde(default)]
+    pub chords: Vec<ChordSymbol>,
     pub voices: Vec<Voice>,
+}
+
+/// A chord symbol: written root, quality and bass, e.g. "F♯m7♭5/E".
+#[derive(Deserialize, Debug, Clone)]
+pub struct ChordSymbol {
+    pub at: Frac,
+    pub text: String,
+    #[serde(default)]
+    pub id: u64,
+}
+
+/// One syllable of a verse under a note.
+#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct Lyric {
+    #[serde(default = "one")]
+    pub verse: u8,
+    pub text: String,
+    /// A hyphen joins it to the next syllable (the word goes on).
+    #[serde(default)]
+    pub hyphen: bool,
+    /// An extender line runs through the following notes (a melisma).
+    #[serde(default)]
+    pub extend: bool,
+}
+
+fn one() -> u8 {
+    1
 }
 
 fn treble() -> String {
@@ -120,6 +150,8 @@ pub struct Event {
     pub dynamic: Option<String>, // "pp" .. "fff"
     #[serde(default)]
     pub spans: u8,
+    #[serde(default)]
+    pub lyrics: Vec<Lyric>,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]

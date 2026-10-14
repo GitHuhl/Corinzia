@@ -17,6 +17,7 @@ fn sample() -> Project {
         articulations: 1,
         dynamic: Some(5),
         spans: 4,
+        lyrics: vec![Lyric { verse: 1, text: "Glo".into(), hyphen: true, extend: false }, Lyric { verse: 2, text: "Ah".into(), hyphen: false, extend: true }],
     };
     // Events across two storage chunks (chunk = 4 whole notes).
     let events = vec![ev(10, Frac::ZERO, Frac::new(1, 4), 0, true), ev(12, Frac::new(1, 4), Frac::new(3, 4), 3, false), ev(14, Frac::int(5), Frac::int(1), 4, false)];
@@ -37,6 +38,7 @@ fn sample() -> Project {
             changes: vec![InstrumentChange { id: 23, at: Frac::ZERO, instrument: 3 }],
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
             texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
+            chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
             voices: vec![Voice { id: 26, index: 1, events: Arc::new(events) }],
         }],
     });
@@ -56,6 +58,8 @@ fn save_and_load_round_trip() {
     assert_eq!(b.tracks[0].gain_db, -3.0);
     assert_eq!(b.instruments[0].track, Some(1));
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
+    assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);
+    assert_eq!(mb.lanes[0].voices[0].events[0].lyrics, ma.lanes[0].voices[0].events[0].lyrics);
     assert_eq!(mb.tempo, ma.tempo);
     assert_eq!(mb.meter, ma.meter);
     assert_eq!(mb.keys, ma.keys);

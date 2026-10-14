@@ -29,6 +29,11 @@ impl Default for Options {
 const NAME_SIZE: f32 = 2.0;
 const TEXT_SIZE: f32 = 2.0;
 const TEMPO_SIZE: f32 = 2.2;
+const LYRIC_SIZE: f32 = 2.0;
+const CHORD_SIZE: f32 = 2.3;
+/// Space between two words of a verse; room for a hyphen inside a word.
+const WORD_GAP: f32 = 0.9;
+const HYPHEN_GAP: f32 = 2.0;
 const CLEF_CHANGE_SCALE: f32 = 0.8;
 
 // ------------------------------------------------------------- pitch & clef --
@@ -186,6 +191,7 @@ struct Note {
     first: bool,      // first piece of its event (marks go here)
     art: u16,
     dynamic: Option<String>,
+    lyrics: Vec<corinzia_score::score::Lyric>, // on the first piece only
     // layout
     stem_up: bool,
     beamed: bool,
@@ -271,6 +277,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             first,
                             art: e.art,
                             dynamic: e.dynamic.clone(),
+                            lyrics: if first { e.lyrics.clone() } else { vec![] },
                             stem_up: true,
                             beamed: false,
                             stem_x: 0.0,
@@ -302,6 +309,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     first: true,
                     art: 0,
                     dynamic: None,
+                    lyrics: vec![],
                     stem_up: true,
                     beamed: false,
                     stem_x: 0.0,
@@ -329,13 +337,14 @@ struct Engraver<'a> {
     first_system: bool,                      // full instrument names (else abbreviations)
     width: Option<f32>,                      // justify the system to this width
     range: (Frac, Frac),                     // written span of this system
+    tops: Vec<f32>,                          // y of each staff's top line
 }
 
 const HEAD_W: f32 = 1.18;
 
 impl<'a> Engraver<'a> {
     fn top(&self, part: usize) -> f32 {
-        part as f32 * self.opt.staff_distance
+        self.tops.get(part).copied().unwrap_or(part as f32 * self.opt.staff_distance)
     }
     fn y(&self, part: usize, pos: i32) -> f32 {
         self.top(part) + 2.0 - pos as f32 * 0.5
@@ -508,6 +517,11 @@ impl<'a> Engraver<'a> {
         let clef_w = self.score.parts.iter().map(|p| self.width(clef_glyph(&p.clef).0)).fold(0.0f32, f32::max);
         x += 0.8 + clef_w + 0.8;
         let nms = self.ms.len();
+        // Right edge of the last syllable per (part, verse), and whether it is hyphenated.
+        let mut lyric_edge: std::collections::HashMap<(usize, u8), (f32, bool)> = Default::default();
+        // Right edge of the last chord symbol per part.
+        let mut chord_edge: std::collections::HashMap<usize, f32> = Default::default();
+        let mut pending_chords: Vec<(usize, f32)> = Vec::new();
         for mi in 0..nms {
             if mi > 0 {
                 x += 0.0;
@@ -537,6 +551,16 @@ impl<'a> Engraver<'a> {
             let mut cx = x + 1.0;
             for (j, &t) in cols.iter().enumerate() {
                 let here: Vec<&Note> = self.notes.iter().filter(|n| n.measure == mi && n.start == t && !n.whole_bar).collect();
+                // Syllables here must clear the previous ones of their verse.
+                let mut lyric_min = f32::MIN;
+                for n in &here {
+                    for l in &n.lyrics {
+                        let w = text_width(&l.text, LYRIC_SIZE, false);
+                        if let Some(&(edge, hyphen)) = lyric_edge.get(&(n.part, l.verse)) {
+                            lyric_min = lyric_min.max(edge + if hyphen { HYPHEN_GAP } else { WORD_GAP } + w / 2.0 - HEAD_W / 2.0);
+                        }
+                    }
+                }
                 let (mut left, right) = here.iter().map(|n| self.note_extents(n)).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
                 if self.clef_changes.iter().any(|c| c.1 == t) {
                     left += self.clef_change_width() + 0.5;
@@ -555,6 +579,26 @@ impl<'a> Engraver<'a> {
                         .unwrap_or(gap);
                     let ideal = ideal_space(dmin) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
                     cx += ideal.max(prev_right + left + 0.4);
+                }
+                // A chord symbol here must clear the previous one on its staff.
+                for (pi, part) in self.score.parts.iter().enumerate() {
+                    if let Some(c) = part.chords.iter().find(|c| c.at == t) {
+                        if let Some(&edge) = chord_edge.get(&pi) {
+                            lyric_min = lyric_min.max(edge + 1.0 + 0.3);
+                        }
+                        let w: f32 = chord_runs(&c.text).iter().map(|r| self.chord_run_width(r)).sum();
+                        pending_chords.push((pi, w));
+                    }
+                }
+                cx = cx.max(lyric_min);
+                for (pi, w) in pending_chords.drain(..) {
+                    chord_edge.insert(pi, cx - 0.3 + w);
+                }
+                for n in &here {
+                    for l in &n.lyrics {
+                        let w = text_width(&l.text, LYRIC_SIZE, false);
+                        lyric_edge.insert((n.part, l.verse), (cx + HEAD_W / 2.0 + w / 2.0, l.hyphen));
+                    }
                 }
                 xs.push(cx);
                 prev_right = right;
@@ -1172,6 +1216,10 @@ impl<'a> Engraver<'a> {
                 continue; // instrument names live left of the system
             }
             let r = item.bounds(self.font);
+            // Barlines and brackets that join staves belong to none of them.
+            if (0..sky.len()).filter(|&p| r[1] < self.top(p) + 4.0 && r[3] > self.top(p)).count() >= 2 {
+                continue;
+            }
             let cy = (r[1] + r[3]) / 2.0;
             if let Some(k) = (0..sky.len()).min_by(|&a, &b| {
                 (cy - (sky[a].staff_top + 2.0)).abs().partial_cmp(&(cy - (sky[b].staff_top + 2.0)).abs()).unwrap()
@@ -1285,6 +1333,93 @@ impl<'a> Engraver<'a> {
                 let r = item.bounds(self.font);
                 self.sky[pi].add(r);
                 self.out.items.push(item);
+            }
+        }
+    }
+
+    /// Chord symbols: text with Bravura's chord-symbol accidentals and
+    /// qualities, on a common baseline above each staff of the system.
+    fn draw_chord_symbols(&mut self) {
+        for pi in 0..self.score.parts.len() {
+            let chords: Vec<_> = self.score.parts[pi].chords.iter().filter(|c| c.at >= self.range.0 && c.at < self.range.1).cloned().collect();
+            if chords.is_empty() {
+                continue;
+            }
+            let runs: Vec<(f32, Vec<ChordRun>, u64)> = chords.iter().map(|c| (self.col_x(c.at), chord_runs(&c.text), c.id)).collect();
+            let width = |r: &[ChordRun]| r.iter().map(|x| self.chord_run_width(x)).sum::<f32>();
+            let top = runs.iter().map(|(x, r, _)| self.sky[pi].top_over(*x, x + width(r))).fold(self.top(pi), f32::min);
+            let y = top - 0.8;
+            for (x0, r, id) in runs {
+                let mut x = x0;
+                for run in r {
+                    let w = self.chord_run_width(&run);
+                    let item = match run {
+                        ChordRun::Text(t) => Item::Text { text: t, at: pt(x, y), size: CHORD_SIZE, italic: false, bold: false, anchor: 0, id },
+                        ChordRun::Glyph(g, centre) => {
+                            // The glyph's box centred `centre` above the baseline.
+                            let b = self.font.bbox(g);
+                            let cy = (b.sw.1 + b.ne.1) / 2.0 * CHORD_GLYPH_SCALE;
+                            Item::Glyph { glyph: g.codepoint(), at: pt(x + 0.05 - b.sw.0 * CHORD_GLYPH_SCALE, y - centre + cy), scale: CHORD_GLYPH_SCALE, id }
+                        }
+                    };
+                    self.place(pi, item);
+                    x += w;
+                }
+            }
+        }
+    }
+
+    fn chord_run_width(&self, r: &ChordRun) -> f32 {
+        match r {
+            ChordRun::Text(t) => text_width(t, CHORD_SIZE, false),
+            ChordRun::Glyph(g, _) => self.width(*g) * CHORD_GLYPH_SCALE + 0.15,
+        }
+    }
+
+    /// Lyrics: one line per verse under each staff, below everything drawn
+    /// so far in the system; syllables centred under their notes, hyphens
+    /// centred between the syllables of a word, extenders through melismas.
+    fn draw_lyrics(&mut self) {
+        for pi in 0..self.score.parts.len() {
+            let idx: Vec<usize> = (0..self.notes.len()).filter(|&i| self.notes[i].part == pi && !self.notes[i].lyrics.is_empty()).collect();
+            let Some(verses) = idx.iter().flat_map(|&i| self.notes[i].lyrics.iter().map(|l| l.verse)).max() else { continue };
+            let (x0, x1) = (self.left, self.out.width);
+            let base = (self.sky[pi].bottom_over(x0, x1) + 0.8 + 0.75 * LYRIC_SIZE).max(self.top(pi) + 4.0 + 2.6);
+            let mut boxes = Vec::new();
+            for v in 1..=verses {
+                let y = base + (v - 1) as f32 * LYRIC_SIZE * 1.2;
+                let mut syl: Vec<(usize, corinzia_score::score::Lyric)> = idx.iter().filter_map(|&i| self.notes[i].lyrics.iter().find(|l| l.verse == v).map(|l| (i, l.clone()))).collect();
+                syl.sort_by(|a, b| (self.notes[a.0].voice, self.notes[a.0].start).cmp(&(self.notes[b.0].voice, self.notes[b.0].start)));
+                for (k, (i, l)) in syl.iter().enumerate() {
+                    let n = &self.notes[*i];
+                    let cx = n.x + HEAD_W / 2.0;
+                    let w = text_width(&l.text, LYRIC_SIZE, false);
+                    let right = cx + w / 2.0;
+                    let item = Item::Text { text: l.text.clone(), at: pt(cx, y), size: LYRIC_SIZE, italic: false, bold: false, anchor: 1, id: n.heads.first().map(|h| h.id).unwrap_or(n.id) };
+                    boxes.push(item.bounds(self.font));
+                    self.out.items.push(item);
+                    let next = syl.get(k + 1).filter(|(j, _)| self.notes[*j].voice == n.voice);
+                    let next_left = next.map(|(j, nl)| self.notes[*j].x + HEAD_W / 2.0 - text_width(&nl.text, LYRIC_SIZE, false) / 2.0);
+                    if l.hyphen {
+                        // Centred in the gap; at the end of the system when the word goes on in the next one.
+                        let hx = match next_left {
+                            Some(nl) if nl - right > 0.7 => (right + nl) / 2.0,
+                            Some(_) => continue,
+                            None => right + 0.9,
+                        };
+                        self.out.items.push(Item::Text { text: "-".into(), at: pt(hx, y), size: LYRIC_SIZE, italic: false, bold: false, anchor: 1, id: 0 });
+                    } else if l.extend {
+                        // Through the following notes of the voice up to the next syllable.
+                        let until = next.map(|(j, _)| self.notes[*j].start).unwrap_or(self.range.1);
+                        let last = self.notes.iter().filter(|o| o.part == pi && o.voice == n.voice && !o.rest && o.start > n.start && o.start < until).map(|o| o.x + HEAD_W).fold(n.x + HEAD_W, f32::max);
+                        if last > right + 0.5 {
+                            self.out.items.push(Item::line(right + 0.25, y + 0.15, last, y + 0.15, 0.12, 0));
+                        }
+                    }
+                }
+            }
+            for b in boxes {
+                self.sky[pi].add(b);
             }
         }
     }
@@ -1449,6 +1584,55 @@ impl<'a> Engraver<'a> {
     }
 }
 
+const CHORD_GLYPH_SCALE: f32 = 0.55;
+
+/// A chord symbol cut into text and SMuFL chord-symbol glyphs: accidentals
+/// (♯ ♭ ♮, or # and b after the root/bass letter and before a degree) and
+/// the qualities ° ø Δ.
+#[derive(Clone, Debug, PartialEq)]
+enum ChordRun {
+    Text(String),
+    Glyph(Glyph, f32), // centre height above the baseline, staff spaces
+}
+
+fn chord_runs(text: &str) -> Vec<ChordRun> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<ChordRun> = Vec::new();
+    let mut buf = String::new();
+    let flush = |buf: &mut String, out: &mut Vec<ChordRun>| {
+        if !buf.is_empty() {
+            out.push(ChordRun::Text(std::mem::take(buf)));
+        }
+    };
+    for (i, &c) in chars.iter().enumerate() {
+        let prev = if i > 0 { Some(chars[i - 1]) } else { None };
+        let next = chars.get(i + 1).copied();
+        let after_letter = prev.is_some_and(|p| ('A'..='G').contains(&p));
+        let before_digit = next.is_some_and(|n| n.is_ascii_digit());
+        let glyph = match c {
+            // Accidentals centred on the capitals; qualities raised like exponents.
+            '♯' => Some((Glyph::CsymSharp, 1.0)),
+            '♭' => Some((Glyph::CsymFlat, 0.9)),
+            '♮' => Some((Glyph::CsymNatural, 1.0)),
+            '#' if after_letter || before_digit => Some((Glyph::CsymSharp, 1.0)),
+            'b' if after_letter || before_digit => Some((Glyph::CsymFlat, 0.9)),
+            '°' => Some((Glyph::CsymDiminished, 1.35)),
+            'ø' => Some((Glyph::CsymHalfDiminished, 1.35)),
+            'Δ' => Some((Glyph::CsymMajorSeventh, 1.2)),
+            _ => None,
+        };
+        match glyph {
+            Some((g, raise)) => {
+                flush(&mut buf, &mut out);
+                out.push(ChordRun::Glyph(g, raise));
+            }
+            None => buf.push(c),
+        }
+    }
+    flush(&mut buf, &mut out);
+    out
+}
+
 fn rest_glyph(base: i64) -> Glyph {
     match base {
         0 | 1 => Glyph::RestWhole,
@@ -1503,11 +1687,14 @@ impl<'a> Engraver<'a> {
             first_system,
             width,
             range,
+            tops: (0..score.parts.len()).map(|p| p as f32 * opt.staff_distance).collect(),
         }
     }
 
     /// Everything after `prepare`: spacing and drawing.
-    fn engrave(mut self) -> DisplayList {
+    /// The display list and each staff's (above, below) extent relative to
+    /// its top line.
+    fn engrave(mut self) -> (DisplayList, Vec<(f32, f32)>) {
         let groups = self.beam_groups();
         self.space();
         self.draw_staves();
@@ -1522,12 +1709,17 @@ impl<'a> Engraver<'a> {
         self.draw_tuplets();
         self.draw_ornaments();
         self.draw_texts(true);
+        self.draw_chord_symbols();
         self.draw_dynamics_and_hairpins();
         self.draw_texts(false);
+        self.draw_lyrics();
         self.draw_tempo_marks_endings();
         let staves = self.score.parts.len().max(1);
-        self.out.height = (staves - 1) as f32 * self.opt.staff_distance + 4.0;
-        self.out
+        self.out.height = self.top(staves - 1) + 4.0;
+        // How far each staff's music reaches above and below its top line.
+        let (x0, x1) = (self.left, self.out.width.max(self.left + 1.0));
+        let extents = (0..self.score.parts.len()).map(|p| (self.sky[p].top_over(x0, x1) - self.top(p), self.sky[p].bottom_over(x0, x1) - self.top(p))).collect();
+        (self.out, extents)
     }
 }
 
@@ -1543,7 +1735,28 @@ fn prepared(score: &Score, opt: &Options) -> (Vec<Measure>, Vec<Note>) {
 /// Lays the whole movement out on one system.
 pub fn layout_line(score: &Score, opt: &Options) -> DisplayList {
     let (ms, notes) = prepared(score, opt);
-    Engraver::new(score, opt, ms, notes, true, None).engrave()
+    engrave_spaced(score, opt, ms, notes, true, None)
+}
+
+/// Clearance between one staff's lowest and the next staff's highest item.
+const STAFF_CLEARANCE: f32 = 1.5;
+
+/// Engraves, then, where the music of neighbouring staves would collide
+/// (lyrics, chord symbols, high or low notes), moves the staves apart and
+/// engraves again. Staves never come closer than `staff_distance`.
+fn engrave_spaced(score: &Score, opt: &Options, ms: Vec<Measure>, notes: Vec<Note>, first: bool, width: Option<f32>) -> DisplayList {
+    let (list, ext) = Engraver::new(score, opt, ms.clone(), notes.clone(), first, width).engrave();
+    let mut tops = vec![0.0f32; ext.len()];
+    for p in 1..ext.len() {
+        let need = ext[p - 1].1 - ext[p].0 + STAFF_CLEARANCE;
+        tops[p] = tops[p - 1] + need.max(opt.staff_distance);
+    }
+    if tops.iter().enumerate().all(|(p, t)| (t - p as f32 * opt.staff_distance).abs() < 0.01) {
+        return list;
+    }
+    let mut e = Engraver::new(score, opt, ms, notes, first, width);
+    e.tops = tops;
+    e.engrave().0
 }
 
 /// One system of bars [a, b) from prepared notes, optionally justified.
@@ -1567,7 +1780,7 @@ fn system(score: &Score, opt: &Options, ms: &[Measure], notes: &[Note], a: usize
             n
         })
         .collect();
-    Engraver::new(score, opt, sm, sn, a == 0, width).engrave()
+    engrave_spaced(score, opt, sm, sn, a == 0, width)
 }
 
 /// Page geometry in staff spaces (A4 at an 18 pt staff: 132.3 × 187.1).

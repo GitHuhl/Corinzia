@@ -403,6 +403,12 @@ impl App {
         ed.status.clear(); // the action reports its own outcome
         match a {
             Action::PlayStop => self.play_stop(),
+            Action::Lyrics(v) => {
+                ed.lyric_verse = v;
+                let t = self.open_popover(PopoverKind::Lyrics);
+                self.sync();
+                return t;
+            }
             Action::ShowScore => self.tab = Tab::Score,
             Action::ShowMix => {
                 self.tab = Tab::Mix;
@@ -646,9 +652,41 @@ impl App {
             Message::Key(_) => return Task::none(),
             Message::Act(a) => return self.act(a),
             Message::PopoverInput(s) => {
-                if let Some(p) = self.popover.as_mut() {
+                let Some(p) = self.popover.as_mut() else { return Task::none() };
+                p.error = None;
+                // Lyrics and chord symbols are entered as a stream: space (or,
+                // for lyrics, a hyphen or an extender) commits and moves on.
+                let last = s.chars().last();
+                let commits = match p.kind {
+                    PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
+                    PopoverKind::Chord => last == Some(' '),
+                    _ => false,
+                };
+                if !commits {
                     p.input = s;
-                    p.error = None;
+                    return Task::none();
+                }
+                let word = s[..s.len() - 1].trim().to_string();
+                let kind = p.kind;
+                let result = match kind {
+                    PopoverKind::Lyrics => self.editor.enter_lyric(self.editor.lyric_verse, &word, last == Some('-'), last == Some('_')).map(|_| ()),
+                    _ if word.is_empty() => {
+                        self.editor.advance_target();
+                        Ok(())
+                    }
+                    _ => self.editor.apply_popover(kind, &word).map(|_| self.editor.advance_target()),
+                };
+                let p = self.popover.as_mut().unwrap();
+                match result {
+                    Ok(()) => p.input.clear(),
+                    Err(e) => {
+                        p.input = word;
+                        p.error = Some(e);
+                    }
+                }
+                self.sync();
+                if self.playback.problem.is_none() && !self.playback.is_playing() {
+                    self.audition();
                 }
                 return Task::none();
             }
@@ -842,7 +880,13 @@ impl App {
         let mut desk = stack![container(Element::from(score).map(Message::Canvas)).width(Length::Fill).height(Length::Fill)];
         if let Some(p) = &self.popover {
             let mut card = column![
-                row![text(format!("{} · {}", p.kind.title(), ed.popover_position())).size(13), panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(button::text).on_press(Message::PopoverClose)]
+                row![
+                    text(match p.kind {
+                        PopoverKind::Lyrics => format!("Lyrics · verse {} · {}", ed.lyric_verse, ed.popover_position()),
+                        _ => format!("{} · {}", p.kind.title(), ed.popover_position()),
+                    })
+                    .size(13),
+                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(button::text).on_press(Message::PopoverClose)]
                     .align_y(iced::Alignment::Center),
                 text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(Message::PopoverInput).on_submit(Message::PopoverSubmit).padding(6).size(15),
             ]
@@ -1239,5 +1283,59 @@ mod tests {
         let p = corinzia_model::store::load(&path).unwrap();
         assert!(p.movements[0].lanes[0].voices[0].events[0].articulations != 0, "the staccato reached the file");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn type_into_popover(a: &mut App, text: &str) {
+        let mut buf = String::new();
+        for c in text.chars() {
+            buf.push(c);
+            let _ = a.update(Message::PopoverInput(buf.clone()));
+            buf = a.popover.as_ref().map(|p| p.input.clone()).unwrap_or_default();
+        }
+    }
+
+    #[test]
+    fn lyrics_and_chords_are_typed_as_a_stream() {
+        let mut a = app(View::Page);
+        let flute = a.editor.project.movements[0].lanes[0].voices[0].events.clone();
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(flute[0].heads[0].id), at: None, shift: false }));
+        key(&mut a, "ctrl+l");
+        assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Lyrics);
+        type_into_popover(&mut a, "Glo-ri-a in ");
+        let ev = &a.editor.project.movements[0].lanes[0].voices[0].events;
+        let syl: Vec<(String, bool)> = ev.iter().take(4).map(|e| e.lyrics.first().map(|l| (l.text.clone(), l.hyphen)).unwrap_or_default()).collect();
+        assert_eq!(syl, vec![("Glo".into(), true), ("ri".into(), true), ("a".into(), false), ("in".into(), false)]);
+        assert_eq!(a.editor.selection, Some(ev[4].heads[0].id), "the popover moved on to the fifth note");
+        let _ = a.update(Message::PopoverClose);
+        // Chord symbols on the cello from its first note, moving on with space.
+        let cello = a.editor.project.movements[0].lanes[1].voices[0].events.clone();
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(cello[0].heads[0].id), at: None, shift: false }));
+        key(&mut a, "ctrl+k");
+        type_into_popover(&mut a, "C G7/b "); // a lower-case bass letter is fine
+        type_into_popover(&mut a, "Hm ");
+        assert!(a.popover.as_ref().unwrap().error.as_deref().is_some_and(|e| e.starts_with("Chord symbol not understood")));
+        assert_eq!(a.popover.as_ref().unwrap().input, "Hm", "the bad input stays for correction");
+        let chords: Vec<String> = a.editor.movement().unwrap().lanes[1].chords.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(chords, vec!["C", "G7/B"]);
+        let _ = a.update(Message::PopoverClose);
+        // A chord symbol is clickable: select it and delete it.
+        let id = a.editor.movement().unwrap().lanes[1].chords[1].id;
+        let origins = score_view::page_origins(&a.pages, true);
+        let item = a.pages[0].items.iter().find(|i| matches!(i, Item::Text { id: t, .. } if *t == id)).unwrap();
+        let r = item.bounds(corinzia_layout::font::Font::bravura());
+        let at = iced::Point::new((r[0] + r[2]) / 2.0 + origins[0].x, (r[1] + r[3]) / 2.0 + origins[0].y);
+        assert_eq!(score_view::hit_test(&a.pages, &origins, at), Some(id));
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(id), at: None, shift: false }));
+        key(&mut a, "del");
+        assert_eq!(a.editor.movement().unwrap().lanes[1].chords.len(), 1);
+        // Both reach MusicXML.
+        let xml = String::from_utf8(files::export(&a.editor.project, 0, files::Format::MusicXml).unwrap()).unwrap();
+        assert!(xml.contains("<lyric number=\"1\"><syllabic>begin</syllabic><text>Glo</text></lyric>"));
+        assert!(xml.contains("<syllabic>end</syllabic><text>a</text>"));
+        assert!(xml.contains("<harmony><root><root-step>C</root-step></root><kind text=\"\">major</kind></harmony>"));
+        if let Ok(dir) = std::env::var("CORINZIA_EXPORT_DIR") {
+            std::fs::write(std::path::Path::new(&dir).join("lyrics.musicxml"), &xml).unwrap();
+            std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf).unwrap()).unwrap();
+        }
     }
 }

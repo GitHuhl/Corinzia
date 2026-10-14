@@ -235,6 +235,71 @@ pub fn parse_ornament(text: &str) -> Option<u16> {
     })
 }
 
+/// A chord symbol as typed ("C", "f#m7", "Bbmaj7", "Eb7(#9)/G", "Do",
+/// "C°7", "Cø") -> its engraved spelling ("F♯m7", "B♭maj7", "E♭7(♯9)/G").
+/// The root (and bass) letter is A–G with ♯/♭ (#, b); the rest is a
+/// quality and extensions from the usual vocabulary.
+pub fn parse_chord(text: &str) -> Option<String> {
+    let t = text.trim();
+    let (main, bass) = match t.rsplit_once('/') {
+        Some((m, b)) if !b.is_empty() && !b.chars().all(|c| c.is_ascii_digit()) => (m, Some(b)), // "6/9" is not a bass
+        _ => (t, None),
+    };
+    fn root(s: &str) -> Option<(String, &str)> {
+        let mut chars = s.chars();
+        let letter = chars.next()?.to_ascii_uppercase();
+        if !('A'..='G').contains(&letter) {
+            return None;
+        }
+        let rest = chars.as_str();
+        let (acc, rest) = match rest.chars().next() {
+            Some('#') | Some('♯') => ("♯", &rest[rest.chars().next().unwrap().len_utf8()..]),
+            Some('b') | Some('♭') if !rest.starts_with("b5") || rest.len() == 1 => ("♭", &rest[rest.chars().next().unwrap().len_utf8()..]),
+            _ => ("", rest),
+        };
+        Some((format!("{letter}{acc}"), rest))
+    }
+    let (r, quality) = root(main)?;
+    // Quality and extensions: a known vocabulary, accidentals spelled.
+    let q = quality.replace('#', "♯").replace("dim", "°").replace("o", "°");
+    let q = {
+        // b before a digit is a flat: "7b9" -> "7♭9".
+        let mut out = String::new();
+        let cs: Vec<char> = q.chars().collect();
+        for (i, &c) in cs.iter().enumerate() {
+            if c == 'b' && cs.get(i + 1).is_some_and(|n| n.is_ascii_digit()) {
+                out.push('♭');
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    const WORDS: [&str; 12] = ["maj", "min", "m", "M", "aug", "sus", "add", "alt", "omit", "no", "Δ", "+"];
+    let mut rest = q.as_str();
+    while !rest.is_empty() {
+        if let Some(w) = WORDS.iter().find(|w| rest.starts_with(**w)) {
+            rest = &rest[w.len()..];
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        if c.is_ascii_digit() || "♯♭°ø()-+,/ ".contains(c) {
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        return None;
+    }
+    let mut out = format!("{r}{q}");
+    if let Some(b) = bass {
+        let (br, tail) = root(b)?;
+        if !tail.is_empty() {
+            return None;
+        }
+        out = format!("{out}/{br}");
+    }
+    Some(out)
+}
+
 // ------------------------------------------------------------ positions --
 pub fn bar_length(m: &Movement, pos: Frac) -> Frac {
     m.meter.iter().filter(|x| x.at <= pos).last().map(|x| Frac::new(x.num, x.den)).unwrap_or(Frac::int(1))
@@ -336,6 +401,13 @@ pub fn set_clef(m: &mut Movement, player: Id, at: Frac, clef: &str, ids: &mut Id
         replace_at(&mut l.clefs, at, ClefChange { id: ids.next(), at, clef: clef.to_string() }, |c| c.at);
     }
 }
+/// Sets (replaces) the chord symbol of a staff at a position.
+pub fn set_chord(m: &mut Movement, player: Id, at: Frac, text: &str, ids: &mut Ids) {
+    for l in m.lanes.iter_mut().filter(|l| l.player == player) {
+        replace_at(&mut l.chords, at, ChordSymbol { id: ids.next(), at, text: text.to_string() }, |c| c.at);
+    }
+}
+
 pub fn add_text(m: &mut Movement, player: Id, at: Frac, text: &str, kind: TextKind, ids: &mut Ids) {
     for l in m.lanes.iter_mut().filter(|l| l.player == player) {
         l.texts.push(TextItem { id: ids.next(), at, text: text.to_string(), kind });
@@ -359,6 +431,9 @@ pub fn describe_item(m: &Movement, id: Id) -> Option<String> {
         if let Some(c) = l.clefs.iter().find(|c| c.id == id) {
             return Some(format!("Clef {}", c.clef));
         }
+        if let Some(c) = l.chords.iter().find(|c| c.id == id) {
+            return Some(format!("Chord symbol {}", c.text));
+        }
         if let Some(t) = l.texts.iter().find(|t| t.id == id) {
             let k = if t.kind == TextKind::Expression { "Expression" } else { "Technique" };
             return Some(format!("{k} \"{}\"", t.text));
@@ -376,6 +451,7 @@ pub fn remove_item(m: &mut Movement, id: Id) -> Option<String> {
     for l in m.lanes.iter_mut() {
         l.clefs.retain(|x| x.id != id);
         l.texts.retain(|x| x.id != id);
+        l.chords.retain(|x| x.id != id);
     }
     Some(what)
 }
@@ -425,7 +501,7 @@ macro_rules! impl_at {
         fn at_mut(&mut self) -> &mut Frac { &mut self.at }
     })*};
 }
-impl_at!(Tempo, Meter, Key, InstrumentChange, ClefChange, TextItem, RehearsalMark, Barline);
+impl_at!(Tempo, Meter, Key, InstrumentChange, ClefChange, TextItem, ChordSymbol, RehearsalMark, Barline);
 
 /// Maps (tempo, meter, key, instrument changes) keep their entry at 0 and
 /// hold one entry per position; marks and text are plain items.
@@ -495,6 +571,7 @@ pub fn insert_span(m: &mut Movement, at: Frac, length: Frac) {
         shift_items(&mut l.changes, at, length, Kind::Map);
         shift_items(&mut l.clefs, at, length, Kind::Items);
         shift_items(&mut l.texts, at, length, Kind::Items);
+        shift_items(&mut l.chords, at, length, Kind::Items);
     }
     m.length = m.length + length;
 }
@@ -536,6 +613,7 @@ pub fn delete_span(m: &mut Movement, from: Frac, to: Frac) {
         delete_items(&mut l.changes, from, to, Kind::Map);
         delete_items(&mut l.clefs, from, to, Kind::Items);
         delete_items(&mut l.texts, from, to, Kind::Items);
+        delete_items(&mut l.chords, from, to, Kind::Items);
     }
     m.length = m.length - gap;
 }

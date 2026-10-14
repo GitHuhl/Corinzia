@@ -39,6 +39,7 @@ pub fn project() -> Project {
                 articulations: e.art,
                 dynamic: e.dynamic.as_deref().and_then(|d| DYNAMICS.iter().position(|x| *x == d)).map(|i| i as u8),
                 spans: e.spans,
+                lyrics: e.lyrics,
             })
             .collect();
         lanes.push(Lane {
@@ -46,6 +47,7 @@ pub fn project() -> Project {
             changes: vec![InstrumentChange { id: 40 + k as u64, at: Frac::ZERO, instrument: inst }],
             clefs: vec![],
             texts: if k == 0 { vec![TextItem { id: 50, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }] } else { vec![] },
+            chords: vec![],
             voices: vec![Voice { id: 60 + k as u64, index: 1, events: Arc::new(events) }],
         });
     }
@@ -78,7 +80,7 @@ pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Proj
         p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clef.to_string(), track: Some(track) });
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         let rests: Vec<Event> = (0..bars)
-            .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0 })
+            .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![] })
             .collect();
         let (change, voice) = (p.allocate_id(), p.allocate_id());
         lanes.push(Lane {
@@ -86,6 +88,7 @@ pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Proj
             changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
             clefs: vec![],
             texts: vec![],
+            chords: vec![],
             voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests) }],
         });
     }

@@ -17,6 +17,7 @@ pub struct Playback {
     #[cfg(feature = "audio-out")]
     _output: Option<corinzia_audio::backend::Output>,
     /// Without an output (tests, no PipeWire), the engine stays here.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub offline: Option<Engine>,
     pub pool: PluginPool,
     pub timeline: Timeline,

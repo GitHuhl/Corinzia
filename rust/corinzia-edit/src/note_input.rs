@@ -118,7 +118,7 @@ pub fn make_event(ids: &mut Ids, start: Frac, duration: Frac, pitches: &[Pitch],
         1 => EventKind::Note,
         _ => EventKind::Chord,
     };
-    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0 }
+    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0, lyrics: vec![] }
 }
 
 fn rest_of(ids: &mut Ids, start: Frac, dur: Frac) -> Event {
@@ -390,4 +390,34 @@ pub fn mark_span(list: &[Event], from: Frac, to: Frac, start_mark: u8, end_mark:
     let focus = out[first].heads[0].id;
     let end = out[last].end();
     Some(EditResult { events: out, focus: Some(focus), from: s, to: end, caret: end })
+}
+
+// ------------------------------------------------------------------ lyrics --
+/// Sets the syllable of a verse on the note containing `element` (an empty
+/// text removes it). `hyphen`: the word continues on the next note.
+pub fn set_lyric(list: &[Event], element: Id, verse: u8, text: &str, hyphen: bool, extend: bool) -> Option<EditResult> {
+    if find_event(list, element).is_some_and(|(e, _)| e.is_rest()) {
+        return None;
+    }
+    modify_event(list, element, |e, _| {
+        e.lyrics.retain(|l| l.verse != verse);
+        if !text.is_empty() {
+            e.lyrics.push(corinzia_model::Lyric { verse, text: text.to_string(), hyphen, extend });
+            e.lyrics.sort_by_key(|l| l.verse);
+        }
+    })
+}
+
+/// The next note (not a rest, not a tie continuation) after `element`'s event.
+pub fn next_note(list: &[Event], element: Id) -> Option<&Event> {
+    let (e, _) = find_event(list, element)?;
+    let tied_in = |n: &Event, prev: Option<&Event>| prev.is_some_and(|p| p.end() == n.start && p.heads.iter().any(|h| h.tie));
+    let mut prev = Some(e);
+    for n in list.iter().filter(|n| n.start > e.start) {
+        if !n.is_rest() && !tied_in(n, prev) {
+            return Some(n);
+        }
+        prev = Some(n);
+    }
+    None
 }

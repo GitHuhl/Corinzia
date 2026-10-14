@@ -84,10 +84,12 @@ pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<
     for (p, o) in pages.iter().zip(origins) {
         let local = Point::new(at.x - o.x, at.y - o.y);
         for item in &p.items {
-            let Item::Glyph { glyph, id, .. } = item else { continue };
-            if *id == 0 || !is_hit_target(*glyph) {
-                continue;
-            }
+            // Notes and rests, and text that belongs to something (chord symbols, lyrics).
+            let id = match item {
+                Item::Glyph { glyph, id, .. } if *id != 0 && is_hit_target(*glyph) => id,
+                Item::Text { id, .. } if *id != 0 => id,
+                _ => continue,
+            };
             let r = item.bounds(font);
             let pad = 0.25;
             if local.x >= r[0] - pad && local.x <= r[2] + pad && local.y >= r[1] - pad && local.y <= r[3] + pad {

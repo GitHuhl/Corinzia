@@ -45,6 +45,8 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     PlayStop,
+    /// Lyrics popover for a verse.
+    Lyrics(u8),
     ShowScore,
     ShowMix,
     // Panel-only actions.
@@ -102,6 +104,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('n', _) => New,
             ('=' | '+', _) => ZoomIn,
             ('-', _) => ZoomOut,
+            ('l', false) => Lyrics(1),
+            ('l', true) => Lyrics(2),
+            ('k', _) => Popover(PopoverKind::Chord),
             ('1', _) => ShowScore,
             ('2', _) => ShowMix,
             _ => return None,
@@ -177,5 +182,7 @@ mod tests {
         assert_eq!(map(&k("h"), Modifiers::SHIFT, false), Some(Action::Hairpin { crescendo: false }));
         assert_eq!(map(&Key::Named(Named::Space), none, true), Some(Action::PlayStop));
         assert_eq!(map(&k("2"), Modifiers::CTRL, false), Some(Action::ShowMix));
+        assert_eq!(map(&k("l"), Modifiers::CTRL, false), Some(Action::Lyrics(1)));
+        assert_eq!(map(&k("k"), Modifiers::CTRL, false), Some(Action::Popover(PopoverKind::Chord)));
     }
 }

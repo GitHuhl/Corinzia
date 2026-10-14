@@ -208,7 +208,7 @@ pub fn load(path: &Path) -> Result<Project> {
         let mut sl = db.prepare("SELECT player_id FROM player_lane WHERE movement_id = ? ORDER BY ordinal")?;
         let players: Vec<i64> = sl.query_map([id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
         for pid in players {
-            let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], voices: vec![] };
+            let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![] };
             let mut sc = db.prepare(
                 "SELECT id, at_num, at_den, instrument_id FROM instrument_change WHERE movement_id = ? AND player_id = ? \
                  ORDER BY at_num * 1.0 / at_den",
@@ -266,6 +266,12 @@ pub fn load(path: &Path) -> Result<Project> {
                     });
                 }
             }
+            for c in n["chords"].as_array().into_iter().flatten() {
+                let pid = c["p"].as_u64().unwrap_or(0);
+                if let Some(l) = m.lanes.iter_mut().find(|l| l.player == pid) {
+                    l.chords.push(ChordSymbol { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), text: c["c"].as_str().unwrap_or("").into() });
+                }
+            }
         }
         p.movements.push(m);
     }
@@ -295,6 +301,18 @@ struct StoredEvent {
     sp: u8,
     #[serde(default)]
     h: Vec<StoredHead>,
+    #[serde(default)]
+    ly: Vec<StoredLyric>,
+}
+#[derive(Deserialize)]
+struct StoredLyric {
+    #[serde(default)]
+    v: u8,
+    t: String,
+    #[serde(default)]
+    h: bool,
+    #[serde(default)]
+    x: bool,
 }
 impl StoredEvent {
     fn into_event(self) -> Event {
@@ -320,6 +338,7 @@ impl StoredEvent {
             articulations: self.a,
             dynamic: self.dynamic,
             spans: self.sp,
+            lyrics: self.ly.into_iter().map(|l| Lyric { verse: l.v.max(1), text: l.t, hyphen: l.h, extend: l.x }).collect(),
         }
     }
 }
@@ -340,6 +359,23 @@ fn event_json(e: &Event) -> Value {
     }
     if e.spans != 0 {
         o["sp"] = json!(e.spans);
+    }
+    if !e.lyrics.is_empty() {
+        o["ly"] = Value::Array(
+            e.lyrics
+                .iter()
+                .map(|l| {
+                    let mut x = json!({"v": l.verse, "t": l.text});
+                    if l.hyphen {
+                        x["h"] = json!(true);
+                    }
+                    if l.extend {
+                        x["x"] = json!(true);
+                    }
+                    x
+                })
+                .collect(),
+        );
     }
     o
 }
@@ -437,7 +473,9 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         let keys = arr(m.keys.iter().map(|k| json!({"at": jfrac(k.at), "fifths": k.fifths, "minor": k.minor})).collect());
         let mut clefs = Vec::new();
         let mut texts = Vec::new();
+        let mut chords = Vec::new();
         for l in &m.lanes {
+            chords.extend(l.chords.iter().map(|c| json!({"id": c.id, "p": l.player, "at": jfrac(c.at), "c": c.text})));
             clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "p": l.player, "at": jfrac(c.at), "c": c.clef})));
             texts.extend(l.texts.iter().map(|t| json!({
                 "id": t.id, "p": l.player, "at": jfrac(t.at), "t": t.text,
@@ -450,6 +488,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,
+            "chords": chords,
         })
         .to_string();
         tx.execute(

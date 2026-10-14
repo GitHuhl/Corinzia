@@ -264,3 +264,62 @@ fn ties_cross_system_breaks_as_halves() {
     // Three ties; each crossing a break is drawn twice (outgoing + incoming half).
     assert_eq!(ties, 3 + (systems - 1));
 }
+
+#[test]
+fn lyrics_and_chord_symbols() {
+    use corinzia_score::score::ChordSymbol;
+    // Measure text with the font the preview draws with (as the app does).
+    if let Ok(path) = std::env::var("CORINZIA_TEXT_FONT") {
+        if let Ok(regular) = std::fs::read(&path) {
+            corinzia_layout::display::set_text_font(regular, std::fs::read(path.replace(".ttf", "-Bold.ttf")).ok());
+        }
+    }
+    use corinzia_score::Frac;
+    let mut s = score(
+        &[("treble", &["g'4\\ly=Glo- \\ly2=Ah a'8\\ly=ri- b'8\\ly=a c''2\\ly=in_ \\ly2=men | d''8\\ly=ex- c''8\\ly=cel- b'4\\ly=sis e'2\\ly=De-"])],
+        (4, 4),
+        0,
+    );
+    s.parts[0].chords = vec![
+        ChordSymbol { at: Frac::ZERO, text: "G".into(), id: 1 },
+        ChordSymbol { at: Frac::new(1, 2), text: "C♯m7♭5/E".into(), id: 2 },
+        ChordSymbol { at: Frac::new(1, 1), text: "Dmaj7".into(), id: 3 },
+        ChordSymbol { at: Frac::new(3, 2), text: "Bb°7".into(), id: 4 },
+    ];
+    let l = layout_line(&s, &Options::default());
+    preview("lyrics_chords", &l);
+    let texts: Vec<(String, f32, f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text { text, at, size, .. } => Some((text.clone(), at.x, at.y, *size)),
+            _ => None,
+        })
+        .collect();
+    let y_of = |t: &str| texts.iter().find(|x| x.0 == t).unwrap_or_else(|| panic!("no {t}: {texts:?}")).2;
+    // Verse 1 on one baseline under the staff, verse 2 below it.
+    let v1 = y_of("Glo");
+    for syl in ["ri", "a", "in", "ex", "cel", "sis", "De"] {
+        assert!((y_of(syl) - v1).abs() < 1e-4, "{syl} on the verse-1 baseline");
+    }
+    assert!(v1 > 4.0 + 2.0, "below the staff: {v1}");
+    assert!((y_of("Ah") - v1 - 2.4).abs() < 1e-3 && (y_of("men") - y_of("Ah")).abs() < 1e-4);
+    // Hyphens inside words; one hangs after "De" at the end of the line.
+    let hyphens = texts.iter().filter(|t| t.0 == "-").count();
+    assert_eq!(hyphens, 5, "Glo-ri-a, ex-cel-sis, De-");
+    // "in" has an extender through nothing (one note), so no line; but syllables never overlap.
+    let mut v1s: Vec<&(String, f32, f32, f32)> = texts.iter().filter(|t| (t.2 - v1).abs() < 1e-4 && t.0 != "-").collect();
+    v1s.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for w in v1s.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let (wa, wb) = (corinzia_layout::display::text_width(&a.0, a.3, false), corinzia_layout::display::text_width(&b.0, b.3, false));
+        assert!(b.1 - wb / 2.0 > a.1 + wa / 2.0 + 0.5, "{} and {} collide", a.0, b.0);
+    }
+    // Chord symbols on one baseline above the staff, accidentals as SMuFL chord glyphs.
+    let gy = y_of("G");
+    assert!(gy < -0.5, "above the staff: {gy}");
+    assert!((y_of("C") - gy).abs() < 1e-4 && (y_of("Dmaj7") - gy).abs() < 1e-4);
+    assert_eq!(glyphs(&l, Glyph::CsymSharp).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::CsymFlat).len(), 2, "♭5 and B♭");
+    assert_eq!(glyphs(&l, Glyph::CsymDiminished).len(), 1);
+}
