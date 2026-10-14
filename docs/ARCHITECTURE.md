@@ -751,36 +751,63 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
 
 ### 5.5g Moving the application to Rust and iced
 
-The Qt application keeps working while a Rust application grows beside it.
-When the iced app reaches parity, the Qt app and the C++ code only it uses
-are retired. Both apps open and save the same `.project` files throughout.
+The Rust application now does everything the Qt one does, so the Qt app and
+the C++ code only it uses can be retired. Both apps open and save the same
+`.project` files.
 
-| Piece | C++ (today) | Rust | State |
+| Piece | C++ | Rust crate | State |
 |---|---|---|---|
-| Export (MIDI, MusicXML) | — | `corinzia-export` | Rust only |
-| Engraving | LilyPond emitter (print/PDF) | `corinzia-layout` (screen; Page + Panorama) | both |
-| Project model + `.project` storage | `model/`, `storage/` | `corinzia-model` | both; byte-compatible, proven by the C++ round-trip test run through the Rust store |
-| UI | Qt Quick / QML | `corinzia-app` (iced, wgpu) | iced: viewing, selection, pan/zoom, save |
-| Editing (note input, structure, undo) | `edit/`, `model/Commands` | — | next |
-| Playback, CLAP hosting, PipeWire | `audio/`, `compile/` | — | later; reused through a C interface first |
+| Project model + `.project` storage | `model/`, `storage/` | `corinzia-model` | byte-compatible; the Rust store also owns the audio graph (nodes, edges, plugin state) |
+| Editing: note input, ranges, structure | `edit/` | `corinzia-edit` | ported with its tests |
+| Undo/redo | `model/Commands` | `corinzia-app::editor` | whole-project snapshots (voices are `Arc`-shared) |
+| Performance (repeats, ties, ornaments, dynamics) | `compile/` | `corinzia-perform` | ported with its tests |
+| Engraving | LilyPond emitter | `corinzia-layout` | native engraver; vector PDF export (`pdf` feature) |
+| Export (MIDI, MusicXML) | — | `corinzia-export` + `corinzia-perform::document` | from the Rust model |
+| CLAP hosting, RT engine, PipeWire | `audio/`, `rt/` | `corinzia-audio` | ported; see below |
+| Built-in instrument | — | `corinzia-sine` | a CLAP plugin |
+| UI | Qt Quick / QML | `corinzia-app` (iced, wgpu) | Score and Mix tabs |
 
 * **`corinzia-app`** (`nix run .#iced [file.project]`, or `cargo run -p
   corinzia-app` in the dev shell):
-  * a canvas draws the engraver's display lists as vector geometry (Bravura
-    glyph outlines, text shaped and converted to paths), cached until the
-    engraving or view changes;
-  * Page and Panorama, Ctrl+wheel zoom anchored at the cursor, drag to pan,
-    click to select a note or rest.
+  * `editor.rs` holds the editing half of the old AppController. That is
+    the caret and input state, the selection or passage, the clipboard,
+    popovers, insert/delete bars, and undo. Every action takes one
+    snapshot, so it is one undo step. Slider drags merge into one step.
+    `revision` moves on every change; `music_revision` moves only when the
+    music changes, so mixer edits neither re-engrave nor rebuild the
+    playback plan.
+  * `keys.rs` is the keyboard map of §5.5. `panels.rs` holds the Notes and
+    Structure panels, with SMuFL glyph buttons.
+  * `score_view.rs` is the canvas. Display lists are drawn as vector
+    geometry and cached. The caret, rubber band and playhead go on an
+    uncached overlay. Staves and columns carry their system index, so a
+    click locates (part, time, staff step) for mouse input.
+  * `playback.rs` keeps the engine plan in step with the editor. `mix.rs`
+    and `arrange.rs` make up the Mix tab. `files.rs` covers New, export,
+    and Open/Save through the XDG portal (`rfd`). Projects with a file
+    autosave 0.8 s after a change, on a worker thread.
+  * `--keys "n c d e"` scripts key presses, and `--export out.pdf|mid|musicxml`
+    runs headless.
+* **`corinzia-audio`** keeps the C++ engine's contract:
+  * the audio thread never allocates, locks or touches the model;
+  * commands arrive through wait-free SPSC queues (`rtrb`);
+  * retired plans go back to the UI thread, which drops them. That is where
+    plugins are deactivated and destroyed. They stop processing on the
+    audio thread first.
 
-  A Qt-saved project engraves in about 3 ms (release build). Stroke widths
-  are given in screen pixels, because iced transforms path points but not
-  widths.
+  Plugin instances live per track in `pool` and survive plan rebuilds.
+  Notes are scheduled sample-accurately, with offs before ons. The plugin
+  gets a transport (beats, tempo, bar, time signature). Buses and plugin
+  delay compensation from §3.6 are not ported yet: tracks mix straight to
+  the output.
 * **Text metrics**: the engraver measures text with the same font files the
-  app draws with (`display::set_text_font`, regular and bold), so tempo marks
-  and text are spaced exactly.
+  app draws with (`display::set_text_font`, regular and bold).
 * **Headless checks**: `scripts/iced-screenshot.sh out.png [args]` runs the
   app under Xvfb with Mesa's software Vulkan (lavapipe) and saves a
-  screenshot.
+  screenshot. The live PipeWire test runs against a private daemon:
+  `CORINZIA_PW=1 CORINZIA_PW_SESSION=1 tests/run_with_pipewire.sh cargo
+  test -p corinzia-audio --test pipewire`. It needs WirePlumber, which is
+  in the dev shell.
 
 ### 5.6 Two workspaces: Score and Mix
 

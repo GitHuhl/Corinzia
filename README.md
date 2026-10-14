@@ -27,6 +27,10 @@ ctest --test-dir build --output-on-failure    # core + offscreen Qt/LilyPond tes
 python3 -I scripts/validate_schema.py         # schema + example data check
 
 nix build                                     # sandboxed build running the full test suite
+
+nix run .#iced                                # the Rust application (demo score)
+nix build .#iced                              # its sandboxed build + tests
+(cd rust && cargo test --workspace)           # all Rust crates, from the dev shell
 ```
 
 ## Layout
@@ -70,10 +74,29 @@ the Bravura font, in both Page and Panorama view. Re-engraving takes tens of
 milliseconds instead of seconds. PDF export still uses LilyPond. See §5.5f of the architecture document for the plan
 towards a full native engraver and an iced front end.
 
-A new front end written in Rust with iced is growing alongside the Qt one
-(`nix run .#iced [file.project]`). It opens and saves the same project files
-and draws the native engraving on the GPU. For now it views and selects;
-editing and playback come next.
+### The Rust application (iced)
+
+The Rust front end (`nix run .#iced [file.project]`) is replacing the Qt
+one. It opens and saves the same `.project` files and has:
+
+* **Score tab:** the native engraving drawn as GPU vector geometry (Page and
+  Panorama), note input from the keyboard, the mouse and the Notes panel,
+  marquee/Shift-click/Ctrl+A passages, copy/paste/repeat, articulations,
+  ornaments, dynamics, slurs, hairpins and ties, and the Structure panel and
+  popovers (key, time, clef, tempo, barlines, endings, rehearsal marks, text,
+  insert/delete bars). Every action is one undo step.
+* **Playback:** Space plays from the selection or caret, with a playhead in
+  the score. The audio engine is Rust: CLAP hosting, a lock-free realtime
+  engine and PipeWire output. Tracks without a plugin play through
+  **Corinzia Sine**, a small built-in CLAP instrument, which is also
+  installed as `lib/clap/Corinzia Sine.clap` for other hosts. Entered notes
+  are auditioned.
+* **Mix tab:** the arrange view, mixer strips (gain, pan, mute, solo) and a
+  CLAP instrument browser.
+* **Files:** New (type an instrument list, e.g. "Flute, 2 Violin, Cello"),
+  Open, Save and autosave. Export writes a vector PDF straight from the
+  native engraver (no LilyPond needed), plus MIDI and MusicXML.
+  `corinzia-iced score.project --export score.pdf` works headless.
 
 **Export ▾** in the toolbar writes PDF (LilyPond), MIDI (sounds like playback,
 one track per mixer track) and MusicXML 4.0. MIDI and MusicXML come from a
