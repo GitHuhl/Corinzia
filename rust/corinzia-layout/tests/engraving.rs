@@ -323,3 +323,46 @@ fn lyrics_and_chord_symbols() {
     assert_eq!(glyphs(&l, Glyph::CsymFlat).len(), 2, "♭5 and B♭");
     assert_eq!(glyphs(&l, Glyph::CsymDiminished).len(), 1);
 }
+
+#[test]
+fn spanners_continue_across_system_breaks() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    // 16 bars of quarters: several systems. A slur and a crescendo from bar 3 to bar 14.
+    let mut music = String::new();
+    for bar in 0..16 {
+        for beat in 0..4 {
+            let mut n = String::from(["c''4", "d''4", "e''4", "f''4"][beat]);
+            if bar == 2 && beat == 0 {
+                n.push_str("(\\cr");
+            }
+            if bar == 13 && beat == 0 {
+                n.push_str(")\\f");
+            }
+            music.push_str(&n);
+            music.push(' ');
+        }
+    }
+    let s = score(&[("treble", &[music.as_str()])], (4, 4), 0);
+    let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
+    let systems: usize = pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map(|m| m as usize + 1).unwrap_or(0)).sum();
+    assert!(systems >= 3, "the example needs several systems: {systems}");
+    let slur_id = s.parts[0].voices[0].events[8].pitches[0].id;
+    let slur_pieces: usize = pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Item::Crescent { id, .. } if *id == slur_id)).count();
+    assert!(slur_pieces >= 3, "a piece of the slur in each system it crosses: {slur_pieces}");
+    // The crescendo: a pair of lines per system; openings grow from piece to piece.
+    let mut openings: Vec<(f32, f32)> = Vec::new();
+    for p in &pages {
+        let lines: Vec<_> = p.items.iter().filter_map(|i| match i { Item::Line { from, to, id, .. } if *id == slur_id => Some((*from, *to)), _ => None }).collect();
+        for pair in lines.chunks(2) {
+            if let [a, b] = pair {
+                openings.push(((a.0.y - b.0.y).abs(), (a.1.y - b.1.y).abs()));
+            }
+        }
+    }
+    assert!(openings.len() >= 3, "{openings:?}");
+    assert!(openings[0].0 < 1e-3, "starts closed");
+    for w in openings.windows(2) {
+        assert!((w[1].0 - w[0].1).abs() < 0.05, "each piece continues the previous opening: {openings:?}");
+    }
+    assert!((openings.last().unwrap().1 - 1.0).abs() < 1e-3, "ends fully open");
+}

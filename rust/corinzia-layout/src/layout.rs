@@ -1133,25 +1133,76 @@ impl<'a> Engraver<'a> {
     /// Slurs from SLUR_START to the next SLUR_END in the voice: on the
     /// notehead side when all stems agree, else above; lifted over the notes
     /// in between.
-    fn draw_slurs(&mut self) {
+    /// Slurs and hairpins of the whole movement, so a system can draw the
+    /// part of one that started or ends in another system.
+    fn spanners(&self) -> Vec<Spanner> {
         use corinzia_score::score::span;
+        let mut out = Vec::new();
+        for (pi, part) in self.score.parts.iter().enumerate() {
+            for v in &part.voices {
+                let notes: Vec<&corinzia_score::score::Event> = v.events.iter().filter(|e| !e.pitches.is_empty()).collect();
+                for (k, e) in notes.iter().enumerate() {
+                    let id = e.pitches.first().map(|p| p.id).unwrap_or(e.id);
+                    if e.spans & span::SLUR_START != 0 {
+                        if let Some(end) = notes[k + 1..].iter().find(|o| o.spans & span::SLUR_END != 0) {
+                            out.push(Spanner { part: pi, voice: v.index, from: e.start, to: end.start, kind: SpanKind::Slur, id });
+                        }
+                    }
+                    if e.spans & (span::CRESC_START | span::DIM_START) != 0 {
+                        let kind = if e.spans & span::CRESC_START != 0 { SpanKind::Cresc } else { SpanKind::Dim };
+                        let to = notes[k + 1..].iter().find(|o| o.dynamic.is_some() || o.spans & span::HAIRPIN_END != 0).map(|o| o.start);
+                        // Without an end: to the end of the note's bar.
+                        let to = to.unwrap_or_else(|| self.score_bar_end(e.start));
+                        out.push(Spanner { part: pi, voice: v.index, from: e.start, to, kind, id });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The end of the bar containing `t` (whole movement).
+    fn score_bar_end(&self, t: Frac) -> Frac {
+        let mut at = Frac::ZERO;
+        loop {
+            let m = self.score.meter.iter().filter(|m| m.at <= at).last();
+            let len = m.map(|m| Frac::new(m.num, m.den)).unwrap_or(Frac::int(1));
+            if at + len > t || len.is_zero() {
+                return (at + len).min(self.score.length.max(t));
+            }
+            at = at + len;
+        }
+    }
+
+    /// The first piece of the event of (part, voice) starting at `t`, in this system.
+    fn note_at(&self, part: usize, voice: u8, t: Frac) -> Option<usize> {
+        self.notes.iter().position(|n| n.part == part && n.voice == voice && n.first && !n.rest && n.start == t)
+    }
+
+    /// Where a spanner cut by a system break starts and ends: just after the
+    /// system's opening and at its final barline.
+    fn system_edges(&self) -> (f32, f32) {
+        (self.ms.first().map(|m| m.x0 + 0.5).unwrap_or(self.left), self.ms.last().map(|m| m.x1 - 0.3).unwrap_or(self.left))
+    }
+
+    fn draw_slurs(&mut self) {
         let d = self.font.defaults;
+        let (r0, r1) = self.range;
+        let (left, right) = self.system_edges();
         let mut items = Vec::new();
-        for i in 0..self.notes.len() {
-            let s0 = &self.notes[i];
-            if s0.rest || !s0.first || self.score_spans(s0) & span::SLUR_START == 0 {
+        for sp in self.spanners().into_iter().filter(|s| s.kind == SpanKind::Slur && s.from < r1 && s.to >= r0) {
+            let si = if sp.from >= r0 { self.note_at(sp.part, sp.voice, sp.from) } else { None };
+            let ei = if sp.to < r1 { self.note_at(sp.part, sp.voice, sp.to) } else { None };
+            let between: Vec<&Note> = self
+                .notes
+                .iter()
+                .filter(|o| o.part == sp.part && o.voice == sp.voice && !o.rest && o.start >= sp.from && o.start <= sp.to)
+                .collect();
+            if between.is_empty() {
                 continue;
             }
-            let Some(j) = (i + 1..self.notes.len()).find(|&k| {
-                let o = &self.notes[k];
-                o.part == s0.part && o.voice == s0.voice && o.first && !o.rest && self.score_spans(o) & span::SLUR_END != 0
-            }) else {
-                continue;
-            };
-            let e0 = &self.notes[j];
-            let between: Vec<&Note> = self.notes[i..=j].iter().filter(|o| o.part == s0.part && o.voice == s0.voice && !o.rest).collect();
-            let poly = self.notes.iter().any(|o| o.part == s0.part && o.measure == s0.measure && o.voice != s0.voice && !o.whole_bar);
-            let above = if poly { s0.voice % 2 == 1 } else { !between.iter().all(|o| o.stem_up) };
+            let poly = between.iter().any(|b| self.notes.iter().any(|o| o.part == sp.part && o.measure == b.measure && o.voice != sp.voice && !o.whole_bar));
+            let above = if poly { sp.voice % 2 == 1 } else { !between.iter().all(|o| o.stem_up) };
             let dir = if above { -1.0 } else { 1.0 };
             // Endpoint: at the head on the head side, at the stem tip on the stem side.
             let end_y = |n: &Note, s: &Self| -> f32 {
@@ -1164,22 +1215,44 @@ impl<'a> Engraver<'a> {
                     lo + 0.7
                 }
             };
-            let (x0, y0) = (s0.x + HEAD_W / 2.0 + 0.2, end_y(s0, self));
-            let (x1, y1) = (e0.x + HEAD_W / 2.0 - 0.2, end_y(e0, self));
+            // A cut end continues at the height of the music it leaves.
+            let edge_y = |n: &Note, s: &Self| end_y(n, s) + dir * 0.6;
+            let (x0, y0, x1, y1) = match (si, ei) {
+                (Some(a), Some(b)) => {
+                    let (a, b) = (&self.notes[a], &self.notes[b]);
+                    (a.x + HEAD_W / 2.0 + 0.2, end_y(a, self), b.x + HEAD_W / 2.0 - 0.2, end_y(b, self))
+                }
+                (Some(a), None) => {
+                    let a = &self.notes[a];
+                    let last = between.last().unwrap();
+                    (a.x + HEAD_W / 2.0 + 0.2, end_y(a, self), right, edge_y(last, self))
+                }
+                (None, Some(b)) => {
+                    let b = &self.notes[b];
+                    let first = between.first().unwrap();
+                    (left, edge_y(first, self), b.x + HEAD_W / 2.0 - 0.2, end_y(b, self))
+                }
+                (None, None) => {
+                    let y = between.iter().map(|n| edge_y(n, self)).fold(if above { f32::MAX } else { f32::MIN }, |a, b| if above { a.min(b) } else { a.max(b) });
+                    (left, y, right, y)
+                }
+            };
             let dx = (x1 - x0).max(0.5);
             let mut h = (0.6 + 0.07 * dx).min(2.2);
-            for o in &between[1..between.len().saturating_sub(1)] {
+            for o in &between {
                 let t = ((o.x + HEAD_W / 2.0 - x0) / dx).clamp(0.05, 0.95);
+                if t <= 0.06 || t >= 0.94 {
+                    continue;
+                }
                 let line = y0 + (y1 - y0) * t;
                 let extreme = end_y(o, self);
                 let poke = (extreme - line) * dir + 0.4; // > 0: the note reaches past the chord
                 if poke > 0.0 {
-                    h = h.max(poke / (3.0 * t * (1.0 - t)) * 1.0);
+                    h = h.max(poke / (3.0 * t * (1.0 - t)));
                 }
             }
             h = h.min(5.0);
             let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
-            let id = s0.heads.first().map(|h| h.id).unwrap_or(s0.id);
             items.push(Item::Crescent {
                 from: pt(x0, y0),
                 c1: c(1.0 / 3.0, h + d.slur_midpoint_thickness),
@@ -1187,22 +1260,10 @@ impl<'a> Engraver<'a> {
                 to: pt(x1, y1),
                 d1: c(1.0 / 3.0, h),
                 d2: c(2.0 / 3.0, h),
-                id,
+                id: sp.id,
             });
         }
         self.out.items.extend(items);
-    }
-
-    fn score_spans(&self, n: &Note) -> u8 {
-        // Spanner marks of the event this piece starts (pieces don't copy them).
-        self.score.parts[n.part]
-            .voices
-            .iter()
-            .filter(|v| v.index == n.voice)
-            .flat_map(|v| v.events.iter())
-            .find(|e| e.start == n.start && (e.id == n.id))
-            .map(|e| e.spans)
-            .unwrap_or(0)
     }
 
     /// Skylines from everything drawn so far; each item goes to the nearest staff.
@@ -1438,22 +1499,22 @@ impl<'a> Engraver<'a> {
     /// Hairpins and dynamics below the staff: a hairpin and the dynamics at
     /// its ends share one baseline; simultaneous dynamics stack.
     fn draw_dynamics_and_hairpins(&mut self) {
-        use corinzia_score::score::span;
         let d = self.font.defaults;
         let dyn_width = |s: &Self, text: &str| Self::dynamic_glyphs(text).iter().map(|g| s.width(*g) - 0.05).sum::<f32>();
         let mut baseline_for: std::collections::HashMap<usize, f32> = Default::default();
-        for i in 0..self.notes.len() {
-            let n = self.notes[i].clone();
-            let spans = if n.first && !n.rest { self.score_spans(&n) } else { 0 };
-            if spans & (span::CRESC_START | span::DIM_START) == 0 {
-                continue;
-            }
-            let end = (i + 1..self.notes.len()).find(|&k| {
-                let o = &self.notes[k];
-                o.part == n.part && o.voice == n.voice && o.first && !o.rest && o.start > n.start && (o.dynamic.is_some() || self.score_spans(o) & span::HAIRPIN_END != 0)
-            });
-            let start_x = n.x + n.dynamic.as_ref().map(|t| HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5).unwrap_or(0.0);
-            let end_x = match end {
+        let (r0, r1) = self.range;
+        let (left, right) = self.system_edges();
+        for sp in self.spanners().into_iter().filter(|s| s.kind != SpanKind::Slur && s.from < r1 && s.to > r0) {
+            let si = if sp.from >= r0 { self.note_at(sp.part, sp.voice, sp.from) } else { None };
+            let ei = if sp.to < r1 { self.note_at(sp.part, sp.voice, sp.to) } else { None };
+            let start_x = match si {
+                Some(i) => {
+                    let n = &self.notes[i];
+                    n.x + n.dynamic.as_ref().map(|t| HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5).unwrap_or(0.0)
+                }
+                None => left,
+            };
+            let end_x = match ei {
                 Some(k) => {
                     let o = &self.notes[k];
                     match &o.dynamic {
@@ -1461,21 +1522,36 @@ impl<'a> Engraver<'a> {
                         None => o.x + HEAD_W,
                     }
                 }
-                None => self.ms[n.measure].x1 - 0.5,
+                // Continues in the next system (or ends at its bar's end).
+                None if sp.to >= r1 => right,
+                None => self.col_x(sp.to) - 0.5,
             };
             if end_x <= start_x + 0.5 {
                 continue;
             }
-            let lo = n.x - 0.5;
-            let hi = end.map(|k| self.notes[k].x + 2.5).unwrap_or(end_x);
-            let base = (self.sky[n.part].bottom_over(lo, hi) + 2.0).max(self.top(n.part) + 6.5);
+            let hi = ei.map(|k| self.notes[k].x + 2.5).unwrap_or(end_x);
+            let base = (self.sky[sp.part].bottom_over(start_x - 0.5, hi) + 2.0).max(self.top(sp.part) + 6.5);
             let c = base - 0.55;
-            let (a, b) = if spans & span::CRESC_START != 0 { (0.0, 0.5) } else { (0.5, 0.0) };
+            // The opening grows (or shrinks) with time, so the parts of a
+            // hairpin cut by a system break continue each other.
+            let total = sp.to - sp.from;
+            let frac = |t: Frac| -> f32 {
+                if total.is_zero() {
+                    return 0.0;
+                }
+                let f = (t.max(sp.from).min(sp.to) - sp.from) * Frac::new(total.den, total.num);
+                (f.num as f32 / f.den as f32).clamp(0.0, 1.0)
+            };
+            let open = |f: f32| if sp.kind == SpanKind::Cresc { 0.5 * f } else { 0.5 * (1.0 - f) };
+            let (fa, fb) = (if si.is_some() { 0.0 } else { frac(r0) }, if ei.is_some() || sp.to < r1 { 1.0 } else { frac(r1) });
+            let (a, b) = (open(fa), open(fb));
             let w = d.hairpin_thickness;
-            self.place(n.part, Item::line(start_x, c - a, end_x, c - b, w, n.id));
-            self.place(n.part, Item::line(start_x, c + a, end_x, c + b, w, n.id));
-            baseline_for.insert(i, base);
-            if let Some(k) = end {
+            self.place(sp.part, Item::line(start_x, c - a, end_x, c - b, w, sp.id));
+            self.place(sp.part, Item::line(start_x, c + a, end_x, c + b, w, sp.id));
+            if let Some(i) = si {
+                baseline_for.insert(i, base);
+            }
+            if let Some(k) = ei {
                 baseline_for.insert(k, base);
             }
         }
@@ -1585,6 +1661,24 @@ impl<'a> Engraver<'a> {
 }
 
 const CHORD_GLYPH_SCALE: f32 = 0.55;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpanKind {
+    Slur,
+    Cresc,
+    Dim,
+}
+
+/// A slur or hairpin: from its start event to the event that ends it.
+#[derive(Clone, Copy, Debug)]
+struct Spanner {
+    part: usize,
+    voice: u8,
+    from: Frac,
+    to: Frac,
+    kind: SpanKind,
+    id: u64,
+}
 
 /// A chord symbol cut into text and SMuFL chord-symbol glyphs: accidentals
 /// (♯ ♭ ♮, or # and b after the root/bass letter and before a degree) and
