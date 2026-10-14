@@ -69,6 +69,8 @@
           packages = with pkgs; [ lilypond sqlite-interactive python3 gdb clang-tools ];
           shellHook = ''
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond
+            # Text in the engraver's PNG previews (rust/target/tmp/engraving).
+            export CORINZIA_TEXT_FONT=${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSerif.ttf
             ${qtRuntimeEnv pkgs}
           '';
         };

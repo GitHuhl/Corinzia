@@ -6,9 +6,10 @@
 //! * durations `1 2 4 8 16 32 64` with dots, sticky as in LilyPond; `*2/3` for triplets;
 //! * `<…>` chords, `q` repeats the last chord, `r` rests, `~` ties;
 //! * `-.` `->` `--` `-!` `-^` articulations, `\fermata \trill \mordent \turn
-//!   \arpeggio \breathe`, dynamics `\pp` … `\ff`.
+//!   \arpeggio \breathe`, dynamics `\pp` … `\ff`;
+//! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings).
 
-use corinzia_score::score::{art, Event, Meter, Part, Pitch, Score, Voice};
+use corinzia_score::score::{art, span, Event, Meter, Part, Pitch, Score, Voice};
 use corinzia_score::Frac;
 
 fn parse_pitch(tok: &str) -> Option<(Pitch, &str)> {
@@ -106,6 +107,9 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
                     "turn" => e.art |= art::TURN,
                     "arpeggio" => e.art |= art::ARPEGGIO,
                     "breathe" => e.art |= art::BREATH,
+                    "cr" => e.spans |= span::CRESC_START,
+                    "decr" => e.spans |= span::DIM_START,
+                    "!" => e.spans |= span::HAIRPIN_END,
                     d => e.dynamic = Some(d.to_string()),
                 }
             }
@@ -147,6 +151,11 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         }
         let mut r = rest.as_str();
         while !r.is_empty() {
+            if r.starts_with('(') {
+                e.spans |= span::SLUR_START;
+            } else if r.starts_with(')') {
+                e.spans |= span::SLUR_END;
+            }
             let (bit, n) = match r {
                 s if s.starts_with('~') => (0, 1),
                 s if s.starts_with("-.") => (art::STACCATO, 2),

@@ -10,7 +10,7 @@ fn glyphs(list: &corinzia_layout::DisplayList, g: Glyph) -> Vec<(f32, f32, u64)>
     list.items
         .iter()
         .filter_map(|i| match i {
-            Item::Glyph { glyph, at, id } if *glyph == g.codepoint() => Some((at.x, at.y, *id)),
+            Item::Glyph { glyph, at, id, .. } if *glyph == g.codepoint() => Some((at.x, at.y, *id)),
             _ => None,
         })
         .collect()
@@ -149,4 +149,59 @@ fn polyphony_keeps_voices_apart() {
     assert_eq!(m.len(), 1);
     assert!(p.iter().any(|g| g.1 > m[0].1 + 1.5), "the second dynamic sits below the first");
     preview("polyphony", &l);
+}
+
+#[test]
+fn outer_marks_avoid_each_other() {
+    use corinzia_score::score::{ClefChange, Ending, Tempo, Text};
+    use corinzia_score::Frac;
+    let mut s = score(
+        &[
+            ("treble", &["c''8(\\f\\cr d'' e'' f'' g''4 a'')\\ff b''8\\decr a'' g'' f'' e''4 d''\\p c''2\\fermata e''4*2/3 f'' g'' c'''1\\trill"]),
+            ("bass", &["c4( e g c') c2 g, c1 f,4*2/3 g, a, c2 c1"]),
+        ],
+        (4, 4),
+        0,
+    );
+    s.tempo = vec![Tempo { at: Frac::ZERO, bpm: 132.0, text: "Allegro".into() }];
+    s.marks = vec![Frac::int(1)];
+    s.endings = vec![Ending { from: Frac::int(1), to: Frac::int(2), numbers: vec![1] }];
+    s.barlines = vec![corinzia_score::score::Barline { at: Frac::int(2), kind: corinzia_score::score::BarKind::RepeatEnd }];
+    s.parts[0].name = "Flute".into();
+    s.parts[1].name = "Cello".into();
+    s.parts[0].texts = vec![Text { at: Frac::ZERO, text: "dolce".into(), technique: false }, Text { at: Frac::int(1), text: "flz.".into(), technique: true }];
+    s.parts[1].clefs = vec![ClefChange { at: Frac::new(3, 2), clef: "tenor".into() }];
+    let l = layout_line(&s, &Options::default());
+    preview("outer_marks", &l);
+
+    // No two outer marks overlap (texts, dynamics, ornaments, numbers, brackets of the top staff).
+    let font = corinzia_layout::font::Font::bravura();
+    let outer: Vec<[f32; 4]> = l
+        .items
+        .iter()
+        .filter(|i| match i {
+            Item::Text { anchor, .. } => *anchor != 2,
+            Item::Glyph { glyph, .. } => [Glyph::DynamicF, Glyph::DynamicP, Glyph::FermataAbove, Glyph::Trill, Glyph::TupletDigit(3), Glyph::MetNoteQuarterUp]
+                .iter()
+                .any(|g| g.codepoint() == *glyph),
+            _ => false,
+        })
+        .map(|i| i.bounds(font))
+        .collect();
+    for (a, ra) in outer.iter().enumerate() {
+        for rb in &outer[a + 1..] {
+            let overlap = ra[0] < rb[2] - 0.05 && rb[0] < ra[2] - 0.05 && ra[1] < rb[3] - 0.05 && rb[1] < ra[3] - 0.05;
+            assert!(!overlap, "outer marks overlap: {ra:?} {rb:?}");
+        }
+    }
+    // Two slurs, one hairpin of each kind (2 strokes each), tuplet numbers, the clef change (scaled).
+    let curves = l.items.iter().filter(|i| matches!(i, Item::Crescent { .. })).count();
+    assert!(curves >= 2, "slurs drawn: {curves}");
+    assert_eq!(glyphs(&l, Glyph::TupletDigit(3)).len(), 2);
+    assert!(l.items.iter().any(|i| matches!(i, Item::Glyph { scale, .. } if (*scale - 0.8).abs() < 1e-6)));
+    assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "Allegro (")));
+    assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, bold: true, .. } if text == "A")));
+    assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "1.")));
+    // The staves start after the instrument names.
+    assert!(l.staves[0].left > 6.0);
 }

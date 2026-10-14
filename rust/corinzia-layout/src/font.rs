@@ -24,6 +24,7 @@ pub enum Glyph {
     StaccatissimoAbove, StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow,
     DynamicP, DynamicM, DynamicF,
     Trill, Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot,
+    MetNoteQuarterUp, TupletDigit(u8),
 }
 
 impl Glyph {
@@ -90,10 +91,32 @@ impl Glyph {
             Tremolo3 => ("tremolo3", 0xE222),
             Arpeggiato => ("wiggleArpeggiatoUp", 0xEAA9),
             RepeatDot => ("repeatDot", 0xE044),
+            MetNoteQuarterUp => ("metNoteQuarterUp", 0xECA5),
+            TupletDigit(d) => (
+                ["tuplet0", "tuplet1", "tuplet2", "tuplet3", "tuplet4", "tuplet5", "tuplet6", "tuplet7", "tuplet8", "tuplet9"]
+                    [d.min(9) as usize],
+                0xE880 + d.min(9) as u32,
+            ),
         }
     }
     pub fn name(self) -> &'static str {
         self.info().0
+    }
+
+    /// Every glyph the engraver can emit.
+    pub fn all() -> Vec<Glyph> {
+        use Glyph::*;
+        let mut v = vec![
+            NoteheadBlack, NoteheadHalf, NoteheadWhole, GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, Flat, Natural,
+            Sharp, DoubleSharp, DoubleFlat, RestWhole, RestHalf, RestQuarter, Rest8th, Rest16th, Rest32nd, Rest64th, Flag8thUp,
+            Flag8thDown, Flag16thUp, Flag16thDown, Flag32ndUp, Flag32ndDown, Flag64thUp, Flag64thDown, Dot, TimeSigCommon,
+            TimeSigCut, AccentAbove, AccentBelow, StaccatoAbove, StaccatoBelow, TenutoAbove, TenutoBelow, StaccatissimoAbove,
+            StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow, DynamicP, DynamicM, DynamicF, Trill,
+            Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot, MetNoteQuarterUp,
+        ];
+        v.extend((0..10).map(TimeSigDigit));
+        v.extend((0..10).map(TupletDigit));
+        v
     }
     pub fn codepoint(self) -> u32 {
         self.info().1
@@ -131,6 +154,7 @@ pub struct EngravingDefaults {
     pub hairpin_thickness: f32,
     pub repeat_barline_dot_separation: f32,
     pub repeat_ending_line_thickness: f32,
+    pub tuplet_bracket_thickness: f32,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +176,7 @@ struct RawMetadata {
 pub struct Font {
     pub defaults: EngravingDefaults,
     boxes: HashMap<String, BBox>,
+    by_codepoint: HashMap<u32, BBox>,
     anchors: HashMap<String, HashMap<String, [f32; 2]>>,
     pub units_per_space: f32,
 }
@@ -163,13 +188,16 @@ impl Font {
         FONT.get_or_init(|| {
             let raw: RawMetadata = serde_json::from_str(METADATA).expect("bravura_metadata.json");
             let face = ttf_parser::Face::parse(FONT_DATA, 0).expect("Bravura.otf");
+            let boxes: HashMap<String, BBox> = raw
+                .glyph_b_boxes
+                .into_iter()
+                .map(|(k, b)| (k, BBox { sw: (b.b_box_sw[0], b.b_box_sw[1]), ne: (b.b_box_ne[0], b.b_box_ne[1]) }))
+                .collect();
+            let by_codepoint = Glyph::all().iter().filter_map(|g| boxes.get(g.name()).map(|b| (g.codepoint(), *b))).collect();
             Font {
                 defaults: raw.engraving_defaults,
-                boxes: raw
-                    .glyph_b_boxes
-                    .into_iter()
-                    .map(|(k, b)| (k, BBox { sw: (b.b_box_sw[0], b.b_box_sw[1]), ne: (b.b_box_ne[0], b.b_box_ne[1]) }))
-                    .collect(),
+                boxes,
+                by_codepoint,
                 anchors: raw.glyphs_with_anchors,
                 units_per_space: face.units_per_em() as f32 / 4.0,
             }
@@ -178,6 +206,11 @@ impl Font {
 
     pub fn bbox(&self, g: Glyph) -> BBox {
         self.boxes.get(g.name()).copied().unwrap_or_default()
+    }
+
+    /// Box of a glyph by codepoint (display lists store codepoints).
+    pub fn bbox_of(&self, codepoint: u32) -> BBox {
+        self.by_codepoint.get(&codepoint).copied().unwrap_or_default()
     }
 
     /// An anchor (e.g. "stemUpSE"), staff spaces, y up.
@@ -200,15 +233,7 @@ mod tests {
         assert_eq!(f.anchor(Glyph::NoteheadBlack, "stemUpSE"), Some((1.18, 0.168)));
         // Every glyph we use exists in the font and has metadata.
         let face = ttf_parser::Face::parse(FONT_DATA, 0).unwrap();
-        use Glyph::*;
-        let all = [
-            NoteheadBlack, NoteheadHalf, NoteheadWhole, GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, Flat, Natural,
-            Sharp, DoubleSharp, DoubleFlat, RestWhole, RestHalf, RestQuarter, Rest8th, Rest16th, Rest32nd, Rest64th, Flag8thUp,
-            Flag8thDown, Flag16thUp, Flag16thDown, Flag32ndUp, Flag32ndDown, Flag64thUp, Flag64thDown, Dot, TimeSigDigit(0),
-            TimeSigDigit(9), TimeSigCommon, TimeSigCut, AccentAbove, AccentBelow, StaccatoAbove, StaccatoBelow, TenutoAbove,
-            TenutoBelow, StaccatissimoAbove, StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow,
-            DynamicP, DynamicM, DynamicF, Trill, Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot,
-        ];
+        let all = Glyph::all();
         for g in all {
             let ch = char::from_u32(g.codepoint()).unwrap();
             assert!(face.glyph_index(ch).is_some(), "{} missing from the font", g.name());

@@ -37,6 +37,7 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     let base = Transform::from_scale(scale, scale).pre_translate(pad, pad + 6.0);
     let face = ttf_parser::Face::parse(FONT_DATA, 0).expect("font");
     let ups = Font::bravura().units_per_space;
+    let text_font: Option<Vec<u8>> = std::env::var("CORINZIA_TEXT_FONT").ok().and_then(|p| std::fs::read(p).ok());
     let p = |q: &Point| (q.x, q.y);
     let staff_lines = list.staves.iter().flat_map(|st| {
         (0..5).map(move |k| Item::line(st.left, st.top + k as f32, st.right, st.top + k as f32, st.line_width, 0))
@@ -44,7 +45,27 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     let all: Vec<Item> = staff_lines.chain(list.items.iter().cloned()).collect();
     for item in &all {
         match item {
-            Item::Glyph { glyph, at, .. } => {
+            Item::Text { text, at, size, anchor, .. } => {
+                // Optional text font for previews (CORINZIA_TEXT_FONT: a .ttf);
+                // without one text is left out. No shaping: Latin text only.
+                let Some(tf) = text_font.as_ref() else { continue };
+                let Ok(tface) = ttf_parser::Face::parse(tf, 0) else { continue };
+                let k = size / tface.units_per_em() as f32;
+                let width: f32 = text.chars().filter_map(|c| tface.glyph_index(c)).filter_map(|g| tface.glyph_hor_advance(g)).map(|a| a as f32 * k).sum();
+                let mut x = at.x - width * (*anchor as f32) / 2.0;
+                for c in text.chars() {
+                    let Some(gid) = tface.glyph_index(c) else { continue };
+                    let mut pb = PathBuilder::new();
+                    if tface.outline_glyph(gid, &mut Outline(&mut pb)).is_some() {
+                        if let Some(path) = pb.finish() {
+                            let t = base.pre_translate(x, at.y).pre_scale(k, -k);
+                            pm.fill_path(&path, &paint, FillRule::Winding, t, None);
+                        }
+                    }
+                    x += tface.glyph_hor_advance(gid).unwrap_or(0) as f32 * k;
+                }
+            }
+            Item::Glyph { glyph, at, scale, .. } => {
                 let Some(ch) = char::from_u32(*glyph) else { continue };
                 let Some(gid) = face.glyph_index(ch) else { continue };
                 let mut pb = PathBuilder::new();
@@ -53,7 +74,7 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
                 }
                 let Some(path) = pb.finish() else { continue };
                 // Font units (y up) -> staff spaces (y down) at the glyph origin.
-                let t = base.pre_translate(at.x, at.y).pre_scale(1.0 / ups, -1.0 / ups);
+                let t = base.pre_translate(at.x, at.y).pre_scale(scale / ups, -scale / ups);
                 pm.fill_path(&path, &paint, FillRule::Winding, t, None);
             }
             Item::Line { from, to, width, .. } => {

@@ -10,6 +10,7 @@ pub mod display;
 pub mod font;
 pub mod layout;
 pub mod notation;
+pub mod skyline;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod svg;

@@ -5,7 +5,8 @@
 //! rhythmic columns shared by all staves -> x positions (logarithmic spacing,
 //! widened where marks need room) -> marks into a display list.
 
-use crate::display::{pt, Column, DisplayList, Item, StaffGeom};
+use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
+use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
 use corinzia_score::score::{art, BarKind, Key, Part, Pitch, Score};
 use corinzia_score::values::{decompose, NoteValue};
@@ -16,12 +17,19 @@ pub struct Options {
     /// Distance between the top lines of adjacent staves, in staff spaces.
     pub staff_distance: f32,
     pub margin: f32,
+    /// Instrument names left of the system.
+    pub names: bool,
 }
 impl Default for Options {
     fn default() -> Self {
-        Options { staff_distance: 11.0, margin: 1.0 }
+        Options { staff_distance: 12.0, margin: 1.0, names: true }
     }
 }
+
+const NAME_SIZE: f32 = 2.0;
+const TEXT_SIZE: f32 = 2.0;
+const TEMPO_SIZE: f32 = 2.2;
+const CLEF_CHANGE_SCALE: f32 = 0.8;
 
 // ------------------------------------------------------------- pitch & clef --
 fn diatonic(p: &Pitch) -> i32 {
@@ -309,6 +317,9 @@ struct Engraver<'a> {
     ms: Vec<Measure>,
     notes: Vec<Note>,
     out: DisplayList,
+    left: f32,                               // where the staves start (after instrument names)
+    clef_changes: Vec<(usize, Frac, String)>, // (part, at, clef), at > 0
+    sky: Vec<Skyline>,                       // per staff, filled after the notes
 }
 
 const HEAD_W: f32 = 1.18;
@@ -482,8 +493,7 @@ impl<'a> Engraver<'a> {
     }
 
     fn space(&mut self) {
-        let x_start = self.opt.margin;
-        let mut x = x_start;
+        let mut x = self.left;
         // System start: clef, key, time.
         let clef_w = self.score.parts.iter().map(|p| self.width(clef_glyph(&p.clef).0)).fold(0.0f32, f32::max);
         x += 0.8 + clef_w + 0.8;
@@ -517,7 +527,10 @@ impl<'a> Engraver<'a> {
             let mut cx = x + 1.0;
             for (j, &t) in cols.iter().enumerate() {
                 let here: Vec<&Note> = self.notes.iter().filter(|n| n.measure == mi && n.start == t && !n.whole_bar).collect();
-                let (left, right) = here.iter().map(|n| self.note_extents(n)).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+                let (mut left, right) = here.iter().map(|n| self.note_extents(n)).fold((0.0f32, 0.0f32), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+                if self.clef_changes.iter().any(|c| c.1 == t) {
+                    left += self.clef_change_width() + 0.5;
+                }
                 if j == 0 {
                     cx += left;
                 } else {
@@ -568,6 +581,10 @@ impl<'a> Engraver<'a> {
         self.out.width = x + self.opt.margin;
     }
 
+    fn clef_change_width(&self) -> f32 {
+        self.width(Glyph::GClef) * CLEF_CHANGE_SCALE
+    }
+
     fn time_width(&self, m: &Measure) -> f32 {
         let digits = |v: i64| v.to_string().len() as f32;
         digits(m.num).max(digits(m.den)) * self.width(Glyph::TimeSigDigit(4))
@@ -579,15 +596,19 @@ impl<'a> Engraver<'a> {
         let right = self.out.width - self.opt.margin;
         for pi in 0..self.score.parts.len() {
             let top = self.top(pi);
-            self.out.staves.push(StaffGeom { part: pi, top, left: self.opt.margin, right, line_width: t });
-            // Clef at the system start.
+            self.out.staves.push(StaffGeom { part: pi, top, left: self.left, right, line_width: t });
+            // Clef at the system start; the instrument name left of the staff.
             let (g, dy) = clef_glyph(&self.score.parts[pi].clef);
-            self.push(Item::glyph(g, self.opt.margin + 0.8, top + dy, 0));
+            self.push(Item::glyph(g, self.left + 0.8, top + dy, 0));
+            let name = &self.score.parts[pi].name;
+            if self.opt.names && !name.is_empty() {
+                self.push(Item::Text { text: name.clone(), at: pt(self.left - 1.0, top + 2.7), size: NAME_SIZE, italic: false, bold: false, anchor: 2, id: 0 });
+            }
         }
         // System barline at the left edge.
         if let Some(last) = self.score.parts.len().checked_sub(1) {
             let thin = self.font.defaults.thin_barline_thickness;
-            self.push(Item::line(self.opt.margin, 0.0, self.opt.margin, self.top(last) + 4.0, thin, 0));
+            self.push(Item::line(self.left, 0.0, self.left, self.top(last) + 4.0, thin, 0));
         }
     }
 
@@ -596,7 +617,7 @@ impl<'a> Engraver<'a> {
         let clef_w = self.score.parts.iter().map(|p| self.width(clef_glyph(&p.clef).0)).fold(0.0f32, f32::max);
         for mi in 0..self.ms.len() {
             let m = self.ms[mi].clone();
-            let mut x = if mi == 0 { self.opt.margin + 0.8 + clef_w + 0.8 } else { self.ms[mi - 1].x1 + 1.0 };
+            let mut x = if mi == 0 { self.left + 0.8 + clef_w + 0.8 } else { self.ms[mi - 1].x1 + 1.0 };
             for pi in 0..self.score.parts.len() {
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
@@ -901,7 +922,7 @@ impl<'a> Engraver<'a> {
     fn draw_marks(&mut self) {
         for i in 0..self.notes.len() {
             let n = self.notes[i].clone();
-            if !n.first || n.rest && n.dynamic.is_none() {
+            if !n.first || n.rest {
                 continue;
             }
             let top = self.top(n.part);
@@ -936,17 +957,6 @@ impl<'a> Engraver<'a> {
                     self.push(Item::glyph(g, center(g, self), y, n.id));
                     pos += if below { -2 } else { 2 };
                 }
-                // Fermata and ornaments above the staff (or the note).
-                let mut y = (self.y(n.part, n.heads[n.heads.len() - 1].pos) - 1.5).min(top - 1.0);
-                if n.stem_up && n.has_stem() {
-                    y = y.min(n.stem_end - 1.0);
-                }
-                for (bit, g) in [(art::FERMATA, Glyph::FermataAbove), (art::TRILL, Glyph::Trill), (art::MORDENT, Glyph::Mordent), (art::TURN, Glyph::Turn)] {
-                    if n.art & bit != 0 {
-                        self.push(Item::glyph(g, center(g, self), y, n.id));
-                        y -= 1.8;
-                    }
-                }
                 if n.art & art::TREMOLO != 0 && n.has_stem() {
                     let g = Glyph::Tremolo3;
                     let sy = (self.notes[i].stem_end + if n.stem_up { 1.0 } else { -1.0 } + self.y(n.part, n.heads[0].pos)) / 2.0;
@@ -972,33 +982,395 @@ impl<'a> Engraver<'a> {
                     self.push(Item::glyph(g, x, y, n.id));
                 }
             }
-            if let Some(dynamic) = &n.dynamic {
-                let mut x = n.x - 0.3;
-                // Below the staff, and below anything of this column on it.
-                let mut y = top + 4.0 + 3.0;
-                for o in self.notes.iter().filter(|o| o.part == n.part && o.start == n.start && !o.rest) {
-                    y = y.max(self.y(o.part, o.heads[0].pos) + 2.6);
-                    if !o.stem_up && o.has_stem() {
-                        let marks = o.art & (art::STACCATO | art::STACCATISSIMO | art::TENUTO | art::ACCENT | art::MARCATO) != 0;
-                        y = y.max(o.stem_end + if marks { 3.2 } else { 2.0 });
-                    }
+        }
+    }
+}
+
+// ------------------------------------------------------- outer marks --
+impl<'a> Engraver<'a> {
+    /// x of a written position: its column, or interpolated between columns.
+    fn col_x(&self, t: Frac) -> f32 {
+        let q = t.num as f64 / t.den as f64 * 4.0;
+        let cols = &self.out.columns;
+        if let Some(c) = cols.iter().find(|c| (c.quarter - q).abs() < 1e-9) {
+            return c.x;
+        }
+        let after = cols.iter().position(|c| c.quarter > q).unwrap_or(cols.len().saturating_sub(1));
+        if after == 0 || cols.is_empty() {
+            return cols.first().map(|c| c.x).unwrap_or(self.left);
+        }
+        let (a, b) = (cols[after - 1], cols[after]);
+        a.x + ((q - a.quarter) / (b.quarter - a.quarter).max(1e-9)) as f32 * (b.x - a.x)
+    }
+
+    /// x of the barline at a written position (bar starts and the end).
+    fn bar_x(&self, t: Frac) -> f32 {
+        for (i, m) in self.ms.iter().enumerate() {
+            if m.start == t {
+                return if i == 0 { self.left } else { self.ms[i - 1].x1 };
+            }
+        }
+        self.ms.last().map(|m| m.x1).unwrap_or(self.left)
+    }
+
+    fn draw_clef_changes(&mut self) {
+        for (part, at, clef) in self.clef_changes.clone() {
+            let here: Vec<&Note> = self.notes.iter().filter(|n| n.part == part && n.start == at && !n.whole_bar).collect();
+            if here.is_empty() {
+                continue;
+            }
+            let left = here.iter().map(|n| self.note_extents(n).0).fold(0.0f32, f32::max);
+            let x = here[0].x - left - 0.3 - self.clef_change_width();
+            let (g, dy) = clef_glyph(&clef);
+            let top = self.top(part);
+            self.push(Item::glyph_scaled(g, x, top + dy, CLEF_CHANGE_SCALE, 0));
+        }
+    }
+
+    /// Slurs from SLUR_START to the next SLUR_END in the voice: on the
+    /// notehead side when all stems agree, else above; lifted over the notes
+    /// in between.
+    fn draw_slurs(&mut self) {
+        use corinzia_score::score::span;
+        let d = self.font.defaults;
+        let mut items = Vec::new();
+        for i in 0..self.notes.len() {
+            let s0 = &self.notes[i];
+            if s0.rest || !s0.first || self.score_spans(s0) & span::SLUR_START == 0 {
+                continue;
+            }
+            let Some(j) = (i + 1..self.notes.len()).find(|&k| {
+                let o = &self.notes[k];
+                o.part == s0.part && o.voice == s0.voice && o.first && !o.rest && self.score_spans(o) & span::SLUR_END != 0
+            }) else {
+                continue;
+            };
+            let e0 = &self.notes[j];
+            let between: Vec<&Note> = self.notes[i..=j].iter().filter(|o| o.part == s0.part && o.voice == s0.voice && !o.rest).collect();
+            let poly = self.notes.iter().any(|o| o.part == s0.part && o.measure == s0.measure && o.voice != s0.voice && !o.whole_bar);
+            let above = if poly { s0.voice % 2 == 1 } else { !between.iter().all(|o| o.stem_up) };
+            let dir = if above { -1.0 } else { 1.0 };
+            // Endpoint: at the head on the head side, at the stem tip on the stem side.
+            let end_y = |n: &Note, s: &Self| -> f32 {
+                let (lo, hi) = (s.y(n.part, n.heads[0].pos), s.y(n.part, n.heads[n.heads.len() - 1].pos));
+                if above {
+                    if n.stem_up && n.has_stem() { n.stem_end - 0.5 } else { hi - 0.7 }
+                } else if !n.stem_up && n.has_stem() {
+                    n.stem_end + 0.5
+                } else {
+                    lo + 0.7
                 }
-                // Several voices with a dynamic at one moment: stacked, voice 1 on top.
-                let earlier = self.notes[..i]
-                    .iter()
-                    .filter(|o| o.part == n.part && o.start == n.start && o.first && o.dynamic.is_some())
-                    .count();
-                y += earlier as f32 * 2.2;
-                for ch in dynamic.chars() {
-                    let g = match ch {
-                        'p' => Glyph::DynamicP,
-                        'm' => Glyph::DynamicM,
-                        _ => Glyph::DynamicF,
-                    };
-                    self.push(Item::glyph(g, x, y, n.id));
-                    x += self.width(g) - 0.05;
+            };
+            let (x0, y0) = (s0.x + HEAD_W / 2.0 + 0.2, end_y(s0, self));
+            let (x1, y1) = (e0.x + HEAD_W / 2.0 - 0.2, end_y(e0, self));
+            let dx = (x1 - x0).max(0.5);
+            let mut h = (0.6 + 0.07 * dx).min(2.2);
+            for o in &between[1..between.len().saturating_sub(1)] {
+                let t = ((o.x + HEAD_W / 2.0 - x0) / dx).clamp(0.05, 0.95);
+                let line = y0 + (y1 - y0) * t;
+                let extreme = end_y(o, self);
+                let poke = (extreme - line) * dir + 0.4; // > 0: the note reaches past the chord
+                if poke > 0.0 {
+                    h = h.max(poke / (3.0 * t * (1.0 - t)) * 1.0);
                 }
             }
+            h = h.min(5.0);
+            let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
+            let id = s0.heads.first().map(|h| h.id).unwrap_or(s0.id);
+            items.push(Item::Crescent {
+                from: pt(x0, y0),
+                c1: c(1.0 / 3.0, h + d.slur_midpoint_thickness),
+                c2: c(2.0 / 3.0, h + d.slur_midpoint_thickness),
+                to: pt(x1, y1),
+                d1: c(1.0 / 3.0, h),
+                d2: c(2.0 / 3.0, h),
+                id,
+            });
+        }
+        self.out.items.extend(items);
+    }
+
+    fn score_spans(&self, n: &Note) -> u8 {
+        // Spanner marks of the event this piece starts (pieces don't copy them).
+        self.score.parts[n.part]
+            .voices
+            .iter()
+            .filter(|v| v.index == n.voice)
+            .flat_map(|v| v.events.iter())
+            .find(|e| e.start == n.start && (e.id == n.id))
+            .map(|e| e.spans)
+            .unwrap_or(0)
+    }
+
+    /// Skylines from everything drawn so far; each item goes to the nearest staff.
+    fn build_skylines(&mut self) {
+        let mut sky: Vec<Skyline> = (0..self.score.parts.len()).map(|p| Skyline::new(self.top(p))).collect();
+        for st in &self.out.staves {
+            sky[st.part].add([st.left, st.top, st.right, st.top + 4.0]);
+        }
+        for item in &self.out.items {
+            if let Item::Text { anchor: 2, .. } = item {
+                continue; // instrument names live left of the system
+            }
+            let r = item.bounds(self.font);
+            let cy = (r[1] + r[3]) / 2.0;
+            if let Some(k) = (0..sky.len()).min_by(|&a, &b| {
+                (cy - (sky[a].staff_top + 2.0)).abs().partial_cmp(&(cy - (sky[b].staff_top + 2.0)).abs()).unwrap()
+            }) {
+                sky[k].add(r);
+            }
+        }
+        self.sky = sky;
+    }
+
+    /// Places `item` by its box against the part's skyline and records it.
+    fn place(&mut self, part: usize, item: Item) {
+        let r = item.bounds(self.font);
+        self.sky[part].add(r);
+        self.out.items.push(item);
+    }
+
+    /// Triplet groups: a number on the stem side (beamed) or a bracket with
+    /// the number in a gap.
+    fn draw_tuplets(&mut self) {
+        let d = self.font.defaults;
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        let mut sum = Frac::ZERO;
+        let mut min_plain = Frac::int(4);
+        for i in 0..self.notes.len() {
+            let n = &self.notes[i];
+            let contiguous = cur.last().is_some_and(|&p| {
+                let o = &self.notes[p];
+                o.part == n.part && o.voice == n.voice && o.start + o.dur == n.start
+            });
+            if !n.value.triplet || !cur.is_empty() && !contiguous {
+                cur.clear();
+                sum = Frac::ZERO;
+                min_plain = Frac::int(4);
+                if !n.value.triplet {
+                    continue;
+                }
+            }
+            cur.push(i);
+            sum = sum + n.dur;
+            min_plain = min_plain.min(n.dur * Frac::new(3, 2));
+            let pow2 = sum.num == 1 && sum.den & (sum.den - 1) == 0;
+            if pow2 && sum >= min_plain * Frac::int(2) {
+                groups.push(std::mem::take(&mut cur));
+                sum = Frac::ZERO;
+                min_plain = Frac::int(4);
+            }
+        }
+        for g in groups {
+            let (first, last) = (&self.notes[g[0]], &self.notes[*g.last().unwrap()]);
+            let part = first.part;
+            let above = g.iter().all(|&i| self.notes[i].stem_up || self.notes[i].rest);
+            let beamed = g.iter().all(|&i| self.notes[i].beamed);
+            let (x0, x1) = (first.x - 0.2, last.x + HEAD_W + 0.2);
+            let num = Glyph::TupletDigit(3);
+            let nb = self.font.bbox(num);
+            let xm = (x0 + x1) / 2.0;
+            let id = first.id;
+            if beamed {
+                let y = if above { self.sky[part].top_over(x0, x1) - 0.4 + nb.sw.1 } else { self.sky[part].bottom_over(x0, x1) + 0.4 + nb.ne.1 };
+                self.place(part, Item::glyph(num, xm - nb.width() / 2.0, y, id));
+            } else {
+                let (line, hook) = if above {
+                    (self.sky[part].top_over(x0, x1) - 1.0, 0.6)
+                } else {
+                    (self.sky[part].bottom_over(x0, x1) + 1.0, -0.6)
+                };
+                let gap = nb.width() / 2.0 + 0.3;
+                let w = d.tuplet_bracket_thickness;
+                self.place(part, Item::line(x0, line + hook, x0, line, w, id));
+                self.place(part, Item::line(x0, line, xm - gap, line, w, id));
+                self.place(part, Item::line(xm + gap, line, x1, line, w, id));
+                self.place(part, Item::line(x1, line, x1, line + hook, w, id));
+                self.place(part, Item::glyph(num, xm - nb.width() / 2.0, line + 0.75, id));
+            }
+        }
+    }
+
+    /// Fermatas and ornaments above the note, clear of everything there.
+    fn draw_ornaments(&mut self) {
+        for i in 0..self.notes.len() {
+            let n = self.notes[i].clone();
+            if !n.first || n.rest {
+                continue;
+            }
+            for (bit, g) in [(art::FERMATA, Glyph::FermataAbove), (art::TRILL, Glyph::Trill), (art::MORDENT, Glyph::Mordent), (art::TURN, Glyph::Turn)] {
+                if n.art & bit == 0 {
+                    continue;
+                }
+                let b = self.font.bbox(g);
+                let x = n.x + HEAD_W / 2.0 - b.width() / 2.0;
+                let y = self.sky[n.part].top_over(x, x + b.width()) - 0.4 + b.sw.1;
+                self.place(n.part, Item::glyph(g, x, y, n.id));
+            }
+        }
+    }
+
+    /// Technique text above (`above`), expression text below, in italics.
+    fn draw_texts(&mut self, above: bool) {
+        for (pi, part) in self.score.parts.iter().enumerate() {
+            for t in part.texts.iter().filter(|t| t.technique == above) {
+                let x = self.col_x(t.at);
+                let w = text_width(&t.text, TEXT_SIZE, false);
+                let y = if above {
+                    self.sky[pi].top_over(x, x + w) - 0.4 - 0.22 * TEXT_SIZE
+                } else {
+                    self.sky[pi].bottom_over(x, x + w) + 0.4 + 0.72 * TEXT_SIZE
+                };
+                let item = Item::Text { text: t.text.clone(), at: pt(x, y), size: TEXT_SIZE, italic: !above, bold: false, anchor: 0, id: 0 };
+                let r = item.bounds(self.font);
+                self.sky[pi].add(r);
+                self.out.items.push(item);
+            }
+        }
+    }
+
+    fn dynamic_glyphs(text: &str) -> Vec<Glyph> {
+        text.chars()
+            .filter_map(|c| match c {
+                'p' => Some(Glyph::DynamicP),
+                'm' => Some(Glyph::DynamicM),
+                'f' => Some(Glyph::DynamicF),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Hairpins and dynamics below the staff: a hairpin and the dynamics at
+    /// its ends share one baseline; simultaneous dynamics stack.
+    fn draw_dynamics_and_hairpins(&mut self) {
+        use corinzia_score::score::span;
+        let d = self.font.defaults;
+        let dyn_width = |s: &Self, text: &str| Self::dynamic_glyphs(text).iter().map(|g| s.width(*g) - 0.05).sum::<f32>();
+        let mut baseline_for: std::collections::HashMap<usize, f32> = Default::default();
+        for i in 0..self.notes.len() {
+            let n = self.notes[i].clone();
+            let spans = if n.first && !n.rest { self.score_spans(&n) } else { 0 };
+            if spans & (span::CRESC_START | span::DIM_START) == 0 {
+                continue;
+            }
+            let end = (i + 1..self.notes.len()).find(|&k| {
+                let o = &self.notes[k];
+                o.part == n.part && o.voice == n.voice && o.first && !o.rest && o.start > n.start && (o.dynamic.is_some() || self.score_spans(o) & span::HAIRPIN_END != 0)
+            });
+            let start_x = n.x + n.dynamic.as_ref().map(|t| HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5).unwrap_or(0.0);
+            let end_x = match end {
+                Some(k) => {
+                    let o = &self.notes[k];
+                    match &o.dynamic {
+                        Some(t) => o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - 0.5,
+                        None => o.x + HEAD_W,
+                    }
+                }
+                None => self.ms[n.measure].x1 - 0.5,
+            };
+            if end_x <= start_x + 0.5 {
+                continue;
+            }
+            let lo = n.x - 0.5;
+            let hi = end.map(|k| self.notes[k].x + 2.5).unwrap_or(end_x);
+            let base = (self.sky[n.part].bottom_over(lo, hi) + 2.0).max(self.top(n.part) + 6.5);
+            let c = base - 0.55;
+            let (a, b) = if spans & span::CRESC_START != 0 { (0.0, 0.5) } else { (0.5, 0.0) };
+            let w = d.hairpin_thickness;
+            self.place(n.part, Item::line(start_x, c - a, end_x, c - b, w, n.id));
+            self.place(n.part, Item::line(start_x, c + a, end_x, c + b, w, n.id));
+            baseline_for.insert(i, base);
+            if let Some(k) = end {
+                baseline_for.insert(k, base);
+            }
+        }
+        for i in 0..self.notes.len() {
+            let n = self.notes[i].clone();
+            let Some(text) = n.dynamic.clone() else { continue };
+            if !n.first {
+                continue;
+            }
+            let w = dyn_width(self, &text);
+            let mut x = n.x + HEAD_W / 2.0 - w / 2.0;
+            let own = (self.sky[n.part].bottom_over(x, x + w) + 2.0).max(self.top(n.part) + 6.5);
+            let y = baseline_for.get(&i).map_or(own, |&b| b.max(own));
+            for g in Self::dynamic_glyphs(&text) {
+                self.place(n.part, Item::glyph(g, x, y, n.id));
+                x += self.width(g) - 0.05;
+            }
+        }
+    }
+
+    /// Above the top staff: volta brackets, rehearsal marks, tempo marks.
+    fn draw_tempo_marks_endings(&mut self) {
+        if self.sky.is_empty() {
+            return;
+        }
+        let d = self.font.defaults;
+        // Endings.
+        for e in self.score.endings.clone() {
+            let (x0, x1) = (self.bar_x(e.from) + 0.3, self.bar_x(e.to) - 0.3);
+            if x1 <= x0 {
+                continue;
+            }
+            let label: Vec<String> = e.numbers.iter().map(|n| format!("{n}.")).collect();
+            let label = label.join(", ");
+            let lw = text_width(&label, 1.6, false);
+            // The line clears everything under it; the label (hanging below the
+            // line at the start) clears what is under the label.
+            let y = (self.sky[0].top_over(x0, x1) - 0.8)
+                .min(self.sky[0].top_over(x0, x0 + lw + 0.8) - 2.2)
+                .min(self.top(0) - 2.5);
+            let w = d.repeat_ending_line_thickness;
+            let closed = self.score.barlines.iter().any(|b| b.at == e.to && matches!(b.kind, BarKind::RepeatEnd | BarKind::RepeatBoth));
+            self.place(0, Item::line(x0, y + 2.0, x0, y, w, 0));
+            self.place(0, Item::line(x0, y, x1, y, w, 0));
+            if closed {
+                self.place(0, Item::line(x1, y, x1, y + 2.0, w, 0));
+            }
+            self.place(0, Item::Text { text: label, at: pt(x0 + 0.4, y + 1.6), size: 1.6, italic: false, bold: false, anchor: 0, id: 0 });
+        }
+        // Rehearsal marks: boxed letters at their barline.
+        let mut marks = self.score.marks.clone();
+        marks.sort();
+        for (k, at) in marks.iter().enumerate() {
+            let letter: String = std::iter::repeat_n((b'A' + (k % 26) as u8) as char, k / 26 + 1).collect();
+            let size = 2.4;
+            let w = text_width(&letter, size, true);
+            let x = self.bar_x(*at);
+            let (bx0, bx1) = (x - w / 2.0 - 0.4, x + w / 2.0 + 0.4);
+            let bottom = self.sky[0].top_over(bx0, bx1) - 0.6;
+            let top = bottom - 0.72 * size - 0.8;
+            let t = 0.16;
+            for (a, b) in [((bx0, top), (bx1, top)), ((bx1, top), (bx1, bottom)), ((bx1, bottom), (bx0, bottom)), ((bx0, bottom), (bx0, top))] {
+                self.place(0, Item::line(a.0, a.1, b.0, b.1, t, 0));
+            }
+            self.place(0, Item::Text { text: letter, at: pt(x, bottom - 0.4), size, italic: false, bold: true, anchor: 1, id: 0 });
+        }
+        // Tempo marks: words (bold) and a metronome mark; repeated only when they change.
+        let mut tempo = self.score.tempo.clone();
+        tempo.sort_by(|a, b| a.at.cmp(&b.at));
+        let mut printed = -1i64;
+        for t in tempo {
+            let bpm = t.bpm.round() as i64;
+            if t.text.is_empty() && bpm == printed {
+                continue;
+            }
+            printed = bpm;
+            let mut x = if t.at == Frac::ZERO { self.left + 1.0 } else { self.col_x(t.at) - 0.5 };
+            let words = if t.text.is_empty() { String::new() } else { format!("{} (", t.text) };
+            let tail = format!(" = {bpm}{}", if t.text.is_empty() { "" } else { ")" });
+            let total = text_width(&words, TEMPO_SIZE, true) + 1.0 + text_width(&tail, TEMPO_SIZE, false);
+            let y = (self.sky[0].top_over(x, x + total) - 0.6).min(self.top(0) - 2.0);
+            if !words.is_empty() {
+                let item = Item::Text { text: words.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: true, anchor: 0, id: 0 };
+                x += text_width(&words, TEMPO_SIZE, true) + 0.2;
+                self.place(0, item);
+            }
+            self.place(0, Item::glyph_scaled(Glyph::MetNoteQuarterUp, x, y - 0.1, 0.6, 0));
+            x += 0.9;
+            self.place(0, Item::Text { text: tail, at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: false, anchor: 0, id: 0 });
         }
     }
 }
@@ -1032,16 +1404,48 @@ fn flag_glyph(base: i64, up: bool) -> Glyph {
 pub fn layout_line(score: &Score, opt: &Options) -> DisplayList {
     let ms = measures(score);
     let notes = split(score, &ms);
-    let mut e = Engraver { score, font: Font::bravura(), opt: opt.clone(), ms, notes, out: DisplayList::default() };
+    let names_w = if opt.names {
+        score.parts.iter().map(|p| text_width(&p.name, NAME_SIZE, false)).fold(0.0f32, f32::max)
+    } else {
+        0.0
+    };
+    let left = opt.margin + if names_w > 0.0 { names_w + 1.5 } else { 0.0 };
+    let mut clef_changes: Vec<(usize, Frac, String)> = score
+        .parts
+        .iter()
+        .enumerate()
+        .flat_map(|(pi, p)| p.clefs.iter().filter(|c| c.at > Frac::ZERO).map(move |c| (pi, c.at, c.clef.clone())))
+        .collect();
+    clef_changes.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut e = Engraver {
+        score,
+        font: Font::bravura(),
+        opt: opt.clone(),
+        ms,
+        notes,
+        out: DisplayList::default(),
+        left,
+        clef_changes,
+        sky: Vec::new(),
+    };
     e.prepare();
     let groups = e.beam_groups();
     e.space();
     e.draw_staves();
     e.draw_measure_furniture();
+    e.draw_clef_changes();
     e.draw_notes();
     e.draw_beams(&groups);
     e.draw_ties();
     e.draw_marks();
+    e.draw_slurs();
+    e.build_skylines();
+    e.draw_tuplets();
+    e.draw_ornaments();
+    e.draw_texts(true);
+    e.draw_dynamics_and_hairpins();
+    e.draw_texts(false);
+    e.draw_tempo_marks_endings();
     let staves = score.parts.len().max(1);
     e.out.height = (staves - 1) as f32 * e.opt.staff_distance + 4.0;
     e.out

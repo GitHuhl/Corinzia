@@ -18,8 +18,11 @@ pub fn pt(x: f32, y: f32) -> Point {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
 pub enum Item {
-    /// A SMuFL glyph with its origin at `at` (baseline, SMuFL origin), size 1 = staff space metrics.
-    Glyph { glyph: u32, at: Point, id: u64 },
+    /// A SMuFL glyph with its origin at `at` (SMuFL origin); `scale` 1 = full size
+    /// (clef changes are drawn smaller).
+    Glyph { glyph: u32, at: Point, scale: f32, id: u64 },
+    /// Text: baseline at `at`, `size` = em in staff spaces; anchor 0 start, 1 middle, 2 end.
+    Text { text: String, at: Point, size: f32, italic: bool, bold: bool, anchor: u8, id: u64 },
     /// A straight stroke (staff lines, stems, ledger lines, barlines).
     Line { from: Point, to: Point, width: f32, id: u64 },
     /// A filled quadrilateral (beams).
@@ -31,14 +34,17 @@ pub enum Item {
 
 impl Item {
     pub fn glyph(g: Glyph, x: f32, y: f32, id: u64) -> Item {
-        Item::Glyph { glyph: g.codepoint(), at: pt(x, y), id }
+        Item::Glyph { glyph: g.codepoint(), at: pt(x, y), scale: 1.0, id }
+    }
+    pub fn glyph_scaled(g: Glyph, x: f32, y: f32, scale: f32, id: u64) -> Item {
+        Item::Glyph { glyph: g.codepoint(), at: pt(x, y), scale, id }
     }
     pub fn line(x0: f32, y0: f32, x1: f32, y1: f32, width: f32, id: u64) -> Item {
         Item::Line { from: pt(x0, y0), to: pt(x1, y1), width, id }
     }
     pub fn id(&self) -> u64 {
         match self {
-            Item::Glyph { id, .. } | Item::Line { id, .. } | Item::Quad { id, .. } | Item::Crescent { id, .. } => *id,
+            Item::Glyph { id, .. } | Item::Text { id, .. } | Item::Line { id, .. } | Item::Quad { id, .. } | Item::Crescent { id, .. } => *id,
         }
     }
 }
@@ -67,4 +73,45 @@ pub struct DisplayList {
     pub items: Vec<Item>,
     pub staves: Vec<StaffGeom>,
     pub columns: Vec<Column>,
+}
+
+/// Estimated advance of `text` (staff spaces) in the score's serif text font.
+/// The engraver needs it for spacing and collisions; renderers use real metrics.
+pub fn text_width(text: &str, size: f32, bold: bool) -> f32 {
+    let per = if bold { 0.56 } else { 0.5 };
+    text.chars().map(|c| if c == ' ' { 0.28 } else if c.is_uppercase() { per * 1.25 } else { per }).sum::<f32>() * size
+}
+
+impl Item {
+    /// Bounding box (x0, y0, x1, y1), y down; control points make curves conservative.
+    pub fn bounds(&self, font: &crate::font::Font) -> [f32; 4] {
+        let span = |pts: &[Point]| {
+            let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for p in pts {
+                r = [r[0].min(p.x), r[1].min(p.y), r[2].max(p.x), r[3].max(p.y)];
+            }
+            r
+        };
+        match self {
+            Item::Glyph { glyph, at, scale, .. } => {
+                let b = font.bbox_of(*glyph);
+                [at.x + b.sw.0 * scale, at.y - b.ne.1 * scale, at.x + b.ne.0 * scale, at.y - b.sw.1 * scale]
+            }
+            Item::Text { text, at, size, bold, anchor, .. } => {
+                let w = text_width(text, *size, *bold);
+                let x0 = at.x - w * (*anchor as f32) / 2.0;
+                [x0, at.y - 0.72 * size, x0 + w, at.y + 0.22 * size]
+            }
+            Item::Line { from, to, width, .. } => {
+                let r = span(&[*from, *to]);
+                [r[0] - width / 2.0, r[1] - width / 2.0, r[2] + width / 2.0, r[3] + width / 2.0]
+            }
+            Item::Quad { p, .. } => span(p),
+            Item::Crescent { from, c1, c2, to, d1, d2, .. } => {
+                // The curve passes 3/4 of the way to its control points' offset.
+                let mid = |a: &Point, c: &Point| pt(c.x, a.y + (c.y - a.y) * 0.75);
+                span(&[*from, *to, mid(from, c1), mid(to, c2), mid(from, d1), mid(to, d2)])
+            }
+        }
+    }
 }

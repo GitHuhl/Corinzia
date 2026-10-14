@@ -683,8 +683,8 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
 |---|---|---|
 | 1 | `corinzia-layout`: SMuFL (Bravura) metrics, single-system layout into a display list, reference tests | done |
 | 2 | Panorama view in the app engraved natively ("⚡ Native") | done |
-| 3 | slurs, hairpins, text/tempo/marks, collision avoidance, voice polish | next |
-| 4 | system and page breaking, incremental per-measure cache; native Page view | |
+| 3 | slurs, hairpins, text/tempo/marks, collision avoidance, voice polish | done |
+| 4 | system and page breaking, incremental per-measure cache; native Page view | next |
 | 5 | `corinzia-render` (wgpu) and the iced front end | |
 
 * **Workspace** `rust/`:
@@ -708,6 +708,23 @@ toolkit-independent, that will in time drive an iced (wgpu) front end:
     beat with secondary beams and hooks; rests, including whole-bar rests;
   * marks: ties; articulations (on the stem side in polyphony); ornaments;
     stacked dynamics; double, final and repeat barlines.
+* **Collision avoidance** (`skyline.rs`): each staff has a skyline, the
+  boxes of everything drawn so far. Outer marks are placed against it from
+  the staff outwards, each added as it lands, so they stack instead of
+  colliding. The order:
+  * tuplet numbers and brackets (stem side);
+  * fermatas and ornaments;
+  * technique text;
+  * hairpins with their dynamics on a shared baseline, simultaneous dynamics
+    stacked;
+  * expression text below;
+  * on the top staff: volta brackets (with their labels), boxed rehearsal
+    marks, and tempo marks (bold words plus a metronome note).
+
+  Slurs go on the notehead side when all stems agree, else above, and lift
+  over the notes in between. Instrument names sit left of the system, and
+  clef changes are drawn at 80 % size. A test asserts that no two outer marks
+  overlap.
 * **In the app** the native engraving is written as SVG shaped like
   LilyPond's (`svg.rs`), so vector tiles, the hit index, the instant-feedback
   layer and the playhead work unchanged. A full engraving takes about 57 ms,

@@ -52,6 +52,10 @@ impl ttf_parser::OutlineBuilder for PathText {
     }
 }
 
+fn escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
 fn is_hit_target(codepoint: u32) -> bool {
     use Glyph::*;
     [NoteheadBlack, NoteheadHalf, NoteheadWhole, RestWhole, RestHalf, RestQuarter, Rest8th, Rest16th, Rest32nd, Rest64th]
@@ -103,15 +107,30 @@ pub fn to_svg(list: &DisplayList) -> String {
     }
     for item in &list.items {
         match item {
-            Item::Glyph { glyph, at, id } => {
+            Item::Glyph { glyph, at, scale, id } => {
                 let d = glyph_path(*glyph);
-                let path = format!("<path transform=\"translate({:.4}, {:.4})\" d=\"{}\"/>", at.x, at.y + oy, d);
+                let scaled = if (*scale - 1.0).abs() > 1e-6 { format!(" scale({scale:.3})") } else { String::new() };
+                let path = format!("<path transform=\"translate({:.4}, {:.4}){}\" d=\"{}\"/>", at.x, at.y + oy, scaled, d);
                 if *id != 0 && is_hit_target(*glyph) {
                     let _ = writeln!(o, "<g id=\"{}\" class=\"ev\">{}</g>", svg_id(*id), path);
                 } else {
                     o.push_str(&path);
                     o.push('\n');
                 }
+            }
+            Item::Text { text, at, size, italic, bold, anchor, .. } => {
+                // LilyPond's shape: a translated group around <text><tspan>.
+                let _ = writeln!(
+                    o,
+                    "<g transform=\"translate({:.4}, {:.4})\"><text font-family=\"serif\" font-size=\"{:.4}\"{}{} text-anchor=\"{}\" fill=\"currentColor\"><tspan>{}</tspan></text></g>",
+                    at.x,
+                    at.y + oy,
+                    size,
+                    if *italic { " font-style=\"italic\"" } else { "" },
+                    if *bold { " font-weight=\"bold\"" } else { "" },
+                    ["start", "middle", "end"][(*anchor).min(2) as usize],
+                    escape(text)
+                );
             }
             Item::Line { from, to, width, .. } => {
                 let _ = writeln!(
