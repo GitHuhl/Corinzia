@@ -125,7 +125,10 @@ if(CORINZIA_BUILD_TESTS)
     # (Cargo; vendored crates in the sandbox). The iced app is its own flake package.
     find_program(CARGO_EXECUTABLE cargo REQUIRED)
     add_test(NAME corinzia_rust
-             COMMAND ${CARGO_EXECUTABLE} test --quiet --workspace --exclude corinzia-app --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
+             # The crates this application links (via corinzia-ffi); the iced app's
+             # crates (editing, audio, ...) are tested by the flake's `iced` package.
+             COMMAND ${CARGO_EXECUTABLE} test --quiet -p corinzia-score -p corinzia-model -p corinzia-export -p corinzia-layout -p corinzia-ffi
+                     --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
                      --target-dir ${CMAKE_BINARY_DIR}/cargo-test)
     if(PIPEWIRE_FOUND)
         add_executable(corinzia_pw_tests tests/test_pipewire.cpp)

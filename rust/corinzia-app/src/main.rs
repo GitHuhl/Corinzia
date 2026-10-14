@@ -10,6 +10,8 @@ mod demo;
 mod editor;
 mod files;
 mod keys;
+mod mix;
+mod playback;
 mod panels;
 mod score_view;
 
@@ -54,8 +56,20 @@ enum NewField {
     Bars,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Score,
+    Mix,
+}
+
+/// Live audio output (PipeWire) for the windowed app; tests and --export run without.
+static LIVE_AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 struct App {
     editor: Editor,
+    playback: playback::Playback,
+    tab: Tab,
+    strip: Option<corinzia_model::Id>, // the Mix tab's selected strip
     undo_tip: String,
     new_score: Option<NewScore>,
     path: Option<PathBuf>,
@@ -77,6 +91,7 @@ struct App {
 enum Message {
     SetView(View),
     SetPanel(Panel),
+    Mix(mix::MixMsg),
     ZoomBy(f32),
     Canvas(ViewEvent),
     Key(iced::keyboard::Event),
@@ -209,10 +224,24 @@ impl App {
     }
 
     fn new(project: Project, path: Option<PathBuf>, view: View, status: String) -> App {
+        let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
+        Self::with_playback(project, path, view, status, playback::Playback::new(live))
+    }
+
+    /// A project in the window, keeping the audio output and plugins.
+    fn with_playback(project: Project, path: Option<PathBuf>, view: View, status: String, mut playback: playback::Playback) -> App {
+        playback.stop();
         let mut editor = Editor::new(project);
-        editor.status = status;
+        editor.status = match &playback.problem {
+            Some(p) if status.is_empty() => p.clone(),
+            Some(p) => format!("{status} · {p}"),
+            None => status,
+        };
         let mut app = App {
             editor,
+            playback,
+            tab: Tab::Score,
+            strip: None,
             undo_tip: String::new(),
             new_score: None,
             path,
@@ -241,7 +270,7 @@ impl App {
 
     /// Native engraving of the current movement (milliseconds).
     fn engrave(&mut self) {
-        self.engraved = Some(self.editor.revision);
+        self.engraved = Some(self.editor.music_revision);
         let Some(m) = self.editor.movement() else {
             self.pages.clear();
             return;
@@ -277,9 +306,10 @@ impl App {
 
     /// Brings the engraving and the selection colours up to date.
     fn sync(&mut self) {
-        if self.engraved != Some(self.editor.revision) {
+        if self.engraved != Some(self.editor.music_revision) {
             self.engrave();
         }
+        self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
         let mut sel = HashSet::new();
         if let Some(id) = self.editor.selection {
             sel.insert(id);
@@ -310,10 +340,55 @@ impl App {
         Some(self.act(action))
     }
 
+    /// Plays the selected note (just entered or clicked) on its instrument.
+    fn audition(&mut self) {
+        let ed = &self.editor;
+        let (Some(id), Some(m)) = (ed.selection, ed.movement()) else { return };
+        let Some(loc) = ed.locate(id) else { return };
+        let lane = &m.lanes[loc.lane];
+        let Some((e, head)) = corinzia_edit::find_event(&lane.voices[loc.voice].events, id) else { return };
+        let keys: Vec<i32> = match head {
+            Some(h) => vec![e.heads[h].pitch.midi_key()],
+            None => e.heads.iter().map(|h| h.pitch.midi_key()).collect(),
+        };
+        let Some(track) = lane.instrument_at(e.start).and_then(|i| ed.project.instrument(i)).and_then(|i| i.track) else { return };
+        let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
+        self.sync(); // the plan knows a new track before we preview on it
+        self.playback.preview(track, channel, &keys);
+    }
+
+    fn play_stop(&mut self) {
+        if self.playback.is_playing() {
+            self.playback.stop();
+            return;
+        }
+        // From the selection, else the caret.
+        let ed = &self.editor;
+        let (Some(m), Some((_, at))) = (ed.movement(), ed.structure_target()) else { return };
+        self.playback.play_from(m.id, quarters(at));
+    }
+
     fn act(&mut self, a: Action) -> Task<Message> {
+        let audition = matches!(a, Action::Note { .. } | Action::Transpose(_));
+        let task = self.act_inner(a);
+        if audition && self.playback.problem.is_none() && !self.playback.is_playing() {
+            self.audition();
+        }
+        task
+    }
+
+    fn act_inner(&mut self, a: Action) -> Task<Message> {
         let ed = &mut self.editor;
         ed.status.clear(); // the action reports its own outcome
         match a {
+            Action::PlayStop => self.play_stop(),
+            Action::ShowScore => self.tab = Tab::Score,
+            Action::ShowMix => {
+                self.tab = Tab::Mix;
+                if self.playback.plugins.is_empty() {
+                    self.playback.scan();
+                }
+            }
             Action::ToggleInput => ed.set_input_mode(!ed.input_mode),
             Action::SetInput(on) => ed.set_input_mode(on),
             Action::Escape => {
@@ -392,8 +467,8 @@ impl App {
     fn open(&mut self, path: PathBuf) {
         match corinzia_model::store::load(&path) {
             Ok(p) => {
-                let view = self.view;
-                *self = App::new(p, Some(path.clone()), view, format!("Opened {}", path.display()));
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                *self = App::with_playback(p, Some(path.clone()), view, format!("Opened {}", path.display()), pb);
             }
             Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
         }
@@ -405,8 +480,8 @@ impl App {
         let title = if n.title.trim().is_empty() { "Untitled" } else { n.title.trim() };
         match files::new_project(title, &n.instruments, bars) {
             Ok(p) => {
-                let view = self.view;
-                *self = App::new(p, None, view, "New score · N starts note input".into());
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                *self = App::with_playback(p, None, view, "New score · N starts note input".into(), pb);
                 self.editor.set_input_mode(true);
             }
             Err(e) => n.error = Some(e),
@@ -414,6 +489,8 @@ impl App {
     }
 
     fn save(&mut self, path: PathBuf) {
+        // Plugin state chunks go into the file with the music.
+        self.playback.pool.store_states(&mut self.editor.project);
         self.editor.status = match corinzia_model::store::save(&self.editor.project, &path) {
             Ok(()) => {
                 self.path = Some(path.clone());
@@ -422,6 +499,34 @@ impl App {
             }
             Err(e) => format!("Save failed: {e}"),
         };
+    }
+
+    fn mix(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
+            Select(t) => self.strip = Some(t),
+            Gain(t, db) => {
+                self.editor.set_track(t, "Gain", true, |x| x.gain_db = (db * 2.0).round() / 2.0);
+                self.playback.live_mix(&self.editor.project, t);
+            }
+            Pan(t, pan) => {
+                self.editor.set_track(t, "Pan", true, |x| x.pan = if pan.abs() < 0.03 { 0.0 } else { pan });
+                self.playback.live_mix(&self.editor.project, t);
+            }
+            Released => {}
+            Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
+            Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
+            Assign(t, i) => {
+                let Some(info) = self.playback.plugins.get(i).cloned() else { return };
+                if info.bundle.as_os_str() == corinzia_audio::host::BUILTIN {
+                    self.editor.set_track_plugin(t, None);
+                } else {
+                    let bundle = info.bundle.to_string_lossy().into_owned();
+                    self.editor.set_track_plugin(t, Some((&info.name, &bundle, &info.id)));
+                }
+            }
+            Rescan => self.playback.scan(),
+        }
     }
 
     /// A click on the score: select, or (input mode, empty paper) enter a note.
@@ -433,6 +538,7 @@ impl App {
                     let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
                     let diatonic = top_line(&clef_at(&ed.project, m, p.part, pos)) - p.step_below_top;
                     ed.place_note_at(p.part, p.quarter, diatonic, shift);
+                    self.audition();
                     return;
                 }
             }
@@ -457,6 +563,7 @@ impl App {
                 self.engraved = None;
             }
             Message::SetPanel(p) => self.panel = p,
+            Message::Mix(m) => self.mix(m),
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Canvas(ViewEvent::Pan(d)) => self.pan = self.pan + d,
             Message::Canvas(ViewEvent::Zoom { factor, around }) => {
@@ -581,6 +688,7 @@ impl App {
                 };
             }
             Message::Frame => {
+                self.playback.tick();
                 self.frames += 1;
                 if self.frames == 3 && self.screenshot.is_some() {
                     return iced::window::oldest().and_then(iced::window::screenshot).map(Message::Shot);
@@ -611,6 +719,11 @@ impl App {
             button(text(label).size(14)).padding([4, 10]).style(button::secondary).on_press_maybe(enabled.then_some(Message::Act(a)))
         };
         let toolbar = row![
+            seg("Score", self.tab == Tab::Score, Message::Act(Action::ShowScore)),
+            seg("Mix", self.tab == Tab::Mix, Message::Act(Action::ShowMix)),
+            Space::new().width(10),
+            button(text(if self.playback.is_playing() { "■ Stop" } else { "▶ Play" }).size(14)).padding([4, 12]).style(button::success).on_press(Message::Act(Action::PlayStop)),
+            Space::new().width(10),
             act("New", true, Action::New),
             act("Open", true, Action::Open),
             act("Save", true, Action::Save),
@@ -648,6 +761,7 @@ impl App {
             selected: &self.selected,
             caret,
             highlight,
+            playhead: self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q),
             cache: &self.cache,
         })
         .width(Length::Fill)
@@ -701,12 +815,16 @@ impl App {
             text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(13),
         ]
         .padding([4, 10]);
-        column![toolbar, row![side, desk].height(Length::Fill), status].into()
+        let body: Element<'_, Message> = match self.tab {
+            Tab::Score => row![side, desk].height(Length::Fill).into(),
+            Tab::Mix => container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(Length::Fill).into(),
+        };
+        column![toolbar, body, status].into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         let keys = iced::keyboard::listen().map(Message::Key);
-        if self.screenshot.is_some() {
+        if self.screenshot.is_some() || self.playback.busy() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
@@ -766,6 +884,7 @@ fn main() -> iced::Result {
         .window_size(Size::new(1280.0, 860.0))
         .antialiasing(true)
         .font(corinzia_layout::font::FONT_DATA);
+    LIVE_AUDIO.store(true, std::sync::atomic::Ordering::Relaxed);
     for font in load_text_fonts() {
         app = app.font(font);
     }
@@ -937,5 +1056,71 @@ mod tests {
         assert_eq!((m.lanes.len(), m.length), (4, Frac::int(12)));
         assert!(a.editor.input_mode, "a new score starts in note input");
         assert_eq!(a.pages[0].staves.iter().filter(|s| s.system == 0).count(), 4);
+    }
+
+    fn render(a: &mut App, frames: usize) -> f32 {
+        let (l, _) = a.playback.offline.as_mut().expect("offline engine").render_offline(frames);
+        (l.iter().map(|v| v * v).sum::<f32>() / frames as f32).sqrt()
+    }
+
+    #[test]
+    fn plays_the_score_and_follows_the_playhead() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::PlayStop));
+        assert!(render(&mut a, 4800) > 0.005, "the flute and cello sound");
+        assert!(a.playback.is_playing());
+        // Andante 84: a quarter is 60/84 s; after 1.6 s (76 800 samples) the
+        // playhead is 1.6 · 84/60 = 2.24 quarters in.
+        render(&mut a, 72000);
+        let (m, q) = a.playback.playhead().unwrap();
+        assert_eq!(m, a.editor.project.movements[0].id);
+        assert!((q - 2.24).abs() < 0.01, "playhead at {q}");
+        let _ = a.update(Message::Act(Action::PlayStop));
+        render(&mut a, 9600); // the 150 ms release
+        assert!(!a.playback.is_playing());
+        assert!(render(&mut a, 4800) < 1e-4, "silent once stopped and released");
+        // Play from a selected note in bar 5.
+        let id = a.editor.project.movements[0].lanes[1].voices[0].events[8].heads[0].id;
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(id), at: None, shift: false }));
+        let _ = a.update(Message::Act(Action::PlayStop));
+        render(&mut a, 256);
+        let (_, q) = a.playback.playhead().unwrap();
+        assert!((q - 16.0).abs() < 0.1, "from bar 5: {q}");
+    }
+
+    #[test]
+    fn mixer_edits_are_live_and_undoable() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        assert!(a.playback.plugins.iter().any(|p| p.id == "org.corinzia.sine"));
+        let (engraved, track) = (a.engraved, a.editor.project.tracks[0].id);
+        for db in [-1.0, -2.5, -4.0] {
+            let _ = a.update(Message::Mix(mix::MixMsg::Gain(track, db)));
+        }
+        let _ = a.update(Message::Mix(mix::MixMsg::Released));
+        assert_eq!(a.editor.project.tracks[0].gain_db, -4.0);
+        assert_eq!(a.engraved, engraved, "mixer edits do not re-engrave");
+        a.editor.undo();
+        assert_eq!(a.editor.project.tracks[0].gain_db, 0.0, "one drag, one undo step");
+        // Solo the cello: the flute is silent.
+        let cello = a.editor.project.tracks[1].id;
+        let _ = a.update(Message::Mix(mix::MixMsg::Solo(cello)));
+        assert!(a.editor.project.tracks[1].solo);
+        // Choose the built-in instrument explicitly: no node needed.
+        let sine = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.sine").unwrap();
+        let _ = a.update(Message::Mix(mix::MixMsg::Assign(track, sine)));
+        assert_eq!(a.editor.project.tracks[0].instrument_node, None);
+        assert_eq!(a.playback.plugin_name(track), "Corinzia Sine");
+    }
+
+    #[test]
+    fn entering_a_note_auditions_it() {
+        let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+        render(&mut a, 1024);
+        assert!(render(&mut a, 1024) < 1e-6);
+        key(&mut a, "n");
+        key(&mut a, "c");
+        assert!(render(&mut a, 2048) > 0.005, "the new note sounds");
+        assert!(!a.playback.is_playing(), "without starting playback");
     }
 }

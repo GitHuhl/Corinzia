@@ -19,6 +19,7 @@ const PAGE_GAP: f32 = 6.0;
 
 const INK: Color = Color::from_rgb(0.08, 0.08, 0.1);
 const SELECTED: Color = Color::from_rgb(0.12, 0.42, 0.86);
+const PLAYHEAD: Color = Color::from_rgb(0.1, 0.62, 0.3);
 const CARET: Color = Color::from_rgb(0.95, 0.45, 0.05);
 const DESK: Color = Color::from_rgb(0.84, 0.83, 0.80);
 
@@ -215,6 +216,8 @@ pub struct ScoreView<'a> {
     pub selected: &'a std::collections::HashSet<u64>,
     pub caret: Option<Caret>,
     pub highlight: Option<Highlight>,
+    /// The playback position (written quarters) while playing.
+    pub playhead: Option<f64>,
     pub cache: &'a Cache,
 }
 
@@ -333,6 +336,11 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                     draw_caret(f, page, *origin, c, px);
                 }
             }
+            if let Some(q) = self.playhead {
+                for (page, origin) in self.pages.iter().zip(&origins) {
+                    draw_playhead(f, page, *origin, q, px);
+                }
+            }
         });
         if let (true, Some(a), Some(b)) = (state.marquee, state.press, state.current) {
             let r = Rectangle::new(Point::new(a.x.min(b.x), a.y.min(b.y)), Size::new((a.x - b.x).abs(), (a.y - b.y).abs()));
@@ -350,6 +358,24 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
         } else {
             mouse::Interaction::default()
         }
+    }
+}
+
+/// A line through the whole system at the playback position.
+fn draw_playhead(frame: &mut Frame, page: &DisplayList, origin: Vector, quarter: f64, px: f32) {
+    let systems: std::collections::BTreeSet<u32> = page.staves.iter().map(|s| s.system).collect();
+    for sys in systems {
+        let cols: Vec<_> = page.columns.iter().filter(|c| c.system == sys).collect();
+        let (Some(first), Some(last)) = (cols.first(), cols.last()) else { continue };
+        if quarter < first.quarter || quarter >= last.quarter {
+            continue;
+        }
+        let Some(x) = column_x(page, sys, quarter) else { continue };
+        let staves: Vec<_> = page.staves.iter().filter(|s| s.system == sys).collect();
+        let (top, bottom) = (staves.first().map(|s| s.top).unwrap_or(0.0), staves.last().map(|s| s.top).unwrap_or(0.0));
+        let line = Path::line(Point::new(origin.x + x - 0.6, origin.y + top - 2.0), Point::new(origin.x + x - 0.6, origin.y + bottom + 6.0));
+        frame.stroke(&line, Stroke::default().with_width(0.3 * px).with_color(PLAYHEAD));
+        return;
     }
 }
 

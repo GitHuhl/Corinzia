@@ -44,6 +44,9 @@ pub enum Action {
     Rehearsal,
     ZoomIn,
     ZoomOut,
+    PlayStop,
+    ShowScore,
+    ShowMix,
     // Panel-only actions.
     SetInput(bool),
     SetVoice(u8),
@@ -62,6 +65,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if let Key::Named(n) = key {
         return Some(match (n, ctrl, alt) {
             (Named::Escape, ..) => Escape,
+            (Named::Space, false, false) => PlayStop,
             (Named::ArrowLeft, false, false) => CaretBy(-1),
             (Named::ArrowRight, false, false) => CaretBy(1),
             (Named::ArrowUp, _, true) => CaretStaff(-1),
@@ -98,6 +102,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('n', _) => New,
             ('=' | '+', _) => ZoomIn,
             ('-', _) => ZoomOut,
+            ('1', _) => ShowScore,
+            ('2', _) => ShowMix,
             _ => return None,
         });
     }
@@ -169,5 +175,7 @@ mod tests {
         assert_eq!(map(&Key::Named(Named::ArrowUp), Modifiers::CTRL, false), Some(Action::Transpose(7)));
         assert_eq!(map(&Key::Named(Named::Backspace), Modifiers::CTRL | Modifiers::SHIFT, false), Some(Action::DeleteBars));
         assert_eq!(map(&k("h"), Modifiers::SHIFT, false), Some(Action::Hairpin { crescendo: false }));
+        assert_eq!(map(&Key::Named(Named::Space), none, true), Some(Action::PlayStop));
+        assert_eq!(map(&k("2"), Modifiers::CTRL, false), Some(Action::ShowMix));
     }
 }

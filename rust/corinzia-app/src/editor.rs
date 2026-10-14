@@ -46,8 +46,13 @@ pub struct Editor {
     clip: Option<Clip>,
     undo: Vec<(Project, String)>,
     redo: Vec<(Project, String)>,
-    /// Bumped on every model change (the app re-engraves when it moves).
+    /// Bumped on every model change.
     pub revision: u64,
+    /// Bumped when the music changes (engraving and the playback plan);
+    /// mixer edits leave it alone.
+    pub music_revision: u64,
+    /// The last commit's merge key: a slider drag is one undo step.
+    merge: Option<(String, Id)>,
     /// Unsaved changes.
     pub modified: bool,
     pub status: String,
@@ -112,6 +117,8 @@ impl Editor {
             undo: Vec::new(),
             redo: Vec::new(),
             revision: 0,
+            music_revision: 0,
+            merge: None,
             modified: false,
             status: String::new(),
         }
@@ -127,16 +134,34 @@ impl Editor {
     }
 
     fn commit(&mut self, before: Project, label: &str) {
-        self.undo.push((before, label.to_string()));
-        if self.undo.len() > UNDO_LIMIT {
-            self.undo.remove(0);
+        self.commit_with(before, label, true, None);
+    }
+
+    /// `merge`: consecutive commits with the same label and key fold into
+    /// the first one's undo step.
+    fn commit_with(&mut self, before: Project, label: &str, music: bool, merge: Option<Id>) {
+        let key = merge.map(|k| (label.to_string(), k));
+        let merging = key.is_some() && key == self.merge && self.undo.last().is_some_and(|u| u.1 == label) && self.redo.is_empty();
+        if !merging {
+            self.undo.push((before, label.to_string()));
+            if self.undo.len() > UNDO_LIMIT {
+                self.undo.remove(0);
+            }
         }
+        self.merge = key;
         self.redo.clear();
-        self.changed();
+        self.changed_with(music);
     }
 
     fn changed(&mut self) {
+        self.changed_with(true);
+    }
+
+    fn changed_with(&mut self, music: bool) {
         self.revision += 1;
+        if music {
+            self.music_revision += 1;
+        }
         self.modified = true;
         // Keep the selection valid.
         if let Some(id) = self.selection {
@@ -162,6 +187,7 @@ impl Editor {
     }
 
     pub fn undo(&mut self) {
+        self.merge = None;
         if let Some((p, label)) = self.undo.pop() {
             let now = std::mem::replace(&mut self.project, p);
             self.redo.push((now, label.clone()));
@@ -171,6 +197,7 @@ impl Editor {
     }
 
     pub fn redo(&mut self) {
+        self.merge = None;
         if let Some((p, label)) = self.redo.pop() {
             let now = std::mem::replace(&mut self.project, p);
             self.undo.push((now, label.clone()));
@@ -193,6 +220,41 @@ impl Editor {
             self.project = before;
         }
         ok
+    }
+
+    // -------------------------------------------------------------- mixer --
+    /// A mixer change on a track; `merge` folds a slider drag into one step.
+    pub fn set_track(&mut self, track: Id, label: &str, merge: bool, f: impl FnOnce(&mut Track)) {
+        let before = self.snapshot();
+        let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };
+        f(t);
+        self.commit_with(before, label, false, merge.then_some(track));
+    }
+
+    /// Assigns a CLAP plugin (name, bundle, plugin id) to a track, or the
+    /// built-in instrument (`None`). The track's previous plugin node goes.
+    pub fn set_track_plugin(&mut self, track: Id, plugin: Option<(&str, &str, &str)>) {
+        let before = self.snapshot();
+        let Some(ti) = self.project.tracks.iter().position(|t| t.id == track) else { return };
+        if let Some(old) = self.project.tracks[ti].instrument_node.take() {
+            let shared = self.project.tracks.iter().any(|t| t.instrument_node == Some(old));
+            if !shared {
+                self.project.nodes.retain(|n| n.id != old);
+                self.project.edges.retain(|e| e.from != old && e.to != old);
+                self.project.plugin_state.remove(&old);
+            }
+        }
+        let name = match plugin {
+            Some((name, bundle, id)) => {
+                let node = self.project.allocate_id();
+                self.project.nodes.push(AudioNode { id: node, kind: NodeKind::Clap, name: name.into(), bundle: bundle.into(), plugin_id: id.into(), bypassed: false });
+                self.project.tracks[ti].instrument_node = Some(node);
+                name.to_string()
+            }
+            None => "Corinzia Sine".to_string(),
+        };
+        self.status = format!("{} plays {name}", self.project.tracks[ti].name);
+        self.commit_with(before, "Instrument plugin", true, None);
     }
 
     /// Marks the project saved (the app calls this after writing the file).

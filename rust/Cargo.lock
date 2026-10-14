@@ -707,6 +707,7 @@ dependencies = [
 name = "corinzia-app"
 version = "0.1.0"
 dependencies = [
+ "corinzia-audio",
  "corinzia-edit",
  "corinzia-layout",
  "corinzia-model",

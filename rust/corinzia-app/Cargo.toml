@@ -14,8 +14,14 @@ corinzia-score.workspace = true
 corinzia-model.workspace = true
 corinzia-edit.workspace = true
 corinzia-perform.workspace = true
+corinzia-audio = { workspace = true, default-features = false }
 corinzia-layout = { workspace = true, features = ["pdf"] }
 iced = { version = "0.14", features = ["canvas", "advanced"] }
 ttf-parser = "0.25"
 png = "0.17"
 rfd = "0.15"
+
+[features]
+default = ["audio-out"]
+# Live output through PipeWire.
+audio-out = ["corinzia-audio/pipewire"]
