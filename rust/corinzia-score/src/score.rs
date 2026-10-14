@@ -7,7 +7,11 @@ use crate::frac::Frac;
 
 #[derive(Debug)]
 pub struct Score {
+    /// The movement's title.
     pub title: String,
+    /// The work's title and composer (the page header).
+    pub work_title: String,
+    pub composer: String,
     pub length: Frac,
     pub tempo: Vec<Tempo>,
     pub meter: Vec<Meter>,

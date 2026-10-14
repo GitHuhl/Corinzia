@@ -125,6 +125,8 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         .collect();
     sc::Score {
         title: m.title.clone(),
+        work_title: project.title.clone(),
+        composer: project.composer.clone(),
         length: m.length,
         tempo: m.tempo.iter().map(|t| sc::Tempo { at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
         meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den }).collect(),

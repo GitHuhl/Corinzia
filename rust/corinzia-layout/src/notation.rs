@@ -222,6 +222,8 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
     let bars = (q.num + q.den - 1) / q.den;
     Score {
         title: String::new(),
+        work_title: String::new(),
+        composer: String::new(),
         length: bar * Frac::int(bars.max(1)),
         tempo: vec![],
         meter: vec![Meter { at: Frac::ZERO, num: meter.0, den: meter.1 }],

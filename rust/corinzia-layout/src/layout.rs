@@ -951,7 +951,8 @@ impl<'a> Engraver<'a> {
     /// Full name on the first system, the abbreviation (if any) after it.
     fn part_name(&self, part: usize) -> String {
         let p = &self.score.parts[part];
-        if self.first_system || p.abbr.is_empty() { p.name.clone() } else { p.abbr.clone() }
+        // Later systems carry only the abbreviation (none if there is none).
+        if self.first_system { p.name.clone() } else { p.abbr.clone() }
     }
 
     fn clef_change_width(&self) -> f32 {
@@ -2276,6 +2277,9 @@ fn system(score: &Score, opt: &Options, ms: &[Measure], notes: &[Note], a: usize
     engrave_spaced(score, opt, sm, sn, a == 0, width)
 }
 
+/// The most a full page's systems are moved apart to reach its bottom.
+const MAX_EXTRA_SYSTEM_GAP: f32 = 12.0;
+
 /// Page geometry in staff spaces (A4 at an 18 pt staff: 132.3 × 187.1).
 #[derive(Clone, Debug)]
 pub struct PageSpec {
@@ -2363,10 +2367,44 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     let new_page = || DisplayList { width: page.width, height: page.height, ..Default::default() };
     let mut cur = new_page();
     let mut y = page.margin_y;
-    if !score.title.is_empty() {
-        cur.items.push(Item::Text { text: score.title.clone(), at: pt(page.width / 2.0, y + 3.0), size: 3.2, italic: false, bold: true, anchor: 1, id: 0 });
-        y += 7.0;
+    // The header, as LilyPond sets it: the title centred and bold, the
+    // movement as a subtitle, the composer flush right below them.
+    let (title, subtitle) = if score.work_title.is_empty() { (&score.title, None) } else { (&score.work_title, Some(&score.title).filter(|t| !t.is_empty())) };
+    let text = |s: &str, x: f32, y: f32, size: f32, bold: bool, anchor: u8| Item::Text { text: s.to_string(), at: pt(x, y), size, italic: false, bold, anchor, id: 0 };
+    if !title.is_empty() {
+        cur.items.push(text(title, page.width / 2.0, y + 3.0, 3.2, true, 1));
+        y += 5.0;
+        if let Some(sub) = subtitle {
+            cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1));
+            y += 3.5;
+        }
+        if !score.composer.is_empty() {
+            cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2));
+            y += 2.5;
+        }
+        y += 2.0;
     }
+    // Where each system's items and staves start on the current page, and
+    // how far down the page is used: full pages are justified vertically.
+    let mut starts: Vec<(usize, usize)> = Vec::new();
+    let mut used = y;
+    let fill = |page_list: &mut DisplayList, starts: &[(usize, usize)], used: f32| {
+        if starts.len() < 2 {
+            return;
+        }
+        let extra = (page.height - page.margin_y - used).max(0.0);
+        let gap = (extra / (starts.len() - 1) as f32).min(MAX_EXTRA_SYSTEM_GAP);
+        for (k, w) in starts.iter().enumerate().skip(1) {
+            let end = starts.get(k + 1).copied().unwrap_or((page_list.items.len(), page_list.staves.len()));
+            let dy = gap * k as f32;
+            for it in &mut page_list.items[w.0..end.0] {
+                *it = it.clone().translated(0.0, dy);
+            }
+            for st in &mut page_list.staves[w.1..end.1] {
+                st.top += dy;
+            }
+        }
+    };
     for &(a, b) in &systems {
         let sys = system(score, opt, &ms, &notes, a, b, Some(line + opt.margin));
         let font = Font::bravura();
@@ -2378,10 +2416,13 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         }
         let mut offset = y - y0;
         if offset + y1 > page.height - page.margin_y && !cur.staves.is_empty() {
+            fill(&mut cur, &starts, used);
+            starts.clear();
             pages.push(std::mem::replace(&mut cur, new_page()));
             y = page.margin_y;
             offset = y - y0;
         }
+        starts.push((cur.items.len(), cur.staves.len()));
         let (dx, dy) = (page.margin_x - opt.margin, offset);
         let sys_index = cur.staves.last().map(|s| s.system + 1).unwrap_or(0);
         cur.items.extend(sys.items.into_iter().map(|i| i.translated(dx, dy)));
@@ -2397,9 +2438,17 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
             c.system = sys_index;
             c
         }));
-        y = offset + y1 + page.system_gap;
+        used = offset + y1;
+        y = used + page.system_gap;
     }
+    // (The last page stays ragged at the bottom, as in LilyPond.)
     pages.push(cur);
+    // Page numbers from page 2, in the outer corner of the top margin.
+    for (k, p) in pages.iter_mut().enumerate().skip(1) {
+        let n = k + 1;
+        let (x, anchor) = if n % 2 == 0 { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
+        p.items.push(Item::Text { text: n.to_string(), at: pt(x, page.margin_y * 0.6), size: 2.0, italic: false, bold: false, anchor, id: 0 });
+    }
     pages
 }
 

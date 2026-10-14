@@ -389,3 +389,28 @@ fn grand_staff_has_a_brace_joined_barlines_and_one_name() {
     assert_eq!(names, 1);
     preview("grand_staff", &l);
 }
+
+#[test]
+fn page_header_and_numbers() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    let mut music = String::new();
+    for _ in 0..120 {
+        music.push_str("c''4 d'' e'' f'' | ");
+    }
+    let mut s = score(&[("treble", &[music.as_str()])], (4, 4), 0);
+    s.work_title = "Sonatina".into();
+    s.title = "I. Allegro".into();
+    s.composer = "A. Composer".into();
+    let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
+    assert!(pages.len() >= 2, "{} pages", pages.len());
+    let texts = |p: &corinzia_layout::DisplayList| -> Vec<(String, u8)> { p.items.iter().filter_map(|i| match i { Item::Text { text, anchor, .. } => Some((text.clone(), *anchor)), _ => None }).collect() };
+    let first = texts(&pages[0]);
+    assert!(first.contains(&("Sonatina".into(), 1)) && first.contains(&("I. Allegro".into(), 1)) && first.contains(&("A. Composer".into(), 2)));
+    assert!(!first.iter().any(|t| t.0 == "1"), "no number on page 1");
+    assert!(texts(&pages[1]).contains(&("2".into(), 0)), "page 2 numbered on the left");
+    if pages.len() > 2 {
+        assert!(texts(&pages[2]).contains(&("3".into(), 2)));
+    }
+    assert!(!texts(&pages[1]).iter().any(|t| t.0 == "Sonatina"));
+    preview("page_header", &pages[0]);
+}
