@@ -2,7 +2,8 @@
 
 ## A LilyPond-backed DAW/Music Notation Hybrid Program with CLAPi and VST3 Instrument Support for Linux
 
-<img width="1400" height="900" alt="image-1791944260201" src="https://github.com/user-attachments/assets/f8f6399e-5659-416a-ae44-e3661d441b29" />
+<img width="1280" height="860" alt="image-1791952433031" src="https://github.com/user-attachments/assets/8a7336f7-c9c3-4616-8be7-9de70f34ac16" />
+
 
 
 * Zero-lag score canvas (Qt Quick scene graph) with an instant provisional layer
