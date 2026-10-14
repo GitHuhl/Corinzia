@@ -220,14 +220,14 @@ impl App {
     /// The app as the command line asks for it (file, view, scripted keys);
     /// no window is needed, so `--export` runs headless.
     fn from_args(a: Args) -> App {
-        let (project, status) = match &a.file {
-            Some(f) => match corinzia_model::store::load(f) {
-                Ok(p) => (p, format!("Opened {}", f.display())),
-                Err(e) => (demo::project(), format!("Could not open {}: {e} — showing the demo", f.display())),
+        let (project, path, status) = match &a.file {
+            Some(f) => match files::load(f) {
+                Ok(loaded) => loaded,
+                Err(e) => (demo::project(), None, format!("Could not open {}: {e} — showing the demo", f.display())),
             },
-            None => (demo::project(), "Demo project · N starts note input · drag selects · right-drag pans · Ctrl+wheel zooms".to_string()),
+            None => (demo::project(), None, "Demo project · N starts note input · drag selects · right-drag pans · Ctrl+wheel zooms".to_string()),
         };
-        let mut app = App::new(project, a.file, a.view, status);
+        let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
         for t in &a.keys {
             match parse_key_token(t) {
@@ -507,10 +507,10 @@ impl App {
     }
 
     fn open(&mut self, path: PathBuf) {
-        match corinzia_model::store::load(&path) {
-            Ok(p) => {
+        match files::load(&path) {
+            Ok((p, kept, status)) => {
                 let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
-                *self = App::with_playback(p, Some(path.clone()), view, format!("Opened {}", path.display()), pb);
+                *self = App::with_playback(p, kept, view, status, pb);
             }
             Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
         }
@@ -751,7 +751,11 @@ impl App {
                     let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
                     return Task::perform(
                         async move {
-                            let mut d = rfd::AsyncFileDialog::new().set_title("Open project").add_filter("Corinzia project", &["project"]);
+                            let mut d = rfd::AsyncFileDialog::new()
+                                .set_title("Open")
+                                .add_filter("Scores (project, MusicXML)", &["project", "musicxml", "xml", "mxl"])
+                                .add_filter("Corinzia project", &["project"])
+                                .add_filter("MusicXML", &["musicxml", "xml", "mxl"]);
                             if let Some(dir) = dir {
                                 d = d.set_directory(dir);
                             }

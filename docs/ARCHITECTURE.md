@@ -15,6 +15,7 @@ rust/
   corinzia-audio     CLAP host, realtime engine, PipeWire output
   corinzia-sine      Corinzia Sine, the built-in CLAP instrument
   corinzia-export    MIDI and MusicXML writers
+  corinzia-import    MusicXML reader (.musicxml, .xml, compressed .mxl)
   corinzia-score     fractions, note values, the engraver's input types
 ```
 
@@ -187,6 +188,26 @@ Items that join staves (barlines) belong to no staff's skyline.
 **Text** is measured with the font that draws it (`set_text_font`; the app
 uses DejaVu Serif). The test notation (`notation.rs`, LilyPond-like) builds
 scores for the engraving tests.
+
+## 4b. Import (`corinzia-import`)
+
+`corinzia_import::musicxml` reads a `score-partwise` file (plain or `.mxl`)
+into a new project with one movement:
+* Each part becomes a player, an instrument and a track; each of its staves
+  becomes a lane. A piano's left hand starts with a clef change at bar 1.
+* Notes, rests, chords (cross-staff ones split between the staves), ties
+  and voices come across. MusicXML voices are renumbered 1–4 per staff, and
+  voice 1 is filled with rests where it is silent.
+* Also imported:
+  * keys, time signatures, clefs and tempo marks;
+  * dynamics, hairpins, slurs, articulations and ornaments;
+  * lyrics, chord symbols and expression text;
+  * barlines, repeats, voltas and rehearsal marks.
+* A pickup bar is padded with rests to a full bar.
+* Grace and cue notes are skipped for now.
+
+Every example score in the W3C MusicXML repository imports and engraves
+(`CORINZIA_MUSICXML_DIR=… cargo test -p corinzia-import`).
 
 ## 5. Performance (`corinzia-perform`)
 

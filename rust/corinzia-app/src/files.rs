@@ -167,3 +167,23 @@ mod tests {
         assert_eq!(sibling(None, "Serenade (demo)", "mid"), Path::new("Serenade__demo_.mid"));
     }
 }
+
+/// Whether a file is MusicXML (by its extension).
+pub fn is_musicxml(path: &std::path::Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(), Some("musicxml" | "xml" | "mxl"))
+}
+
+/// Opens a project, or imports a MusicXML file as a new (unsaved) project.
+/// The path is kept only for projects.
+pub fn load(path: &std::path::Path) -> Result<(corinzia_model::Project, Option<std::path::PathBuf>, String), String> {
+    if is_musicxml(path) {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let p = corinzia_import::musicxml(&bytes)?;
+        let staves: usize = p.movements.iter().map(|m| m.lanes.len()).sum();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let msg = format!("Imported {name} · {staves} staves · Save keeps it as a project");
+        return Ok((p, None, msg));
+    }
+    let p = corinzia_model::store::load(path).map_err(|e| e.to_string())?;
+    Ok((p, Some(path.to_path_buf()), format!("Opened {}", path.display())))
+}

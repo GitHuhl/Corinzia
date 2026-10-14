@@ -30,7 +30,8 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
   solo) and a browser of the CLAP instruments found in `CLAP_PATH`,
   `~/.clap`, your Nix profiles and `/usr/lib/clap`.
 * **Files:** New (type an instrument list, e.g. "Flute, 2 Violin, Cello"),
-  Open, Save and autosave to a single SQLite `.project` file. Export writes
+  Open, Save and autosave to a single SQLite `.project` file. Open also
+  imports MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Export writes
   a vector PDF straight from the engraver, MIDI and MusicXML 4.0.
   `corinzia score.project --export score.pdf` works headless.
 

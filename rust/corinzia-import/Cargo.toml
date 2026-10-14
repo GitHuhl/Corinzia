@@ -1,0 +1,16 @@
+[package]
+name = "corinzia-import"
+description = "Corinzia score import: MusicXML (.musicxml, .xml and compressed .mxl) into a project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corinzia-score.workspace = true
+corinzia-model.workspace = true
+roxmltree = "0.20"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+corinzia-layout.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }

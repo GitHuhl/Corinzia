@@ -15,6 +15,7 @@ corinzia-model.workspace = true
 corinzia-edit.workspace = true
 corinzia-perform.workspace = true
 corinzia-audio.workspace = true
+corinzia-import.workspace = true
 corinzia-layout = { workspace = true, features = ["pdf"] }
 iced = { version = "0.14", features = ["canvas", "advanced"] }
 ttf-parser = "0.25"
