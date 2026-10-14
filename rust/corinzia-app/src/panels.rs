@@ -18,7 +18,7 @@ pub enum Panel {
 }
 
 pub fn tip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: &'a str) -> Element<'a, M> {
-    tooltip(content, container(text(label).size(12)).padding([3, 6]).style(container::rounded_box), tooltip::Position::Bottom).into()
+    tooltip(content, container(text(label).size(12)).padding([4, 8]).style(crate::theme::tooltip), tooltip::Position::Bottom).into()
 }
 
 /// A square tool button with a music glyph (or text) and a tooltip.
@@ -32,18 +32,19 @@ fn tool<'a>(label: &'a str, music: bool, active: bool, hint: &'a str, action: Ac
         .width(30)
         .height(30)
         .padding(0)
-        .style(if active { button::primary } else { button::secondary })
+        .style(crate::theme::tool(active))
         .on_press(action);
     tip(b, hint)
 }
 
 fn wide<'a>(label: &'a str, active: bool, hint: &'a str, action: Action) -> Element<'a, Action> {
-    let b = button(text(label).size(13)).padding([5, 8]).width(Length::Fill).style(if active { button::primary } else { button::secondary }).on_press(action);
+    let b = button(text(label).size(13)).padding([6, 10]).width(Length::Fill).style(crate::theme::tool(active)).on_press(action);
     tip(b, hint)
 }
 
+/// A section heading: small, spaced capitals in the dim colour.
 fn heading(t: &str) -> Element<'_, Action> {
-    text(t).size(12).style(text::secondary).into()
+    container(text(t.to_uppercase()).size(10).style(crate::theme::faint)).padding(iced::Padding { top: 8.0, right: 0.0, bottom: 1.0, left: 0.0 }).into()
 }
 
 fn grid<'a>(items: Vec<Element<'a, Action>>, per_row: usize) -> Element<'a, Action> {
@@ -137,7 +138,6 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),
     ];
     column![
-        wide(if ed.input_mode { "✎ Note input: on" } else { "✎ Note input" }, ed.input_mode, "N toggles; letters A–G enter notes", Action::SetInput(!ed.input_mode)),
         heading("Duration"),
         grid(durations, 7),
         grid(rhythm, 7),
@@ -194,7 +194,7 @@ pub fn panel(ed: &Editor, which: Panel) -> Element<'_, Action> {
         Panel::Notes => notes(ed),
         Panel::Structure => structure(ed),
     };
-    container(scrollable(container(body).padding([8, 12])).height(Length::Fill)).width(WIDTH).height(Length::Fill).style(container::bordered_box).into()
+    container(scrollable(container(body).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 16.0, left: 12.0 })).height(Length::Fill)).width(WIDTH).height(Length::Fill).into()
 }
 
 pub fn spacer() -> Space {

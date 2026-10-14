@@ -19,13 +19,13 @@ pub enum MixMsg {
 }
 
 fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, selected: bool) -> Element<'a, MixMsg> {
-    let toggle = |label: &'a str, on: bool, m: MixMsg| button(text(label).size(12)).padding([3, 8]).style(if on { button::primary } else { button::secondary }).on_press(m);
+    let toggle = |label: &'a str, on: bool, m: MixMsg| button(text(label).size(12)).padding([3, 8]).style(crate::theme::tool(on)).on_press(m);
     let plugin = play.plugin_name(t.id);
     let players: Vec<String> = p.instruments.iter().filter(|i| i.track == Some(t.id)).map(|i| i.name.clone()).collect();
     let body = column![
         text(&t.name).size(14),
-        text(players.join(", ")).size(11).style(text::secondary),
-        button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(button::secondary).on_press(MixMsg::Select(t.id)),
+        text(players.join(", ")).size(11).style(crate::theme::dim),
+        button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(false)).on_press(MixMsg::Select(t.id)),
         container(vertical_slider(-60.0..=12.0, t.gain_db, move |v| MixMsg::Gain(t.id, v)).step(0.5).on_release(MixMsg::Released).height(130)).center_x(Length::Fill),
         text(if t.gain_db <= -59.9 { "−∞ dB".to_string() } else { format!("{:+.1} dB", t.gain_db) }).size(12),
         slider(-1.0..=1.0, t.pan, move |v| MixMsg::Pan(t.id, v)).step(0.01).on_release(MixMsg::Released),
@@ -40,38 +40,38 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
     .spacing(8)
     .align_x(Alignment::Center)
     .width(120);
-    container(body).padding(10).style(if selected { container::bordered_box } else { container::rounded_box }).into()
+    container(body).padding(10).style(crate::theme::strip(selected)).into()
 }
 
 pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>) -> Element<'a, MixMsg> {
     let strips = row(p.tracks.iter().map(|t| strip(p, play, t, selected == Some(t.id)))).spacing(8).padding(12);
     let mut browser = column![text("Instruments").size(16)].spacing(6).padding(12).width(300);
     match selected.and_then(|id| p.track(id)) {
-        None => browser = browser.push(text("Select a strip to choose its instrument.").size(13).style(text::secondary)),
+        None => browser = browser.push(text("Select a strip to choose its instrument.").size(13).style(crate::theme::dim)),
         Some(t) => {
             browser = browser.push(text(format!("For {}:", t.name)).size(13));
             let current = play.plugin_name(t.id);
             for (i, info) in play.plugins.iter().enumerate().filter(|(_, i)| i.is_instrument()) {
                 let label = format!("{} — {}", info.name, info.vendor);
                 let on = info.name == current;
-                browser = browser.push(button(text(label).size(13)).width(Length::Fill).padding([5, 8]).style(if on { button::primary } else { button::secondary }).on_press(MixMsg::Assign(t.id, i)));
+                browser = browser.push(button(text(label).size(13)).width(Length::Fill).padding([5, 8]).style(crate::theme::tool(on)).on_press(MixMsg::Assign(t.id, i)));
             }
             let effects = play.plugins.iter().filter(|i| !i.is_instrument()).count();
             if effects > 0 {
-                browser = browser.push(text(format!("{effects} effect plugin(s) found; effect routing comes with buses.")).size(11).style(text::secondary));
+                browser = browser.push(text(format!("{effects} effect plugin(s) found; effect routing comes with buses.")).size(11).style(crate::theme::dim));
             }
         }
     }
-    browser = browser.push(Space::new().height(8)).push(button(text("Rescan plugins").size(13)).style(button::secondary).on_press(MixMsg::Rescan));
+    browser = browser.push(Space::new().height(8)).push(button(text("Rescan plugins").size(13)).padding([5, 10]).style(crate::theme::tool(false)).on_press(MixMsg::Rescan));
     for e in &play.scan_errors {
-        browser = browser.push(text(e).size(11).style(text::danger));
+        browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
     for e in &play.pool.errors {
-        browser = browser.push(text(e).size(11).style(text::danger));
+        browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
     row![
         scrollable(strips).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::default())).width(Length::Fill).height(Length::Fill),
-        container(scrollable(browser)).height(Length::Fill).style(container::bordered_box),
+        container(scrollable(browser).height(Length::Fill)).padding(10).height(Length::Fill).style(crate::theme::strip(false)),
     ]
     .into()
 }

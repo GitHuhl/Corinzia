@@ -18,10 +18,11 @@ pub const BASE_PX: f32 = 8.0;
 const PAGE_GAP: f32 = 6.0;
 
 const INK: Color = Color::from_rgb(0.08, 0.08, 0.1);
-const SELECTED: Color = Color::from_rgb(0.12, 0.42, 0.86);
-const PLAYHEAD: Color = Color::from_rgb(0.1, 0.62, 0.3);
-const CARET: Color = Color::from_rgb(0.95, 0.45, 0.05);
-const DESK: Color = Color::from_rgb(0.84, 0.83, 0.80);
+/// The selection on the white page: the accent, a shade deeper for contrast.
+const SELECTED: Color = Color::from_rgb(0.85, 0.28, 0.09);
+const PLAYHEAD: Color = Color::from_rgb(0.16, 0.62, 0.36);
+const CARET: Color = Color::from_rgb(0.12, 0.47, 0.90);
+const DESK: Color = crate::theme::DESK;
 
 /// Bravura glyph outlines as paths in staff spaces (y down), built once.
 fn glyph_path(codepoint: u32) -> Option<Path> {
@@ -425,7 +426,7 @@ fn draw_page(frame: &mut Frame, page: &DisplayList, origin: Vector, selected: &s
     frame.with_save(|f| {
         f.translate(origin);
         // Paper with a soft edge.
-        f.fill_rectangle(Point::new(0.35, 0.35), Size::new(page.width, page.height), Color::from_rgba(0.0, 0.0, 0.0, 0.18));
+        f.fill_rectangle(Point::new(0.5, 0.6), Size::new(page.width, page.height), Color::from_rgba(0.0, 0.0, 0.0, 0.35));
         f.fill_rectangle(Point::ORIGIN, Size::new(page.width, page.height), Color::WHITE);
         for st in &page.staves {
             let lines = Path::new(|b| {

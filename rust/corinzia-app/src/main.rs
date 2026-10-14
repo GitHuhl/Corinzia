@@ -17,6 +17,7 @@ mod mix;
 mod playback;
 mod panels;
 mod score_view;
+mod theme;
 
 use corinzia_layout::{layout_line, layout_pages, DisplayList, Options, PageSpec};
 use corinzia_model::{Movement, Project};
@@ -832,48 +833,58 @@ impl App {
 
     fn view(&self) -> Element<'_, Message> {
         let ed = &self.editor;
-        let seg = |label: &'static str, on: bool, m: Message| {
-            let b = button(text(label).size(14)).padding([4, 12]).on_press(m);
-            if on { b.style(button::primary) } else { b.style(button::secondary) }
+        let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+        // A segmented control: options side by side in a trough.
+        let segmented = |opts: Vec<(&'static str, bool, Message)>| -> Element<'_, Message> {
+            let mut r = row![].spacing(2);
+            for (label, on, m) in opts {
+                r = r.push(button(text(label).size(13)).padding([3, 12]).style(theme::segment(on)).on_press(m));
+            }
+            container(r).padding(2).style(theme::trough).into()
         };
-        let act = |label: &'static str, enabled: bool, a: Action| {
-            button(text(label).size(14)).padding([4, 10]).style(button::secondary).on_press_maybe(enabled.then_some(Message::Act(a)))
-        };
-        let small = |label: &'static str, m: Message| button(text(label).size(13)).padding([4, 8]).style(button::secondary).on_press(m);
+        let flat = |label: &'static str, enabled: bool, m: Message| button(text(label).size(13)).padding([5, 9]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m));
+        let rule = || container(Space::new()).width(1).height(22).style(theme::rule);
         let mut toolbar = row![
-            seg("Score", self.tab == Tab::Score, Message::Act(Action::ShowScore)),
-            seg("Mix", self.tab == Tab::Mix, Message::Act(Action::ShowMix)),
-            Space::new().width(8),
-            button(text(if self.playback.is_playing() { "■ Stop" } else { "▶ Play" }).size(14)).padding([4, 12]).style(button::success).on_press(Message::Act(Action::PlayStop)),
-            Space::new().width(8),
-            act("New", true, Action::New),
-            act("Open", true, Action::Open),
-            act("Save", true, Action::Save),
-            Space::new().width(8),
-            text("Export").size(13).style(text::secondary),
-            small("PDF", Message::Export(files::Format::Pdf)),
-            small("MIDI", Message::Export(files::Format::Midi)),
-            small("MusicXML", Message::Export(files::Format::MusicXml)),
-            Space::new().width(8),
-            panels::tip(act("↶", ed.can_undo(), Action::Undo), self.undo_tip.as_str()),
-            panels::tip(act("↷", ed.can_redo(), Action::Redo), "Redo (Ctrl+Shift+Z)"),
+            text("Corinzia").size(15).font(bold).style(theme::accent),
+            segmented(vec![
+                ("Score", self.tab == Tab::Score, Message::Act(Action::ShowScore)),
+                ("Mix", self.tab == Tab::Mix, Message::Act(Action::ShowMix)),
+            ]),
+            rule(),
+            panels::tip(
+                button(text(if self.playback.is_playing() { "■  Stop" } else { "▶  Play" }).size(13)).padding([5, 14]).style(theme::primary).on_press(Message::Act(Action::PlayStop)),
+                "Play from the selection (Space)",
+            ),
+            panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
+            panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
         ]
-        .spacing(6)
-        .padding(8)
+        .spacing(8)
         .align_y(iced::Alignment::Center);
         if self.tab == Tab::Score {
             toolbar = toolbar
-                .push(Space::new().width(8))
-                .push(seg(if ed.input_mode { "✎ Input on" } else { "✎ Input" }, ed.input_mode, Message::Act(Action::SetInput(!ed.input_mode))))
-                .push(Space::new().width(8))
-                .push(seg("Page", self.view == View::Page, Message::SetView(View::Page)))
-                .push(seg("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama)))
-                .push(Space::new().width(8))
-                .push(small("−", Message::ZoomBy(1.0 / 1.25)))
-                .push(text(format!("{:.0} %", self.zoom * 100.0)).size(13))
-                .push(small("+", Message::ZoomBy(1.25)));
+                .push(rule())
+                .push(panels::tip(
+                    button(text("✎  Note input").size(13)).padding([5, 12]).style(theme::tool(ed.input_mode)).on_press(Message::Act(Action::SetInput(!ed.input_mode))),
+                    "Note input (N)",
+                ))
+                .push(segmented(vec![("Page", self.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama))]))
+                .push(rule())
+                .push(panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"))
+                .push(text(format!("{:.0}%", self.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center))
+                .push(panels::tip(flat("+", true, Message::ZoomBy(1.25)), "Zoom in (Ctrl+=)"));
         }
-        let toolbar = toolbar.push(panels::spacer()).push(text(ed.movement().map(|m| m.title.clone()).unwrap_or_default()).size(14));
+        let title = ed.movement().map(|m| m.title.clone()).unwrap_or_default();
+        let toolbar = toolbar
+            .push(panels::spacer())
+            .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
+            .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open (Ctrl+O)"))
+            .push(panels::tip(flat("Save", true, Message::Act(Action::Save)), "Save (Ctrl+S)"))
+            .push(rule())
+            .push(text("Export").size(12).style(theme::faint))
+            .push(panels::tip(flat("PDF", true, Message::Export(files::Format::Pdf)), "Export the movement as PDF"))
+            .push(panels::tip(flat("MIDI", true, Message::Export(files::Format::Midi)), "Export as a MIDI file"))
+            .push(panels::tip(flat("XML", true, Message::Export(files::Format::MusicXml)), "Export as MusicXML"));
+        let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
         let caret = ed.input_mode.then(|| Caret { part: ed.caret_lane, quarter: quarters(ed.caret) });
         let highlight = ed.range.map(|r| Highlight { part_from: r.lane_from, part_to: r.lane_to, start: quarters(r.from), end: quarters(r.to) });
@@ -898,25 +909,26 @@ impl App {
                         PopoverKind::Lyrics => format!("Lyrics · verse {} · {}", ed.lyric_verse, ed.popover_position()),
                         _ => format!("{} · {}", p.kind.title(), ed.popover_position()),
                     })
-                    .size(13),
-                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(button::text).on_press(Message::PopoverClose)]
+                    .size(13)
+                    .style(theme::dim),
+                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::PopoverClose)]
                     .align_y(iced::Alignment::Center),
                 text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(Message::PopoverInput).on_submit(Message::PopoverSubmit).padding(6).size(15),
             ]
             .spacing(6)
             .width(320);
             if let Some(e) = &p.error {
-                card = card.push(text(e).size(12).style(text::danger));
+                card = card.push(text(e).size(12).style(theme::danger));
             }
-            desk = desk.push(container(iced::widget::opaque(container(card).padding(10).style(container::bordered_box))).padding(16).width(Length::Fill).align_x(iced::Alignment::Center));
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(12).style(theme::card))).padding(16).width(Length::Fill).align_x(iced::Alignment::Center));
         }
 
         if let Some(n) = &self.new_score {
             let field = |label: &'static str, hint: &'static str, value: &str, f: NewField| {
-                column![text(label).size(12).style(text::secondary), text_input(hint, value).on_input(move |v| Message::NewInput(f, v)).on_submit(Message::NewCreate).padding(6).size(14)].spacing(3)
+                column![text(label).size(12).style(theme::dim), text_input(hint, value).on_input(move |v| Message::NewInput(f, v)).on_submit(Message::NewCreate).padding(6).size(14)].spacing(3)
             };
             let mut card = column![
-                text("New score").size(18),
+                text("New score").size(18).font(bold),
                 field("Title", "Untitled", &n.title, NewField::Title),
                 field("Instruments (comma separated; \"2 Violin\" for two)", "Flute, Clarinet, Violin, Cello", &n.instruments, NewField::Instruments),
                 field("Bars", "32", &n.bars, NewField::Bars),
@@ -924,31 +936,51 @@ impl App {
             .spacing(10)
             .width(420);
             if let Some(e) = &n.error {
-                card = card.push(text(e).size(12).style(text::danger));
+                card = card.push(text(e).size(12).style(theme::danger));
             }
             card = card.push(
-                row![panels::spacer(), button(text("Cancel").size(14)).style(button::secondary).on_press(Message::NewCancel), button(text("Create").size(14)).style(button::primary).on_press(Message::NewCreate)].spacing(8),
+                row![
+                    panels::spacer(),
+                    button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::NewCancel),
+                    button(text("Create").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::NewCreate)
+                ]
+                .spacing(8),
             );
-            desk = desk.push(container(iced::widget::opaque(container(card).padding(16).style(container::bordered_box))).center(Length::Fill));
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
-        let tabs = row![seg("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)), seg("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure))].spacing(4).padding([0, 8]);
-        let side = column![tabs, panels::panel(ed, self.panel).map(Message::Act)].spacing(6).width(panels::WIDTH);
+        let tabs = container(segmented(vec![
+            ("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
+            ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
+        ]))
+        .padding([10, 12]);
+        let side = container(column![tabs, panels::panel(ed, self.panel).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
+        let vline = || container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
+        let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
 
         let left = if !ed.status.is_empty() { ed.status.clone() } else { ed.selection_label() };
         let middle = if ed.input_mode { ed.caret_label() } else if ed.status.is_empty() { String::new() } else { ed.selection_label() };
-        let status = row![
-            text(left).size(13),
-            Space::new().width(24),
-            text(middle).size(13).style(text::secondary),
-            panels::spacer(),
-            text(self.playback.problem.clone().unwrap_or_default()).size(13).style(text::danger),
-            Space::new().width(16),
-            text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(13),
-        ]
-        .padding([4, 10]);
+        let status = container(
+            row![
+                text(left).size(12).style(|_: &Theme| text::Style { color: Some(theme::TEXT) }),
+                Space::new().width(24),
+                text(middle).size(12),
+                panels::spacer(),
+                text(self.playback.problem.clone().unwrap_or_default()).size(12).style(theme::danger),
+                Space::new().width(16),
+                text(title).size(12),
+                Space::new().width(16),
+                text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(12),
+            ]
+            .align_y(iced::Alignment::Center)
+            .padding([0, 12]),
+        )
+        .height(26)
+        .center_y(26)
+        .width(Length::Fill)
+        .style(theme::status);
         let body: Element<'_, Message> = match self.tab {
-            Tab::Score => row![side, desk].height(Length::Fill).into(),
+            Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
             Tab::Mix => {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
                 let arr = canvas(arrange::ArrangeView {
@@ -964,13 +996,14 @@ impl App {
                 .height(Length::Fill);
                 column![
                     Element::from(arr).map(Message::Arrange),
-                    container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(360),
+                    hline(),
+                    container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(360).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
             }
         };
-        column![toolbar, body, status].into()
+        column![toolbar, hline(), body, hline(), status].into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -1033,7 +1066,7 @@ fn main() -> iced::Result {
     let mut app = iced::application(App::boot, App::update, App::view)
         .title(App::title)
         .subscription(App::subscription)
-        .theme(|_: &App| Theme::Light)
+        .theme(|_: &App| theme::theme())
         .window_size(Size::new(1280.0, 860.0))
         .antialiasing(true)
         .font(corinzia_layout::font::FONT_DATA);
