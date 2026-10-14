@@ -57,7 +57,13 @@ Shift+M time ("6/8"), Shift+T tempo ("Allegro 132"), Shift+B barline (":|"
 repeats play back), Shift+C clef, Shift+X / Shift+P expression or technique
 text, and Shift+A rehearsal mark. The right-hand Structure panel has the same
 actions plus insert/delete bars (Ctrl+B to insert). Click a mark or text and
-press Delete to remove it.
+press Delete to remove it. Shift+O adds ornaments (tr, mordent, turn, trem,
+arp, breath, caesura); "1st / 2nd ending" or Shift+R add repeat endings, and
+repeats play back as written.
+
+**Export ▾** in the toolbar writes PDF (LilyPond), MIDI (sounds like playback,
+one track per mixer track) and MusicXML 4.0. MIDI and MusicXML come from a
+small Rust crate (`rust/corinzia-export`) built by the same Nix flake.
 
 The notation and DAW sides are separate tabs: **Score** (Ctrl+1) for engraving
 and note input, **Mix** (Ctrl+2) for the arrange view, mixer strips and plugin

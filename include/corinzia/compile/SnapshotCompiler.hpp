@@ -59,6 +59,31 @@ std::vector<EventShape> expressiveShape(const model::EventList& events);
 // [from, to) spans in performed order.
 std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m);
 
+// The performance of one movement, independent of routing and sample rate
+// domain: repeats unrolled, ties merged, ornaments written out, dynamics and
+// hairpins as velocities. Positions are *performed* quarters from the
+// movement start. Consumed by the snapshot compiler (-> samples) and by
+// MIDI export (-> ticks).
+struct PerformedNote {
+    InstrumentId instrument;   // sounding instrument at the onset (-> DAW track)
+    ElementId element;         // the notehead (CLAP note_id source)
+    std::int16_t key = 60;
+    float velocity = 0.6f;     // 0..1
+    double onQ = 0, fullOffQ = 0;   // full written length, before the gate
+    double gate = 1.0;              // fraction of [on, fullOff) that sounds
+    double rollSec = 0;             // arpeggio delay added to the onset
+};
+struct Performance {
+    std::vector<std::pair<Fraction, Fraction>> order;   // playbackOrder()
+    std::vector<rt::Section::Span> spans;               // performed <-> written
+    rt::TempoMap tempo;                                 // over performed quarters
+    std::vector<rt::TempoMap::TempoPoint> tempoPoints;  // what `tempo` was built from
+    std::vector<rt::TempoMap::Meter> meterPoints;
+    double lengthQ = 0;
+    std::vector<PerformedNote> notes;                   // in score order (not sorted)
+};
+Performance perform(const model::Movement& m, double sampleRate);
+
 // Written-out playback of an ornament on one head sounding for `length`
 // (whole notes, tie chain included): trill = main/upper alternation ending on
 // the main note, mordent = main-lower-main, turn = upper-main-lower-main,

@@ -634,8 +634,44 @@ buttons never take keyboard focus, so typing always reaches the score.
 | Structure | multi-movement, instrument changes, key/time/tempo/clef changes via popovers and the panel, barline types, repeats (played back), insert/delete bars | pickup bars; voltas, D.C./D.S./Coda; multi-bar rests; system text |
 | Instruments | players with doublings, transposition data | add/remove/reorder players; grand staff (piano), divisi, percussion kits, unpitched staves; transposed vs concert-pitch toggle; staff-type changes |
 | Layout & parts | Page and Panorama views, LilyPond engraving | system/page breaks, staff spacing, beam & stem overrides, cue notes, part extraction (layouts), house styles, condensing |
-| I/O | own SQLite project | MusicXML import/export, MIDI import/export, PDF/SVG/PNG export, audio export, printing |
-| Playback | dynamics, hairpins, slurs (legato), articulations gate/accent, PDC, CLAP | expression maps / key switches per articulation, swing, voltas and jumps in playback, humanize, mixer automation from notation |
+| I/O | own SQLite project; PDF, MIDI and MusicXML export | MusicXML and MIDI import, SVG/PNG export, audio export, printing, part extraction |
+| Playback | dynamics, hairpins, slurs (legato), articulations gate/accent, ornaments written out, repeats and endings, PDC, CLAP | expression maps / key switches per articulation, swing, D.C./D.S./Coda jumps, humanize, mixer automation from notation |
+
+### 5.5e Ornaments, repeat endings and export
+
+* **Ornaments and marks**: trill, mordent, turn, unmeasured tremolo,
+  arpeggio, staccatissimo, breath mark, caesura (`Articulation` bits; Shift+O
+  popover or the Notes panel). Playback writes them out
+  (`compile::ornamentFigure`): neighbours follow the key, the unit is a 32nd
+  (or a quarter of a shorter note), and rolled chords start 30 ms apart from
+  the bottom up.
+* **Repeat endings** (`Ending`: a span plus a pass set, engraved as
+  LilyPond volta brackets). `compile::playbackOrder` plays the movement like a
+  performer: an end repeat jumps back until its passes are done, and an
+  ending not marked for the current pass is skipped together with its end
+  repeat. Tested: 1st/2nd, three endings, "1., 2." + "3.", and later plain
+  repeats. UI: "1st / 2nd ending" in the Structure panel, Shift+R for any
+  ending.
+* **`compile::perform`** turns a movement into performed notes (quarters,
+  repeats unrolled, ties merged, ornaments written out, gate and velocity).
+  The snapshot compiler maps them to samples, MIDI export to ticks.
+* **Export** (toolbar → Export):
+  * **PDF**: LilyPond runs in the background on the page layout.
+  * **MIDI and MusicXML**: written by the Rust crate `rust/corinzia-export`.
+    The crate is a static library behind a two-function C interface
+    (`corinzia_export.h`), built by Cargo through Corrosion and vendored from
+    `Cargo.lock` in the Nix sandbox. C++ (`src/export/Export.cpp`) passes it
+    one JSON document holding the notation and the performance.
+  * **MIDI** is format 1 at 960 PPQ, with a conductor track (tempo, ramps as
+    16th-note steps, meters) and one track per DAW track on that track's
+    channel. It sounds exactly like playback.
+  * **MusicXML 4.0** (partwise, concert pitch): notes are split at barlines
+    into tied, notatable values (dots, triplets with tuplet brackets), voices
+    are joined with `<backup>`/`<forward>`, and it carries articulations,
+    ornaments, dynamics, wedges, slurs, tempo, text, rehearsal marks,
+    barlines, repeats, endings, clef and key changes. Instrument changes
+    become staff text. Verified by reading it back with LilyPond's
+    `musicxml2ly`.
 
 ### 5.6 Two workspaces: Score and Mix
 
@@ -782,9 +818,9 @@ python3 -I scripts/validate_schema.py
 nix build                        # sandboxed build + full test suite (incl. LilyPond + offscreen Qt)
 ```
 
-**Verified by tests.** Four ctest suites: core (57 cases, also clean under
-ASan + UBSan), PipeWire end-to-end, Qt/UI (14 cases, pixel-level) and an app
-smoke run.
+**Verified by tests.** Five ctest suites: core (67 cases, also clean under
+ASan + UBSan), the Rust export crate (`cargo test`), PipeWire end-to-end,
+Qt/UI (14 cases, pixel-level) and an app smoke run.
 
 | Area | Tests |
 |---|---|
@@ -801,6 +837,7 @@ smoke run.
 | Note input | overwrite insert/truncate/fill, chords, delete, modify, durations incl. triplets, key-aware nearest-octave spelling; `locate` inverts every engraved head to its staff, beat and pitch; tuplet and barline-completion emission compiled by LilyPond |
 | Selection & spanners | eraseRange/slice/paste/applyToRange/transposeRange/markSpan; hairpin velocity ramps and slur legato; spans survive save/load and compile in LilyPond without warnings; smoke: real marquee drag (band + highlight pixels), Ctrl+C/V at a note, R, undo identity, Shift+click passage, S/H, ↑, Ctrl+A + Delete + undo, Esc |
 | Structure & text | popover parsers (keys incl. minor and Unicode accidentals, meters, clefs, barlines, tempo words); bar positions across meter changes; header edits; insert/delete bars for voices and header (maps keep their entry at 0, text follows its bar, barlines between bars survive); repeat unrolling with exact note samples and playhead mapping; LilyPond compiles barlines, marks, tempo words, clefs and text without warnings, with clickable ids; v1→v2 file migration; provisional notes and mouse entry after a mid-system clef change; smoke: Shift+K/M/T/X/B popovers incl. an invalid entry and Esc, panel rehearsal mark, click text + Delete + undo, Ctrl+B and Delete bars + undo, survives save/reopen |
+| Ornaments, endings, export | ornament figures (key-aware neighbours, unit shrinking, contiguity), rolled-chord and trill sample positions, LilyPond compiles every mark without warnings; playback order for 1st/2nd, three and shared endings; MIDI: tracks, channels, tempo/meter, tie-merged gate length, repeats unrolled (parsed back with an SMF reader); MusicXML: measures, ties over barlines, chords, endings, escaping, re-imported by `musicxml2ly` + LilyPond; Rust: fractions, VLQ, tempo-ramp steps, note-value decomposition; smoke: Shift+O, Ornaments panel, 1st/2nd ending button, Shift+R, PDF/MIDI/MusicXML export from the app |
 | Zoom & views | canvas pixel-exact vs direct SVG rendering at 4×; text present at every zoom; Page/Panorama engrave, names, mouse entry in panorama |
 | Mix tab | arrange blocks keep colour/position/clip through swaps, growth, scroll and shrink; score canvas growing 1 → 2 pages |
 | App (`corinzia --smoke`) | QML window loads; demo engraved; select + transpose through undo; background re-engrave; transport advances in real time; **keys** N, 4, C D E, Shift+G (chord), R into the canvas; undo of one item; **mouse click** on a clarinet note places an eighth at that pitch and beat; voice 2 created on demand; typing past the end adds a bar (and undo removes it); **panel button** selects durations; **Ctrl+2** Mix tab: one arrange block per note head, doubling on the Piccolo lane, blocks drawn, clicking a block selects the note, clicking the timeline locates the transport sample-exactly; **Ctrl+1** back with score keys working; save to `.project` and reopen; engraved music visible on screen |

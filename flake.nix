@@ -19,7 +19,10 @@
         export LANG=C.UTF-8
       '';
 
-      nativeDeps = pkgs: with pkgs; [ cmake ninja pkg-config qt6.wrapQtAppsHook ];
+      # Rust: the export crate (rust/corinzia-export) is built by CMake through
+      # Corrosion; in the sandbox its crates come from Cargo.lock via
+      # cargoSetupHook (vendored, offline).
+      nativeDeps = pkgs: with pkgs; [ cmake ninja pkg-config qt6.wrapQtAppsHook cargo rustc corrosion ];
       buildDeps = pkgs: with pkgs; [
         clap                 # CLAP plugin ABI headers
         sqlite               # project container (>= 3.45 for JSONB)
@@ -36,8 +39,12 @@
           pname = "corinzia";
           version = "0.1.0";
           src = self;
-          nativeBuildInputs = nativeDeps pkgs;
+          nativeBuildInputs = nativeDeps pkgs ++ [ pkgs.rustPlatform.cargoSetupHook ];
           buildInputs = buildDeps pkgs;
+          # Crates for rust/corinzia-export, pinned by its Cargo.lock and vendored
+          # (the sandbox has no network); Corrosion's cargo build uses them.
+          cargoRoot = "rust/corinzia-export";
+          cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./rust/corinzia-export/Cargo.lock; };
           cmakeFlags = [ "-DCORINZIA_BUILD_TESTS=ON" ];
           doCheck = true;
           # Run the LilyPond round-trip and offscreen Qt tests inside the sandbox too.

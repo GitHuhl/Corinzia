@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import Corinzia.Core
 
 ApplicationWindow {
@@ -87,6 +88,21 @@ ApplicationWindow {
                 spacing: 6
                 ToolButton { text: App.playing ? "■ Stop" : "▶ Play"; focusPolicy: Qt.NoFocus; onClicked: App.togglePlay() }
                 ToolButton { text: "⏮"; focusPolicy: Qt.NoFocus; ToolTip.text: "Go to start"; ToolTip.visible: hovered; onClicked: App.locate(0) }
+                ToolSeparator {}
+                ToolButton {
+                    id: exportButton
+                    objectName: "exportButton"
+                    text: "Export ▾"
+                    focusPolicy: Qt.NoFocus
+                    onClicked: exportMenu.open()
+                    Menu {
+                        id: exportMenu
+                        y: exportButton.height
+                        MenuItem { text: "PDF (LilyPond)…"; onTriggered: exportDialog.ask("pdf") }
+                        MenuItem { text: "MIDI file…"; onTriggered: exportDialog.ask("midi") }
+                        MenuItem { text: "MusicXML…"; onTriggered: exportDialog.ask("musicxml") }
+                    }
+                }
                 ToolSeparator {}
                 ToolButton { text: "Undo"; focusPolicy: Qt.NoFocus; enabled: App.canUndo; onClicked: App.undo() }
                 ToolButton { text: "Redo"; focusPolicy: Qt.NoFocus; enabled: App.canRedo; onClicked: App.redo() }
@@ -238,6 +254,26 @@ ApplicationWindow {
             Item { Layout.fillWidth: true }
             Label { text: App.status; elide: Text.ElideLeft; Layout.maximumWidth: 600 }
         }
+    }
+
+    FileDialog {
+        id: exportDialog
+        property string kind: "pdf"
+        fileMode: FileDialog.SaveFile
+        function ask(k) {
+            kind = k
+            const f = { pdf: ["PDF (*.pdf)"], midi: ["MIDI (*.mid *.midi)"], musicxml: ["MusicXML (*.musicxml *.xml)"] }
+            nameFilters = f[k]
+            title = "Export " + (k === "pdf" ? "PDF" : k === "midi" ? "MIDI" : "MusicXML")
+            open()
+        }
+        onAccepted: {
+            if (kind === "pdf") App.exportPdf(selectedFile)
+            else if (kind === "midi") App.exportMidi(selectedFile)
+            else App.exportMusicXml(selectedFile)
+            score.forceActiveFocus()
+        }
+        onRejected: score.forceActiveFocus()
     }
 
     Component.onCompleted: App.attachCanvas(score)

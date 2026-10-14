@@ -9,6 +9,8 @@
 
 #include <QCommandLineParser>
 #include <QDir>
+#include <QUrl>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
@@ -562,6 +564,27 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
     key(Qt::Key_N, Qt::NoModifier, QStringLiteral("n"));
     check(app.inputMode(), "score keys work again after switching back");
     key(Qt::Key_Escape);
+
+    // ---- Export: PDF (LilyPond, async), MIDI and MusicXML (Rust crate) -------
+    {
+        const QString base = QDir::temp().filePath(QStringLiteral("corinzia-smoke-export"));
+        for (const char* ext : {".pdf", ".mid", ".musicxml"}) QFile::remove(base + QString::fromLatin1(ext));
+        bool pdfDone = false, pdfOk = false;
+        auto conn = QObject::connect(&app, &AppController::exportFinished, [&](bool ok, const QString&) { pdfDone = true; pdfOk = ok; });
+        check(app.exportPdf(base), "PDF export started");
+        check(waitFor([&] { return pdfDone; }, 60000) && pdfOk, "PDF export finished");
+        QObject::disconnect(conn);
+        QFile pdf(base + QStringLiteral(".pdf"));
+        check(pdf.open(QIODevice::ReadOnly) && pdf.read(5) == "%PDF-" && pdf.size() > 5000, "PDF written (LilyPond page layout)");
+        check(app.exportMidi(QUrl::fromLocalFile(base).toString()), "MIDI export (file:// URL as from the dialog)");
+        QFile mid(base + QStringLiteral(".mid"));
+        check(mid.open(QIODevice::ReadOnly) && mid.read(4) == "MThd" && mid.size() > 200, "MIDI file written");
+        check(app.exportMusicXml(base), "MusicXML export");
+        QFile xml(base + QStringLiteral(".musicxml"));
+        const QByteArray xmlData = xml.open(QIODevice::ReadOnly) ? xml.readAll() : QByteArray();
+        check(xmlData.contains("<score-partwise") && xmlData.count("<part id=") == 2 && xmlData.contains("<measure number=\"8\""),
+              "MusicXML written (both staves, all bars)");
+    }
 
     const QString file = QDir::temp().filePath(QStringLiteral("corinzia-smoke.project"));
     check(app.saveProjectAs(file), "saved to SQLite project");

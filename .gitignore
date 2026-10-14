@@ -3,3 +3,4 @@
 /result-*
 .direnv/
 compile_commands.json
+/rust/corinzia-export/target/

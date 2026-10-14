@@ -43,6 +43,15 @@ target_include_directories(corinzia_core PUBLIC include)
 target_link_libraries(corinzia_core PUBLIC PkgConfig::CLAP PkgConfig::SQLITE ${CMAKE_DL_LIBS} Threads::Threads)
 target_compile_options(corinzia_core PRIVATE -Wall -Wextra -Wpedantic)
 
+# --------------------------------------------------------------- export ----
+# MIDI / MusicXML writers in Rust (rust/corinzia-export), built by Cargo through
+# Corrosion and linked as a static library; Export.cpp builds their input.
+find_package(Corrosion REQUIRED)
+corrosion_import_crate(MANIFEST_PATH rust/corinzia-export/Cargo.toml CRATE_TYPES staticlib)
+add_library(corinzia_io src/export/Export.cpp)
+target_link_libraries(corinzia_io PUBLIC corinzia_core PRIVATE corinzia_export)
+target_compile_options(corinzia_io PRIVATE -Wall -Wextra -Wpedantic)
+
 # PipeWire backend (separate library: libpipewire's C headers use GNU extensions).
 if(PIPEWIRE_FOUND)
     add_library(corinzia_pipewire src/audio/PipeWireBackend.cpp)
@@ -71,13 +80,13 @@ if(CORINZIA_BUILD_UI AND PIPEWIRE_FOUND)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Qml QuickControls2)
     qt_add_executable(corinzia
         src/app/main.cpp
-        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp src/app/AppControllerDaw.cpp src/app/AppControllerRange.cpp src/app/AppControllerStructure.cpp
+        include/corinzia/app/AppController.hpp src/app/AppController.cpp src/app/AppControllerInput.cpp src/app/AppControllerDaw.cpp src/app/AppControllerRange.cpp src/app/AppControllerStructure.cpp src/app/AppControllerExport.cpp
         include/corinzia/app/DemoProject.hpp   src/app/DemoProject.cpp
         include/corinzia/app/DummyBackend.hpp
     )
     qt_policy(SET QTP0004 NEW)
     qt_add_qml_module(corinzia URI CorinziaApp VERSION 1.0 QML_FILES qml/Main.qml qml/NotesPanel.qml qml/NoteIcon.qml qml/MixView.qml qml/Popover.qml qml/StructurePanel.qml)
-    target_link_libraries(corinzia PRIVATE corinzia_ui corinzia_pipewire Qt6::Qml Qt6::Quick Qt6::QuickControls2)
+    target_link_libraries(corinzia PRIVATE corinzia_ui corinzia_io corinzia_pipewire Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_compile_options(corinzia PRIVATE -Wall -Wextra)
     install(TARGETS corinzia RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
@@ -95,8 +104,9 @@ if(CORINZIA_BUILD_TESTS)
         tests/test_plugins.cpp
         tests/test_edit.cpp
         tests/test_structure.cpp
+        tests/test_export.cpp
     )
-    target_link_libraries(corinzia_tests PRIVATE corinzia_core)
+    target_link_libraries(corinzia_tests PRIVATE corinzia_core corinzia_io)
 
     # The recorder fixture as a real .clap bundle, for dlopen/scan tests.
     add_library(corinzia_test_recorder MODULE tests/plugin/recorder_clap.cpp)
@@ -110,6 +120,11 @@ if(CORINZIA_BUILD_TESTS)
     target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins"
                                                       CORINZIA_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
+    # The export crate's own unit tests (Cargo; vendored crates in the sandbox).
+    find_program(CARGO_EXECUTABLE cargo REQUIRED)
+    add_test(NAME corinzia_export_rust
+             COMMAND ${CARGO_EXECUTABLE} test --quiet --manifest-path ${CMAKE_SOURCE_DIR}/rust/corinzia-export/Cargo.toml
+                     --target-dir ${CMAKE_BINARY_DIR}/cargo-test)
     if(PIPEWIRE_FOUND)
         add_executable(corinzia_pw_tests tests/test_pipewire.cpp)
         target_link_libraries(corinzia_pw_tests PRIVATE corinzia_pipewire PkgConfig::PIPEWIRE)

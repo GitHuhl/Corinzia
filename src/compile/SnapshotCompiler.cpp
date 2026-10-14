@@ -44,10 +44,10 @@ namespace {
 
 // Tempo and meter maps over performed time: each span starts with the tempo
 // and meter in force at its written start, then carries the changes inside it.
-rt::TempoMap buildTempo(const model::Movement& m, const std::vector<std::pair<Fraction, Fraction>>& order, double sr) {
-    rt::TempoMap tm;
-    std::vector<rt::TempoMap::TempoPoint> pts;
-    std::vector<rt::TempoMap::Meter> meters;
+void buildTempo(const model::Movement& m, const std::vector<std::pair<Fraction, Fraction>>& order, double sr,
+                Performance& perf) {
+    auto& pts = perf.tempoPoints;
+    auto& meters = perf.meterPoints;
     double performed = 0.0;
     for (const auto& [a, b] : order) {
         const model::TempoEvent* t0 = &m.tempo.front();
@@ -62,9 +62,8 @@ rt::TempoMap buildTempo(const model::Movement& m, const std::vector<std::pair<Fr
             if (me.at > a && me.at < b) meters.push_back({performed + (me.at - a).toQuarters(), 0, me.numerator, me.denominator});
         performed += (b - a).toQuarters();
     }
-    tm.build(pts, sr);
-    tm.buildMeters(meters);
-    return tm;
+    perf.tempo.build(pts, sr);
+    perf.tempo.buildMeters(meters);
 }
 
 // Topological order of graph nodes (Kahn). Cycles are rejected by the routing
@@ -273,6 +272,87 @@ std::vector<EventShape> expressiveShape(const model::EventList& evs) {
     return out;
 }
 
+Performance perform(const model::Movement& m, double sampleRate) {
+    Performance perf;
+    perf.order = playbackOrder(m);
+    buildTempo(m, perf.order, sampleRate, perf);
+    for (const auto& [a, b] : perf.order) {
+        perf.spans.push_back({perf.lengthQ, a.toQuarters(), (b - a).toQuarters()});
+        perf.lengthQ += (b - a).toQuarters();
+    }
+    auto keyAt = [&](Fraction at) {
+        int fifths = 0;
+        for (const auto& k : m.keys) if (k.at <= at) fifths = k.fifths;
+        return fifths;
+    };
+    for (std::size_t si = 0; si < perf.order.size(); ++si) {
+        const auto [a, b] = perf.order[si];
+        const double base = perf.spans[si].performedQ;
+        auto toQ = [&](Fraction f) { return base + (f - a).toQuarters(); };   // written -> performed
+
+        for (const auto& lane : m.lanes) {
+            for (const auto& voice : lane.voices) {
+                const auto& evs = *voice.events;
+                std::unordered_set<std::uint64_t> consumed;   // tie continuations
+                const auto shape = expressiveShape(evs);
+                for (std::size_t ei = 0; ei < evs.size(); ++ei) {
+                    const auto& ev = evs[ei];
+                    if (ev.kind == model::EventKind::Rest || ev.start < a || ev.start >= b) continue;
+                    const InstrumentId inst = lane.instrumentAt(ev.start);
+                    for (const auto& h : ev.heads) {
+                        if (consumed.count(h.id.id.value)) continue;
+                        // Follow the tie chain to find the true sounding end
+                        // (cut at the end of this pass: a repeat jumps away).
+                        Fraction end = ev.start + ev.duration;
+                        std::uint16_t lastArt = ev.articulations;
+                        bool tied = h.tieToNext;
+                        for (std::size_t k = ei + 1; tied && k < evs.size() && evs[k].start < b; ++k) {
+                            tied = false;
+                            for (const auto& h2 : evs[k].heads)
+                                if (h2.pitch.midiKey() == h.pitch.midiKey()) {
+                                    consumed.insert(h2.id.id.value);
+                                    end = evs[k].start + evs[k].duration;
+                                    lastArt = evs[k].articulations;
+                                    tied = h2.tieToNext;
+                                    break;
+                                }
+                        }
+                        end = std::min(end, b);
+                        // Slurred notes are legato unless explicitly articulated short.
+                        const double gate = (shape[ei].legato && !(lastArt & (model::ArtStaccato | model::ArtStaccatissimo)))
+                                                ? 1.0 : gateFactor(lastArt);
+                        const float vel = h.velocity ? h.velocity / 127.f
+                                                     : shape[ei].velocity * ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
+                        // A rolled chord starts each head a little later, bottom up
+                        // (at most half the note).
+                        double roll = 0;
+                        if ((ev.articulations & model::ArtArpeggio) && ev.heads.size() > 1) {
+                            int rank = 0;
+                            for (const auto& o : ev.heads) rank += o.pitch.midiKey() < h.pitch.midiKey();
+                            roll = std::min(rank * 0.03, (perf.tempo.secondsAt(toQ(end)) - perf.tempo.secondsAt(toQ(ev.start))) / 2);
+                        }
+                        const auto figure = ornamentFigure(h.pitch, end - ev.start, ev.articulations, keyAt(ev.start));
+                        for (std::size_t fi = 0; fi < figure.size(); ++fi) {
+                            const auto& f = figure[fi];
+                            PerformedNote n;
+                            n.instrument = inst;
+                            n.element = h.id.id;
+                            n.key = std::int16_t(f.pitch.midiKey());
+                            n.velocity = std::min(vel, 1.f);
+                            n.onQ = toQ(ev.start + f.offset);
+                            n.fullOffQ = toQ(ev.start + f.offset + f.length);
+                            n.gate = fi + 1 < figure.size() ? 0.95 : gate;   // figure notes are joined
+                            n.rollSec = fi == 0 ? roll : 0.0;
+                            perf.notes.push_back(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return perf;
+}
+
 std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::MovementSnapshot>& movements,
                                                       const RoutingSnapshot& routing, const CompileOptions& opt) {
     auto snap = std::make_unique<rt::PlaybackSnapshot>();
@@ -317,113 +397,42 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
     for (const auto& ms : movements) {
         if (!ms.movement) continue;
         const model::Movement& m = *ms.movement;
-        const auto order = playbackOrder(m);
-        rt::Section sec{m.id, cursor, 0, buildTempo(m, order, opt.sampleRate), globalQuarter, {}};
-        double performed = 0.0;
-        for (const auto& [a, b] : order) {
-            sec.spans.push_back({performed, a.toQuarters(), (b - a).toQuarters()});
-            performed += (b - a).toQuarters();
-        }
+        Performance perf = perform(m, opt.sampleRate);
+        rt::Section sec{m.id, cursor, 0, std::move(perf.tempo), globalQuarter, std::move(perf.spans)};
+        const double performed = perf.lengthQ;
         sec.end = cursor + SamplePos(std::llround(sec.tempo.samplesAt(performed)));
-        // One RT lane per automation lane; every pass appends its breakpoints.
-        std::vector<long> autoIndex(m.automation.size(), -1);
-        for (std::size_t li = 0; li < m.automation.size(); ++li) {
-            const auto& lane = m.automation[li];
+        auto qToSample = [&](double q) { return sec.start + SamplePos(std::llround(sec.tempo.samplesAt(q))); };
+
+        for (const auto& n : perf.notes) {
+            auto route = routing.instrumentRoutes.find(n.instrument);
+            if (route == routing.instrumentRoutes.end()) continue;
+            auto ni = nodeIndex.find(route->second.node);
+            if (ni == nodeIndex.end()) continue;
+            const SamplePos on = qToSample(n.onQ) + SamplePos(std::llround(n.rollSec * opt.sampleRate));
+            const SamplePos fullOff = qToSample(n.fullOffQ);
+            const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * n.gate));
+            const auto noteId = std::int32_t(n.element.value & 0x7fffffff);
+            const auto& rtr = route->second;
+            snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, n.key, rt::NoteEdge::On, n.velocity, n.element});
+            snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, n.key, rt::NoteEdge::Off, 0.f,
+                                   n.element});
+        }
+
+        // Automation: one RT lane per lane; every pass appends its breakpoints.
+        for (const auto& lane : m.automation) {
             auto ni = nodeIndex.find(lane.target.node);
             if (ni == nodeIndex.end() || lane.points->empty()) continue;
-            autoIndex[li] = long(snap->automation.size());
-            snap->automation.push_back({ni->second, lane.target.clapParamId, nullptr,
-                                        lane.target.mode == model::AutomationMode::Modulation, lane.target.noteId, {}});
-        }
-
-        auto keyAt = [&](Fraction at) {
-            int fifths = 0;
-            for (const auto& k : m.keys) if (k.at <= at) fifths = k.fifths;
-            return fifths;
-        };
-        for (std::size_t si = 0; si < order.size(); ++si) {
-            const auto& span = sec.spans[si];
-            const auto [a, b] = order[si];
-            // Written position inside this pass -> timeline sample.
-            auto toSample = [&](Fraction f) {
-                return sec.start + SamplePos(std::llround(sec.tempo.samplesAt(span.performedQ + (f - a).toQuarters())));
-            };
-
-            for (const auto& lane : m.lanes) {
-                for (const auto& voice : lane.voices) {
-                    const auto& evs = *voice.events;
-                    std::unordered_set<std::uint64_t> consumed;   // tie continuations
-                    const auto shape = expressiveShape(evs);
-                    for (std::size_t ei = 0; ei < evs.size(); ++ei) {
-                        const auto& ev = evs[ei];
-                        if (ev.kind == model::EventKind::Rest || ev.start < a || ev.start >= b) continue;
-                        auto route = routing.instrumentRoutes.find(lane.instrumentAt(ev.start));
-                        if (route == routing.instrumentRoutes.end()) continue;
-                        auto ni = nodeIndex.find(route->second.node);
-                        if (ni == nodeIndex.end()) continue;
-
-                        for (const auto& h : ev.heads) {
-                            if (consumed.count(h.id.id.value)) continue;
-                            // Follow the tie chain to find the true sounding end
-                            // (cut at the end of this pass: a repeat jumps away).
-                            Fraction end = ev.start + ev.duration;
-                            std::uint16_t lastArt = ev.articulations;
-                            bool tied = h.tieToNext;
-                            for (std::size_t k = ei + 1; tied && k < evs.size() && evs[k].start < b; ++k) {
-                                tied = false;
-                                for (const auto& h2 : evs[k].heads)
-                                    if (h2.pitch.midiKey() == h.pitch.midiKey()) {
-                                        consumed.insert(h2.id.id.value);
-                                        end = evs[k].start + evs[k].duration;
-                                        lastArt = evs[k].articulations;
-                                        tied = h2.tieToNext;
-                                        break;
-                                    }
-                            }
-                            end = std::min(end, b);
-                            // Slurred notes are legato unless explicitly articulated short.
-                            const double gate = (shape[ei].legato && !(lastArt & (model::ArtStaccato | model::ArtStaccatissimo)))
-                                                    ? 1.0 : gateFactor(lastArt);
-                            const float vel = h.velocity ? h.velocity / 127.f
-                                                         : shape[ei].velocity *
-                                                               ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
-                            const auto noteId = std::int32_t(h.id.id.value & 0x7fffffff);
-                            const auto& rtr = route->second;
-                            // A rolled chord starts each head a little later, bottom up.
-                            SamplePos roll = 0;
-                            if ((ev.articulations & model::ArtArpeggio) && ev.heads.size() > 1) {
-                                int rank = 0;
-                                for (const auto& o : ev.heads) rank += o.pitch.midiKey() < h.pitch.midiKey();
-                                roll = SamplePos(std::llround(rank * 0.03 * opt.sampleRate));
-                                roll = std::min(roll, (toSample(end) - toSample(ev.start)) / 2);
-                            }
-                            const auto figure = ornamentFigure(h.pitch, end - ev.start, ev.articulations, keyAt(ev.start));
-                            for (std::size_t fi = 0; fi < figure.size(); ++fi) {
-                                const auto& f = figure[fi];
-                                const SamplePos on = toSample(ev.start + f.offset) + (fi == 0 ? roll : 0);
-                                const SamplePos fullOff = toSample(ev.start + f.offset + f.length);
-                                // Figure notes are joined; the gate shapes the last one.
-                                const double g = fi + 1 < figure.size() ? 0.95 : gate;
-                                const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * g));
-                                const auto key = std::int16_t(f.pitch.midiKey());
-                                snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, key, rt::NoteEdge::On,
-                                                       std::min(vel, 1.f), h.id.id});
-                                snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, key,
-                                                       rt::NoteEdge::Off, 0.f, h.id.id});
-                            }
-                        }
-                    }
-                }
-            }
-
-            for (std::size_t li = 0; li < m.automation.size(); ++li) {
-                const auto& lane = m.automation[li];
-                if (autoIndex[li] < 0) continue;
-                auto* rl = &snap->automation[std::size_t(autoIndex[li])];
+            rt::RtAutomationLane rl{ni->second, lane.target.clapParamId, nullptr,
+                                    lane.target.mode == model::AutomationMode::Modulation, lane.target.noteId, {}};
+            for (std::size_t si = 0; si < perf.order.size(); ++si) {
+                const auto [a, b] = perf.order[si];
+                const double base = sec.spans[si].performedQ;
                 for (const auto& p : *lane.points)
                     if (p.at >= a && p.at < b)
-                        rl->points.push_back({toSample(p.at), p.value, rt::Curve(static_cast<std::uint8_t>(p.shapeToNext))});
+                        rl.points.push_back({qToSample(base + (p.at - a).toQuarters()), p.value,
+                                             rt::Curve(static_cast<std::uint8_t>(p.shapeToNext))});
             }
+            snap->automation.push_back(std::move(rl));
         }
 
         snap->sections.push_back(std::move(sec));

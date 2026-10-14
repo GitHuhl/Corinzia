@@ -129,6 +129,13 @@ public:
     Q_INVOKABLE void deleteBars();                  // the selected bars, or the caret's bar
     Q_INVOKABLE void addFirstSecondEndings();       // selected bars = 1st ending + end repeat, then a 2nd
 
+    // ---- export (AppControllerExport.cpp) -------------------------------------
+    // Paths or file:// URLs; a missing extension is added. PDF runs LilyPond in
+    // the background and reports through exportFinished.
+    Q_INVOKABLE bool exportPdf(const QString& path);
+    Q_INVOKABLE bool exportMidi(const QString& path);
+    Q_INVOKABLE bool exportMusicXml(const QString& path);
+
     bool inputMode() const noexcept { return inputMode_; }
     void setInputMode(bool on);
     int duration() const noexcept { return int(spec_.base); }
@@ -178,6 +185,7 @@ signals:
     void inputStateChanged();
     void arrangeChanged();
     void viewModeChanged();
+    void exportFinished(bool ok, const QString& path);
 
 private slots:
     void onElementClicked(quint64 elementId, quint64 voiceId, quint64 trackId, Qt::KeyboardModifiers mods);
