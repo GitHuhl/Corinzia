@@ -286,8 +286,10 @@ distributions:
   a stand-in `libpipewire` (`packaging/pipewire-stub.c`) when the system has
   none, so Corinzia runs without sound instead of failing to start.
 * The squashfs image is appended to the pinned AppImage type-2 runtime.
-* `.github/workflows/release.yml` builds it on GitHub and attaches it to the
-  release when a `v*` tag is pushed.
+* `.github/workflows/release.yml` builds it on GitHub and publishes it:
+  * a push to `main` creates release `v<version>` (the workspace version)
+    if it doesn't exist yet, so bumping the version makes a new release;
+  * a pushed `v*` tag is published as well.
 
 ## 9. Verification
 

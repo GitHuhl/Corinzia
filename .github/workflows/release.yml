@@ -1,10 +1,14 @@
-# Builds the AppImage with Nix and attaches it to a GitHub release.
-# Push a tag such as v0.1.0 to publish; "Run workflow" builds without
-# publishing (the AppImage is kept as a workflow artifact).
+# Builds the AppImage with Nix and publishes it as a GitHub release.
+#
+# A push to main publishes release v<version> (the workspace version in
+# rust/Cargo.toml) if there is none yet: bump the version to make a new
+# release. Pushing a v* tag publishes that tag. "Run workflow" builds
+# without publishing (the AppImage is kept as a workflow artifact).
 name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -16,26 +20,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Decide the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            tag="${GITHUB_REF_NAME}"; publish=true
+          else
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -n1)
+            tag="v${version}"; publish=false
+            if [ "${GITHUB_EVENT_NAME}" = push ] && ! gh release view "$tag" >/dev/null 2>&1; then
+              publish=true
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "release $tag, publish: $publish"
       - uses: cachix/install-nix-action@v31
+        if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
       - name: Build the AppImage
+        if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           nix build .#appimage -L
-          tag="${GITHUB_REF_NAME}"
-          [ "${GITHUB_REF_TYPE}" = tag ] || tag="dev-${GITHUB_SHA::7}"
-          cp result/Corinzia-x86_64.AppImage "Corinzia-${tag}-x86_64.AppImage"
+          cp result/Corinzia-x86_64.AppImage "Corinzia-${{ steps.release.outputs.tag }}-x86_64.AppImage"
           sha256sum Corinzia-*.AppImage > SHA256SUMS
       - uses: actions/upload-artifact@v4
+        if: steps.release.outputs.publish == 'true' || github.event_name == 'workflow_dispatch'
         with:
           name: appimage
           path: |
             Corinzia-*.AppImage
             SHA256SUMS
       - name: Publish the release
-        if: github.ref_type == 'tag'
+        if: steps.release.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Corinzia ${{ steps.release.outputs.tag }}
           files: |
             Corinzia-*.AppImage
             SHA256SUMS
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}
+          prerelease: ${{ startsWith(steps.release.outputs.tag, 'v0.') }}
