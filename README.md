@@ -54,7 +54,7 @@ H/Shift+H (hairpins) work on the whole passage. **Page | Panorama** switches
 between the printed layout and one endless system. Zoom stays vector-sharp at
 any level.
 
-Score structure uses Dorico-style popovers: Shift+K key ("Eb", "f#" minor),
+Score structure uses industry-style popovers: Shift+K key ("Eb", "f#" minor),
 Shift+M time ("6/8"), Shift+T tempo ("Allegro 132"), Shift+B barline (":|"
 repeats play back), Shift+C clef, Shift+X / Shift+P expression or technique
 text, and Shift+A rehearsal mark. The right-hand Structure panel has the same
