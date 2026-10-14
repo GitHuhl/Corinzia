@@ -1,8 +1,9 @@
 # Corinzia
 
-A Linux-only hybrid **music notation editor + DAW** with native **CLAP** plugin hosting.
+## A LilyPond-backed DAW/Music Notation Hybrid Program with CLAPi and VST3 Instrument Support for Linux
 
 <img width="1400" height="900" alt="image-1791944260201" src="https://github.com/user-attachments/assets/f8f6399e-5659-416a-ae44-e3661d441b29" />
+
 
 * Zero-lag score canvas (Qt Quick scene graph) with an instant provisional layer
   and an asynchronous definitive LilyPond engraving layer.
