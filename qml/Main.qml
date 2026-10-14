@@ -39,7 +39,8 @@ ApplicationWindow {
         }
         // Popovers (Dorico letters). Shift+A/B/C double as chord notes in input mode.
         if (shift && !alt) {
-            const pops = { [Qt.Key_K]: "key", [Qt.Key_M]: "time", [Qt.Key_T]: "tempo", [Qt.Key_X]: "expression", [Qt.Key_P]: "technique" }
+            const pops = { [Qt.Key_K]: "key", [Qt.Key_M]: "time", [Qt.Key_T]: "tempo", [Qt.Key_X]: "expression", [Qt.Key_P]: "technique",
+                           [Qt.Key_O]: "ornament" }
             if (!App.inputMode) { pops[Qt.Key_C] = "clef"; pops[Qt.Key_B] = "barline" }
             if (pops[k] !== undefined) { popover.open(pops[k]); event.accepted = true; return }
             if (!App.inputMode && k === Qt.Key_A) { App.applyPopover("rehearsal", ""); event.accepted = true; return }

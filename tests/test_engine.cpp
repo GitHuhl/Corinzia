@@ -295,3 +295,54 @@ TEST(compile_unrolls_repeats) {
     // Automation is repeated only for points inside the repeated bar (none here).
     CHECK(snap->automation.size() == 1 && snap->automation[0].points.size() == 2);
 }
+
+TEST(compile_ornament_figures) {
+    using model::Pitch;
+    const Pitch c5{0, 0, 5};
+    // No ornament: the note itself.
+    auto f = compile::ornamentFigure(c5, Fraction(1, 4), 0, 0);
+    CHECK(f.size() == 1 && f[0].length == Fraction(1, 4));
+    // Trill on a crotchet in C: 32nds C D C D C D C (ends on the main note), contiguous.
+    f = compile::ornamentFigure(c5, Fraction(1, 4), model::ArtTrill, 0);
+    CHECK(f.size() == 7 && f.front().pitch.step == 0 && f[1].pitch.step == 1 && f.back().pitch.step == 0);
+    Fraction sum{0};
+    for (const auto& n : f) { CHECK(n.offset == sum); sum = sum + n.length; }
+    CHECK(sum == Fraction(1, 4));
+    // Key-aware neighbours: a trill on E in E-flat major goes to F; the turn below B in B-flat major is A natural... in Bb: A.
+    f = compile::ornamentFigure(Pitch{2, -1, 5}, Fraction(1, 4), model::ArtTrill, -3);
+    CHECK(f[1].pitch.step == 3 && f[1].pitch.alter == 0);
+    f = compile::ornamentFigure(Pitch{1, 0, 5}, Fraction(1, 2), model::ArtTurn, 2);   // D in D major: E D C# D
+    CHECK(f.size() == 4 && f[0].pitch.step == 2 && f[2].pitch.step == 0 && f[2].pitch.alter == 1 && f[3].length == Fraction(13, 32));
+    // Mordent: main, lower, main; the lower neighbour of C is B (octave below).
+    f = compile::ornamentFigure(c5, Fraction(1, 8), model::ArtMordent, 0);
+    CHECK(f.size() == 3 && f[1].pitch.step == 6 && f[1].pitch.octave == 4 && f[1].length == Fraction(1, 32));
+    // Short note: the unit shrinks to a quarter of it.
+    f = compile::ornamentFigure(c5, Fraction(1, 16), model::ArtMordent, 0);
+    CHECK(f[0].length == Fraction(1, 64));
+    // Tremolo: repeated main note in 32nds.
+    f = compile::ornamentFigure(c5, Fraction(1, 4), model::ArtTremolo, 0);
+    CHECK(f.size() == 8 && f[5].pitch.midiKey() == c5.midiKey());
+}
+
+TEST(compile_plays_ornaments_and_rolls_chords) {
+    model::Project p;
+    auto ids = fixture::makeProject(p);
+    auto* m = p.movement(ids.mov);
+    auto evs = std::make_shared<model::EventList>(*m->lanes[0].voices[0].events);
+    (*evs)[2].articulations = model::ArtArpeggio;   // <e' g'>2 at beat 3
+    (*evs)[4].articulations = model::ArtTrill;      // b''4 in bar 2
+    m->lanes[0].voices[0].events = evs;
+    compile::CompileOptions opt;
+    auto snap = compile::compileSnapshot({p.snapshot(ids.mov)}, compile::RoutingSnapshot::capture(p), opt);
+    const SamplePos q = 24000;   // one crotchet at 120 bpm
+    SamplePos eOn = -1, gOn = -1;
+    int trillOn = 0;
+    for (const auto& n : snap->notes) {
+        if (n.edge != rt::NoteEdge::On) continue;
+        if (n.key == 64) eOn = n.at;
+        if (n.key == 67) gOn = n.at;
+        if (n.at >= 5 * q && n.at < 6 * q) ++trillOn;
+    }
+    CHECK(eOn == 2 * q && gOn == 2 * q + SamplePos(0.03 * 48000));   // rolled upwards by 30 ms
+    CHECK(trillOn == 7);                                                // 32nd alternation
+}

@@ -1,4 +1,5 @@
 #include "corinzia/compile/SnapshotCompiler.hpp"
+#include "corinzia/edit/NoteInput.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +27,9 @@ RoutingSnapshot RoutingSnapshot::capture(const model::Project& p) {
 }
 
 double gateFactor(std::uint16_t a) noexcept {
+    if (a & model::ArtStaccatissimo) return 0.25;
     if (a & model::ArtStaccato) return 0.5;
+    if (a & (model::ArtBreath | model::ArtCaesura)) return 0.7;   // leave room to breathe
     if (a & model::ArtTenuto) return 1.0;
     return 0.9;
 }
@@ -92,6 +95,47 @@ std::vector<std::size_t> topoOrder(const RoutingSnapshot& r) {
 }
 
 }  // namespace
+
+std::vector<FigureNote> ornamentFigure(const model::Pitch& main, Fraction length, std::uint16_t a, int keyFifths) {
+    auto neighbour = [&](int dir) {
+        const int d = edit::diatonic(main) + dir;
+        return edit::fromDiatonic(d, edit::keyAlter(keyFifths, ((d % 7) + 7) % 7));
+    };
+    const Fraction unit = std::min(Fraction(1, 32), length * Fraction(1, 4));
+    std::vector<FigureNote> out;
+    Fraction at{0};
+    auto add = [&](const model::Pitch& p, Fraction len) {
+        len = std::min(len, length - at);
+        if (len > Fraction{0}) out.push_back({at, len, p});
+        at = at + len;
+    };
+    if (a & model::ArtTrill) {
+        const model::Pitch upper = neighbour(+1);
+        // Alternate in units; an odd count keeps the main note last.
+        bool onMain = true;
+        while (length - at > unit) {
+            add(onMain ? main : upper, unit);
+            onMain = !onMain;
+        }
+        if (!onMain && !out.empty()) out.back().length = out.back().length + (length - at), at = length;   // end on main
+        else add(main, length - at);
+    } else if (a & model::ArtTurn) {
+        add(neighbour(+1), unit);
+        add(main, unit);
+        add(neighbour(-1), unit);
+        add(main, length - at);
+    } else if (a & model::ArtMordent) {
+        add(main, unit);
+        add(neighbour(-1), unit);
+        add(main, length - at);
+    } else if (a & model::ArtTremolo) {
+        while (length - at > unit) add(main, unit);
+        add(main, length - at);
+    } else {
+        add(main, length);
+    }
+    return out;
+}
 
 std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m) {
     std::vector<model::BarlineMark> bars = m.barlines;
@@ -219,6 +263,11 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
                                         lane.target.mode == model::AutomationMode::Modulation, lane.target.noteId, {}});
         }
 
+        auto keyAt = [&](Fraction at) {
+            int fifths = 0;
+            for (const auto& k : m.keys) if (k.at <= at) fifths = k.fifths;
+            return fifths;
+        };
         for (std::size_t si = 0; si < order.size(); ++si) {
             const auto& span = sec.spans[si];
             const auto [a, b] = order[si];
@@ -259,21 +308,36 @@ std::unique_ptr<rt::PlaybackSnapshot> compileSnapshot(const std::vector<model::M
                                     }
                             }
                             end = std::min(end, b);
-                            const SamplePos on = toSample(ev.start);
-                            const SamplePos fullOff = toSample(end);
                             // Slurred notes are legato unless explicitly articulated short.
-                            const double gate = (shape[ei].legato && !(lastArt & model::ArtStaccato)) ? 1.0 : gateFactor(lastArt);
-                            const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * gate));
+                            const double gate = (shape[ei].legato && !(lastArt & (model::ArtStaccato | model::ArtStaccatissimo)))
+                                                    ? 1.0 : gateFactor(lastArt);
                             const float vel = h.velocity ? h.velocity / 127.f
                                                          : shape[ei].velocity *
                                                                ((ev.articulations & model::ArtAccent) ? 1.15f : 1.f);
                             const auto noteId = std::int32_t(h.id.id.value & 0x7fffffff);
-                            const auto key = std::int16_t(h.pitch.midiKey());
                             const auto& rtr = route->second;
-                            snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, key, rt::NoteEdge::On,
-                                                   std::min(vel, 1.f), h.id.id});
-                            snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, key,
-                                                   rt::NoteEdge::Off, 0.f, h.id.id});
+                            // A rolled chord starts each head a little later, bottom up.
+                            SamplePos roll = 0;
+                            if ((ev.articulations & model::ArtArpeggio) && ev.heads.size() > 1) {
+                                int rank = 0;
+                                for (const auto& o : ev.heads) rank += o.pitch.midiKey() < h.pitch.midiKey();
+                                roll = SamplePos(std::llround(rank * 0.03 * opt.sampleRate));
+                                roll = std::min(roll, (toSample(end) - toSample(ev.start)) / 2);
+                            }
+                            const auto figure = ornamentFigure(h.pitch, end - ev.start, ev.articulations, keyAt(ev.start));
+                            for (std::size_t fi = 0; fi < figure.size(); ++fi) {
+                                const auto& f = figure[fi];
+                                const SamplePos on = toSample(ev.start + f.offset) + (fi == 0 ? roll : 0);
+                                const SamplePos fullOff = toSample(ev.start + f.offset + f.length);
+                                // Figure notes are joined; the gate shapes the last one.
+                                const double g = fi + 1 < figure.size() ? 0.95 : gate;
+                                const SamplePos off = on + SamplePos(std::llround(double(fullOff - on) * g));
+                                const auto key = std::int16_t(f.pitch.midiKey());
+                                snap->notes.push_back({on, ni->second, noteId, rtr.port, rtr.channel, key, rt::NoteEdge::On,
+                                                       std::min(vel, 1.f), h.id.id});
+                                snap->notes.push_back({std::max(off, on + 1), ni->second, noteId, rtr.port, rtr.channel, key,
+                                                       rt::NoteEdge::Off, 0.f, h.id.id});
+                            }
                         }
                     }
                 }

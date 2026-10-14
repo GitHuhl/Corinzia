@@ -19,7 +19,8 @@ Rectangle {
         barline:    { title: "Barline",        hint: "||  double  ·  |.  final  ·  |:  :|  :|:  repeats" },
         tempo:      { title: "Tempo",          hint: "Allegro  ·  Andante 84  ·  q=96  ·  72" },
         expression: { title: "Expression",     hint: "dolce, espressivo, sempre legato … (below the staff, italic)" },
-        technique:  { title: "Playing technique", hint: "pizz., arco, con sord., sul pont. … (above the staff)" }
+        technique:  { title: "Playing technique", hint: "pizz., arco, con sord., sul pont. … (above the staff)" },
+        ornament:   { title: "Ornament",       hint: "tr  mordent  turn  trem  arp  ,  //  (toggles on the selection)" }
     })
 
     visible: false

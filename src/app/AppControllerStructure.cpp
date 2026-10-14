@@ -64,6 +64,13 @@ bool AppController::applyPopover(const QString& kind, const QString& input) {
         return false;
     };
 
+    if (kind == u"ornament") {   // acts on the selection like the panel buttons
+        const auto bit = edit::parseOrnament(text);
+        if (!bit) return fail(QStringLiteral("Ornament not understood: tr, mordent, turn, trem, arp, breath, caesura"));
+        if (!range_.active && !selection_.valid()) return fail(QStringLiteral("Select notes first"));
+        toggleArticulation(*bit);
+        return true;
+    }
     if (kind == u"key") {
         const auto k = edit::parseKey(text);
         if (!k) return fail(QStringLiteral("Key not understood: try C, Eb, f# (minor) or \"a minor\""));

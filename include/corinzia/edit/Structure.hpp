@@ -24,6 +24,10 @@ std::optional<model::BarlineKind> parseBarline(std::string text);
 // "Allegro 132", "q=96", "♩=96", "96", "Adagio" (word -> conventional tempo).
 struct TempoSpec { std::string text; double bpm; };
 std::optional<TempoSpec> parseTempo(std::string text);
+// Ornament / articulation popover: "tr", "mordent", "turn", "trem", "arp",
+// "breath" (or ","), "caesura" (or "//"), "staccatissimo", "fermata" ...
+// -> model::Articulation bit.
+std::optional<std::uint16_t> parseOrnament(std::string text);
 
 // ------------------------------------------------------------ positions --
 // Start of the bar containing `pos` (from the meter map).

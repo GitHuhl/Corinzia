@@ -134,12 +134,33 @@ Pane {
                     // flags: model::Articulation
                     model: [ { f: 1, t: "•", n: "Staccato ([)" }, { f: 2, t: ">", n: "Accent (')" },
                              { f: 4, t: "–", n: "Tenuto (])" }, { f: 8, t: "^", n: "Marcato (\\)" },
-                             { f: 16, t: "𝄐", n: "Fermata" } ]
+                             { f: 16, t: "𝄐", n: "Fermata" }, { f: 32, t: "▾", n: "Staccatissimo" } ]
                     delegate: PanelButton {
                         required property var modelData
                         tip: modelData.n + " on the selection"
                         onClicked: App.toggleArticulation(modelData.f)
                         contentItem: Label { text: modelData.t; font.pixelSize: 16; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                }
+            }
+
+            SectionLabel { text: "Ornaments (Shift+O)" }
+            GridLayout {
+                columns: 3
+                columnSpacing: 2
+                rowSpacing: 2
+                Repeater {
+                    // flags: model::Articulation
+                    model: [ { f: 64, t: "tr", n: "Trill" }, { f: 128, t: "𝆗", n: "Mordent" },
+                             { f: 256, t: "𝆘", n: "Turn" }, { f: 512, t: "≡", n: "Tremolo" },
+                             { f: 1024, t: "⌇", n: "Arpeggio (rolled chord)" }, { f: 2048, t: "’", n: "Breath mark" },
+                             { f: 4096, t: "//", n: "Caesura" } ]
+                    delegate: PanelButton {
+                        required property var modelData
+                        objectName: "ornament" + modelData.f
+                        tip: modelData.n + " on the selection"
+                        onClicked: App.toggleArticulation(modelData.f)
+                        contentItem: Label { text: modelData.t; font.pixelSize: 15; font.bold: true; font.italic: modelData.f === 64; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                 }
             }

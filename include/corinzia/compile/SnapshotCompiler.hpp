@@ -59,6 +59,15 @@ std::vector<EventShape> expressiveShape(const model::EventList& events);
 // [from, to) spans in performed order.
 std::vector<std::pair<Fraction, Fraction>> playbackOrder(const model::Movement& m);
 
+// Written-out playback of an ornament on one head sounding for `length`
+// (whole notes, tie chain included): trill = main/upper alternation ending on
+// the main note, mordent = main-lower-main, turn = upper-main-lower-main,
+// tremolo = repeated notes. Neighbours follow the key (`keyFifths`). The
+// figure unit is a 32nd, or a quarter of a shorter note. Returns contiguous
+// segments; without an ornament one segment covering the note.
+struct FigureNote { Fraction offset, length; model::Pitch pitch; };
+std::vector<FigureNote> ornamentFigure(const model::Pitch& main, Fraction length, std::uint16_t articulations, int keyFifths);
+
 // Exposed for unit tests / the engraver's MIDI-preview path.
 double gateFactor(std::uint16_t articulations) noexcept;
 float velocityForDynamic(std::optional<std::uint8_t> mark) noexcept;

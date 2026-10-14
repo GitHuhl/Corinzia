@@ -174,6 +174,26 @@ std::optional<TempoSpec> parseTempo(std::string text) {
     return TempoSpec{words, *bpm};
 }
 
+std::optional<std::uint16_t> parseOrnament(std::string text) {
+    text = lower(trim(text));
+    static const std::map<std::string, std::uint16_t> kOrn = {
+        {"tr", model::ArtTrill}, {"trill", model::ArtTrill},
+        {"mordent", model::ArtMordent}, {"mord", model::ArtMordent}, {"m", model::ArtMordent},
+        {"turn", model::ArtTurn}, {"~", model::ArtTurn},
+        {"trem", model::ArtTremolo}, {"tremolo", model::ArtTremolo}, {"///", model::ArtTremolo},
+        {"arp", model::ArtArpeggio}, {"arpeggio", model::ArtArpeggio}, {"roll", model::ArtArpeggio},
+        {"breath", model::ArtBreath}, {",", model::ArtBreath},
+        {"caesura", model::ArtCaesura}, {"//", model::ArtCaesura},
+        {"staccatissimo", model::ArtStaccatissimo}, {"!", model::ArtStaccatissimo},
+        {"staccato", model::ArtStaccato}, {".", model::ArtStaccato},
+        {"accent", model::ArtAccent}, {">", model::ArtAccent},
+        {"tenuto", model::ArtTenuto}, {"-", model::ArtTenuto},
+        {"marcato", model::ArtMarcato}, {"^", model::ArtMarcato},
+        {"fermata", model::ArtFermata}, {"ferm", model::ArtFermata}};
+    auto it = kOrn.find(text);
+    return it == kOrn.end() ? std::nullopt : std::optional<std::uint16_t>(it->second);
+}
+
 // ------------------------------------------------------------ positions --
 Fraction barLength(const MovementHeader& h, Fraction pos) {
     Fraction len{1};

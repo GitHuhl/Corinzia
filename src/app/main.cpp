@@ -455,6 +455,20 @@ int runSmoke(AppController& app, QQmlApplicationEngine& engine, const QString& p
         app.undo();
         check(mov().length == len && mov().rehearsal.size() == 1 && mov().keys.size() == 2 && mov().lanes[0].texts.size() == 1,
               "undo restores the deleted bar");
+
+        // Ornaments: Shift+O popover and the Notes panel, on the selected passage.
+        app.selectElements({bar3Id}, false);
+        key(Qt::Key_O, Qt::ShiftModifier, QStringLiteral("O"));
+        type(QStringLiteral("tr"));
+        key(Qt::Key_Return);
+        const auto artAt2 = [&] { return cz::edit::eventAt(flute(), cz::Fraction{2})->articulations; };
+        check(pop && !pop->isVisible() && (artAt2() & cz::model::ArtTrill), "Shift+O \"tr\" adds a trill");
+        check(clickItem("ornament4096") && (artAt2() & cz::model::ArtCaesura), "Ornaments panel adds a caesura");
+        const int beforeOrn = app.engraveCount();
+        check(waitFor([&] { return app.engraveCount() > beforeOrn; }, 60000), "ornaments engraved");
+        app.undo();
+        app.undo();
+        check(!(artAt2() & (cz::model::ArtTrill | cz::model::ArtCaesura)), "undo removes both");
         key(Qt::Key_Escape);
     }
 

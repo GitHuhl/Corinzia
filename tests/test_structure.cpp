@@ -188,3 +188,12 @@ TEST(structure_delete_bars_keeps_barlines_between_bars) {
     deleteSpan(h, Fraction{5}, Fraction{6});   // the last bar: the final barline moves back
     CHECK(h.length == Fraction{5} && h.barlines.back().at == Fraction{5} && h.barlines.back().kind == BarlineKind::Final);
 }
+
+TEST(structure_parse_ornament) {
+    CHECK(parseOrnament("tr") == std::uint16_t(model::ArtTrill));
+    CHECK(parseOrnament(" Mordent ") == std::uint16_t(model::ArtMordent));
+    CHECK(parseOrnament("//") == std::uint16_t(model::ArtCaesura));
+    CHECK(parseOrnament(",") == std::uint16_t(model::ArtBreath));
+    CHECK(parseOrnament("arp") == std::uint16_t(model::ArtArpeggio));
+    CHECK(!parseOrnament("glissando"));
+}

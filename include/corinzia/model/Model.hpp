@@ -53,6 +53,13 @@ enum class EventKind : std::uint8_t { Note, Rest, Chord };
 enum Articulation : std::uint16_t {
     ArtNone = 0, ArtStaccato = 1 << 0, ArtAccent = 1 << 1, ArtTenuto = 1 << 2,
     ArtMarcato = 1 << 3, ArtFermata = 1 << 4,
+    ArtStaccatissimo = 1 << 5,
+    // Ornaments (played back as written-out figures, see compile::ornamentFigure).
+    ArtTrill = 1 << 6, ArtMordent = 1 << 7, ArtTurn = 1 << 8,
+    ArtTremolo = 1 << 9,      // unmeasured tremolo (three strokes)
+    ArtArpeggio = 1 << 10,    // rolled chord
+    ArtBreath = 1 << 11,      // breath mark after the note
+    ArtCaesura = 1 << 12,     // caesura after the note
 };
 
 // Spanners as start/stop marks on events (as in LilyPond and MusicXML): they

@@ -170,3 +170,31 @@ TEST(lily_structure_and_text_compile) {
         CHECK(svg.str().find(textId.toSvgId()) != std::string::npos);
     }
 }
+
+TEST(lily_ornaments_compile) {
+    model::Project p;
+    fixture::Ids ids;
+    emitFixture(p, ids);
+    auto& m = *p.movements[0];
+    auto evs = std::make_shared<model::EventList>(*m.lanes[0].voices[0].events);
+    (*evs)[0].articulations = model::ArtTrill;
+    (*evs)[1].articulations = model::ArtMordent | model::ArtBreath;
+    (*evs)[2].articulations = model::ArtArpeggio | model::ArtTremolo;   // chord
+    (*evs)[3].articulations = model::ArtTurn | model::ArtStaccatissimo;
+    (*evs)[4].articulations = model::ArtCaesura;
+    m.lanes[0].voices[0].events = evs;
+    engrave::EngraveContext ctx;
+    const std::string ly = engrave::emitLilyPond(m, ctx);
+    for (const char* s : {"\\trill", "\\mordent", "\\turn", "\\arpeggio", "-!", "\\breathe", "\\caesura", ">2:32"})
+        CHECK(ly.find(s) != std::string::npos);
+    if (const char* lily = std::getenv("CORINZIA_LILYPOND")) {
+        const std::string base = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/corinzia_ornaments";
+        { std::ofstream(base + ".ly") << ly; }
+        const std::string cmd = std::string(lily) + " -dbackend=svg -s -o " + base + " " + base + ".ly 2>" + base + ".err";
+        CHECK(std::system(cmd.c_str()) == 0);
+        std::stringstream err;
+        err << std::ifstream(base + ".err").rdbuf();
+        CHECK(err.str().find("warning") == std::string::npos);
+        if (err.str().find("warning") != std::string::npos) std::printf("%s\n", err.str().c_str());
+    }
+}

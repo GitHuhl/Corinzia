@@ -37,6 +37,11 @@ std::string articulations(std::uint16_t a) {
     if (a & model::ArtTenuto) s += "--";
     if (a & model::ArtMarcato) s += "-^";
     if (a & model::ArtFermata) s += "\\fermata";
+    if (a & model::ArtStaccatissimo) s += "-!";
+    if (a & model::ArtTrill) s += "\\trill";
+    if (a & model::ArtMordent) s += "\\mordent";
+    if (a & model::ArtTurn) s += "\\turn";
+    if (a & model::ArtArpeggio) s += "\\arpeggio";
     return s;
 }
 
@@ -227,12 +232,16 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                 const auto tr = ctx.instrumentTracks.find(inst);
                 const TrackId track = tr != ctx.instrumentTracks.end() ? tr->second : TrackId{};
                 const std::string dur = lilyDuration(triplet ? plain : ev.duration);
+                // Unmeasured tremolo: three strokes (":32"), fewer on short values.
+                const std::string trem = (ev.articulations & model::ArtTremolo) && !ev.heads.empty()
+                                             ? (ev.duration >= Fraction(1, 8) ? ":32" : ":64")
+                                             : "";
                 o << "          ";
                 if (ev.kind == model::EventKind::Rest || ev.heads.empty()) {
                     o << tag(ev.id.id, "ev rest", voice.id, track) << "r" << dur;
                 } else if (ev.heads.size() == 1) {
                     const auto& h = ev.heads.front();
-                    o << tag(h.id.id, "ev note", voice.id, track) << lilyPitch(h.pitch) << dur
+                    o << tag(h.id.id, "ev note", voice.id, track) << lilyPitch(h.pitch) << dur << trem
                       << (h.tieToNext ? "~" : "");
                 } else {
                     o << "< ";
@@ -241,7 +250,7 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                         o << tag(h.id.id, "ev head", voice.id, track) << lilyPitch(h.pitch) << " ";
                         anyTie |= h.tieToNext;
                     }
-                    o << ">" << dur << (anyTie ? "~" : "");
+                    o << ">" << dur << trem << (anyTie ? "~" : "");
                 }
                 o << articulations(ev.articulations);
                 if (ev.dynamicMark) o << "\\" << dynamicName(*ev.dynamicMark);
@@ -252,6 +261,8 @@ std::string emitLilyPond(const model::Movement& m, const EngraveContext& ctx) {
                 if (ev.spans & model::SlurStart) o << "(";
                 if (ev.spans & model::CrescStart) o << "\\<";
                 if (ev.spans & model::DimStart) o << "\\>";
+                if (ev.articulations & model::ArtBreath) o << " \\breathe";
+                if (ev.articulations & model::ArtCaesura) o << " \\caesura";
                 o << "\n";
                 at = ev.start + ev.duration;
             }
