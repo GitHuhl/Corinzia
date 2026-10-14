@@ -6,6 +6,7 @@
 //! as vector geometry. This is the start of the Rust application that will
 //! replace the Qt one: it reads and writes the same .project files.
 
+mod arrange;
 mod demo;
 mod editor;
 mod files;
@@ -70,6 +71,15 @@ struct App {
     playback: playback::Playback,
     tab: Tab,
     strip: Option<corinzia_model::Id>, // the Mix tab's selected strip
+    arrange: arrange::Content,
+    arrange_cache: canvas::Cache,
+    arrange_ppq: f32,
+    arrange_scroll: f32,
+    /// Autosave (projects with a file): the revision on disk, and when the
+    /// next coalesced save is due.
+    saved_revision: u64,
+    autosave_at: Option<std::time::Instant>,
+    saving: bool,
     undo_tip: String,
     new_score: Option<NewScore>,
     path: Option<PathBuf>,
@@ -92,6 +102,7 @@ enum Message {
     SetView(View),
     SetPanel(Panel),
     Mix(mix::MixMsg),
+    Arrange(arrange::ArrangeEvent),
     ZoomBy(f32),
     Canvas(ViewEvent),
     Key(iced::keyboard::Event),
@@ -111,6 +122,7 @@ enum Message {
     Export(files::Format),
     ExportTo(files::Format, Option<PathBuf>),
     Frame,
+    Autosaved(u64, Result<(), String>),
     Shot(iced::window::Screenshot),
 }
 
@@ -239,6 +251,13 @@ impl App {
             playback,
             tab: Tab::Score,
             strip: None,
+            arrange: arrange::Content::default(),
+            arrange_cache: canvas::Cache::new(),
+            arrange_ppq: 40.0,
+            arrange_scroll: 0.0,
+            saved_revision: 0,
+            autosave_at: None,
+            saving: false,
             undo_tip: String::new(),
             new_score: None,
             path,
@@ -299,6 +318,7 @@ impl App {
             }
         };
         self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
+        self.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
 
     /// Brings the engraving and the selection colours up to date.
@@ -307,6 +327,9 @@ impl App {
             self.engrave();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+        if self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
+            self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
+        }
         let mut sel = HashSet::new();
         if let Some(id) = self.editor.selection {
             sel.insert(id);
@@ -324,6 +347,7 @@ impl App {
         self.selected = sel;
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
+        self.arrange_cache.clear();
     }
 
     fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {
@@ -382,6 +406,7 @@ impl App {
             Action::ShowScore => self.tab = Tab::Score,
             Action::ShowMix => {
                 self.tab = Tab::Mix;
+                ed.set_input_mode(false); // the keyboard follows the visible tab
                 if self.playback.plugins.is_empty() {
                     self.playback.scan();
                 }
@@ -485,12 +510,25 @@ impl App {
         }
     }
 
+    /// Starts a background save when one is due.
+    fn autosave(&mut self) -> Option<Task<Message>> {
+        let due = self.autosave_at.is_some_and(|t| std::time::Instant::now() >= t);
+        let path = self.path.clone().filter(|_| due && !self.saving)?;
+        self.autosave_at = None;
+        self.saving = true;
+        self.playback.pool.store_states(&mut self.editor.project);
+        let (project, rev) = (self.editor.project.clone(), self.editor.revision);
+        Some(Task::perform(async move { corinzia_model::store::save(&project, &path).map_err(|e| e.to_string()) }, move |r| Message::Autosaved(rev, r)))
+    }
+
     fn save(&mut self, path: PathBuf) {
         // Plugin state chunks go into the file with the music.
         self.playback.pool.store_states(&mut self.editor.project);
         self.editor.status = match corinzia_model::store::save(&self.editor.project, &path) {
             Ok(()) => {
                 self.path = Some(path.clone());
+                self.saved_revision = self.editor.revision;
+                self.autosave_at = None;
                 self.editor.saved();
                 format!("Saved {}", path.display())
             }
@@ -561,6 +599,26 @@ impl App {
             }
             Message::SetPanel(p) => self.panel = p,
             Message::Mix(m) => self.mix(m),
+            Message::Arrange(e) => match e {
+                arrange::ArrangeEvent::Select(id) => {
+                    self.editor.select(id);
+                    if id.is_some() {
+                        self.audition();
+                    }
+                }
+                arrange::ArrangeEvent::Locate(q) => {
+                    let at = Frac::new((q * 1024.0).round() as i64, 4096);
+                    self.editor.clear_selection();
+                    self.editor.caret = at.min(self.editor.movement().map(|m| m.length).unwrap_or(at));
+                    if self.playback.is_playing() {
+                        if let Some(m) = self.editor.movement().map(|m| m.id) {
+                            self.playback.play_from(m, q);
+                        }
+                    }
+                }
+                arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
+                arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+            },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Canvas(ViewEvent::Pan(d)) => self.pan = self.pan + d,
             Message::Canvas(ViewEvent::Zoom { factor, around }) => {
@@ -686,11 +744,26 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                if let Some(t) = self.autosave() {
+                    return t;
+                }
                 self.frames += 1;
                 if self.frames == 3 && self.screenshot.is_some() {
                     return iced::window::oldest().and_then(iced::window::screenshot).map(Message::Shot);
                 }
                 return Task::none();
+            }
+            Message::Autosaved(rev, result) => {
+                self.saving = false;
+                match result {
+                    Ok(()) => {
+                        self.saved_revision = rev;
+                        if self.editor.revision == rev {
+                            self.editor.saved();
+                        }
+                    }
+                    Err(e) => self.editor.status = format!("Autosave failed: {e}"),
+                }
             }
             Message::Shot(shot) => {
                 if let Some(path) = self.screenshot.take() {
@@ -819,14 +892,33 @@ impl App {
         .padding([4, 10]);
         let body: Element<'_, Message> = match self.tab {
             Tab::Score => row![side, desk].height(Length::Fill).into(),
-            Tab::Mix => container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(Length::Fill).into(),
+            Tab::Mix => {
+                let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
+                let arr = canvas(arrange::ArrangeView {
+                    content: &self.arrange,
+                    pixels_per_quarter: self.arrange_ppq,
+                    scroll_x: self.arrange_scroll,
+                    lane_height: 56.0,
+                    selected: &self.selected,
+                    playhead,
+                    cache: &self.arrange_cache,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill);
+                column![
+                    Element::from(arr).map(Message::Arrange),
+                    container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(360),
+                ]
+                .height(Length::Fill)
+                .into()
+            }
         };
         column![toolbar, body, status].into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         let keys = iced::keyboard::listen().map(Message::Key);
-        if self.screenshot.is_some() || self.playback.busy() {
+        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
@@ -1124,5 +1216,28 @@ mod tests {
         key(&mut a, "c");
         assert!(render(&mut a, 2048) > 0.005, "the new note sounds");
         assert!(!a.playback.is_playing(), "without starting playback");
+    }
+
+    #[test]
+    fn autosaves_projects_with_a_file() {
+        let dir = std::env::temp_dir().join(format!("corinzia-autosave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.project");
+        corinzia_model::store::save(&demo::project(), &path).unwrap();
+        let mut a = App::new(corinzia_model::store::load(&path).unwrap(), Some(path.clone()), View::Page, String::new());
+        assert!(a.autosave_at.is_none(), "nothing to save after opening");
+        key(&mut a, "ctrl+a");
+        key(&mut a, "[");
+        assert!(a.editor.modified && a.autosave_at.is_some());
+        a.autosave_at = Some(std::time::Instant::now()); // due now
+        assert!(a.autosave().is_some() && a.saving);
+        // The task's work, as the executor would run it:
+        corinzia_model::store::save(&a.editor.project, &path).unwrap();
+        let rev = a.editor.revision;
+        let _ = a.update(Message::Autosaved(rev, Ok(())));
+        assert!(!a.editor.modified && !a.saving);
+        let p = corinzia_model::store::load(&path).unwrap();
+        assert!(p.movements[0].lanes[0].voices[0].events[0].articulations != 0, "the staccato reached the file");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

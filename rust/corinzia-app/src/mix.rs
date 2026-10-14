@@ -26,7 +26,7 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         text(&t.name).size(14),
         text(players.join(", ")).size(11).style(text::secondary),
         button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(button::secondary).on_press(MixMsg::Select(t.id)),
-        container(vertical_slider(-60.0..=12.0, t.gain_db, move |v| MixMsg::Gain(t.id, v)).step(0.5).on_release(MixMsg::Released).height(170)).center_x(Length::Fill),
+        container(vertical_slider(-60.0..=12.0, t.gain_db, move |v| MixMsg::Gain(t.id, v)).step(0.5).on_release(MixMsg::Released).height(130)).center_x(Length::Fill),
         text(if t.gain_db <= -59.9 { "−∞ dB".to_string() } else { format!("{:+.1} dB", t.gain_db) }).size(12),
         slider(-1.0..=1.0, t.pan, move |v| MixMsg::Pan(t.id, v)).step(0.01).on_release(MixMsg::Released),
         text(match t.pan {
