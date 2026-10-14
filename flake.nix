@@ -50,8 +50,70 @@
         '';
         meta.mainProgram = "corinzia";
       };
+      # The AppImage runtime (AppImage/type2-runtime), pinned.
+      appimageRuntime = pkgs: pkgs.fetchurl {
+        url = "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64";
+        hash = "sha256-L8qLRDySUQ8Ug6iD9gBhrQm0a5eLJjHIB82HOkfsJg0=";
+      };
+
+      # A portable build for other distributions: compiled with cargo-zigbuild
+      # against glibc 2.31 (Ubuntu 20.04, Debian 11 and newer), SQLite
+      # compiled in, and only the system's libpipewire linked. Graphics
+      # (Vulkan), Wayland/X11 and the file-dialog portal are loaded from the
+      # system at run time, as for any desktop app.
+      appimage = pkgs: let
+        glibc = "2.31";
+        target = "x86_64-unknown-linux-gnu";
+      in pkgs.rustPlatform.buildRustPackage {
+        pname = "corinzia-appimage";
+        version = "0.1.0";
+        src = self;
+        cargoRoot = "rust";
+        buildAndTestSubdir = "rust";
+        cargoLock.lockFile = ./rust/Cargo.lock;
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook pkgs.cargo-zigbuild pkgs.zig pkgs.squashfsTools ];
+        # Headers and a libpipewire to link against; the system's is used at run time.
+        buildInputs = [ pkgs.pipewire ];
+        doCheck = false; # the regular package runs the tests
+        dontFixup = true; # keep the binary free of /nix/store paths
+        buildPhase = ''
+          runHook preBuild
+          export HOME=$TMPDIR ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+          cd rust
+          # libpipewire from Nix refers to a newer glibc than the target's;
+          # the system's own libpipewire is the one loaded at run time.
+          RUSTFLAGS="-C link-arg=-Wl,--allow-shlib-undefined" \
+            cargo zigbuild --offline --release -p corinzia-app --features portable --target ${target}.${glibc}
+          zig cc -shared -fPIC -O2 -target x86_64-linux-gnu.${glibc} -Wl,-soname,libpipewire-0.3.so.0 \
+            -o libpipewire-0.3.so.0 ../packaging/pipewire-stub.c
+          cd ..
+          runHook postBuild
+        '';
+        installPhase = ''
+          runHook preInstall
+          app=$TMPDIR/Corinzia.AppDir
+          mkdir -p $app/usr/bin $app/usr/lib/no-pipewire $app/usr/share/corinzia \
+            $app/usr/share/applications $app/usr/share/icons/hicolor/scalable/apps
+          install -m755 rust/target/${target}/release/corinzia $app/usr/bin/corinzia
+          install -m755 rust/libpipewire-0.3.so.0 $app/usr/lib/no-pipewire/
+          install -m644 ${textFont pkgs} $app/usr/share/corinzia/DejaVuSerif.ttf
+          install -m644 ${pkgs.dejavu_fonts}/share/fonts/truetype/LICENSE $app/usr/share/corinzia/DejaVu-LICENSE 2>/dev/null || true
+          install -m755 packaging/AppRun $app/AppRun
+          install -m644 packaging/corinzia.desktop $app/corinzia.desktop
+          install -m644 packaging/corinzia.desktop $app/usr/share/applications/
+          install -m644 packaging/corinzia.svg $app/corinzia.svg
+          install -m644 packaging/corinzia.svg $app/usr/share/icons/hicolor/scalable/apps/
+          ln -s corinzia.svg $app/.DirIcon
+          mksquashfs $app $TMPDIR/app.squashfs -root-owned -noappend -comp zstd -quiet
+          mkdir -p $out
+          cat ${appimageRuntime pkgs} $TMPDIR/app.squashfs > $out/Corinzia-x86_64.AppImage
+          chmod 755 $out/Corinzia-x86_64.AppImage
+          runHook postInstall
+        '';
+      };
     in {
-      packages = forAll (pkgs: { default = corinzia pkgs; });
+      packages = forAll (pkgs: { default = corinzia pkgs; }
+        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") { appimage = appimage pkgs; });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

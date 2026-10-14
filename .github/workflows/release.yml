@@ -1,0 +1,41 @@
+# Builds the AppImage with Nix and attaches it to a GitHub release.
+# Push a tag such as v0.1.0 to publish; "Run workflow" builds without
+# publishing (the AppImage is kept as a workflow artifact).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build the AppImage
+        run: |
+          nix build .#appimage -L
+          tag="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = tag ] || tag="dev-${GITHUB_SHA::7}"
+          cp result/Corinzia-x86_64.AppImage "Corinzia-${tag}-x86_64.AppImage"
+          sha256sum Corinzia-*.AppImage > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: |
+            Corinzia-*.AppImage
+            SHA256SUMS
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Corinzia-*.AppImage
+            SHA256SUMS
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') || startsWith(github.ref_name, 'v0.') }}

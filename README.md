@@ -36,12 +36,31 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
 
 **Read the design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
+## Download (any Linux distribution)
+
+Get `Corinzia-…-x86_64.AppImage` from the
+[Releases](https://github.com/githuhl/corinzia/releases) page, then:
+
+```sh
+chmod +x Corinzia-*-x86_64.AppImage
+./Corinzia-*-x86_64.AppImage
+```
+
+It runs on x86-64 distributions with glibc 2.31 or newer (Ubuntu 20.04,
+Debian 11, Fedora 32 and later). It uses your system's graphics driver
+(Vulkan), PipeWire for audio, and the CLAP plugins installed in `~/.clap`
+or `/usr/lib/clap`. Without PipeWire it still runs, without sound. On NixOS
+use the flake below, or `appimage-run`.
+
+Found a bug? Please [open an issue](https://github.com/githuhl/corinzia/issues).
+
 ## Run, build & test (Nix only)
 
 ```sh
 nix run                                       # the app (a demo score)
 nix run . -- score.project                    # open a project
 nix build                                     # sandboxed build running every test
+nix build .#appimage                          # the portable AppImage (x86-64)
 
 nix develop                                   # pinned nixos-26.05 toolchain
 cd rust && cargo test --workspace             # all crates

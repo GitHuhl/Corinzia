@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Corinzia
+Comment=Music notation editor and CLAP DAW
+Exec=corinzia %f
+Icon=corinzia
+Terminal=false
+Categories=AudioVideo;Audio;Music;

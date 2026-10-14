@@ -10,3 +10,7 @@ serde.workspace = true
 serde_json.workspace = true
 corinzia-score.workspace = true
 rusqlite = "0.37"
+
+[features]
+# Compile SQLite in instead of linking the system's (portable builds).
+bundled-sqlite = ["rusqlite/bundled"]

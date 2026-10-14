@@ -274,7 +274,22 @@ output), automation, plugin GUIs.
 * Projects with a file are saved 0.8 s after a change, on a worker thread.
 * Untitled projects ask before their changes are discarded.
 
-## 8. Verification
+## 8. Packaging
+
+`nix build .#appimage` builds `Corinzia-x86_64.AppImage` for other
+distributions:
+* The binary is compiled with `cargo-zigbuild` against glibc 2.31, with
+  SQLite compiled in (the `portable` feature). It links only the system's
+  `libpipewire`; Vulkan, Wayland/X11 and the file-dialog portal load at run
+  time.
+* `packaging/AppRun` points at the bundled DejaVu Serif. It also switches to
+  a stand-in `libpipewire` (`packaging/pipewire-stub.c`) when the system has
+  none, so Corinzia runs without sound instead of failing to start.
+* The squashfs image is appended to the pinned AppImage type-2 runtime.
+* `.github/workflows/release.yml` builds it on GitHub and attaches it to the
+  release when a `v*` tag is pushed.
+
+## 9. Verification
 
 * **Unit and integration tests** cover every crate (`cargo test
   --workspace`, also run by `nix build`):

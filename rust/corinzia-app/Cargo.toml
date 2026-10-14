@@ -25,3 +25,5 @@ rfd = "0.15"
 default = ["audio-out"]
 # Live output through PipeWire.
 audio-out = ["corinzia-audio/pipewire"]
+# A self-contained build for the AppImage: SQLite compiled in.
+portable = ["corinzia-model/bundled-sqlite"]

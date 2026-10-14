@@ -1,0 +1,25 @@
+#!/bin/sh
+# Corinzia's AppImage entry point.
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# The score's text font, unless the user chose another.
+: "${CORINZIA_TEXT_FONT:=$HERE/usr/share/corinzia/DejaVuSerif.ttf}"
+export CORINZIA_TEXT_FONT
+
+# The system's PipeWire is used when there is one. Without it, a stand-in
+# library lets Corinzia start (without audio output) instead of failing.
+have_pipewire() {
+    if command -v ldconfig >/dev/null 2>&1 || [ -x /sbin/ldconfig ]; then
+        { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libpipewire-0\.3\.so\.0' && return 0
+    fi
+    for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib64 /usr/lib /lib64 /lib /run/current-system/sw/lib; do
+        [ -e "$d/libpipewire-0.3.so.0" ] && return 0
+    done
+    return 1
+}
+if ! have_pipewire; then
+    LD_LIBRARY_PATH="$HERE/usr/lib/no-pipewire${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
+fi
+
+exec "$HERE/usr/bin/corinzia" "$@"
