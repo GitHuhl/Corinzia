@@ -45,12 +45,20 @@
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
         cargoLock.lockFile = ./rust/Cargo.lock;
-        cargoBuildFlags = [ "-p" "corinzia-app" ];
+        cargoBuildFlags = [ "-p" "corinzia-app" "-p" "corinzia-sine" ];
         # The Rust crates the app is made of (the FFI/export crates are tested with the C++ package).
-        cargoTestFlags = [ "-p" "corinzia-app" "-p" "corinzia-model" "-p" "corinzia-layout" "-p" "corinzia-score" ];
-        nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
-        buildInputs = [ pkgs.sqlite ];
+        # The live PipeWire test is opt-in (CORINZIA_PW=1, see tests/run_with_pipewire.sh).
+        cargoTestFlags = [ "-p" "corinzia-app" "-p" "corinzia-model" "-p" "corinzia-layout" "-p" "corinzia-score"
+                           "-p" "corinzia-edit" "-p" "corinzia-perform" "-p" "corinzia-audio" "-p" "corinzia-sine" ];
+        # bindgenHook: libclang for the PipeWire bindings (pipewire-rs).
+        nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper pkgs.rustPlatform.bindgenHook ];
+        buildInputs = [ pkgs.sqlite pkgs.pipewire ];
         postInstall = ''
+          # The built-in instrument as a regular CLAP bundle, for other hosts too.
+          mkdir -p $out/lib/clap
+          sine=$(find $out/lib target -name libcorinzia_sine.so | head -n1)
+          install -m755 "$sine" "$out/lib/clap/Corinzia Sine.clap"
+          rm -f $out/lib/libcorinzia_sine.so
           wrapProgram $out/bin/corinzia-iced \
             --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (guiLibs pkgs)} \
             --set-default CORINZIA_TEXT_FONT ${pkgs.dejavu_fonts}/share/fonts/truetype/DejaVuSerif.ttf
@@ -89,9 +97,9 @@
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
-          nativeBuildInputs = nativeDeps pkgs;
+          nativeBuildInputs = nativeDeps pkgs ++ [ pkgs.rustPlatform.bindgenHook ];
           buildInputs = buildDeps pkgs;
-          packages = with pkgs; [ lilypond sqlite-interactive python3 gdb clang-tools xvfb-run mesa ] ++ guiLibs pkgs;
+          packages = with pkgs; [ lilypond sqlite-interactive python3 gdb clang-tools xvfb-run mesa wireplumber ] ++ guiLibs pkgs;
           shellHook = ''
             export CORINZIA_LILYPOND=${pkgs.lilypond}/bin/lilypond
             # Text in the engraver's PNG previews (rust/target/tmp/engraving) and the iced app.

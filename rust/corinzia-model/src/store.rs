@@ -82,6 +82,39 @@ pub fn load(path: &Path) -> Result<Project> {
         p.next_id = next as u64;
     }
     {
+        let mut s = db.prepare("SELECT id, kind, name, clap_bundle, clap_plugin_id, bypassed FROM audio_node ORDER BY id")?;
+        let rows = s.query_map([], |r| {
+            Ok(AudioNode {
+                id: r.get::<_, i64>(0)? as u64,
+                kind: match r.get::<_, String>(1)?.as_str() {
+                    "bus" => NodeKind::Bus,
+                    "master" => NodeKind::Master,
+                    _ => NodeKind::Clap,
+                },
+                name: r.get(2)?,
+                bundle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                plugin_id: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                bypassed: r.get::<_, i64>(5)? != 0,
+            })
+        })?;
+        for n in rows {
+            p.nodes.push(n?);
+        }
+        let mut s = db.prepare("SELECT from_node, from_port, to_node, to_port, gain FROM audio_edge ORDER BY from_node, to_node")?;
+        let rows = s.query_map([], |r| {
+            Ok(AudioEdge { from: r.get::<_, i64>(0)? as u64, from_port: r.get::<_, i64>(1)? as u32, to: r.get::<_, i64>(2)? as u64, to_port: r.get::<_, i64>(3)? as u32, gain: r.get(4)? })
+        })?;
+        for e in rows {
+            p.edges.push(e?);
+        }
+        let mut s = db.prepare("SELECT node_id, state FROM plugin_state")?;
+        let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, Vec<u8>>(1)?)))?;
+        for row in rows {
+            let (id, state) = row?;
+            p.plugin_state.insert(id, Arc::new(state));
+        }
+    }
+    {
         let mut s = db.prepare(
             "SELECT id, name, instrument_node_id, note_port, output_bus_id, midi_channel, gain_db, pan, mute, solo FROM track ORDER BY ordinal",
         )?;
@@ -324,8 +357,44 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         params![project.title, project.composer, project.sample_rate, project.next_id as i64],
     )?;
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();
+    // The audio graph. Upserts (never REPLACE): deleting a node row would
+    // cascade to its automation lanes.
+    for n in &project.nodes {
+        let kind = match n.kind {
+            NodeKind::Clap => "clap",
+            NodeKind::Bus => "bus",
+            NodeKind::Master => "master",
+        };
+        let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+        tx.execute(
+            "INSERT INTO audio_node(id, kind, name, clap_bundle, clap_plugin_id, bypassed) VALUES (?,?,?,?,?,?) \
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, name=excluded.name, clap_bundle=excluded.clap_bundle, \
+             clap_plugin_id=excluded.clap_plugin_id, bypassed=excluded.bypassed",
+            params![n.id as i64, kind, n.name, opt(&n.bundle), opt(&n.plugin_id), n.bypassed as i64],
+        )?;
+    }
+    tx.execute("DELETE FROM audio_node WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.nodes.iter().map(|n| n.id).collect())])?;
+    tx.execute("DELETE FROM audio_edge", [])?;
+    for e in &project.edges {
+        tx.execute(
+            "INSERT OR IGNORE INTO audio_edge(from_node, from_port, to_node, to_port, gain) VALUES (?,?,?,?,?)",
+            params![e.from as i64, e.from_port, e.to as i64, e.to_port, e.gain],
+        )?;
+    }
+    for (id, state) in &project.plugin_state {
+        if project.node(*id).is_none() {
+            continue;
+        }
+        let hash = fnv1a(state).to_le_bytes().to_vec();
+        tx.execute(
+            "INSERT INTO plugin_state(node_id, state, state_hash) VALUES (?,?,?) ON CONFLICT(node_id) DO UPDATE SET \
+             state=excluded.state, state_hash=excluded.state_hash, saved_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+             WHERE plugin_state.state_hash IS NOT excluded.state_hash",
+            params![*id as i64, state.as_slice(), hash],
+        )?;
+    }
+    tx.execute("DELETE FROM plugin_state WHERE node_id NOT IN (SELECT value FROM json_each(?))", [ids(project.plugin_state.keys().copied().collect())])?;
     for (ord, t) in project.tracks.iter().enumerate() {
-        // Plugin nodes are not in this model: keep existing references valid.
         let node = t.instrument_node.filter(|n| node_exists(&tx, *n));
         let bus = t.output_bus.filter(|n| node_exists(&tx, *n));
         tx.execute(
@@ -430,6 +499,11 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
     tx.execute("DELETE FROM movement WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.movements.iter().map(|m| m.id).collect())])?;
     tx.commit()?;
     Ok(())
+}
+
+/// 64-bit FNV-1a, for plugin_state.state_hash (skip rewriting unchanged state).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
 fn node_exists(tx: &rusqlite::Transaction, id: u64) -> bool {

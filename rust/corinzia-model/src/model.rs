@@ -209,7 +209,7 @@ pub struct Player {
 pub struct Track {
     pub id: Id,
     pub name: String,
-    pub instrument_node: Option<Id>, // CLAP plugin node (audio graph: kept by the C++ side for now)
+    pub instrument_node: Option<Id>, // CLAP plugin node; none = the built-in instrument
     pub note_port: u16,
     pub output_bus: Option<Id>,
     pub midi_channel: u8,
@@ -217,6 +217,33 @@ pub struct Track {
     pub pan: f64,
     pub mute: bool,
     pub solo: bool,
+}
+
+/// An audio-graph node: a CLAP plugin, a bus, or the master output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeKind {
+    Clap,
+    Bus,
+    Master,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioNode {
+    pub id: Id,
+    pub kind: NodeKind,
+    pub name: String,
+    pub bundle: String,    // .clap path ("builtin:corinzia-sine" for the built-in instrument)
+    pub plugin_id: String, // clap_plugin_descriptor.id
+    pub bypassed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioEdge {
+    pub from: Id,
+    pub from_port: u32,
+    pub to: Id,
+    pub to_port: u32,
+    pub gain: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -229,6 +256,10 @@ pub struct Project {
     pub instruments: Vec<Instrument>,
     pub tracks: Vec<Track>,
     pub movements: Vec<Movement>,
+    /// The audio graph and the CLAP state chunks of its plugin nodes.
+    pub nodes: Vec<AudioNode>,
+    pub edges: Vec<AudioEdge>,
+    pub plugin_state: std::collections::BTreeMap<Id, Arc<Vec<u8>>>,
 }
 
 impl Project {
@@ -245,5 +276,8 @@ impl Project {
     }
     pub fn track(&self, id: Id) -> Option<&Track> {
         self.tracks.iter().find(|t| t.id == id)
+    }
+    pub fn node(&self, id: Id) -> Option<&AudioNode> {
+        self.nodes.iter().find(|n| n.id == id)
     }
 }

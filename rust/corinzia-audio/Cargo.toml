@@ -1,0 +1,21 @@
+[package]
+name = "corinzia-audio"
+description = "Corinzia's audio engine: CLAP hosting, realtime rendering of performed scores, PipeWire output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap-sys = "0.5"
+libloading = "0.8"
+rtrb = "0.3"
+corinzia-score.workspace = true
+corinzia-model.workspace = true
+corinzia-perform.workspace = true
+corinzia-sine.workspace = true
+pipewire = { version = "0.8", optional = true }
+
+[features]
+default = ["pipewire"]
+# Live output through PipeWire (needs libpipewire; bindgen at build time).
+pipewire = ["dep:pipewire"]

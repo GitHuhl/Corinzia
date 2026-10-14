@@ -85,3 +85,36 @@ fn notation_matches_the_model() {
     assert_eq!((e.pitches[0].step, e.pitches[0].alter, e.dynamic.as_deref()), (3, 1, Some("f")));
     assert_eq!(s.endings[0].numbers, vec![1]);
 }
+
+#[test]
+fn audio_graph_round_trip() {
+    let dir = std::env::temp_dir().join(format!("corinzia-model-graph-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("g.project");
+    let _ = std::fs::remove_file(&path);
+    let mut a = sample();
+    a.nodes = vec![
+        AudioNode { id: 500, kind: NodeKind::Clap, name: "Sine".into(), bundle: "builtin:corinzia-sine".into(), plugin_id: "org.corinzia.sine".into(), bypassed: false },
+        AudioNode { id: 501, kind: NodeKind::Master, name: "Master".into(), bundle: String::new(), plugin_id: String::new(), bypassed: false },
+    ];
+    a.edges = vec![AudioEdge { from: 500, from_port: 0, to: 501, to_port: 0, gain: 0.5 }];
+    a.plugin_state.insert(500, std::sync::Arc::new(b"CZS1\0\0\0?".to_vec()));
+    a.tracks[0].instrument_node = Some(500);
+    save(&a, &path).unwrap();
+    let b = load(&path).unwrap();
+    assert_eq!(b.nodes, a.nodes);
+    assert_eq!(b.edges, a.edges);
+    assert_eq!(b.plugin_state.get(&500).map(|s| s.as_slice()), Some(&b"CZS1\0\0\0?"[..]));
+    assert_eq!(b.tracks[0].instrument_node, Some(500));
+    // Removing the plugin: node, edge and state go; the track falls back to the built-in sound.
+    let mut c = b.clone();
+    c.nodes.retain(|n| n.id != 500);
+    c.edges.clear();
+    c.plugin_state.clear();
+    c.tracks[0].instrument_node = None;
+    save(&c, &path).unwrap();
+    let d = load(&path).unwrap();
+    assert_eq!(d.nodes.len(), 1);
+    assert!(d.edges.is_empty() && d.plugin_state.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}

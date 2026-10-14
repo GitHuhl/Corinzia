@@ -1,0 +1,12 @@
+[package]
+name = "corinzia-sine"
+description = "Corinzia Sine: a small polyphonic CLAP instrument, built in and used as the default sound and as the host's test plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clap-sys = "0.5"
