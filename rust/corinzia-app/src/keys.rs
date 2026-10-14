@@ -57,6 +57,10 @@ pub enum Action {
     Lyrics(u8),
     ShowScore,
     ShowMix,
+    /// Zoom so the page fills the width.
+    FitWidth,
+    /// Show or hide the keyboard shortcuts.
+    Help,
     // Panel-only actions.
     SetInput(bool),
     SetVoice(u8),
@@ -75,6 +79,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if let Key::Named(n) = key {
         return Some(match (n, ctrl, alt) {
             (Named::Escape, ..) => Escape,
+            (Named::F1, ..) => Help,
             (Named::Space, false, false) => PlayStop,
             // Input mode moves the caret; otherwise the arrows walk notes.
             (Named::ArrowLeft | Named::ArrowRight, _, false) => {
@@ -122,6 +127,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('o', _) => Open,
             ('n', _) => New,
             ('=' | '+', _) => ZoomIn,
+            ('0', _) => FitWidth,
             ('-', _) => ZoomOut,
             ('l', false) => Lyrics(1),
             ('l', true) => Lyrics(2),

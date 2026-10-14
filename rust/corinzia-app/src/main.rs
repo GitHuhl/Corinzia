@@ -98,6 +98,10 @@ struct App {
     popover: Option<Popover>,
     screenshot: Option<PathBuf>,
     frames: u32,
+    /// The window's size (logical pixels), for keeping the selection in view.
+    window: Size,
+    /// The keyboard shortcut overview (F1).
+    help: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +125,9 @@ enum Message {
     Proceed(Box<Message>),
     Open,
     Opened(Option<PathBuf>),
+    /// A file dropped on the window.
+    Dropped(PathBuf),
+    Resized(Size),
     SaveTo(Option<PathBuf>),
     Export(files::Format),
     ExportTo(files::Format, Option<PathBuf>),
@@ -183,6 +190,9 @@ fn parse_key_token(t: &str) -> Option<(iced::keyboard::Key, iced::keyboard::Modi
         "bs" => Key::Named(Named::Backspace),
         "del" => Key::Named(Named::Delete),
         "space" => Key::Named(Named::Space),
+        "home" => Key::Named(Named::Home),
+        "end" => Key::Named(Named::End),
+        "f1" => Key::Named(Named::F1),
         c => Key::Character(c.into()),
     };
     Some((key, mods))
@@ -276,6 +286,8 @@ impl App {
             popover: None,
             screenshot: None,
             frames: 0,
+            window: Size::new(1280.0, 860.0),
+            help: false,
         };
         app.sync();
         app
@@ -399,9 +411,83 @@ impl App {
         self.playback.play_from(m.id, quarters(at));
     }
 
+    /// The score canvas's size: the window less the toolbar, side panel and
+    /// status bar (and their hairlines).
+    fn viewport(&self) -> Size {
+        Size::new((self.window.width - panels::WIDTH - 1.0).max(100.0), (self.window.height - 47.0 - 27.0).max(100.0))
+    }
+
+    /// Pans so that the selection (or the caret's note) is in view.
+    fn reveal(&mut self) {
+        let ed = &self.editor;
+        // What to show: the selected element, or the events at the caret.
+        let mut ids: Vec<u64> = ed.selection.into_iter().collect();
+        if ids.is_empty() {
+            if let Some(m) = ed.movement() {
+                if let Some(l) = m.lanes.get(ed.caret_lane) {
+                    for v in &l.voices {
+                        if let Some(e) = v.events.iter().find(|e| e.start <= ed.caret && ed.caret <= e.end()) {
+                            ids.push(e.id);
+                            ids.extend(e.heads.iter().map(|h| h.id));
+                        }
+                    }
+                }
+            }
+        }
+        if ids.is_empty() || self.pages.is_empty() {
+            return;
+        }
+        let font = corinzia_layout::font::Font::bravura();
+        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
+        let mut r: Option<[f32; 4]> = None;
+        for (p, o) in self.pages.iter().zip(&origins) {
+            for it in p.items.iter().filter(|it| ids.contains(&it.id())) {
+                let b = it.bounds(font);
+                let b = [b[0] + o.x, b[1] + o.y, b[2] + o.x, b[3] + o.y];
+                r = Some(match r {
+                    None => b,
+                    Some(a) => [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+                });
+            }
+        }
+        let Some(r) = r else { return };
+        let px = self.zoom * score_view::BASE_PX;
+        let (x0, y0, x1, y1) = (r[0] * px + self.pan.x, r[1] * px + self.pan.y, r[2] * px + self.pan.x, r[3] * px + self.pan.y);
+        let vp = self.viewport();
+        let margin = 60.0;
+        let shift = |lo: f32, hi: f32, size: f32| -> f32 {
+            if hi - lo > size - 2.0 * margin {
+                0.0
+            } else if lo < margin {
+                margin - lo
+            } else if hi > size - margin {
+                size - margin - hi
+            } else {
+                0.0
+            }
+        };
+        self.pan = self.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
+    }
+
+    /// Ctrl+0: the page fills the canvas's width.
+    fn fit_width(&mut self) {
+        let Some(page) = self.pages.first() else { return };
+        let vp = self.viewport();
+        self.zoom = ((vp.width - 48.0) / (page.width * score_view::BASE_PX)).clamp(0.25, 8.0);
+        self.pan = Vector::new(24.0, self.pan.y.min(24.0));
+    }
+
     fn act(&mut self, a: Action) -> Task<Message> {
         let audition = matches!(a, Action::Note { .. } | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
+        let reveal = matches!(
+            a,
+            Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste
+        );
         let task = self.act_inner(a);
+        if reveal {
+            self.sync();
+            self.reveal();
+        }
         if audition && self.playback.problem.is_none() && !self.playback.is_playing() {
             self.audition();
         }
@@ -430,7 +516,9 @@ impl App {
             Action::ToggleInput => ed.set_input_mode(!ed.input_mode),
             Action::SetInput(on) => ed.set_input_mode(on),
             Action::Escape => {
-                if self.popover.take().is_some() {
+                if self.help {
+                    self.help = false;
+                } else if self.popover.take().is_some() {
                 } else if ed.input_mode {
                     ed.set_input_mode(false)
                 } else {
@@ -455,6 +543,8 @@ impl App {
             Action::CaretBy(d) => ed.move_caret(d),
             Action::CaretStaff(d) => ed.move_caret_staff(d),
             Action::Step { dir, bar } => ed.select_step(dir, bar),
+            Action::FitWidth => self.fit_width(),
+            Action::Help => self.help = !self.help,
             Action::Extend(d) => ed.extend_step(d),
             Action::Edge { last } => ed.select_edge(last),
             Action::Staff(d) => ed.select_staff(d),
@@ -640,6 +730,13 @@ impl App {
                 arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
             },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
+            Message::Resized(size) => self.window = size,
+            Message::Dropped(path) => {
+                if path.extension().is_some_and(|e| e == "project") || files::is_musicxml(&path) {
+                    return Task::done(Message::Guarded(Box::new(Message::Opened(Some(path)))));
+                }
+                self.editor.status = format!("Cannot open {}: drop a .project or MusicXML file", path.display());
+            }
             Message::Canvas(ViewEvent::Pan(d)) => self.pan = self.pan + d,
             Message::Canvas(ViewEvent::Zoom { factor, around }) => {
                 let z = (self.zoom * factor).clamp(0.25, 8.0);
@@ -880,6 +977,7 @@ impl App {
         let title = ed.movement().map(|m| m.title.clone()).unwrap_or_default();
         let toolbar = toolbar
             .push(panels::spacer())
+            .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open (Ctrl+O)"))
             .push(panels::tip(flat("Save", true, Message::Act(Action::Save)), "Save (Ctrl+S)"))
@@ -953,6 +1051,10 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if self.help {
+            desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
+        }
+
         let tabs = container(segmented(vec![
             ("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
             ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
@@ -1011,13 +1113,96 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let keys = iced::keyboard::listen().map(Message::Key);
+        let window = iced::event::listen_with(|e, _, _| match e {
+            iced::Event::Window(iced::window::Event::FileDropped(p)) => Some(Message::Dropped(p)),
+            iced::Event::Window(iced::window::Event::Resized(s)) => Some(Message::Resized(s)),
+            _ => None,
+        });
+        let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
         if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
         }
     }
+}
+
+/// The keyboard shortcut overview (F1).
+fn help_card() -> Element<'static, Message> {
+    const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
+        (
+            "Note input",
+            &[
+                ("N", "Note input on / off"),
+                ("A – G", "Enter a note"),
+                ("Shift+A – G", "Add to the chord"),
+                ("1 – 7", "64th … whole note"),
+                (".", "Dot, double dot"),
+                (";", "Triplet"),
+                ("R  ,", "Rest"),
+                ("−  =  0", "Flat, sharp, natural"),
+                ("T", "Tie"),
+                ("V", "Next voice"),
+                ("Q", "Chord mode"),
+                ("Backspace", "Delete the last note"),
+            ],
+        ),
+        (
+            "Moving around",
+            &[
+                ("← →", "Previous / next note"),
+                ("Ctrl+← →", "Previous / next bar"),
+                ("Shift+← →", "Extend the selection"),
+                ("Home  End", "First / last note"),
+                ("Alt+↑ ↓", "Staff above / below"),
+                ("↑ ↓", "Transpose a step"),
+                ("Ctrl+↑ ↓", "Transpose an octave"),
+                ("Space", "Play / stop"),
+                ("Ctrl+= −", "Zoom in / out"),
+                ("Ctrl+0", "Fit the page width"),
+            ],
+        ),
+        (
+            "Marks and text",
+            &[
+                ("[  '  ]  \\", "Staccato, accent, tenuto, marcato"),
+                ("S", "Slur"),
+                ("H  Shift+H", "Crescendo, diminuendo"),
+                ("Shift+K  M  T", "Key, time, tempo"),
+                ("Shift+C  B  R", "Clef, barline, ending"),
+                ("Shift+X  P  O", "Expression, technique, ornament"),
+                ("Shift+A", "Rehearsal mark"),
+                ("Ctrl+L", "Lyrics"),
+                ("Ctrl+K", "Chord symbols"),
+            ],
+        ),
+        (
+            "Editing and files",
+            &[
+                ("Ctrl+Z  Ctrl+Y", "Undo, redo"),
+                ("Ctrl+C  X  V", "Copy, cut, paste"),
+                ("Ctrl+A", "Select all"),
+                ("Delete", "Delete the selection"),
+                ("R", "Repeat the selection"),
+                ("Ctrl+B", "Insert a bar"),
+                ("Ctrl+Shift+⌫", "Delete bars"),
+                ("Ctrl+N  O  S", "New, open, save"),
+                ("Ctrl+1  2", "Score, Mix"),
+                ("F1", "This overview"),
+            ],
+        ),
+    ];
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let mut cols = row![].spacing(20);
+    for (title, keys) in SECTIONS {
+        let mut c = column![text(title.to_uppercase()).size(10).style(theme::faint)].spacing(5).width(200);
+        for (k, what) in keys {
+            c = c.push(row![text(*k).size(12).font(bold).style(theme::accent).width(92), text(*what).size(12)].spacing(8));
+        }
+        cols = cols.push(c);
+    }
+    let close = button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::Act(Action::Help));
+    container(column![row![text("Keyboard shortcuts").size(16).font(bold), panels::spacer(), close], cols].spacing(14)).padding(20).style(theme::card).into()
 }
 
 fn save_png(path: &std::path::Path, shot: &iced::window::Screenshot) -> Result<(), Box<dyn std::error::Error>> {
