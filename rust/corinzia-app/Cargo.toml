@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 corinzia-score.workspace = true
 corinzia-model.workspace = true
+corinzia-edit.workspace = true
 corinzia-layout.workspace = true
 iced = { version = "0.14", features = ["canvas", "advanced"] }
 ttf-parser = "0.25"

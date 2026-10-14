@@ -1,0 +1,383 @@
+//! Ported from tests/test_edit.cpp and tests/test_structure.cpp.
+
+use corinzia_edit::*;
+use corinzia_model::*;
+use corinzia_score::score::{art, span};
+use corinzia_score::Frac;
+use std::sync::Arc;
+
+fn f(n: i64, d: i64) -> Frac {
+    Frac::new(n, d)
+}
+fn p(step: i8, alter: i8, octave: i8) -> Pitch {
+    Pitch { step, alter, octave }
+}
+fn bar(ids: &mut Ids) -> Vec<Event> {
+    // c'4 d'4 e'2
+    vec![
+        make_event(ids, f(0, 1), f(1, 4), &[p(0, 0, 4)], 0),
+        make_event(ids, f(1, 4), f(1, 4), &[p(1, 0, 4)], 0),
+        make_event(ids, f(1, 2), f(1, 2), &[p(2, 0, 4)], 0),
+    ]
+}
+fn contiguous(v: &[Event]) -> bool {
+    let mut at = Frac::ZERO;
+    for e in v {
+        if e.start != at {
+            return false;
+        }
+        at = e.end();
+    }
+    true
+}
+fn two_bars(ids: &mut Ids) -> Vec<Event> {
+    // c4 d4 e4 f4 | g2 a2
+    let mut v: Vec<Event> = (0..4).map(|i| make_event(ids, f(i, 4), f(1, 4), &[p(i as i8, 0, 4)], 0)).collect();
+    v.push(make_event(ids, f(1, 1), f(1, 2), &[p(4, 0, 4)], 0));
+    v.push(make_event(ids, f(3, 2), f(1, 2), &[p(5, 0, 4)], 0));
+    v
+}
+
+#[test]
+fn durations() {
+    let d = |base, dots, triplet| DurationSpec { base, dots, triplet }.value();
+    assert_eq!(d(BaseDuration::Quarter, 0, false), f(1, 4));
+    assert_eq!(d(BaseDuration::Quarter, 1, false), f(3, 8));
+    assert_eq!(d(BaseDuration::Half, 2, false), f(7, 8));
+    assert_eq!(d(BaseDuration::Eighth, 0, true), f(1, 12));
+    assert_eq!(d(BaseDuration::SixtyFourth, 0, false), f(1, 64));
+}
+
+#[test]
+fn pitch_spelling_and_octave() {
+    assert_eq!(key_alter(1, 3), 1);
+    assert_eq!(key_alter(1, 0), 0);
+    assert!(key_alter(-2, 6) == -1 && key_alter(-2, 2) == -1 && key_alter(-2, 5) == 0);
+    let b4 = p(6, 0, 4);
+    assert_eq!(nearest_pitch(0, None, 0, b4).octave, 5);
+    assert_eq!(nearest_pitch(4, None, 0, b4).octave, 4);
+    let fs = nearest_pitch(3, None, 1, b4);
+    assert!(fs.alter == 1 && fs.octave == 4);
+    assert_eq!(nearest_pitch(3, Some(0), 1, b4).alter, 0);
+}
+
+#[test]
+fn overwrite_insert_truncates_and_fills() {
+    let mut ids = Ids(1000);
+    let v = bar(&mut ids);
+    let ev = make_event(&mut ids, f(1, 4), f(3, 8), &[p(4, 0, 4)], 0);
+    let head = ev.heads[0].id;
+    let r = insert_event(&v, ev, true, &mut ids);
+    let out = &r.events;
+    assert!(contiguous(out));
+    assert_eq!(out.len(), 3);
+    assert!(out[1].heads[0].pitch.step == 4 && out[1].duration == f(3, 8));
+    assert!(out[2].kind == EventKind::Rest && out[2].start == f(5, 8) && out[2].duration == f(3, 8));
+    assert!(r.caret == f(5, 8) && r.focus == Some(head));
+}
+
+#[test]
+fn insert_after_end_fills_gap_in_voice1_only() {
+    let mut ids = Ids(1000);
+    let v = bar(&mut ids);
+    let e = make_event(&mut ids, f(3, 2), f(1, 4), &[p(0, 0, 5)], 0);
+    let r1 = insert_event(&v, e.clone(), true, &mut ids);
+    assert!(contiguous(&r1.events) && r1.events.len() == 5 && r1.from == f(1, 1));
+    let r2 = insert_event(&v, e, false, &mut ids);
+    assert!(r2.events.len() == 4 && !contiguous(&r2.events));
+}
+
+#[test]
+fn chords_and_delete() {
+    let mut ids = Ids(1000);
+    let v = bar(&mut ids);
+    let c = add_to_chord(&v, Frac::ZERO, p(2, 0, 4), &mut ids).unwrap();
+    assert!(c.events[0].heads.len() == 2 && c.events[0].kind == EventKind::Chord);
+    assert!(add_to_chord(&c.events, Frac::ZERO, p(2, 0, 4), &mut ids).is_none());
+    assert!(add_to_chord(&v, f(1, 8), p(2, 0, 4), &mut ids).is_none());
+    let upper = c.events[0].heads[1].id;
+    let d1 = delete_element(&c.events, upper, true, &mut ids).unwrap();
+    assert!(d1.events[0].heads.len() == 1 && d1.events[0].kind == EventKind::Note);
+    let d2 = delete_element(&d1.events, d1.events[0].heads[0].id, true, &mut ids).unwrap();
+    assert!(d2.events[0].kind == EventKind::Rest && contiguous(&d2.events));
+    let d3 = delete_element(&v, v[1].id, false, &mut ids).unwrap();
+    assert_eq!(d3.events.len(), 2);
+}
+
+#[test]
+fn modify_and_lookup() {
+    let mut ids = Ids(1000);
+    let v = bar(&mut ids);
+    let m = modify_event(&v, v[2].heads[0].id, |e, h| {
+        e.articulations |= art::ACCENT;
+        e.heads[h.unwrap()].tie = true;
+    })
+    .unwrap();
+    assert!(m.events[2].articulations & art::ACCENT != 0 && m.events[2].heads[0].tie);
+    assert_eq!(event_at(&v, f(5, 8)).unwrap().id, v[2].id);
+    assert_eq!(previous_pitch(&v, f(1, 2)).unwrap().step, 1);
+    assert_eq!(voice_end(&v), f(1, 1));
+    let (e, h) = find_event(&v, v[1].heads[0].id).unwrap();
+    assert!(e.id == v[1].id && h == Some(0));
+}
+
+#[test]
+fn range_erase_slice_paste() {
+    let mut ids = Ids(1000);
+    let v = two_bars(&mut ids);
+    let e = erase_range(&v, f(1, 4), f(3, 4), true, &mut ids);
+    assert!(contiguous(&e.events) && e.events.len() == 5);
+    assert!(e.events[1].kind == EventKind::Rest && e.events[1].duration == f(1, 2));
+    let e2 = erase_range(&v, f(3, 4), f(5, 4), true, &mut ids);
+    assert!(contiguous(&e2.events));
+    assert_eq!(voice_end(&e2.events), f(2, 1));
+    let clip = slice_range(&v, f(1, 2), f(1, 1));
+    assert!(clip.len() == 2 && clip[0].start == Frac::ZERO && clip[1].start == f(1, 4));
+    let pr = paste_events(&v, &clip, f(1, 1), f(1, 2), true, &mut ids);
+    assert!(contiguous(&pr.events));
+    let pasted = event_at(&pr.events, f(1, 1)).unwrap();
+    assert!(pasted.heads[0].pitch.step == 2 && pasted.id != clip[0].id && pasted.heads[0].id != clip[0].heads[0].id);
+    assert_eq!(event_at(&pr.events, f(3, 2)).unwrap().heads[0].pitch.step, 5);
+    let holey = vec![make_event(&mut ids, f(1, 4), f(1, 4), &[p(6, 0, 4)], 0)];
+    let p2 = paste_events(&v, &holey, Frac::ZERO, f(1, 2), true, &mut ids);
+    assert!(contiguous(&p2.events) && p2.events[0].kind == EventKind::Rest);
+}
+
+#[test]
+fn range_transpose_apply_and_spans() {
+    let mut ids = Ids(1000);
+    let v = two_bars(&mut ids);
+    let t = transpose_range(&v, Frac::ZERO, f(1, 1), 2).unwrap();
+    assert!(t.events[0].heads[0].pitch.step == 2 && t.events[4].heads[0].pitch.step == 4);
+    let a = apply_to_range(&v, Frac::ZERO, f(1, 2), |e| e.articulations |= art::STACCATO).unwrap();
+    assert!(a.events[1].articulations & art::STACCATO != 0 && a.events[2].articulations & art::STACCATO == 0);
+    let s = mark_span(&v, Frac::ZERO, f(1, 1), span::SLUR_START, span::SLUR_END).unwrap();
+    assert!(s.events[0].spans & span::SLUR_START != 0 && s.events[3].spans & span::SLUR_END != 0);
+    assert!(mark_span(&v, Frac::ZERO, f(1, 4), span::SLUR_START, span::SLUR_END).is_none());
+    let h = mark_span(&s.events, Frac::ZERO, f(2, 1), span::CRESC_START, span::HAIRPIN_END).unwrap();
+    let d = mark_span(&h.events, Frac::ZERO, f(2, 1), span::DIM_START, span::HAIRPIN_END).unwrap();
+    assert!(d.events[0].spans & span::DIM_START != 0 && d.events[0].spans & span::CRESC_START == 0);
+    assert!(d.events[0].spans & span::SLUR_START != 0);
+}
+
+// ------------------------------------------------------------ structure --
+fn header() -> Movement {
+    Movement {
+        id: 1,
+        ordinal: 0,
+        title: String::new(),
+        length: f(8, 1),
+        revision: 0,
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }],
+        keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
+        barlines: vec![],
+        rehearsal: vec![],
+        endings: vec![],
+        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]) }] }],
+    }
+}
+
+#[test]
+fn parse_key_cases() {
+    assert_eq!(parse_key("Eb"), Some(KeySig { fifths: -3, minor: false }));
+    assert_eq!(parse_key("f#"), Some(KeySig { fifths: 3, minor: true }));
+    assert_eq!(parse_key("Bbm"), Some(KeySig { fifths: -5, minor: true }));
+    assert_eq!(parse_key("A minor"), Some(KeySig { fifths: 0, minor: true }));
+    assert_eq!(parse_key("D major"), Some(KeySig { fifths: 2, minor: false }));
+    assert_eq!(parse_key("E♭").unwrap().fifths, -3);
+    assert!(parse_key("H").is_none() && parse_key("").is_none() && parse_key("cbm").is_none());
+}
+
+#[test]
+fn parse_time_clef_barline() {
+    assert_eq!(parse_time("6/8"), Some((6, 8)));
+    assert_eq!(parse_time(" 3/4 "), Some((3, 4)));
+    assert_eq!(parse_time("C"), Some((4, 4)));
+    assert_eq!(parse_time("C|"), Some((2, 2)));
+    assert!(parse_time("3/5").is_none() && parse_time("x/4").is_none() && parse_time("0/4").is_none());
+    assert_eq!(parse_clef("Bass"), Some("bass"));
+    assert_eq!(parse_clef("c"), Some("alto"));
+    assert_eq!(parse_clef("g8"), Some("treble_8"));
+    assert!(parse_clef("soprano-ish").is_none());
+    assert_eq!(parse_barline("||"), Some(BarKind::Double));
+    assert_eq!(parse_barline("final"), Some(BarKind::Final));
+    assert_eq!(parse_barline("|:"), Some(BarKind::RepeatStart));
+    assert_eq!(parse_barline(":|"), Some(BarKind::RepeatEnd));
+    assert_eq!(parse_barline(":|:"), Some(BarKind::RepeatBoth));
+    assert!(parse_barline("|||").is_none());
+}
+
+#[test]
+fn parse_tempo_cases() {
+    let t = |s: &str| parse_tempo(s).map(|t| (t.text, t.bpm));
+    assert_eq!(t("Allegro 132"), Some(("Allegro".into(), 132.0)));
+    assert_eq!(t("q=96"), Some(("".into(), 96.0)));
+    assert_eq!(t("72"), Some(("".into(), 72.0)));
+    assert_eq!(t("Adagio"), Some(("Adagio".into(), 70.0)));
+    assert_eq!(t("Andante = 84"), Some(("Andante".into(), 84.0)));
+    assert!(t("Whatever").is_none() && t("q=2").is_none());
+}
+
+#[test]
+fn bar_positions() {
+    let mut h = header();
+    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4 });
+    assert_eq!(bar_start_at_or_before(&h, f(3, 2)), f(1, 1));
+    assert_eq!(bar_start_at_or_before(&h, f(2, 1)), f(2, 1));
+    assert_eq!(bar_start_at_or_before(&h, f(23, 8)), f(11, 4));
+    assert_eq!(bar_length(&h, f(3, 1)), f(3, 4));
+    assert_eq!(nearest_barline(&h, f(9, 8)), f(1, 1));
+    assert_eq!(nearest_barline(&h, f(15, 8)), f(2, 1));
+    assert_eq!(nearest_barline(&h, f(63, 8)), f(8, 1));
+    assert_eq!(bar_number(&h, f(9, 4)), (3, f(1, 4)));
+    assert_eq!(round_up_to_bar(&h, f(33, 4)), f(35, 4));
+}
+
+#[test]
+fn header_edits() {
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_key(&mut h, f(1, 1), KeySig { fifths: 2, minor: false });
+    set_key(&mut h, f(1, 1), KeySig { fifths: -1, minor: false });
+    assert!(h.keys.len() == 2 && h.keys[1].fifths == -1);
+    set_meter(&mut h, f(2, 1), 6, 8);
+    assert!(h.meter.len() == 2 && h.meter[1].num == 6);
+    set_tempo(&mut h, Frac::ZERO, &TempoSpec { text: "Lento".into(), bpm: 56.0 });
+    assert!(h.tempo.len() == 1 && h.tempo[0].text == "Lento" && h.tempo[0].bpm == 56.0);
+    set_barline(&mut h, f(4, 1), BarKind::Double, &mut ids);
+    set_barline(&mut h, f(4, 1), BarKind::RepeatEnd, &mut ids);
+    assert!(h.barlines.len() == 1 && h.barlines[0].kind == BarKind::RepeatEnd);
+    toggle_rehearsal_mark(&mut h, f(3, 1), &mut ids);
+    assert_eq!(h.rehearsal.len(), 1);
+    toggle_rehearsal_mark(&mut h, f(3, 1), &mut ids);
+    assert!(h.rehearsal.is_empty());
+    set_clef(&mut h, 1, f(1, 1), "bass", &mut ids);
+    assert!(h.lanes[0].clefs.len() == 1 && h.lanes[0].clefs[0].clef == "bass");
+    add_text(&mut h, 1, f(2, 1), "dolce", TextKind::Expression, &mut ids);
+    add_text(&mut h, 1, f(1, 1), "pizz.", TextKind::Technique, &mut ids);
+    assert!(h.lanes[0].texts.len() == 2 && h.lanes[0].texts[0].text == "pizz.");
+}
+
+#[test]
+fn insert_delete_header() {
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_key(&mut h, f(2, 1), KeySig { fifths: 1, minor: false });
+    set_barline(&mut h, f(4, 1), BarKind::Double, &mut ids);
+    set_clef(&mut h, 1, f(1, 1), "bass", &mut ids);
+    insert_span(&mut h, f(1, 1), f(2, 1));
+    assert_eq!(h.length, f(10, 1));
+    assert!(h.keys[0].at == Frac::ZERO && h.keys[1].at == f(4, 1));
+    assert_eq!(h.barlines[0].at, f(6, 1));
+    assert_eq!(h.lanes[0].clefs[0].at, f(3, 1));
+    assert_eq!(h.meter[0].at, Frac::ZERO);
+    delete_span(&mut h, Frac::ZERO, f(4, 1));
+    assert_eq!(h.length, f(6, 1));
+    assert!(h.keys.len() == 1 && h.keys[0].at == Frac::ZERO && h.keys[0].fifths == 1);
+    assert!(h.lanes[0].clefs.is_empty());
+    assert_eq!(h.barlines[0].at, f(2, 1));
+}
+
+#[test]
+fn insert_delete_events() {
+    let mut ids = Ids(5000);
+    let v = vec![
+        make_event(&mut ids, Frac::ZERO, f(1, 2), &[p(0, 0, 4)], 0),
+        make_event(&mut ids, f(1, 2), f(1, 1), &[p(1, 0, 4)], 0),
+        make_event(&mut ids, f(2, 1), f(1, 1), &[p(2, 0, 4)], 0),
+    ];
+    let ins = insert_span_events(&v, f(1, 1), f(1, 1));
+    assert!(ins[0].start == Frac::ZERO && ins[1].start == f(1, 2) && ins[2].start == f(3, 1));
+    let del = delete_span_events(&v, f(1, 1), f(2, 1));
+    assert_eq!(del.len(), 3);
+    assert_eq!(del[1].duration, f(1, 2));
+    assert!(!del[1].heads[0].tie);
+    assert_eq!(del[2].start, f(1, 1));
+    let del2 = delete_span_events(&v, f(1, 1), f(3, 1));
+    assert!(del2.len() == 2 && del2[1].duration == f(1, 2));
+}
+
+#[test]
+fn remove_items_by_id() {
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_barline(&mut h, f(1, 1), BarKind::Final, &mut ids);
+    toggle_rehearsal_mark(&mut h, f(1, 1), &mut ids);
+    add_text(&mut h, 1, Frac::ZERO, "dolce", TextKind::Expression, &mut ids);
+    let (text, mark) = (h.lanes[0].texts[0].id, h.rehearsal[0].id);
+    assert_eq!(describe_item(&h, mark).as_deref(), Some("Rehearsal mark"));
+    assert_eq!(remove_item(&mut h, text).as_deref(), Some("Expression \"dolce\""));
+    assert!(h.lanes[0].texts.is_empty() && h.rehearsal.len() == 1 && h.barlines.len() == 1);
+    assert!(remove_item(&mut h, text).is_none());
+    let b = h.barlines[0].id;
+    assert_eq!(remove_item(&mut h, b).as_deref(), Some("Final barline"));
+    assert!(h.barlines.is_empty());
+}
+
+#[test]
+fn text_items_follow_their_bars() {
+    let mut ids = Ids(5000);
+    let mut h = header();
+    add_text(&mut h, 1, Frac::ZERO, "dolce", TextKind::Expression, &mut ids);
+    add_text(&mut h, 1, f(1, 1), "pizz.", TextKind::Technique, &mut ids);
+    add_text(&mut h, 1, f(1, 1), "sul pont.", TextKind::Technique, &mut ids);
+    set_barline(&mut h, f(1, 1), BarKind::RepeatStart, &mut ids);
+    insert_span(&mut h, Frac::ZERO, f(1, 1));
+    assert!(h.lanes[0].texts[0].at == f(1, 1) && h.lanes[0].texts[1].at == f(2, 1));
+    assert_eq!(h.barlines[0].at, f(2, 1));
+    assert_eq!(h.keys[0].at, Frac::ZERO);
+    delete_span(&mut h, f(1, 1), f(2, 1));
+    assert!(h.lanes[0].texts.len() == 2 && h.lanes[0].texts[0].at == f(1, 1) && h.lanes[0].texts[1].at == f(1, 1));
+}
+
+#[test]
+fn delete_bars_keeps_barlines_between_bars() {
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_barline(&mut h, f(2, 1), BarKind::RepeatEnd, &mut ids);
+    set_barline(&mut h, f(3, 1), BarKind::Double, &mut ids);
+    set_barline(&mut h, f(8, 1), BarKind::Final, &mut ids);
+    delete_span(&mut h, f(2, 1), f(4, 1));
+    assert!(h.barlines.len() == 2 && h.barlines[0].at == f(2, 1) && h.barlines[0].kind == BarKind::RepeatEnd);
+    assert!(h.barlines[1].at == f(6, 1) && h.barlines[1].kind == BarKind::Final);
+    delete_span(&mut h, f(5, 1), f(6, 1));
+    assert!(h.length == f(5, 1) && h.barlines.last().unwrap().at == f(5, 1) && h.barlines.last().unwrap().kind == BarKind::Final);
+}
+
+#[test]
+fn ornaments() {
+    assert_eq!(parse_ornament("tr"), Some(art::TRILL));
+    assert_eq!(parse_ornament(" Mordent "), Some(art::MORDENT));
+    assert_eq!(parse_ornament("//"), Some(art::CAESURA));
+    assert_eq!(parse_ornament(","), Some(art::BREATH));
+    assert_eq!(parse_ornament("arp"), Some(art::ARPEGGIO));
+    assert!(parse_ornament("glissando").is_none());
+}
+
+#[test]
+fn endings() {
+    assert_eq!(parse_ending("1"), Some(1));
+    assert_eq!(parse_ending("2."), Some(2));
+    assert_eq!(parse_ending("1, 2"), Some(3));
+    assert_eq!(parse_ending("1-3"), Some(7));
+    assert_eq!(parse_ending("1.2."), Some(3));
+    for bad in ["0", "12", "x", "3-1", "1-"] {
+        assert!(parse_ending(bad).is_none(), "{bad}");
+    }
+    assert_eq!(ending_label(1), "1.");
+    assert_eq!(ending_label(3), "1., 2.");
+    assert_eq!(ending_label(7), "1.–3.");
+    assert_eq!(ending_label(5), "1., 3.");
+    let mut ids = Ids(5000);
+    let mut h = header();
+    set_ending(&mut h, f(3, 1), f(4, 1), 1, &mut ids);
+    set_ending(&mut h, f(4, 1), f(5, 1), 2, &mut ids);
+    set_ending(&mut h, f(3, 1), f(4, 1), 3, &mut ids);
+    assert!(h.endings.len() == 2 && h.endings[0].passes == 3 && h.endings[1].from == f(4, 1));
+    insert_span(&mut h, f(7, 2), f(1, 1));
+    assert!(h.endings[0].from == f(3, 1) && h.endings[0].to == f(5, 1) && h.endings[1].from == f(5, 1));
+    delete_span(&mut h, f(4, 1), f(6, 1));
+    assert!(h.endings.len() == 1 && h.endings[0].to == f(4, 1));
+    assert_eq!(describe_item(&h, h.endings[0].id).as_deref(), Some("Ending 1., 2."));
+}

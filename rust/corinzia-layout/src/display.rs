@@ -58,12 +58,14 @@ pub struct StaffGeom {
     pub left: f32,
     pub right: f32,
     pub line_width: f32,
+    pub system: u32, // index of the system on its page
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Column {
     pub quarter: f64, // written position in quarters from the movement start
     pub x: f32,
+    pub system: u32,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]

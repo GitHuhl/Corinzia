@@ -563,12 +563,21 @@ dependencies = [
 name = "corinzia-app"
 version = "0.1.0"
 dependencies = [
+ "corinzia-edit",
  "corinzia-layout",
  "corinzia-model",
  "corinzia-score",
  "iced",
  "png",
  "ttf-parser",
+]
+
+[[package]]
+name = "corinzia-edit"
+version = "0.1.0"
+dependencies = [
+ "corinzia-model",
+ "corinzia-score",
 ]
 
 [[package]]

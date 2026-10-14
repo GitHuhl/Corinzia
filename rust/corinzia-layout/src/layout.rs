@@ -582,13 +582,13 @@ impl<'a> Engraver<'a> {
                 n.x = xs[j];
             }
             for (j, &t) in cols.iter().enumerate() {
-                self.out.columns.push(Column { quarter: (t.num as f64 / t.den as f64) * 4.0, x: xs[j] });
+                self.out.columns.push(Column { quarter: (t.num as f64 / t.den as f64) * 4.0, x: xs[j], system: 0 });
             }
             self.ms[mi].x1 = x1;
             x = x1 + 0.0;
         }
         let end = self.ms.last().map(|m| m.start + m.len).unwrap_or(Frac::ZERO);
-        self.out.columns.push(Column { quarter: end.num as f64 / end.den as f64 * 4.0, x });
+        self.out.columns.push(Column { quarter: end.num as f64 / end.den as f64 * 4.0, x, system: 0 });
         // Justify: stretch everything after the system's opening prefix.
         if let Some(w) = self.width {
             let cs = self.ms.first().map(|m| m.x0).unwrap_or(self.left);
@@ -633,7 +633,7 @@ impl<'a> Engraver<'a> {
         let right = self.out.width - self.opt.margin;
         for pi in 0..self.score.parts.len() {
             let top = self.top(pi);
-            self.out.staves.push(StaffGeom { part: pi, top, left: self.left, right, line_width: t });
+            self.out.staves.push(StaffGeom { part: pi, top, left: self.left, right, line_width: t, system: 0 });
             // Clef at the system start (the one in force); the instrument name left of the staff.
             let clef = self.clef_at(pi, self.range.0);
             let (g, dy) = clef_glyph(&clef);
@@ -1675,15 +1675,18 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
             offset = y - y0;
         }
         let (dx, dy) = (page.margin_x - opt.margin, offset);
+        let sys_index = cur.staves.last().map(|s| s.system + 1).unwrap_or(0);
         cur.items.extend(sys.items.into_iter().map(|i| i.translated(dx, dy)));
         cur.staves.extend(sys.staves.into_iter().map(|mut st| {
             st.top += dy;
             st.left += dx;
             st.right += dx;
+            st.system = sys_index;
             st
         }));
         cur.columns.extend(sys.columns.into_iter().map(|mut c| {
             c.x += dx;
+            c.system = sys_index;
             c
         }));
         y = offset + y1 + page.system_gap;

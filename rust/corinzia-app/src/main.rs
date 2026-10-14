@@ -7,6 +7,7 @@
 //! replace the Qt one: it reads and writes the same .project files.
 
 mod demo;
+mod editor;
 mod score_view;
 
 use corinzia_layout::{layout_line, layout_pages, DisplayList, Options, PageSpec};

@@ -1,0 +1,10 @@
+[package]
+name = "corinzia-edit"
+description = "Pure editing operations on the Corinzia model: note input, ranges, structure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corinzia-score.workspace = true
+corinzia-model.workspace = true

@@ -66,3 +66,43 @@ pub fn project() -> Project {
     p.next_id = id + 1;
     p
 }
+
+/// A new, empty project: these instruments (name, abbreviation, clef), each
+/// on its own player, over `bars` bars of 4/4 filled with whole-bar rests.
+pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Project {
+    let mut p = Project { title: title.into(), sample_rate: 48000.0, next_id: 1, ..Default::default() };
+    let mut lanes = Vec::new();
+    for (k, (name, abbr, clef)) in instruments.iter().enumerate() {
+        let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
+        p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (k % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: 0, clef: clef.to_string(), track: Some(track) });
+        p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
+        let rests: Vec<Event> = (0..bars)
+            .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0 })
+            .collect();
+        let (change, voice) = (p.allocate_id(), p.allocate_id());
+        lanes.push(Lane {
+            player,
+            changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
+            clefs: vec![],
+            texts: vec![],
+            voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests) }],
+        });
+    }
+    let id = p.allocate_id();
+    p.movements.push(Movement {
+        id,
+        ordinal: 0,
+        title: String::new(),
+        length: Frac::int(bars.max(1)),
+        revision: 0,
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4 }],
+        keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
+        barlines: vec![],
+        rehearsal: vec![],
+        endings: vec![],
+        lanes,
+    });
+    p
+}
