@@ -40,7 +40,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
     }
 }
 
-/// c'4 d'4 <e' g'>2 | b''4 a''4-. r2   (the C++ fixture)
+/// c'4 d'4 <e' g'>2 | b''4 a''4-. r2   (the fixture)
 fn fixture() -> Movement {
     let mut ids = Ids(100);
     let mut a = make_event(&mut ids, f(1, 1) + f(1, 4), f(1, 4), &[p(5, 0, 5)], art::STACCATO);

@@ -2,7 +2,6 @@
 //! (bpm linear in quarters):
 //!   t(q) = 60/k · ln(bpm(q)/bpm0)            (k ≠ 0)
 //!   q(t) = bpm0 · (exp(k t / 60) − 1) / k
-//! Port of the C++ `rt::TempoMap`.
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TempoPoint {

@@ -1,8 +1,4 @@
-//! `.project` files (SQLite, schema/project.sql, user_version 2), read and
-//! written in the same format as the C++ ProjectStore so both applications
-//! open each other's files. The audio graph (plugin nodes, edges, plugin
-//! state) and automation are not part of this model yet: saving leaves those
-//! tables untouched.
+//! `.project` files: SQLite with the schema in schema/project.sql.
 
 use crate::model::*;
 use corinzia_score::Frac;
@@ -13,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub const SCHEMA: &str = include_str!("../../../schema/project.sql");
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 1;
 /// Voice content is stored in chunks of this many whole notes.
 const CHUNK_WHOLE_NOTES: i64 = 4;
 
@@ -54,12 +50,6 @@ fn chunk_of(start: Frac) -> i64 {
 fn open_db(path: &Path) -> Result<Connection> {
     let db = Connection::open(path)?;
     db.execute_batch(SCHEMA)?;
-    let has_notation: bool = db
-        .prepare("SELECT 1 FROM pragma_table_info('movement') WHERE name = 'notation'")?
-        .exists([])?;
-    if !has_notation {
-        db.execute_batch("ALTER TABLE movement ADD COLUMN notation BLOB")?;
-    }
     db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(db)
 }
@@ -237,7 +227,7 @@ pub fn load(path: &Path) -> Result<Project> {
             }
             m.lanes.push(lane);
         }
-        // Structure marks, clefs, texts (NULL in v1 files).
+        // Structure marks, clefs, texts, chord symbols.
         if let Some(n) = notation {
             let n: Value = serde_json::from_str(&n)?;
             for b in n["barlines"].as_array().into_iter().flatten() {
@@ -380,9 +370,7 @@ fn event_json(e: &Event) -> Value {
     o
 }
 
-/// Writes the whole project (players, instruments, tracks, movements and
-/// their music). Rows that no longer exist are removed; the audio graph,
-/// plugin state, automation and undo journal are left as they are.
+/// Writes the whole project. Rows that no longer exist are removed.
 pub fn save(project: &Project, path: &Path) -> Result<()> {
     let mut db = open_db(path)?;
     let tx = db.transaction()?;
@@ -393,8 +381,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         params![project.title, project.composer, project.sample_rate, project.next_id as i64],
     )?;
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();
-    // The audio graph. Upserts (never REPLACE): deleting a node row would
-    // cascade to its automation lanes.
+    // The audio graph. Upserts, not REPLACE: replacing a node row would
+    // delete it first and cascade to its state and edges.
     for n in &project.nodes {
         let kind = match n.kind {
             NodeKind::Clap => "clap",

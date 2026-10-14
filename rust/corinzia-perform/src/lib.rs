@@ -3,8 +3,8 @@
 //! out, articulations become gate times and dynamics/hairpins velocities.
 //! Positions are *performed* quarters from the movement start.
 //!
-//! The Rust port of the C++ `compile::perform` family; it feeds MIDI export
-//! (`document`) now and the Rust audio engine later.
+//! It feeds both MIDI export (`document`) and the audio engine
+//! (`corinzia-audio`'s snapshots).
 
 pub mod tempo;
 
@@ -403,9 +403,9 @@ pub fn perform(m: &Movement) -> Performance {
     Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes }
 }
 
-/// The export document of one movement (notation + performance), as the
-/// C++ `exporter::exportDocument` built it: one MIDI track per DAW track
-/// that sounds, in mixer order; gate and roll applied in time.
+/// The export document of one movement (notation + performance): one MIDI
+/// track per DAW track that sounds, in mixer order; gate and roll applied in
+/// time, as in playback.
 pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Document {
     use corinzia_export::doc;
     let perf = perform(m);
@@ -435,7 +435,6 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
         })
         .collect();
     doc::Document {
-        version: 1,
         title: project.title.clone(),
         composer: project.composer.clone(),
         score: corinzia_model::notation::score(project, m),

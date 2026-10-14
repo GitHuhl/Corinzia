@@ -1,12 +1,11 @@
 //! The engraver's output: a flat, renderer-agnostic display list in staff
 //! spaces (x right, y down; the top line of the first staff is y = 0). Any
-//! front end (Qt scene graph, wgpu in iced, tiny-skia for tests) draws it,
+//! renderer (the app's iced canvas, PDF, tiny-skia for tests) draws it,
 //! and `id`s map every mark back to the model for hit testing.
 
 use crate::font::Glyph;
-use serde::Serialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -15,8 +14,7 @@ pub fn pt(x: f32, y: f32) -> Point {
     Point { x, y }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(tag = "k", rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     /// A SMuFL glyph with its origin at `at` (SMuFL origin); `scale` 1 = full size
     /// (clef changes are drawn smaller).
@@ -51,7 +49,7 @@ impl Item {
 
 /// Geometry besides the marks: staves (drawn by every renderer from this,
 /// and used for the caret and mouse entry) and the time -> x map (playhead).
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct StaffGeom {
     pub part: usize,
     pub top: f32, // y of the top line; five lines one space apart
@@ -61,14 +59,14 @@ pub struct StaffGeom {
     pub system: u32, // index of the system on its page
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Column {
     pub quarter: f64, // written position in quarters from the movement start
     pub x: f32,
     pub system: u32,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default)]
 pub struct DisplayList {
     pub width: f32,
     pub height: f32,

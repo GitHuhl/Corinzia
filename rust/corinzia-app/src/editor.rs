@@ -1,7 +1,7 @@
 //! The score editor: input state (caret, duration, accidental, voice),
 //! selection (one element or a passage), clipboard, and undo/redo.
 //!
-//! The Rust twin of the Qt AppController's editing half. Every user action
+//! Every user action
 //! is one undo step: the project is snapshotted before the change (voices are
 //! `Arc`-shared, so a snapshot copies little more than the movement headers)
 //! and the edit itself goes through the pure `corinzia_edit` functions.

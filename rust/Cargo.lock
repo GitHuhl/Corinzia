@@ -746,20 +746,6 @@ name = "corinzia-export"
 version = "0.1.0"
 dependencies = [
  "corinzia-score",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "corinzia-ffi"
-version = "0.1.0"
-dependencies = [
- "corinzia-export",
- "corinzia-layout",
- "corinzia-model",
- "corinzia-score",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -797,10 +783,6 @@ dependencies = [
 [[package]]
 name = "corinzia-score"
 version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "corinzia-sine"

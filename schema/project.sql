@@ -1,21 +1,17 @@
 -- Corinzia project container (.project) — SQLite >= 3.45 (binary JSONB).
 --
+-- Read and written by rust/corinzia-model/src/store.rs.
+--
 -- Design rules
---  * One file = one project. WAL mode: the PersistenceWorker writes on its own
---    connection while the UI thread never touches SQLite.
---  * Every row is keyed by the persistent ElementId used in memory, in the
---    engraved SVG (<g id="e-…">) and as CLAP note_id. No surrogate keys.
---  * Music is stored in *chunks* (voice_chunk / automation_chunk) of a fixed
---    musical span (4 whole notes = 16 crotchets). Editing one note rewrites one
---    small JSONB row, so auto-save cost is proportional to the edit, not the score.
---  * Large opaque blobs (CLAP plugin state, engraving cache) live in their own
---    tables, so metadata updates never rewrite megabytes of state.
---  * undo_journal persists the command history per movement → undo survives
---    reopen and can be scoped to a single movement.
+--  * One file = one project; autosave writes it from a worker thread (WAL).
+--  * Every row is keyed by the persistent element id used in memory and in
+--    the engraving. No surrogate keys.
+--  * Music is stored in chunks (voice_chunk) of a fixed musical span (4 whole
+--    notes = 16 crotchets), as JSONB.
+--  * CLAP plugin state lives in its own table, so metadata writes never
+--    rewrite large blobs.
 
 PRAGMA application_id = 1129271898;   -- 'CORZ'
--- user_version (schema version) is managed by ProjectStore::open, which
--- creates/migrates: v1 -> v2 adds movement.notation.
 PRAGMA journal_mode   = WAL;
 PRAGMA foreign_keys   = ON;
 
@@ -25,8 +21,7 @@ CREATE TABLE IF NOT EXISTS project (
     title        TEXT    NOT NULL DEFAULT '',
     composer     TEXT    NOT NULL DEFAULT '',
     sample_rate  REAL    NOT NULL DEFAULT 48000,
-    next_id      INTEGER NOT NULL,                    -- ElementId allocator high-water mark
-    settings     BLOB,                                -- JSONB: engraving/house style, transport prefs
+    next_id      INTEGER NOT NULL,                    -- element id allocator high-water mark
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     modified_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -73,12 +68,6 @@ CREATE TABLE IF NOT EXISTS track (
     output_bus_id       INTEGER REFERENCES audio_node(id) ON DELETE SET NULL
 );
 
--- Named mixer/console layouts (strip order, widths, colours, visible sends).
-CREATE TABLE IF NOT EXISTS mixer_layout (
-    name    TEXT PRIMARY KEY,
-    layout  BLOB NOT NULL                             -- JSONB
-) WITHOUT ROWID;
-
 -- ----------------------------------------------------- players / instruments --
 CREATE TABLE IF NOT EXISTS player (
     id       INTEGER PRIMARY KEY,
@@ -110,8 +99,9 @@ CREATE TABLE IF NOT EXISTS movement (
     meter       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"num":4,"den":4}]
     keys        BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
     -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}], "endings":[{"id","from","to","n":passes bitmask}],
-    --        "clefs":[{"id","p":player,"at","c":"bass"}], "texts":[{"id","p","at","t":"dolce","k":"x"|"t"}]}
-    notation    BLOB
+    --        "clefs":[{"id","p":player,"at","c":"bass"}], "texts":[{"id","p","at","t":"dolce","k":"x"|"t"}],
+    --        "chords":[{"id","p","at","c":"F♯m7"}]}
+    notation    BLOB    NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS player_lane (
@@ -143,51 +133,12 @@ CREATE INDEX IF NOT EXISTS voice_by_lane ON voice(movement_id, player_id);
 
 -- Event payload, chunked by musical span: chunk_index = floor(start / 4 whole notes).
 -- events: JSONB array of
---   {"id":17,"k":"n|r|c","s":[n,d],"d":[n,d],"a":bits,"dyn":5,
---    "h":[{"id":18,"p":[step,alter,octave],"t":0|1,"v":velocity}]}
+--   {"id":17,"k":"n|r|c","s":[n,d],"d":[n,d],"a":bits,"dyn":5,"sp":span bits,
+--    "h":[{"id":18,"p":[step,alter,octave],"t":0|1,"v":velocity}],
+--    "ly":[{"v":verse,"t":"Glo","h":hyphen,"x":extender}]}
 CREATE TABLE IF NOT EXISTS voice_chunk (
     voice_id     INTEGER NOT NULL REFERENCES voice(id) ON DELETE CASCADE,
     chunk_index  INTEGER NOT NULL,
     events       BLOB    NOT NULL,
     PRIMARY KEY (voice_id, chunk_index)
 ) WITHOUT ROWID;
-
-CREATE TABLE IF NOT EXISTS automation_lane (
-    id             INTEGER PRIMARY KEY,
-    movement_id    INTEGER NOT NULL REFERENCES movement(id) ON DELETE CASCADE,
-    name           TEXT    NOT NULL DEFAULT '',
-    node_id        INTEGER NOT NULL REFERENCES audio_node(id) ON DELETE CASCADE,
-    clap_param_id  INTEGER NOT NULL,
-    mode           TEXT    NOT NULL CHECK (mode IN ('value','mod')),
-    note_id        INTEGER NOT NULL DEFAULT -1
-);
-
--- points: JSONB [{"id":40,"at":[n,d],"v":0.5,"c":"step|lin|exp|s"}]
-CREATE TABLE IF NOT EXISTS automation_chunk (
-    lane_id      INTEGER NOT NULL REFERENCES automation_lane(id) ON DELETE CASCADE,
-    chunk_index  INTEGER NOT NULL,
-    points       BLOB    NOT NULL,
-    PRIMARY KEY (lane_id, chunk_index)
-) WITHOUT ROWID;
-
--- ---------------------------------------------------------- history / cache --
--- Persistent, per-movement-scopable undo history (serialized Commands).
-CREATE TABLE IF NOT EXISTS undo_journal (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    movement_id  INTEGER REFERENCES movement(id) ON DELETE CASCADE,   -- NULL = project-wide
-    label        TEXT    NOT NULL,
-    forward      BLOB    NOT NULL,                    -- JSONB command payload
-    inverse      BLOB    NOT NULL,                    -- JSONB inverse payload
-    undone       INTEGER NOT NULL DEFAULT 0,          -- 1 = on the redo side of the cursor
-    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-);
-CREATE INDEX IF NOT EXISTS undo_by_movement ON undo_journal(movement_id, seq);
-
--- Last definitive engraving per movement: reopening a project shows real
--- engraving instantly while the background pass revalidates it.
-CREATE TABLE IF NOT EXISTS engraving_cache (
-    movement_id        INTEGER PRIMARY KEY REFERENCES movement(id) ON DELETE CASCADE,
-    revision           INTEGER NOT NULL,              -- movement.revision it was built from
-    engraver_version   TEXT    NOT NULL,              -- e.g. 'GNU LilyPond 2.26.0'
-    svg                BLOB    NOT NULL               -- one or more pages, concatenated with \f
-);

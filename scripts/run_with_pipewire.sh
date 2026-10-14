@@ -29,6 +29,6 @@ if [ -n "${CORINZIA_PW_SESSION:-}" ]; then
     wp_pid=$!
     sleep 1.5
 fi
-# The C++ test creates its own sink node (a pw_filter with DSP input ports) and
+# Tests that need a sink create one (e.g. a null-audio-sink via pw-cli).
 # links to it with pw-link, which is the session manager's job on a desktop.
 "$@"

@@ -1,11 +1,9 @@
-//! Exact musical time: whole-note fractions, as in the C++ model.
+//! Exact musical time: whole-note fractions.
 
-use serde::Deserialize;
 use std::cmp::Ordering;
 use std::ops::{Add, Mul, Sub};
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(from = "[i64; 2]")]
+#[derive(Clone, Copy, Debug)]
 pub struct Frac {
     pub num: i64,
     pub den: i64,
@@ -35,12 +33,6 @@ impl Frac {
     }
     pub fn is_zero(self) -> bool {
         self.num == 0
-    }
-}
-
-impl From<[i64; 2]> for Frac {
-    fn from(v: [i64; 2]) -> Self {
-        Frac::new(v[0], if v[1] == 0 { 1 } else { v[1] })
     }
 }
 

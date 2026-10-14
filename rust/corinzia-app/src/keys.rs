@@ -1,4 +1,4 @@
-//! The score keyboard, as in the Qt app: note names enter notes, digits pick
+//! The score keyboard: note names enter notes, digits pick
 //! durations, punctuation adds marks, Shift+letter opens a popover.
 
 use crate::editor::PopoverKind;

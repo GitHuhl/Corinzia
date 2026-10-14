@@ -1,6 +1,6 @@
-//! A movement as the engraver's input (`corinzia_score::score::Score`), the
-//! Rust twin of the C++ `exporter::scoreJson`: staff names and clefs from
-//! each lane's first instrument, instrument changes written as text.
+//! A movement as the engraver's and exporters' input
+//! (`corinzia_score::score::Score`): staff names and clefs from each lane's
+//! first instrument, instrument changes written as text.
 
 use crate::model::*;
 use corinzia_score::score as sc;

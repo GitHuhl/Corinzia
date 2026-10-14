@@ -1,10 +1,10 @@
-//! Corinzia's iced front end.
+//! Corinzia: a music notation editor and CLAP DAW (iced).
 //!
-//! `corinzia-iced [file.project] [--view page|panorama] [--screenshot out.png]`
+//! `corinzia [file.project] [--view page|panorama] [--keys "n c d"]
+//! [--screenshot out.png] [--export out.pdf|mid|musicxml]`
 //!
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
-//! as vector geometry. This is the start of the Rust application that will
-//! replace the Qt one: it reads and writes the same .project files.
+//! as vector geometry; playback runs through corinzia-audio.
 
 mod arrange;
 mod demo;
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn saves_a_project_both_apps_can_open() {
-        let dir = std::env::temp_dir().join(format!("corinzia-iced-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("corinzia-app-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("demo.project");
         let mut a = app(View::Page);

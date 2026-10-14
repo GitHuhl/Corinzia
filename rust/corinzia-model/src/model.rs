@@ -1,5 +1,5 @@
 //! Model types. Music is immutable-shared per voice (`Arc<Vec<Event>>`), so
-//! snapshots for engraving and playback are cheap, as in the C++ model.
+//! snapshots for undo, engraving and playback are cheap.
 
 pub use corinzia_score::score::Lyric;
 use corinzia_score::Frac;

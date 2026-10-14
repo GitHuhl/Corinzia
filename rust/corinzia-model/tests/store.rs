@@ -122,3 +122,4 @@ fn audio_graph_round_trip() {
     assert!(d.edges.is_empty() && d.plugin_state.is_empty());
     std::fs::remove_dir_all(&dir).ok();
 }
+

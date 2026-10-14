@@ -6,116 +6,73 @@
 
 
 
-* Zero-lag score canvas (Qt Quick scene graph) with an instant provisional layer
-  and an asynchronous definitive LilyPond engraving layer.
-* Lock-free real-time engine: sample-accurate `clap_event_note`,
-  `clap_event_param_value` / `clap_event_param_mod` and transport.
-* Multi-movement scores, players with instrument doubling (switches plugin and
-  channel at the exact sample), up to four voices per staff, automation lanes.
-* SQLite `.project` container: chunked JSONB music payload, isolated plugin
-  state blobs, non-blocking autosave, persistent undo journal.
+Corinzia is written in Rust. The score is engraved by its own engraver
+(Bravura/SMuFL) and drawn on the GPU with iced; playback hosts CLAP
+instruments in a lock-free realtime engine that outputs through PipeWire.
 
-**Read the blueprint:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+* **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
+  input from the keyboard, the mouse and the Notes panel; passages by
+  marquee, Shift-click or Ctrl+A; copy/paste/repeat; articulations,
+  ornaments, dynamics, slurs, hairpins and ties; key, time, clef, tempo,
+  barlines, repeat endings, rehearsal marks and text through popovers and
+  the Structure panel. Every action is one undo step.
+* **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
+  (Space moves to the next note, `-` hyphenates, `_` draws an extender;
+  Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is
+  engraved as F♯m7♭5/E). Staves move apart where they need the room.
+* **Playback:** Space plays from the selection or caret with a playhead in
+  the score; repeats, endings, ties, ornaments, dynamics and hairpins are
+  performed. Tracks without a plugin play through **Corinzia Sine**, a
+  small built-in CLAP instrument (also installed as
+  `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
+  auditioned.
+* **Mix tab** (Ctrl+2): the arrange view, mixer strips (gain, pan, mute,
+  solo) and a browser of the CLAP instruments found in `CLAP_PATH`,
+  `~/.clap`, your Nix profiles and `/usr/lib/clap`.
+* **Files:** New (type an instrument list, e.g. "Flute, 2 Violin, Cello"),
+  Open, Save and autosave to a single SQLite `.project` file. Export writes
+  a vector PDF straight from the engraver, MIDI and MusicXML 4.0.
+  `corinzia score.project --export score.pdf` works headless.
 
-## Build & test (Nix only)
+**Read the design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+
+## Run, build & test (Nix only)
 
 ```sh
+nix run                                       # the app (a demo score)
+nix run . -- score.project                    # open a project
+nix build                                     # sandboxed build running every test
+
 nix develop                                   # pinned nixos-26.05 toolchain
-cmake -S . -B build -G Ninja
-cmake --build build
-ctest --test-dir build --output-on-failure    # core + offscreen Qt/LilyPond tests
-python3 -I scripts/validate_schema.py         # schema + example data check
-
-nix build                                     # sandboxed build running the full test suite
-
-nix run .#iced                                # the Rust application (demo score)
-nix build .#iced                              # its sandboxed build + tests
-(cd rust && cargo test --workspace)           # all Rust crates, from the dev shell
+cd rust && cargo test --workspace             # all crates
+cargo run -p corinzia-app                     # the app from source
+scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lavapipe)
 ```
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `include/corinzia/core` | `ElementId`, typed ids, exact `Fraction` time |
-| `include/corinzia/model` | semantic model (Project → Movement → PlayerLane → Voice), commands, undo |
-| `include/corinzia/rt` | SPSC queue, seqlock, tempo map, playback snapshot, playhead tracker |
-| `include/corinzia/audio` | CLAP host (lifecycle, extensions), RT event lists, audio engine |
-| `include/corinzia/compile` | model → `PlaybackSnapshot` compiler |
-| `include/corinzia/engrave` | model → LilyPond emitter with SVG object ids |
-| `include/corinzia/storage` | SQLite project store + background persistence worker |
-| `include/corinzia/ui` | engraving service, SVG hit index, layout anchors, `ScoreCanvas` |
-| `schema/` | `project.sql` (embedded into the binary), `example_project.json` |
-| `tests/` | dependency-free test harness, in-process CLAP recorder plugin fixture |
+| `rust/corinzia-app` | the application (iced): score canvas, editor, panels, playback, Mix tab, files |
+| `rust/corinzia-edit` | pure editing operations: note input, ranges, structure, popover parsing |
+| `rust/corinzia-model` | project model and `.project` storage (SQLite, `schema/project.sql`) |
+| `rust/corinzia-layout` | the engraver: display lists, page layout, PDF |
+| `rust/corinzia-perform` | performance: repeats, ties, ornaments, dynamics; tempo maps; export documents |
+| `rust/corinzia-audio` | CLAP host, realtime engine, PipeWire output |
+| `rust/corinzia-sine` | Corinzia Sine, the built-in CLAP instrument |
+| `rust/corinzia-export` | MIDI and MusicXML writers |
+| `rust/corinzia-score` | exact fractions, note values, the engraver's input types |
+| `assets/fonts/bravura` | Bravura (SIL OFL) and its SMuFL metadata |
+| `scripts/` | headless screenshots, a private PipeWire session for the live audio test |
 
-Run it with `nix run`, or `./build/corinzia` from the dev shell. Press **N** to
-write notes: A–G enter pitches, 1–7 pick durations (5 = quarter), R enters a
-rest, and the left Notes panel does the same with the mouse. Clicking a staff
-in input mode places a note at that pitch and beat. The full key map is in
-§5.5 of the architecture document.
+Press **N** to write notes: A–G enter pitches, 1–7 pick durations
+(5 = quarter), R enters a rest; clicking a staff in input mode places a note.
+Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T
+tempo ("Allegro 132"), Shift+B barline (":|"), Shift+C clef, Shift+X /
+Shift+P expression or technique text, Shift+O ornaments, Shift+R endings,
+Shift+A rehearsal mark; Ctrl+B inserts a bar. The full key map is in
+`rust/corinzia-app/src/keys.rs`.
 
-Select passages by dragging a marquee on empty paper, Shift+clicking or
-pressing Ctrl+A. Then Ctrl+C/X/V, R (repeat), Delete, ↑/↓, S (slur) and
-H/Shift+H (hairpins) work on the whole passage. **Page | Panorama** switches
-between the printed layout and one endless system. Zoom stays vector-sharp at
-any level.
-
-Score structure uses industry-style popovers: Shift+K key ("Eb", "f#" minor),
-Shift+M time ("6/8"), Shift+T tempo ("Allegro 132"), Shift+B barline (":|"
-repeats play back), Shift+C clef, Shift+X / Shift+P expression or technique
-text, and Shift+A rehearsal mark. The right-hand Structure panel has the same
-actions plus insert/delete bars (Ctrl+B to insert). Click a mark or text and
-press Delete to remove it. Shift+O adds ornaments (tr, mordent, turn, trem,
-arp, breath, caesura); "1st / 2nd ending" or Shift+R add repeat endings, and
-repeats play back as written.
-
-**⚡ Native** engraves with Corinzia's own engraver, written in Rust with
-the Bravura font, in both Page and Panorama view. Re-engraving takes tens of
-milliseconds instead of seconds. PDF export still uses LilyPond. See §5.5f of the architecture document for the plan
-towards a full native engraver and an iced front end.
-
-### The Rust application (iced)
-
-The Rust front end (`nix run .#iced [file.project]`) is replacing the Qt
-one. It opens and saves the same `.project` files and has:
-
-* **Score tab:** the native engraving drawn as GPU vector geometry (Page and
-  Panorama), note input from the keyboard, the mouse and the Notes panel,
-  marquee/Shift-click/Ctrl+A passages, copy/paste/repeat, articulations,
-  ornaments, dynamics, slurs, hairpins and ties, and the Structure panel and
-  popovers (key, time, clef, tempo, barlines, endings, rehearsal marks, text,
-  insert/delete bars). Every action is one undo step.
-* **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
-  (Space moves to the next note, `-` hyphenates, `_` draws an extender;
-  Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is
-  engraved as F♯m7♭5/E with SMuFL chord-symbol accidentals). Staves move
-  apart where lyrics or chord symbols need the room. Both export to
-  MusicXML.
-* **Playback:** Space plays from the selection or caret, with a playhead in
-  the score. The audio engine is Rust: CLAP hosting, a lock-free realtime
-  engine and PipeWire output. Tracks without a plugin play through
-  **Corinzia Sine**, a small built-in CLAP instrument, which is also
-  installed as `lib/clap/Corinzia Sine.clap` for other hosts. Entered notes
-  are auditioned.
-* **Mix tab:** the arrange view, mixer strips (gain, pan, mute, solo) and a
-  CLAP instrument browser.
-* **Files:** New (type an instrument list, e.g. "Flute, 2 Violin, Cello"),
-  Open, Save and autosave. Export writes a vector PDF straight from the
-  native engraver (no LilyPond needed), plus MIDI and MusicXML.
-  `corinzia-iced score.project --export score.pdf` works headless.
-
-**Export ▾** in the toolbar writes PDF (LilyPond), MIDI (sounds like playback,
-one track per mixer track) and MusicXML 4.0. MIDI and MusicXML come from a
-small Rust crate (`rust/corinzia-export`) built by the same Nix flake.
-
-The notation and DAW sides are separate tabs: **Score** (Ctrl+1) for engraving
-and note input, **Mix** (Ctrl+2) for the arrange view, mixer strips and plugin
-browser. Selection, transport and undo are shared between them.
-
-Status: implemented and tested are the core engine with plugin delay
-compensation, CLAP hosting (including the MIDI-dialect fallback and plugin
-scanning and lifecycle), the PipeWire backend, storage, the engraving round
-trip, the canvas and a QML application shell. Note input works from the
-keyboard, the mouse and the Notes panel. Plugin GUI embedding, range editing
-and copy/paste, slurs and hairpins, and the piano roll are next; see §9 of the
-architecture document.
+Not yet: bus routing and plugin delay compensation (tracks mix straight to
+the output), automation playback, plugin GUIs, and more than one movement
+in the view.

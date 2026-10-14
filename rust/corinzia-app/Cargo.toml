@@ -1,12 +1,12 @@
 [package]
 name = "corinzia-app"
-description = "Corinzia's iced front end"
+description = "Corinzia: music notation editor and CLAP DAW (iced)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "corinzia-iced"
+name = "corinzia"
 path = "src/main.rs"
 
 [dependencies]

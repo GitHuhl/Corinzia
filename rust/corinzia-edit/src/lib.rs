@@ -1,5 +1,5 @@
-//! Pure editing operations on the Corinzia model, the Rust port of the C++
-//! `corinzia::edit` layer (NoteInput, Structure).
+//! Pure editing operations on the Corinzia model: note input and ranges
+//! (`note_input`), score structure (`structure`).
 //!
 //! Note input follows the "overwrite" model of the major notation editors:
 //! a new event occupies `[pos, pos + duration)`, anything it covers is removed

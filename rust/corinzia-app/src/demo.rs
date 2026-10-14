@@ -1,4 +1,4 @@
-//! A small built-in project, so the app opens with music (`corinzia-iced`
+//! A small built-in project, so the app opens with music (`corinzia`
 //! without a file): two players over eight bars, written in the engraver's
 //! test notation and converted into the model.
 

@@ -1,5 +1,5 @@
 //! Live output through a real (private, headless) PipeWire daemon:
-//!   CORINZIA_PW=1 CORINZIA_PW_SESSION=1 tests/run_with_pipewire.sh cargo test -p corinzia-audio --test pipewire
+//!   CORINZIA_PW=1 CORINZIA_PW_SESSION=1 scripts/run_with_pipewire.sh cargo test -p corinzia-audio --test pipewire
 //! (needs `wireplumber` on PATH for the session).
 //! Skipped unless CORINZIA_PW is set.
 

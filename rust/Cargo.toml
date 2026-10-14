@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-layout", "corinzia-ffi", "corinzia-edit", "corinzia-perform", "corinzia-sine", "corinzia-audio", "corinzia-app"]
+members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-layout", "corinzia-edit", "corinzia-perform", "corinzia-sine", "corinzia-audio", "corinzia-app"]
 
 [workspace.package]
 version = "0.1.0"
