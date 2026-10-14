@@ -47,7 +47,7 @@ target_compile_options(corinzia_core PRIVATE -Wall -Wextra -Wpedantic)
 # MIDI / MusicXML writers in Rust (rust/corinzia-export), built by Cargo through
 # Corrosion and linked as a static library; Export.cpp builds their input.
 find_package(Corrosion REQUIRED)
-corrosion_import_crate(MANIFEST_PATH rust/corinzia-export/Cargo.toml CRATE_TYPES staticlib)
+corrosion_import_crate(MANIFEST_PATH rust/Cargo.toml CRATES corinzia-export CRATE_TYPES staticlib)
 add_library(corinzia_io src/export/Export.cpp)
 target_link_libraries(corinzia_io PUBLIC corinzia_core PRIVATE corinzia_export)
 target_compile_options(corinzia_io PRIVATE -Wall -Wextra -Wpedantic)
@@ -120,10 +120,11 @@ if(CORINZIA_BUILD_TESTS)
     target_compile_definitions(corinzia_tests PRIVATE CORINZIA_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/test-plugins"
                                                       CORINZIA_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
     add_test(NAME corinzia_tests COMMAND corinzia_tests)
-    # The export crate's own unit tests (Cargo; vendored crates in the sandbox).
+    # The Rust workspace's own tests: score types, export, native engraver
+    # (Cargo; vendored crates in the sandbox).
     find_program(CARGO_EXECUTABLE cargo REQUIRED)
-    add_test(NAME corinzia_export_rust
-             COMMAND ${CARGO_EXECUTABLE} test --quiet --manifest-path ${CMAKE_SOURCE_DIR}/rust/corinzia-export/Cargo.toml
+    add_test(NAME corinzia_rust
+             COMMAND ${CARGO_EXECUTABLE} test --quiet --workspace --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
                      --target-dir ${CMAKE_BINARY_DIR}/cargo-test)
     if(PIPEWIRE_FOUND)
         add_executable(corinzia_pw_tests tests/test_pipewire.cpp)

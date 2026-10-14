@@ -59,10 +59,10 @@ const char* dynamicName(std::uint8_t m) {
 }
 
 std::string event(const model::MusicEvent& e) {
-    std::string o = "{\"start\":" + frac(e.start) + ",\"dur\":" + frac(e.duration);
+    std::string o = "{\"id\":" + std::to_string(e.id.id.value) + ",\"start\":" + frac(e.start) + ",\"dur\":" + frac(e.duration);
     if (!e.heads.empty() && e.kind != model::EventKind::Rest)
         o += ",\"pitches\":" + array(e.heads, [](const model::NoteHead& h) {
-                 return "{\"step\":" + std::to_string(h.pitch.step) + ",\"alter\":" + std::to_string(h.pitch.alter) +
+                 return "{\"id\":" + std::to_string(h.id.id.value) + ",\"step\":" + std::to_string(h.pitch.step) + ",\"alter\":" + std::to_string(h.pitch.alter) +
                         ",\"octave\":" + std::to_string(h.pitch.octave) + (h.tieToNext ? ",\"tie\":true" : "") + "}";
              });
     if (e.articulations) o += ",\"art\":" + std::to_string(e.articulations);

@@ -6,7 +6,7 @@
 //! thread.
 
 pub mod doc;
-pub mod frac;
+pub use corinzia_score::frac;
 pub mod midi;
 pub mod musicxml;
 

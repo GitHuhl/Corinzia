@@ -1,0 +1,12 @@
+[package]
+name = "corinzia-score"
+description = "Corinzia score data shared by the Rust crates: exact fractions and the notation of a movement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

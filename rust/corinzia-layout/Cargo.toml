@@ -1,0 +1,18 @@
+[package]
+name = "corinzia-layout"
+description = "Corinzia native engraving: SMuFL (Bravura) layout of a score into a renderer-agnostic display list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["raster"]
+# Rasterize display lists to images (reference tests, previews).
+raster = ["dep:tiny-skia"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+corinzia-score.workspace = true
+ttf-parser = "0.25"
+tiny-skia = { version = "0.11", optional = true }
