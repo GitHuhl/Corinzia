@@ -3,7 +3,7 @@ resolver = "2"
 members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-import", "corinzia-layout", "corinzia-edit", "corinzia-perform", "corinzia-sine", "corinzia-audio", "corinzia-app"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 

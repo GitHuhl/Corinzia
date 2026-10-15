@@ -19,7 +19,7 @@
 
       corinzia = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia";
-        version = "0.1.1";
+        version = "0.2.0";
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -66,7 +66,7 @@
         target = "x86_64-unknown-linux-gnu";
       in pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia-appimage";
-        version = "0.1.1";
+        version = "0.2.0";
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -134,7 +134,7 @@
         fonts = "${pkgs.dejavu_fonts}/share/fonts/truetype";
       in rustPlatform.buildRustPackage {
         pname = "corinzia-windows";
-        version = "0.1.1";
+        version = "0.2.0";
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
