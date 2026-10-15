@@ -36,6 +36,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
             clefs: vec![],
             texts: vec![],
             chords: vec![],
+            lines: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(events), tuplets: vec![] }],
         }],
     }
@@ -257,4 +258,28 @@ fn da_capo_dal_segno_fine_and_coda() {
     m.barlines = vec![Barline { id: 9, at: F::int(2), kind: BarKind::RepeatEnd }];
     m.endings = vec![Ending { id: 7, from: F::int(1), to: F::int(2), passes: 1 }, Ending { id: 8, from: F::int(2), to: F::int(3), passes: 2 }];
     assert_eq!(bars(&m), [(0, 2), (0, 1), (2, 6), (0, 1), (2, 6)]);
+}
+
+#[test]
+fn the_pedal_holds_notes_until_it_lifts() {
+    let mut ids = Ids(100);
+    // Staccato quarters C D under a pedal over the first half note; E after it.
+    let evs = vec![
+        make_event(&mut ids, F::ZERO, f(1, 4), &[p(0, 0, 5)], art::STACCATO),
+        make_event(&mut ids, f(1, 4), f(1, 4), &[p(1, 0, 5)], 0),
+        make_event(&mut ids, f(1, 2), f(1, 4), &[p(2, 0, 5)], 0),
+        make_event(&mut ids, f(3, 4), f(1, 4), &[], 0),
+    ];
+    let mut m = movement(F::int(1), evs);
+    m.lanes[0].lines = vec![LineSpan { id: 1, from: F::ZERO, to: f(1, 2), kind: LineKind::Pedal }];
+    let perf = perform(&m);
+    let off = |key: i32| {
+        let n = perf.notes.iter().find(|n| n.key == key).unwrap();
+        n.on_q + (n.full_off_q - n.on_q) * n.gate
+    };
+    // The staccato C rings to beat 3 (quarter 2.0), where the pedal lifts;
+    // D ends there anyway; E is played as written.
+    assert_eq!(off(72), 2.0);
+    assert!(off(74) <= 2.0 && off(74) > 1.5);
+    assert!(off(76) < 3.0);
 }

@@ -16,7 +16,7 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, Nav, NavMark, NavTo,
+    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo,
 };
 use corinzia_score::score::{art, span, Lyric};
 use corinzia_score::Frac;
@@ -169,6 +169,9 @@ struct StaffMusic {
     /// (start, actual, normal).
     tuplets: BTreeMap<String, Vec<Tuplet>>,
     open_tuplets: BTreeMap<String, Vec<(Frac, i64, i64)>>,
+    /// Octave lines and pedals, and those still open (start, kind).
+    lines: Vec<LineSpan>,
+    open_lines: Vec<(Frac, LineKind)>,
     /// MusicXML voice name -> grace notes waiting for their note.
     graces: BTreeMap<String, Vec<Grace>>,
     /// Dynamics and hairpins waiting for the next event at or after a time.
@@ -515,6 +518,33 @@ fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff
                         bpm = Some(pm * quarters);
                     }
                 }
+                "octave-shift" | "pedal" => {
+                    let ty = c.attribute("type").unwrap_or("");
+                    let octave = c.tag_name().name() == "octave-shift";
+                    let close = |staff: &mut StaffMusic, p: &mut Project, pedal: bool| {
+                        if let Some(i) = staff.open_lines.iter().rposition(|(_, k)| (*k == LineKind::Pedal) == pedal) {
+                            let (from, kind) = staff.open_lines.remove(i);
+                            if at > from {
+                                staff.lines.push(LineSpan { id: p.allocate_id(), from, to: at, kind });
+                            }
+                        }
+                    };
+                    match (octave, ty) {
+                        (true, "stop") => close(staff, p, false),
+                        (true, "down" | "up") => {
+                            let size = c.attribute("size").and_then(|s| s.parse::<i32>().ok()).unwrap_or(8);
+                            let k = if size >= 15 { 2 } else { 1 } * if ty == "down" { 1 } else { -1 };
+                            staff.open_lines.push((at, LineKind::Octave(k)));
+                        }
+                        (false, "start") => staff.open_lines.push((at, LineKind::Pedal)),
+                        (false, "stop") => close(staff, p, true),
+                        (false, "change") => {
+                            close(staff, p, true);
+                            staff.open_lines.push((at, LineKind::Pedal));
+                        }
+                        _ => {}
+                    }
+                }
                 "segno" if first => add_nav(movement, p, if at >= bar_end { bar_end } else { bar }, Nav::Segno),
                 "coda" if first => add_nav(movement, p, if at >= bar_end { bar_end } else { bar }, Nav::Coda),
                 "rehearsal" if first => {
@@ -827,11 +857,18 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
         let ts = corinzia_edit::tuplets::sanitize(&evs, &ts);
         lane_voices.push(Voice { id, index: i as u8 + 1, events: Arc::new(evs), tuplets: ts });
     }
+    // Lines never stopped run to the end.
+    for (from, kind) in std::mem::take(&mut s.open_lines) {
+        if from < length {
+            s.lines.push(LineSpan { id: p.allocate_id(), from, to: length, kind });
+        }
+    }
+    s.lines.sort_by(|a, b| a.from.cmp(&b.from));
     let change = p.allocate_id();
     let clefs = s.clefs.into_iter().map(|(at, clef)| ClefChange { id: p.allocate_id(), at, clef }).collect();
     let texts = s.texts.into_iter().map(|(at, text)| TextItem { id: p.allocate_id(), at, text, kind: TextKind::Expression }).collect();
     let chords = s.chords.into_iter().map(|(at, text)| ChordSymbol { id: p.allocate_id(), at, text }).collect();
-    Lane { player, changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }], clefs, texts, chords, voices: lane_voices }
+    Lane { player, changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }], clefs, texts, chords, lines: s.lines, voices: lane_voices }
 }
 
 fn rest(p: &mut Project, start: Frac, duration: Frac) -> Event {

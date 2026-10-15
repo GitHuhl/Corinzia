@@ -480,6 +480,15 @@ pub fn perform(m: &Movement) -> Performance {
                         }
                         let figure = ornament_figure(h.pitch, end - ev.start - steal, ev.articulations, key_at(ev.start));
                         let n = figure.len();
+                        // The sustain pedal (on any of the player's staves) held
+                        // when the note is let go keeps it sounding until it lifts.
+                        let held = m
+                            .lanes
+                            .iter()
+                            .filter(|o| o.player == lane.player)
+                            .flat_map(|o| o.lines.iter())
+                            .find(|p| p.kind == LineKind::Pedal && p.from < end && end < p.to)
+                            .map(|p| p.to.min(b));
                         for (fi, f) in figure.into_iter().enumerate() {
                             notes.push(PerformedNote {
                                 instrument: inst,
@@ -487,8 +496,11 @@ pub fn perform(m: &Movement) -> Performance {
                                 key: f.pitch.midi_key(),
                                 velocity: vel.min(1.0),
                                 on_q: to_q(ev.start + steal + f.offset),
-                                full_off_q: to_q(ev.start + steal + f.offset + f.length),
-                                gate: if fi + 1 < n { 0.95 } else { gate },
+                                full_off_q: match held {
+                                    Some(t) if fi + 1 == n => to_q(t),
+                                    _ => to_q(ev.start + steal + f.offset + f.length),
+                                },
+                                gate: if fi + 1 < n { 0.95 } else if held.is_some() { 1.0 } else { gate },
                                 roll_sec: if fi == 0 { roll } else { 0.0 },
                             });
                         }

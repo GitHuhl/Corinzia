@@ -55,6 +55,9 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
 * Navigation marks: segno and coda signs at the start of their bar; To
   Coda, Fine and D.C./D.S. (to the end, al Fine, al Coda) at the end of
   theirs. They move with inserted and deleted bars.
+* Each lane has lines: octave lines (8va, 8vb, 15ma, 15mb) and the sustain
+  pedal over a span. Notes stay at sounding pitch; the engraver writes
+  them octaves away under an octave line.
 * An event may carry grace notes (single notes or chords, a written value
   and an optional slash). They belong to the note they precede, take no
   time in the score, and play on the beat, taking a 32nd each (a 64th
@@ -74,6 +77,10 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
     MIDI and MusicXML stay at concert pitch; PDF follows the view.
 
 **Storage** (`store.rs`, `schema/project.sql`):
+
+* lanes are keyed by their position in the movement (a player may have
+  several: a piano's two staves), and so are their clefs, text, chord
+  symbols and lines;
 
 * one SQLite file per project;
 * voice content is stored as JSONB in chunks of four whole notes;
@@ -190,6 +197,10 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* Octave lines: the SMuFL sign, a dashed line to the last note and a hook
+  at the end, above (8va, 15ma) or below (8vb, 15mb). The pedal: Ped.
+  under its first note and the release sign at its end (before the
+  barline when it ends a bar).
 * Segno and coda signs sit over their barline above the top staff; To
   Coda (with a small coda sign), Fine and the jumps in italics end at
   theirs, all stacked against the skyline.
@@ -276,6 +287,7 @@ Every example score in the W3C MusicXML repository imports and engraves
   each set, to Fine, or to To Coda and on from the coda sign.
 * **Notes:**
   * grace notes play on the beat, taking their time from the note;
+  * a note let go while the player's pedal is down sounds until it lifts;
   * ties are merged;
   * ornaments are written out (trills in the key, turns, mordents,
     tremolos);

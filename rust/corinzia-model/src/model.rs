@@ -1,7 +1,7 @@
 //! Model types. Music is immutable-shared per voice (`Arc<Vec<Event>>`), so
 //! snapshots for undo, engraving and playback are cheap.
 
-pub use corinzia_score::score::{Lyric, Nav, NavMark, NavTo};
+pub use corinzia_score::score::{LineKind, LineSpan, Lyric, Nav, NavMark, NavTo};
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -204,6 +204,8 @@ pub struct Lane {
     pub clefs: Vec<ClefChange>,
     pub texts: Vec<TextItem>,
     pub chords: Vec<ChordSymbol>,
+    /// Octave lines and pedal (sorted by start).
+    pub lines: Vec<LineSpan>,
     pub voices: Vec<Voice>,
 }
 impl Lane {

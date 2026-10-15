@@ -2,7 +2,7 @@
 //! model stores sounding pitch). Events crossing barlines, and durations no
 //! single note value can show, are split into tied notes.
 
-use crate::doc::{art, span, BarKind, Document, Event, Nav, Part, Score};
+use crate::doc::{art, span, BarKind, Document, Event, LineKind, Nav, Part, Score};
 use crate::frac::{lcm, Frac};
 use corinzia_score::values::{candidates, decompose, NoteValue};
 use std::fmt::Write;
@@ -253,6 +253,23 @@ impl<'a> Writer<'a> {
                         ),
                     };
                     directions.push((n.at, format!("      <direction placement=\"above\"><direction-type>{body}</direction-type>{sound}</direction>")));
+                }
+            }
+            // Octave lines and pedal: start in the bar of their start, stop at their end.
+            for l in &part.lines {
+                let (start, stop) = match l.kind {
+                    LineKind::Pedal => ("<pedal type=\"start\" line=\"no\" sign=\"yes\"/>".to_string(), "<pedal type=\"stop\" line=\"no\" sign=\"yes\"/>".to_string()),
+                    LineKind::Octave(k) => {
+                        let size = if k.abs() >= 2 { 15 } else { 8 };
+                        (format!("<octave-shift type=\"{}\" size=\"{size}\"/>", if k > 0 { "down" } else { "up" }), format!("<octave-shift type=\"stop\" size=\"{size}\"/>"))
+                    }
+                };
+                let placement = if matches!(l.kind, LineKind::Octave(k) if k > 0) { "above" } else { "below" };
+                if l.from >= m.start && l.from < end {
+                    directions.push((l.from, format!("      <direction placement=\"{placement}\"><direction-type>{start}</direction-type></direction>")));
+                }
+                if l.to > m.start && l.to <= end {
+                    directions.push((l.to, format!("      <direction placement=\"{placement}\"><direction-type>{stop}</direction-type></direction>")));
                 }
             }
             for c in part.chords.iter().filter(|c| c.at >= m.start && c.at < end) {

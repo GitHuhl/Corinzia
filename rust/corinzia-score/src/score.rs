@@ -171,6 +171,49 @@ pub struct Part {
     /// Staves next to each other with the same non-zero group share a
     /// bracket (an instrument family) and barlines.
     pub group: u32,
+    /// Octave lines and pedal marks on this staff.
+    pub lines: Vec<LineSpan>,
+}
+
+/// A line over `[from, to)` of a staff.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineSpan {
+    pub id: u64,
+    pub from: Frac,
+    pub to: Frac,
+    pub kind: LineKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    /// Notes written this many octaves from where they sound: 1 = 8va
+    /// (written an octave lower), -1 = 8vb, 2 = 15ma, -2 = 15mb.
+    Octave(i8),
+    /// The sustain pedal held.
+    Pedal,
+}
+
+impl LineKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            LineKind::Octave(1) => "8va",
+            LineKind::Octave(-1) => "8vb",
+            LineKind::Octave(2) => "15ma",
+            LineKind::Octave(-2) => "15mb",
+            LineKind::Octave(_) => "8va",
+            LineKind::Pedal => "ped",
+        }
+    }
+    pub fn from_code(c: &str) -> Option<LineKind> {
+        Some(match c {
+            "8va" => LineKind::Octave(1),
+            "8vb" => LineKind::Octave(-1),
+            "15ma" => LineKind::Octave(2),
+            "15mb" => LineKind::Octave(-2),
+            "ped" => LineKind::Pedal,
+            _ => return None,
+        })
+    }
 }
 
 /// A chord symbol: written root, quality and bass, e.g. "F♯m7♭5/E".

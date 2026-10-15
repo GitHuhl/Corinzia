@@ -101,39 +101,42 @@ CREATE TABLE IF NOT EXISTS movement (
     meter       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"num":4,"den":4}]
     keys        BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
     -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}], "endings":[{"id","from","to","n":passes bitmask}],
-    --        "clefs":[{"id","p":player,"at","c":"bass"}], "texts":[{"id","p","at","t":"dolce","k":"x"|"t"}],
-    --        "chords":[{"id","p","at","c":"F♯m7"}]}
+    --        "nav":[{"id","at","k":"segno"|"coda"|"tocoda"|"fine"|"dc"|"dc-fine"|"ds-coda"...}],
+    --        per lane ("li": lane index): "clefs":[{"id","li","at","c":"bass"}],
+    --        "texts":[{"id","li","at","t":"dolce","k":"x"|"t"}], "chords":[{"id","li","at","c":"F♯m7"}],
+    --        "lines":[{"id","li","from","to","k":"8va"|"8vb"|"15ma"|"15mb"|"ped"}]}
     notation    BLOB    NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS player_lane (
+-- A movement's staves in order; a player may have several (a piano's two).
+CREATE TABLE IF NOT EXISTS lane (
     movement_id  INTEGER NOT NULL REFERENCES movement(id) ON DELETE CASCADE,
+    lane_index   INTEGER NOT NULL,
     player_id    INTEGER NOT NULL REFERENCES player(id)   ON DELETE CASCADE,
-    ordinal      INTEGER NOT NULL,
-    PRIMARY KEY (movement_id, player_id)
+    PRIMARY KEY (movement_id, lane_index)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS instrument_change (
     id             INTEGER PRIMARY KEY,
     movement_id    INTEGER NOT NULL,
-    player_id      INTEGER NOT NULL,
+    lane_index     INTEGER NOT NULL,
     at_num         INTEGER NOT NULL,
     at_den         INTEGER NOT NULL,
     instrument_id  INTEGER NOT NULL REFERENCES instrument(id) ON DELETE CASCADE,
-    FOREIGN KEY (movement_id, player_id) REFERENCES player_lane(movement_id, player_id) ON DELETE CASCADE
+    FOREIGN KEY (movement_id, lane_index) REFERENCES lane(movement_id, lane_index) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS change_by_lane ON instrument_change(movement_id, player_id);
+CREATE INDEX IF NOT EXISTS change_by_lane ON instrument_change(movement_id, lane_index);
 
 CREATE TABLE IF NOT EXISTS voice (
     id           INTEGER PRIMARY KEY,
     movement_id  INTEGER NOT NULL,
-    player_id    INTEGER NOT NULL,
+    lane_index   INTEGER NOT NULL,
     voice_index  INTEGER NOT NULL CHECK (voice_index BETWEEN 1 AND 4),
     -- JSONB array of tuplets {"s":[n,d] start,"l":[n,d] length,"a":actual,"n":normal}
     tuplets      BLOB    NOT NULL DEFAULT (jsonb('[]')),
-    FOREIGN KEY (movement_id, player_id) REFERENCES player_lane(movement_id, player_id) ON DELETE CASCADE
+    FOREIGN KEY (movement_id, lane_index) REFERENCES lane(movement_id, lane_index) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS voice_by_lane ON voice(movement_id, player_id);
+CREATE INDEX IF NOT EXISTS voice_by_lane ON voice(movement_id, lane_index);
 
 -- Event payload, chunked by musical span: chunk_index = floor(start / 4 whole notes).
 -- events: JSONB array of

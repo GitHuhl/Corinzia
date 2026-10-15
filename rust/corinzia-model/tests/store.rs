@@ -41,7 +41,18 @@ fn sample() -> Project {
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
             texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
             chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
+            lines: vec![LineSpan { id: 40, from: Frac::ZERO, to: Frac::int(1), kind: LineKind::Octave(1) }],
             voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![Tuplet { start: Frac::int(5), length: Frac::new(1, 4), actual: 3, normal: 2 }] }],
+        },
+        // The same player's second staff (a grand staff): its own clef, pedal and voice.
+        Lane {
+            player: 2,
+            changes: vec![InstrumentChange { id: 41, at: Frac::ZERO, instrument: 3 }],
+            clefs: vec![ClefChange { id: 42, at: Frac::ZERO, clef: "bass".into() }],
+            texts: vec![],
+            chords: vec![],
+            lines: vec![LineSpan { id: 43, from: Frac::ZERO, to: Frac::int(2), kind: LineKind::Pedal }],
+            voices: vec![Voice { id: 44, index: 1, events: Arc::new(vec![]), tuplets: vec![] }],
         }],
     });
     p
@@ -72,6 +83,14 @@ fn save_and_load_round_trip() {
     assert_eq!(mb.lanes[0].texts, ma.lanes[0].texts);
     assert_eq!(mb.lanes[0].changes, ma.lanes[0].changes);
     assert_eq!(*mb.lanes[0].voices[0].events, *ma.lanes[0].voices[0].events);
+    assert_eq!(mb.navigation, ma.navigation);
+    assert_eq!(mb.lanes[0].voices[0].tuplets, ma.lanes[0].voices[0].tuplets);
+    assert_eq!(*mb.lanes[0].voices[0].events[0].graces, *ma.lanes[0].voices[0].events[0].graces);
+    // A player's two staves stay two, each with its own clef and lines.
+    assert_eq!(mb.lanes.len(), 2);
+    assert_eq!((mb.lanes[0].clefs.len(), mb.lanes[1].clefs[0].clef.as_str()), (1, "bass"));
+    assert_eq!((mb.lanes[0].lines.clone(), mb.lanes[1].lines.clone()), (ma.lanes[0].lines.clone(), ma.lanes[1].lines.clone()));
+    assert_eq!(mb.lanes[1].voices[0].id, 44);
     // Saving again after a change keeps everything consistent (no stale rows).
     let mut c = b.clone();
     c.movements[0].lanes[0].voices[0].events = Arc::new(vec![]);
@@ -84,7 +103,8 @@ fn save_and_load_round_trip() {
 fn notation_matches_the_model() {
     let p = sample();
     let s = corinzia_model::notation::score(&p, &p.movements[0]);
-    assert_eq!(s.parts.len(), 1);
+    assert_eq!(s.parts.len(), 2);
+    assert!(s.parts[0].brace, "one player's two staves");
     assert_eq!(s.parts[0].name, "Flute");
     assert_eq!(s.parts[0].abbr, "Fl.");
     let e = &s.parts[0].voices[0].events[1];

@@ -550,3 +550,32 @@ fn segno_coda_and_jumps_are_written() {
     assert!(ds.1 > segno[0].0);
     preview("navigation", &l);
 }
+
+#[test]
+fn octave_lines_lower_the_notes_and_pedals_sit_below() {
+    use corinzia_score::score::{LineKind, LineSpan};
+    use corinzia_score::Frac;
+    let plain = score(&[("treble", &["c''''4 d'''' e'''' f'''' | c'1"])], (4, 4), 0);
+    let mut s = score(&[("treble", &["c''''4 d'''' e'''' f'''' | c'1"])], (4, 4), 0);
+    s.parts[0].lines = vec![
+        LineSpan { id: 601, from: Frac::ZERO, to: Frac::int(1), kind: LineKind::Octave(1) },
+        LineSpan { id: 602, from: Frac::int(1), to: Frac::int(2), kind: LineKind::Pedal },
+    ];
+    let (a, b) = (layout_line(&plain, &Options::default()), layout_line(&s, &Options::default()));
+    let ys = |l: &corinzia_layout::DisplayList| glyphs(l, Glyph::NoteheadBlack).iter().map(|h| h.1).collect::<Vec<_>>();
+    // An octave is 3.5 spaces: the four notes come down by that.
+    for (y0, y1) in ys(&a).iter().zip(ys(&b)) {
+        assert!((y1 - y0 - 3.5).abs() < 1e-4, "{y0} -> {y1}");
+    }
+    let ottava = glyphs(&b, Glyph::Ottava);
+    assert_eq!(ottava.len(), 1);
+    assert!(ottava[0].1 < b.staves[0].top);
+    // Fewer ledger lines than without the line.
+    let ledgers = |l: &corinzia_layout::DisplayList| l.items.iter().filter(|i| matches!(i, Item::Line { width, from, to, .. } if (*width - 0.16).abs() < 1e-6 && from.y == to.y)).count();
+    assert!(ledgers(&b) < ledgers(&a));
+    // Ped. and its release under the staff.
+    let (ped, up) = (glyphs(&b, Glyph::PedalPed), glyphs(&b, Glyph::PedalUp));
+    assert_eq!((ped.len(), up.len()), (1, 1));
+    assert!(ped[0].1 > b.staves[0].top + 4.0 && up[0].0 > ped[0].0);
+    preview("lines", &b);
+}

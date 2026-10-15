@@ -8,7 +8,7 @@
 use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
-use corinzia_score::score::{art, BarKind, Key, Nav, Part, Pitch, Score};
+use corinzia_score::score::{art, BarKind, Key, LineKind, Nav, Part, Pitch, Score};
 use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
@@ -449,6 +449,11 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         continue;
                     }
                     let rest = e.pitches.is_empty();
+                    // Under an octave line notes are written octaves from where they sound.
+                    let ottava = part.lines.iter().find_map(|l| match l.kind {
+                        LineKind::Octave(k) if a >= l.from && a < l.to => Some(k as i32 * 7),
+                        _ => None,
+                    }).unwrap_or(0);
                     // Inside tuplets the written value is the sounding one
                     // times each tuplet's actual/normal.
                     let around: Vec<usize> = (0..tuplets.len())
@@ -474,10 +479,10 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             .iter()
                             .map(|p| Head {
                                 id: p.id,
-                                pos: diatonic(p) - middle,
+                                pos: diatonic(p) - ottava - middle,
                                 step: p.step,
                                 alter: p.alter,
-                                dia: diatonic(p),
+                                dia: diatonic(p) - ottava,
                                 tie_out: !last_piece || p.tie,
                                 tied_in: false,
                                 accidental: None,
@@ -495,10 +500,10 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                                         .iter()
                                         .map(|p| Head {
                                             id: p.id,
-                                            pos: diatonic(p) - middle,
+                                            pos: diatonic(p) - ottava - middle,
                                             step: p.step,
                                             alter: p.alter,
-                                            dia: diatonic(p),
+                                            dia: diatonic(p) - ottava,
                                             tie_out: false,
                                             tied_in: false,
                                             accidental: None,
@@ -2090,6 +2095,68 @@ impl<'a> Engraver<'a> {
         }
     }
 
+    /// Octave lines (`pedal` false) or pedal marks over this system: an
+    /// octave line is its sign and a dashed line to the last note, with a
+    /// hook where it ends (above for 8va/15ma, below for 8vb/15mb); a pedal
+    /// is Ped. under its first note and the release sign at its end.
+    fn draw_lines(&mut self, pedal: bool) {
+        let (r0, r1) = self.range;
+        for (pi, part) in self.score.parts.iter().enumerate() {
+            for l in part.lines.iter().filter(|l| (l.kind == LineKind::Pedal) == pedal && l.from < r1 && l.to > r0) {
+                let notes: Vec<&Note> = self.notes.iter().filter(|n| n.part == pi && n.start >= l.from && n.start < l.to && !n.whole_bar).collect();
+                let starts = l.from >= r0;
+                let ends = l.to <= r1;
+                let x0 = if starts { self.col_x(l.from) } else { self.ms.first().map(|m| m.x0).unwrap_or(self.left) };
+                let last_note = notes.iter().map(|n| n.x + HEAD_W).fold(x0 + HEAD_W, f32::max);
+                let x1 = if ends { last_note } else { self.ms.last().map(|m| m.x1).unwrap_or(x0) };
+                let id = l.id;
+                match l.kind {
+                    LineKind::Pedal => {
+                        let (ped, up) = (self.font.bbox(Glyph::PedalPed), self.font.bbox(Glyph::PedalUp));
+                        // Released at its end: before the barline when it ends a bar.
+                        let on_bar = self.ms.iter().any(|m| m.start + m.len == l.to);
+                        let at_end = if on_bar { self.bar_x(l.to) - up.width() - 0.4 } else { self.col_x(l.to) - up.width() / 2.0 };
+                        let after_sign = if starts { x0 - 0.2 + ped.width() + 0.6 } else { x0 };
+                        let release = if ends { at_end.max(last_note - 0.2).max(after_sign) } else { x1 };
+                        let y = self.sky[pi].bottom_over(x0, release + up.width()) + 0.6 + ped.ne.1;
+                        if starts {
+                            self.place(pi, Item::glyph(Glyph::PedalPed, x0 - 0.2, y, id));
+                        }
+                        if ends {
+                            self.place(pi, Item::glyph(Glyph::PedalUp, release, y, id));
+                        }
+                    }
+                    LineKind::Octave(k) => {
+                        let above = k > 0;
+                        let g = match k {
+                            1 => Glyph::Ottava,
+                            -1 => Glyph::OttavaBassa,
+                            2 => Glyph::Quindicesima,
+                            _ => Glyph::QuindicesimaBassa,
+                        };
+                        let b = self.font.bbox(g);
+                        let y = if above { self.sky[pi].top_over(x0, x1) - 0.5 + b.sw.1 } else { self.sky[pi].bottom_over(x0, x1) + 0.5 + b.ne.1 };
+                        let sx = x0 - 0.3;
+                        self.place(pi, Item::glyph(g, sx, y, id));
+                        // The dashed line at the sign's middle.
+                        let ly = y - (b.ne.1 + b.sw.1) / 2.0;
+                        let t = 0.12;
+                        let mut x = sx + b.width() + 0.3;
+                        while x < x1 {
+                            let e = (x + 0.6).min(x1);
+                            self.place(pi, Item::line(x, ly, e, ly, t, id));
+                            x += 1.0;
+                        }
+                        if ends {
+                            let hook = if above { 0.9 } else { -0.9 };
+                            self.place(pi, Item::line(x1, ly, x1, ly + hook, t, id));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Technique text above (`above`), expression text below, in italics.
     fn draw_texts(&mut self, above: bool) {
         for (pi, part) in self.score.parts.iter().enumerate() {
@@ -2566,9 +2633,11 @@ impl<'a> Engraver<'a> {
         self.build_skylines();
         self.draw_tuplets();
         self.draw_ornaments();
+        self.draw_lines(false);
         self.draw_texts(true);
         self.draw_chord_symbols();
         self.draw_dynamics_and_hairpins();
+        self.draw_lines(true);
         self.draw_texts(false);
         self.draw_lyrics();
         self.draw_tempo_marks_endings();

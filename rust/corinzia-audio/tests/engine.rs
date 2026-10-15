@@ -35,6 +35,7 @@ fn project() -> Project {
             clefs: vec![],
             texts: vec![],
             chords: vec![],
+            lines: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(vec![note(10, Frac::ZERO, 0), rest(20, Frac::new(1, 4)), note(30, Frac::new(3, 4), 5)]), tuplets: vec![] }],
         }],
     });

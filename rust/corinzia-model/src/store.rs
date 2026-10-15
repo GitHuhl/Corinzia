@@ -196,15 +196,15 @@ pub fn load(path: &Path) -> Result<Project> {
             m.keys.push(Key { at: frac(&t["at"]), fifths: t["fifths"].as_i64().unwrap_or(0) as i32, minor: t["minor"].as_bool().unwrap_or(false) });
         }
         // Lanes, instrument changes, voices.
-        let mut sl = db.prepare("SELECT player_id FROM player_lane WHERE movement_id = ? ORDER BY ordinal")?;
-        let players: Vec<i64> = sl.query_map([id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
-        for pid in players {
-            let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![] };
+        let mut sl = db.prepare("SELECT lane_index, player_id FROM lane WHERE movement_id = ? ORDER BY lane_index")?;
+        let lanes: Vec<(i64, i64)> = sl.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        for (li, pid) in lanes {
+            let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![] };
             let mut sc = db.prepare(
-                "SELECT id, at_num, at_den, instrument_id FROM instrument_change WHERE movement_id = ? AND player_id = ? \
+                "SELECT id, at_num, at_den, instrument_id FROM instrument_change WHERE movement_id = ? AND lane_index = ? \
                  ORDER BY at_num * 1.0 / at_den",
             )?;
-            for c in sc.query_map(params![id, pid], |r| {
+            for c in sc.query_map(params![id, li], |r| {
                 Ok(InstrumentChange {
                     id: r.get::<_, i64>(0)? as u64,
                     at: Frac::new(r.get(1)?, r.get::<_, i64>(2)?.max(1)),
@@ -213,8 +213,8 @@ pub fn load(path: &Path) -> Result<Project> {
             })? {
                 lane.changes.push(c?);
             }
-            let mut sv = db.prepare("SELECT id, voice_index, json(tuplets) FROM voice WHERE movement_id = ? AND player_id = ? ORDER BY voice_index")?;
-            let voices: Vec<(i64, i64, String)> = sv.query_map(params![id, pid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+            let mut sv = db.prepare("SELECT id, voice_index, json(tuplets) FROM voice WHERE movement_id = ? AND lane_index = ? ORDER BY voice_index")?;
+            let voices: Vec<(i64, i64, String)> = sv.query_map(params![id, li], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
             for (vid, index, tuplets) in voices {
                 let tuplets: Vec<Tuplet> = serde_json::from_str::<Vec<Value>>(&tuplets)?
                     .iter()
@@ -249,15 +249,24 @@ pub fn load(path: &Path) -> Result<Project> {
             for e in n["endings"].as_array().into_iter().flatten() {
                 m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
             }
+            // Per-lane items name their lane by index (a player's staves
+            // share the player id).
+            fn lane_of<'a>(lanes: &'a mut [Lane], v: &Value) -> Option<&'a mut Lane> {
+                match v["li"].as_u64() {
+                    Some(i) => lanes.get_mut(i as usize),
+                    None => {
+                        let pid = v["p"].as_u64().unwrap_or(0);
+                        lanes.iter_mut().find(|l| l.player == pid)
+                    }
+                }
+            }
             for c in n["clefs"].as_array().into_iter().flatten() {
-                let pid = c["p"].as_u64().unwrap_or(0);
-                if let Some(l) = m.lanes.iter_mut().find(|l| l.player == pid) {
+                if let Some(l) = lane_of(&mut m.lanes, c) {
                     l.clefs.push(ClefChange { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), clef: c["c"].as_str().unwrap_or("treble").into() });
                 }
             }
             for t in n["texts"].as_array().into_iter().flatten() {
-                let pid = t["p"].as_u64().unwrap_or(0);
-                if let Some(l) = m.lanes.iter_mut().find(|l| l.player == pid) {
+                if let Some(l) = lane_of(&mut m.lanes, t) {
                     l.texts.push(TextItem {
                         id: t["id"].as_u64().unwrap_or(0),
                         at: frac(&t["at"]),
@@ -267,9 +276,13 @@ pub fn load(path: &Path) -> Result<Project> {
                 }
             }
             for c in n["chords"].as_array().into_iter().flatten() {
-                let pid = c["p"].as_u64().unwrap_or(0);
-                if let Some(l) = m.lanes.iter_mut().find(|l| l.player == pid) {
+                if let Some(l) = lane_of(&mut m.lanes, c) {
                     l.chords.push(ChordSymbol { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), text: c["c"].as_str().unwrap_or("").into() });
+                }
+            }
+            for c in n["lines"].as_array().into_iter().flatten() {
+                if let (Some(l), Some(kind)) = (lane_of(&mut m.lanes, c), c["k"].as_str().and_then(LineKind::from_code)) {
+                    l.lines.push(LineSpan { id: c["id"].as_u64().unwrap_or(0), from: frac(&c["from"]), to: frac(&c["to"]), kind });
                 }
             }
         }
@@ -497,13 +510,15 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         let mut clefs = Vec::new();
         let mut texts = Vec::new();
         let mut chords = Vec::new();
-        for l in &m.lanes {
-            chords.extend(l.chords.iter().map(|c| json!({"id": c.id, "p": l.player, "at": jfrac(c.at), "c": c.text})));
-            clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "p": l.player, "at": jfrac(c.at), "c": c.clef})));
+        let mut lines = Vec::new();
+        for (li, l) in m.lanes.iter().enumerate() {
+            chords.extend(l.chords.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.text})));
+            clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.clef})));
             texts.extend(l.texts.iter().map(|t| json!({
-                "id": t.id, "p": l.player, "at": jfrac(t.at), "t": t.text,
+                "id": t.id, "li": li, "at": jfrac(t.at), "t": t.text,
                 "k": if t.kind == TextKind::Technique { "t" } else { "x" }
             })));
+            lines.extend(l.lines.iter().map(|x| json!({"id": x.id, "li": li, "from": jfrac(x.from), "to": jfrac(x.to), "k": x.kind.code()})));
         }
         let notation = json!({
             "barlines": m.barlines.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "k": b.kind.code()})).collect::<Vec<_>>(),
@@ -513,6 +528,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "clefs": clefs,
             "texts": texts,
             "chords": chords,
+            "lines": lines,
         })
         .to_string();
         tx.execute(
@@ -522,31 +538,30 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
              tempo=excluded.tempo, meter=excluded.meter, keys=excluded.keys, notation=excluded.notation",
             params![m.id as i64, m.ordinal, m.title, m.length.num, m.length.den, m.revision as i64, tempo, meter, keys, notation],
         )?;
-        tx.execute("DELETE FROM player_lane WHERE movement_id = ? AND player_id NOT IN (SELECT value FROM json_each(?))", params![m.id as i64, ids(m.lanes.iter().map(|l| l.player).collect())])?;
-        for (ord, l) in m.lanes.iter().enumerate() {
+        // Voices that are gone (or moved lanes) first, then the lanes past the end.
+        let all_voices = ids(m.lanes.iter().flat_map(|l| l.voices.iter().map(|v| v.id)).collect());
+        tx.execute("DELETE FROM voice WHERE movement_id = ? AND id NOT IN (SELECT value FROM json_each(?))", params![m.id as i64, all_voices])?;
+        tx.execute("DELETE FROM lane WHERE movement_id = ? AND lane_index >= ?", params![m.id as i64, m.lanes.len() as i64])?;
+        for (li, l) in m.lanes.iter().enumerate() {
             tx.execute(
-                "INSERT INTO player_lane(movement_id, player_id, ordinal) VALUES (?,?,?) ON CONFLICT(movement_id, player_id) DO UPDATE SET ordinal=excluded.ordinal",
-                params![m.id as i64, l.player as i64, ord as i64],
+                "INSERT INTO lane(movement_id, lane_index, player_id) VALUES (?,?,?) ON CONFLICT(movement_id, lane_index) DO UPDATE SET player_id=excluded.player_id",
+                params![m.id as i64, li as i64, l.player as i64],
             )?;
-            tx.execute("DELETE FROM instrument_change WHERE movement_id = ? AND player_id = ?", params![m.id as i64, l.player as i64])?;
+            tx.execute("DELETE FROM instrument_change WHERE movement_id = ? AND lane_index = ?", params![m.id as i64, li as i64])?;
             for c in &l.changes {
                 tx.execute(
-                    "INSERT INTO instrument_change(id, movement_id, player_id, at_num, at_den, instrument_id) VALUES (?,?,?,?,?,?)",
-                    params![c.id as i64, m.id as i64, l.player as i64, c.at.num, c.at.den, c.instrument as i64],
+                    "INSERT INTO instrument_change(id, movement_id, lane_index, at_num, at_den, instrument_id) VALUES (?,?,?,?,?,?)",
+                    params![c.id as i64, m.id as i64, li as i64, c.at.num, c.at.den, c.instrument as i64],
                 )?;
             }
-            tx.execute(
-                "DELETE FROM voice WHERE movement_id = ? AND player_id = ? AND id NOT IN (SELECT value FROM json_each(?))",
-                params![m.id as i64, l.player as i64, ids(l.voices.iter().map(|v| v.id).collect())],
-            )?;
             for v in &l.voices {
                 tx.execute(
-                    "INSERT INTO voice(id, movement_id, player_id, voice_index, tuplets) VALUES (?,?,?,?,jsonb(?)) \
-                     ON CONFLICT(id) DO UPDATE SET voice_index=excluded.voice_index, tuplets=excluded.tuplets",
+                    "INSERT INTO voice(id, movement_id, lane_index, voice_index, tuplets) VALUES (?,?,?,?,jsonb(?)) \
+                     ON CONFLICT(id) DO UPDATE SET lane_index=excluded.lane_index, voice_index=excluded.voice_index, tuplets=excluded.tuplets",
                     params![
                         v.id as i64,
                         m.id as i64,
-                        l.player as i64,
+                        li as i64,
                         v.index,
                         Value::Array(v.tuplets.iter().map(|t| json!({"s": jfrac(t.start), "l": jfrac(t.length), "a": t.actual, "n": t.normal})).collect()).to_string()
                     ],

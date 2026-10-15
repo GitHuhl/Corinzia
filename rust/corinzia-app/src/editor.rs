@@ -1469,6 +1469,30 @@ impl Editor {
                     }
                 })
             }
+            PopoverKind::Clef | PopoverKind::Technique if line_text(kind, &text).is_some() => {
+                // Octave lines and pedal over the passage, the selected note, or the bar.
+                let (l0, l1, from, to) = match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+                    (Some(r), _) => (r.lane_from, r.lane_to, r.from, r.to),
+                    (None, Some((loc, e))) => (loc.lane, loc.lane, e.start, e.end()),
+                    _ => (lane, lane, bars.0, bars.1),
+                };
+                at = from;
+                let line = line_text(kind, &text).unwrap();
+                label = match line {
+                    Some(LineKind::Pedal) => "Pedal".into(),
+                    Some(k) => format!("{} line", k.code()),
+                    None if kind == PopoverKind::Technique => "Pedal off".into(),
+                    None => "Loco".into(),
+                };
+                Box::new(move |m, ids| {
+                    for li in l0..=l1.min(m.lanes.len().saturating_sub(1)) {
+                        match line {
+                            Some(k) => edit::set_line(m, li, from, to, k, ids),
+                            None => edit::remove_lines(m, li, from, to, kind == PopoverKind::Technique, ids),
+                        }
+                    }
+                })
+            }
             PopoverKind::Clef => {
                 let c = edit::parse_clef(&text).ok_or("Clef not understood: treble, bass, alto, tenor, treble_8, bass_8")?;
                 label = "Clef".into();
@@ -1696,11 +1720,11 @@ impl PopoverKind {
         match self {
             PopoverKind::Key => "C, Eb, f#, a minor",
             PopoverKind::Time => "3/4, 6/8, C, C|, pickup 1/4",
-            PopoverKind::Clef => "treble, bass, alto, tenor",
+            PopoverKind::Clef => "treble, bass, alto, tenor; 8va, 8vb, 15ma, loco",
             PopoverKind::Barline => "||  |.  |:  :|  :|:",
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",
             PopoverKind::Expression => "dolce, espress.",
-            PopoverKind::Technique => "pizz., arco, con sord.",
+            PopoverKind::Technique => "pizz., arco, con sord.; ped, *",
             PopoverKind::Ending => "1, 2, 1-3; segno, coda, to coda, fine, D.C. al Fine, D.S. al Coda",
             PopoverKind::Rehearsal => "",
             PopoverKind::Ornament => "tr, mordent, turn, trem, arp, fermata",
@@ -1708,6 +1732,16 @@ impl PopoverKind {
             PopoverKind::Chord => "C, F#m7, Bbmaj7, G7/B; space = next beat",
             PopoverKind::Tuplet => "3, 5, 6, 7, 2 (duplet), 5:4, 7:8",
         }
+    }
+}
+
+/// A line typed into the clef popover (octave lines; `Some(None)` = loco)
+/// or the technique popover (pedal; `Some(None)` = release).
+fn line_text(kind: PopoverKind, text: &str) -> Option<Option<LineKind>> {
+    match kind {
+        PopoverKind::Clef => edit::parse_octave_line(text),
+        PopoverKind::Technique => edit::parse_pedal(text).map(|on| on.then_some(LineKind::Pedal)),
+        _ => None,
     }
 }
 

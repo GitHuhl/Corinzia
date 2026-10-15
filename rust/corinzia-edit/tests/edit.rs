@@ -174,7 +174,7 @@ fn header() -> Movement {
         rehearsal: vec![],
         navigation: vec![],
         endings: vec![],
-        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
+        lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
     }
 }
 
@@ -552,4 +552,41 @@ fn navigation_marks_parse_toggle_and_move_with_bars() {
     assert_eq!(describe_item(&h, id).as_deref(), Some("Segno"));
     assert!(remove_item(&mut h, id).is_some());
     assert_eq!(h.navigation.len(), 1);
+}
+
+#[test]
+fn octave_lines_and_pedals_are_set_split_and_moved() {
+    assert_eq!(parse_octave_line("8va"), Some(Some(LineKind::Octave(1))));
+    assert_eq!(parse_octave_line("15mb"), Some(Some(LineKind::Octave(-2))));
+    assert_eq!(parse_octave_line("loco"), Some(None));
+    assert_eq!(parse_octave_line("treble"), None);
+    assert_eq!(parse_pedal("Ped."), Some(true));
+    assert_eq!(parse_pedal("*"), Some(false));
+    assert_eq!(parse_pedal("pizz."), None);
+    let mut ids = Ids(700);
+    let mut h = header();
+    set_line(&mut h, 0, Frac::ZERO, f(2, 1), LineKind::Octave(1), &mut ids);
+    set_line(&mut h, 0, f(1, 1), f(3, 1), LineKind::Pedal, &mut ids);
+    // An 8vb over bar 2 splits the 8va around it; the pedal stays.
+    set_line(&mut h, 0, f(1, 1), f(3, 2), LineKind::Octave(-1), &mut ids);
+    let spans = |h: &Movement| h.lanes[0].lines.iter().map(|l| (l.from, l.to, l.kind)).collect::<Vec<_>>();
+    assert_eq!(
+        spans(&h),
+        [
+            (Frac::ZERO, f(1, 1), LineKind::Octave(1)),
+            (f(1, 1), f(3, 1), LineKind::Pedal),
+            (f(1, 1), f(3, 2), LineKind::Octave(-1)),
+            (f(3, 2), f(2, 1), LineKind::Octave(1)),
+        ]
+    );
+    // Loco over everything removes the octave lines only.
+    remove_lines(&mut h, 0, Frac::ZERO, f(8, 1), false, &mut ids);
+    assert_eq!(spans(&h), [(f(1, 1), f(3, 1), LineKind::Pedal)]);
+    // A bar inserted before moves it; one deleted inside shortens it.
+    insert_span(&mut h, Frac::ZERO, f(1, 1));
+    assert_eq!(spans(&h)[0].0, f(2, 1));
+    delete_span(&mut h, f(2, 1), f(3, 1));
+    assert_eq!(spans(&h), [(f(2, 1), f(3, 1), LineKind::Pedal)]);
+    let id = h.lanes[0].lines[0].id;
+    assert_eq!(describe_item(&h, id).as_deref(), Some("Pedal"));
 }

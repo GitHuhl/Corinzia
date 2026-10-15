@@ -492,6 +492,63 @@ pub fn toggle_nav(m: &mut Movement, at: Frac, kind: Nav, ids: &mut Ids) {
     }
 }
 
+/// Octave lines in the clef popover: "8va", "8vb", "15ma", "15mb", "loco"
+/// (`Some(None)` removes).
+pub fn parse_octave_line(text: &str) -> Option<Option<LineKind>> {
+    let t = text.trim().to_lowercase().replace(['.', ' '], "");
+    match t.as_str() {
+        "loco" | "noottava" | "8vaoff" => Some(None),
+        "8va" | "8" | "ottava" | "8^" => Some(Some(LineKind::Octave(1))),
+        "8vb" | "8va bassa" | "8vabassa" | "8_" | "ottavabassa" => Some(Some(LineKind::Octave(-1))),
+        "15ma" | "15" | "15^" => Some(Some(LineKind::Octave(2))),
+        "15mb" | "15mabassa" | "15_" => Some(Some(LineKind::Octave(-2))),
+        _ => None,
+    }
+}
+
+/// The pedal in the technique popover: "ped" (held over the selection) or
+/// "*" (released: removes it). `Some(true)` puts one down.
+pub fn parse_pedal(text: &str) -> Option<bool> {
+    match text.trim().to_lowercase().trim_end_matches('.') {
+        "ped" | "pedal" | "sus" | "sustain" => Some(true),
+        "*" | "no ped" | "pedal off" | "senza ped" => Some(false),
+        _ => None,
+    }
+}
+
+/// Puts a line over `[from, to)` of a lane: what it overlaps of the same
+/// family (octave lines, or pedals) gives way.
+pub fn set_line(m: &mut Movement, lane: usize, from: Frac, to: Frac, kind: LineKind, ids: &mut Ids) {
+    if from >= to {
+        return;
+    }
+    remove_lines(m, lane, from, to, kind == LineKind::Pedal, ids);
+    if let Some(l) = m.lanes.get_mut(lane) {
+        l.lines.push(LineSpan { id: ids.next(), from, to, kind });
+        l.lines.sort_by(|a, b| a.from.cmp(&b.from));
+    }
+}
+
+/// Removes octave lines (or pedals) overlapping `[from, to)`; one reaching
+/// out of the span keeps the part outside.
+pub fn remove_lines(m: &mut Movement, lane: usize, from: Frac, to: Frac, pedal: bool, ids: &mut Ids) {
+    let Some(l) = m.lanes.get_mut(lane) else { return };
+    let mut out = Vec::new();
+    for x in l.lines.drain(..) {
+        if (x.kind == LineKind::Pedal) != pedal || x.to <= from || x.from >= to {
+            out.push(x);
+            continue;
+        }
+        if x.from < from {
+            out.push(LineSpan { to: from, ..x });
+        }
+        if x.to > to {
+            out.push(LineSpan { from: to, id: ids.next(), ..x });
+        }
+    }
+    l.lines = out;
+}
+
 pub fn toggle_rehearsal_mark(m: &mut Movement, at: Frac, ids: &mut Ids) {
     let n = m.rehearsal.len();
     m.rehearsal.retain(|r| r.at != at);
@@ -544,6 +601,12 @@ pub fn describe_item(m: &Movement, id: Id) -> Option<String> {
         if let Some(c) = l.chords.iter().find(|c| c.id == id) {
             return Some(format!("Chord symbol {}", c.text));
         }
+        if let Some(x) = l.lines.iter().find(|x| x.id == id) {
+            return Some(match x.kind {
+                LineKind::Pedal => "Pedal".into(),
+                k => format!("{} line", k.code()),
+            });
+        }
         if let Some(t) = l.texts.iter().find(|t| t.id == id) {
             let k = if t.kind == TextKind::Expression { "Expression" } else { "Technique" };
             return Some(format!("{k} \"{}\"", t.text));
@@ -563,6 +626,7 @@ pub fn remove_item(m: &mut Movement, id: Id) -> Option<String> {
         l.clefs.retain(|x| x.id != id);
         l.texts.retain(|x| x.id != id);
         l.chords.retain(|x| x.id != id);
+        l.lines.retain(|x| x.id != id);
     }
     Some(what)
 }
@@ -689,6 +753,14 @@ pub fn insert_span(m: &mut Movement, at: Frac, length: Frac) {
         shift_items(&mut l.clefs, at, length, Kind::Items);
         shift_items(&mut l.texts, at, length, Kind::Items);
         shift_items(&mut l.chords, at, length, Kind::Items);
+        for x in l.lines.iter_mut() {
+            if x.from >= at {
+                x.from = x.from + length;
+            }
+            if x.to > at {
+                x.to = x.to + length;
+            }
+        }
     }
     m.length = m.length + length;
 }
@@ -737,6 +809,11 @@ pub fn delete_span(m: &mut Movement, from: Frac, to: Frac) {
         delete_items(&mut l.clefs, from, to, Kind::Items);
         delete_items(&mut l.texts, from, to, Kind::Items);
         delete_items(&mut l.chords, from, to, Kind::Items);
+        for x in l.lines.iter_mut() {
+            x.from = cut(x.from);
+            x.to = cut(x.to);
+        }
+        l.lines.retain(|x| x.from < x.to);
     }
     m.length = m.length - gap;
 }

@@ -191,6 +191,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                 brace: m.lanes.get(li + 1).is_some_and(|next| next.player == lane.player),
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
                 group: groups[li],
+                lines: lane.lines.clone(),
             }
         })
         .collect();

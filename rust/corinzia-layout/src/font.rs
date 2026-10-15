@@ -27,6 +27,7 @@ pub enum Glyph {
     MetNoteQuarterUp, TupletDigit(u8),
     CsymSharp, CsymFlat, CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh,
     BracketTop, BracketBottom, Segno, Coda,
+    Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp,
 }
 
 impl Glyph {
@@ -109,6 +110,12 @@ impl Glyph {
             BracketBottom => ("bracketBottom", 0xE004),
             Segno => ("segno", 0xE047),
             Coda => ("coda", 0xE048),
+            Ottava => ("ottavaAlta", 0xE511),
+            OttavaBassa => ("ottavaBassaVb", 0xE51C),
+            Quindicesima => ("quindicesimaAlta", 0xE514),
+            QuindicesimaBassa => ("quindicesimaBassaMb", 0xE51D),
+            PedalPed => ("keyboardPedalPed", 0xE650),
+            PedalUp => ("keyboardPedalUp", 0xE655),
         }
     }
     pub fn name(self) -> &'static str {
@@ -126,6 +133,7 @@ impl Glyph {
             StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow, DynamicP, DynamicM, DynamicF, Trill,
             Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot, MetNoteQuarterUp, CsymSharp, CsymFlat,
             CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh, BracketTop, BracketBottom, Segno, Coda,
+            Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp,
         ];
         v.extend((0..10).map(TimeSigDigit));
         v.extend((0..10).map(TupletDigit));

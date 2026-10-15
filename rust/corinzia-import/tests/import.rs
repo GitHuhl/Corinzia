@@ -278,3 +278,34 @@ fn navigation_marks_import_and_survive_a_round_trip() {
     let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
     check(&musicxml(out.as_bytes()).unwrap());
 }
+
+#[test]
+fn octave_lines_and_pedals_import_and_survive_a_round_trip() {
+    use corinzia_model::LineKind;
+    let note = |step: &str, oct: u8| format!("<note><pitch><step>{step}</step><octave>{oct}</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>");
+    let dir = |body: &str| format!("<direction><direction-type>{body}</direction-type></direction>");
+    let m1 = format!(
+        "<measure number=\"1\"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}{}{}{}{}</measure>",
+        dir(r#"<octave-shift type="down" size="8"/>"#),
+        note("C", 7),
+        note("D", 7),
+        dir(r#"<octave-shift type="stop" size="8"/>"#),
+        dir(r#"<pedal type="start" line="no"/>"#),
+        note("E", 5),
+        note("F", 5),
+    ) + "";
+    let m1 = m1.replace("</measure>", &format!("{}</measure>", dir(r#"<pedal type="stop" line="no"/>"#)));
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">{m1}</part></score-partwise>"#
+    );
+    let check = |p: &Project| {
+        let lines: Vec<(Frac, Frac, LineKind)> = p.movements[0].lanes[0].lines.iter().map(|l| (l.from, l.to, l.kind)).collect();
+        assert_eq!(lines, [(Frac::ZERO, f(1, 2), LineKind::Octave(1)), (f(1, 2), f(1, 1), LineKind::Pedal)], "{lines:?}");
+        // Pitches stay as they sound.
+        assert_eq!(names(&p.movements[0].lanes[0].voices[0].events)[..2], ["C7", "D7"]);
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    check(&musicxml(out.as_bytes()).unwrap());
+}
