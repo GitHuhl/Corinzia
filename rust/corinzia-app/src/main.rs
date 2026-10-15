@@ -861,6 +861,14 @@ impl App {
                 if let (Some(p), true) = (at, ed.input_mode) {
                     ed.caret_lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
                 }
+                // Empty space in a bar (on or near its staff) selects the bar;
+                // Shift extends the passage.
+                if let Some(p) = at.filter(|p| !ed.input_mode && (-4..=12).contains(&p.step_below_top)) {
+                    let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                    let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
+                    ed.select_bar(lane, pos, shift);
+                    return;
+                }
                 ed.clear_selection()
             }
         }
@@ -1766,6 +1774,28 @@ mod tests {
         assert!(m.meter[0].pickup && (m.meter[1].num, m.meter[1].den) == (3, 4));
         assert_eq!(m.length, Frac::new(1, 4) + Frac::new(3, 4) * Frac::int(8));
         assert!(!a.pages.is_empty());
+    }
+
+    #[test]
+    fn a_click_in_empty_bar_space_selects_the_bar() {
+        let mut a = app(View::Page);
+        a.sync();
+        // Between notes of bar 2 on the cello's staff, on its middle line.
+        a.click(None, Some(StaffPoint { part: 1, quarter: 5.5, step_below_top: 4 }), false);
+        let r = a.editor.range.expect("a bar selected");
+        assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (1, 1, Frac::int(1), Frac::int(2)));
+        // Shift-click in bar 4 of the flute: bars 2-4 on both staves.
+        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 2 }), true);
+        let r = a.editor.range.unwrap();
+        assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (0, 1, Frac::int(1), Frac::int(4)));
+        // Far from any staff: the selection clears.
+        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 30 }), false);
+        assert!(a.editor.range.is_none());
+        // In note input a click still enters a note.
+        a.editor.set_input_mode(true);
+        let rev = a.editor.music_revision;
+        a.click(None, Some(StaffPoint { part: 0, quarter: 1.0, step_below_top: 4 }), false);
+        assert!(a.editor.range.is_none() && a.editor.selection.is_some() && a.editor.music_revision > rev);
     }
 
     #[test]

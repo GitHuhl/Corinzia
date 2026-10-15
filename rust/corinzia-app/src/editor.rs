@@ -890,6 +890,26 @@ impl Editor {
         self.range = Some(r);
     }
 
+    /// The bar at `at` on `lane` as a passage (a click on its empty space);
+    /// `extend` adds it to the passage selected.
+    pub fn select_bar(&mut self, lane: usize, at: Frac, extend: bool) {
+        let Some(m) = self.movement() else { return };
+        if lane >= m.lanes.len() || at < Frac::ZERO || at >= m.length {
+            self.clear_selection();
+            return;
+        }
+        let from = edit::bar_start_at_or_before(m, at);
+        let to = (from + edit::bar_length(m, from)).min(m.length);
+        let r = match (extend, self.range) {
+            (true, Some(r)) => Range { lane_from: r.lane_from.min(lane), lane_to: r.lane_to.max(lane), from: r.from.min(from), to: r.to.max(to) },
+            _ => Range { lane_from: lane, lane_to: lane, from, to },
+        };
+        self.set_range(r);
+        self.range_anchor = None;
+        let (b0, b1) = (edit::bar_number(self.movement().unwrap(), r.from).0, edit::bar_number(self.movement().unwrap(), r.to - Frac::new(1, 1024)).0);
+        self.status = if b0 == b1 { format!("Bar {b0}") } else { format!("Bars {b0}–{b1}") };
+    }
+
     /// The union of the staves and time spans of these notes and rests (plus
     /// the current selection when extending): marquee and shift-click.
     pub fn select_elements(&mut self, ids: &[Id], extend: bool) {
