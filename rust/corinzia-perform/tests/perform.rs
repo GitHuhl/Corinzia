@@ -86,6 +86,21 @@ fn hairpins_and_slurs_shape_playback() {
 }
 
 #[test]
+fn sforzandi_accent_one_note_and_fp_drops_back() {
+    let mut ids = Ids(1);
+    let mut v: Vec<Event> = (0..4).map(|i| make_event(&mut ids, f(i, 4), f(1, 4), &[p(i as i8, 0, 4)], 0)).collect();
+    let d = |s: &str| corinzia_model::dynamic_index(s);
+    v[0].dynamic = d("p");
+    v[1].dynamic = d("sfz");
+    v[3].dynamic = d("fp");
+    let s = expressive_shape(&v);
+    let level = |l: u8| velocity_for_dynamic(Some(l));
+    assert!(s[1].velocity >= level(5), "the sforzando is accented");
+    assert!((s[2].velocity - level(2)).abs() < 1e-6, "and the music goes on at p");
+    assert!((s[3].velocity - level(5)).abs() < 1e-6, "fp starts forte");
+}
+
+#[test]
 fn unrolls_repeats() {
     let mut m = fixture();
     assert_eq!(playback_order(&m), vec![(F::ZERO, F::int(2))]);

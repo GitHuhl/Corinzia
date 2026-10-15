@@ -9,7 +9,7 @@
 
 use corinzia_edit::{self as edit, DurationSpec, EditResult, Ids};
 use corinzia_model::*;
-use corinzia_score::score::span;
+use corinzia_score::score::{ids, span};
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -999,6 +999,7 @@ impl Editor {
     pub fn select(&mut self, id: Option<Id>) {
         self.selection = id;
         self.range = None;
+        self.slur = None;
         if let Some((lane, start)) = id.and_then(|id| self.event_of(id)).map(|(loc, e)| (loc.lane, e.start)) {
             if !self.input_mode {
                 self.caret_lane = lane;
@@ -1011,6 +1012,7 @@ impl Editor {
         self.selection = None;
         self.range = None;
         self.range_anchor = None;
+        self.slur = None;
     }
 
     pub fn select_all(&mut self) {
@@ -1167,7 +1169,12 @@ impl Editor {
 
     /// `None` clears the dynamic.
     pub fn set_dynamic(&mut self, mark: Option<u8>) {
-        let mark = mark.map(|m| m.min(7));
+        let mark = mark.filter(|&m| (m as usize) < DYNAMICS.len());
+        // A selected dynamic: that one.
+        if let Some(ev) = self.selection.and_then(ids::as_dynamic) {
+            self.set_dynamic_of(ev, mark);
+            return;
+        }
         if let Some(r) = self.range {
             // On the first note of the passage on each staff.
             self.edit_range_voices("Dynamic", |evs, index, _| {
@@ -1709,6 +1716,18 @@ impl Editor {
             self.rename_movement(&text);
             return Ok(());
         }
+        if kind == PopoverKind::Title || kind == PopoverKind::Composer {
+            self.set_header(kind, &text);
+            return Ok(());
+        }
+        if kind == PopoverKind::Dynamic {
+            let mark = parse_dynamic(&text)?;
+            if self.range.is_none() && self.selection.is_none() {
+                return Err("Select a note first".into());
+            }
+            self.set_dynamic(mark);
+            return Ok(());
+        }
         if kind == PopoverKind::Tuplet {
             let (a, n) = edit::tuplets::parse_tuplet(&text).ok_or("Tuplet not understood: try 3, 5, 5:4 or 7:8")?;
             self.apply_tuplet(a, n);
@@ -1842,9 +1861,13 @@ impl Editor {
             }
             PopoverKind::Lyrics => {
                 let verse = self.lyric_verse;
-                return self.enter_lyric(verse, &text, false, false).map(|_| ());
+                let (word, hyphen, extend) = match text.strip_suffix('-').map(|w| (w, true, false)).or(text.strip_suffix('_').map(|w| (w, false, true))) {
+                    Some(x) => x,
+                    None => (text.as_str(), false, false),
+                };
+                return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -1927,11 +1950,205 @@ impl Editor {
     /// A selected barline, mark, ending, clef change or text: removed.
     pub fn delete_structure_item(&mut self) -> bool {
         let Some(id) = self.selection else { return false };
+        if self.delete_page_item(id) {
+            return true;
+        }
         let Some(what) = self.movement().and_then(|m| edit::describe_item(m, id)) else { return false };
         self.transact(&format!("Delete {what}"), |m, _| edit::remove_item(m, id).is_some());
         self.selection = None;
         self.status = format!("Deleted {what}");
         true
+    }
+
+    // --------------------------------------------------------- page items --
+    // Titles, tempo marks, texts, chord symbols, dynamics and lyrics: the
+    // things on the page that are words. A click selects them; a
+    // double-click opens their popover with their text to retype.
+
+    /// What editing `id` opens, and the text it starts with.
+    pub fn item_text(&self, id: Id) -> Option<(PopoverKind, String)> {
+        let m = self.movement()?;
+        match id {
+            ids::PROJECT_TITLE => return Some((PopoverKind::Title, self.project.title.clone())),
+            ids::MOVEMENT_TITLE => return Some((PopoverKind::MovementTitle, m.title.clone())),
+            ids::COMPOSER => return Some((PopoverKind::Composer, self.project.composer.clone())),
+            _ => {}
+        }
+        if let Some(i) = ids::as_tempo(id) {
+            let t = m.tempo.get(i)?;
+            let bpm = t.bpm.round() as i64;
+            return Some((PopoverKind::Tempo, if t.text.is_empty() { format!("q={bpm}") } else { format!("{} {bpm}", t.text) }));
+        }
+        if let Some(ev) = ids::as_dynamic(id) {
+            let (_, e) = self.event_of(ev)?;
+            return Some((PopoverKind::Dynamic, e.dynamic.and_then(|d| DYNAMICS.get(d as usize)).map(|d| d.to_string()).unwrap_or_default()));
+        }
+        if let Some((ev, verse)) = ids::as_lyric(id) {
+            let (_, e) = self.event_of(ev)?;
+            let l = e.lyrics.iter().find(|l| l.verse == verse)?;
+            return Some((PopoverKind::Lyrics, format!("{}{}", l.text, if l.hyphen { "-" } else if l.extend { "_" } else { "" })));
+        }
+        for l in &m.lanes {
+            if let Some(t) = l.texts.iter().find(|t| t.id == id) {
+                return Some((if t.kind == TextKind::Expression { PopoverKind::Expression } else { PopoverKind::Technique }, t.text.clone()));
+            }
+            if let Some(c) = l.chords.iter().find(|c| c.id == id) {
+                return Some((PopoverKind::Chord, c.text.clone()));
+            }
+        }
+        None
+    }
+
+    /// Replaces the text of the item `id` (see `item_text`); empty text
+    /// removes a tempo mark, text, chord symbol, dynamic or lyric.
+    pub fn edit_item(&mut self, id: Id, input: &str) -> Result<(), String> {
+        let text = input.trim().to_string();
+        let Some((kind, _)) = self.item_text(id) else { return Err("It is no longer there".into()) };
+        match kind {
+            PopoverKind::Title | PopoverKind::Composer => self.set_header(kind, &text),
+            PopoverKind::MovementTitle => self.rename_movement(&text),
+            PopoverKind::Dynamic => {
+                let mark = parse_dynamic(&text)?;
+                self.set_dynamic_of(ids::as_dynamic(id).unwrap(), mark);
+            }
+            PopoverKind::Lyrics => {
+                let (ev, verse) = ids::as_lyric(id).unwrap();
+                self.select(Some(ev));
+                self.lyric_verse = verse;
+                if text.is_empty() {
+                    self.edit_selected("Lyric", |evs, id, _, _| edit::modify_event(evs, id, |e, _| e.lyrics.retain(|l| l.verse != verse)));
+                } else {
+                    self.apply_popover(PopoverKind::Lyrics, &text)?;
+                }
+            }
+            PopoverKind::Tempo => {
+                let i = ids::as_tempo(id).unwrap();
+                if text.is_empty() {
+                    self.delete_page_item(id);
+                    return Ok(());
+                }
+                let t = edit::parse_tempo(&text).ok_or("Tempo not understood: try \"Allegro\", \"Andante 84\" or \"q=96\"")?;
+                self.transact("Tempo", |m, _| {
+                    let Some(old) = m.tempo.get_mut(i) else { return false };
+                    old.text = t.text.clone();
+                    old.bpm = t.bpm;
+                    true
+                });
+            }
+            PopoverKind::Expression | PopoverKind::Technique | PopoverKind::Chord => {
+                if text.is_empty() {
+                    self.selection = Some(id);
+                    self.delete_structure_item();
+                    return Ok(());
+                }
+                let chord = if kind == PopoverKind::Chord {
+                    Some(edit::parse_chord(&text).ok_or("Chord symbol not understood: try C, F#m7, Bbmaj7, Dsus4, G7/B")?)
+                } else {
+                    None
+                };
+                let label = if chord.is_some() { "Chord symbol" } else { "Text" };
+                self.transact(label, |m, _| {
+                    let mut found = false;
+                    for l in m.lanes.iter_mut() {
+                        for t in l.texts.iter_mut().filter(|t| t.id == id) {
+                            t.text = text.clone();
+                            found = true;
+                        }
+                        for c in l.chords.iter_mut().filter(|c| c.id == id) {
+                            c.text = chord.clone().unwrap_or_default();
+                            found = true;
+                        }
+                    }
+                    found
+                });
+            }
+            _ => return Err("Not editable".into()),
+        }
+        self.status = format!("{} changed", kind.title());
+        Ok(())
+    }
+
+    /// The project's title or composer.
+    pub fn set_header(&mut self, kind: PopoverKind, text: &str) {
+        let text = text.trim().to_string();
+        fn field(p: &mut Project, kind: PopoverKind) -> &mut String {
+            if kind == PopoverKind::Title { &mut p.title } else { &mut p.composer }
+        }
+        if *field(&mut self.project, kind) == text {
+            return;
+        }
+        let before = self.snapshot();
+        *field(&mut self.project, kind) = text;
+        self.commit(before, kind.title());
+    }
+
+    fn set_dynamic_of(&mut self, event: Id, mark: Option<u8>) {
+        let Some((loc, _)) = self.event_of(event) else { return };
+        let before = self.snapshot();
+        let m = &mut self.project.movements[self.movement];
+        let v = &mut m.lanes[loc.lane].voices[loc.voice];
+        let mut evs = (*v.events).clone();
+        let Some(e) = evs.iter_mut().find(|e| e.id == event) else { return };
+        if e.dynamic == mark {
+            return;
+        }
+        e.dynamic = mark;
+        v.events = Arc::new(evs);
+        self.commit(before, if mark.is_some() { "Dynamic" } else { "Remove dynamic" });
+        if mark.is_none() && self.selection == Some(ids::dynamic(event)) {
+            self.selection = None;
+        }
+    }
+
+    /// Deletes a dynamic, tempo mark, lyric or the title or composer.
+    fn delete_page_item(&mut self, id: Id) -> bool {
+        if let Some(ev) = ids::as_dynamic(id) {
+            self.set_dynamic_of(ev, None);
+            self.status = "Deleted dynamic".into();
+            return true;
+        }
+        if let Some((ev, verse)) = ids::as_lyric(id) {
+            self.select(Some(ev));
+            self.edit_selected("Delete lyric", |evs, id, _, _| edit::modify_event(evs, id, |e, _| e.lyrics.retain(|l| l.verse != verse)));
+            self.status = "Deleted lyric".into();
+            return true;
+        }
+        if let Some(i) = ids::as_tempo(id) {
+            // The first tempo stays (playback needs one); it loses its words.
+            self.transact("Delete tempo mark", |m, _| {
+                if i >= m.tempo.len() {
+                    return false;
+                }
+                if m.tempo[i].at == Frac::ZERO {
+                    m.tempo[i].text.clear();
+                } else {
+                    m.tempo.remove(i);
+                }
+                true
+            });
+            self.selection = None;
+            self.status = "Deleted tempo mark".into();
+            return true;
+        }
+        match id {
+            ids::PROJECT_TITLE => self.set_header(PopoverKind::Title, ""),
+            ids::COMPOSER => self.set_header(PopoverKind::Composer, ""),
+            ids::MOVEMENT_TITLE => self.rename_movement(""),
+            _ => return false,
+        }
+        self.selection = None;
+        true
+    }
+
+    fn describe_page_item(&self, id: Id) -> Option<String> {
+        let (kind, text) = self.item_text(id)?;
+        let what = match kind {
+            PopoverKind::Expression | PopoverKind::Technique | PopoverKind::Chord => return None, // edit::describe_item
+            PopoverKind::Lyrics => format!("Lyric \"{text}\" · verse {}", ids::as_lyric(id)?.1),
+            PopoverKind::Tempo => format!("Tempo {text}"),
+            k => format!("{} {text}", k.title()),
+        };
+        Some(format!("{what} · double-click to edit"))
     }
 
     // ------------------------------------------------------------- labels --
@@ -1958,6 +2175,9 @@ impl Editor {
             return format!("{bars} · {staves} {}", if staves == 1 { "staff" } else { "staves" });
         }
         let Some(id) = self.selection else { return String::new() };
+        if let Some(d) = self.describe_page_item(id) {
+            return d;
+        }
         if let Some(d) = edit::describe_item(m, id) {
             return d;
         }
@@ -1989,6 +2209,9 @@ pub enum PopoverKind {
     Tuplet,
     MovementTitle,
     Fingering,
+    Dynamic,
+    Title,
+    Composer,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -2008,6 +2231,9 @@ impl PopoverKind {
             PopoverKind::Tuplet => "Tuplet",
             PopoverKind::MovementTitle => "Movement title",
             PopoverKind::Fingering => "Fingering",
+            PopoverKind::Dynamic => "Dynamic",
+            PopoverKind::Title => "Title",
+            PopoverKind::Composer => "Composer",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -2027,8 +2253,20 @@ impl PopoverKind {
             PopoverKind::Tuplet => "3, 5, 6, 7, 2 (duplet), 5:4, 7:8",
             PopoverKind::MovementTitle => "II. Adagio",
             PopoverKind::Fingering => "1, 1 3 5 (a chord, bottom up), empty clears",
+            PopoverKind::Dynamic => "pp, mf, ff, sfz, fp, rfz…; empty clears",
+            PopoverKind::Title => "Serenade",
+            PopoverKind::Composer => "J. S. Bach",
         }
     }
+}
+
+/// A dynamic typed into its popover: `None` (empty) clears.
+pub fn parse_dynamic(text: &str) -> Result<Option<u8>, String> {
+    let t = text.trim().to_lowercase();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    dynamic_index(&t).map(Some).ok_or_else(|| format!("Dynamic not understood: {}", DYNAMICS.join(" ")))
 }
 
 /// A line typed into the clef popover (octave lines; `Some(None)` = loco)

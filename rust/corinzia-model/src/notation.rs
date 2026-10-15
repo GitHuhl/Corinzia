@@ -131,11 +131,11 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
             let mut texts: Vec<sc::Text> = lane
                 .texts
                 .iter()
-                .map(|t| sc::Text { at: t.at, text: t.text.clone(), technique: t.kind == TextKind::Technique })
+                .map(|t| sc::Text { id: t.id, at: t.at, text: t.text.clone(), technique: t.kind == TextKind::Technique })
                 .collect();
             for c in lane.changes.iter().skip(1) {
                 if let Some(i) = project.instrument(c.instrument) {
-                    texts.push(sc::Text { at: c.at, text: i.name.clone(), technique: true });
+                    texts.push(sc::Text { id: c.id, at: c.at, text: i.name.clone(), technique: true });
                 }
             }
             sc::Part {
@@ -179,7 +179,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                                         .collect()
                                 },
                                 art: e.articulations,
-                                dynamic: e.dynamic.map(|d| DYNAMICS[(d as usize).min(7)].to_string()),
+                                dynamic: e.dynamic.and_then(|d| DYNAMICS.get(d as usize)).map(|d| d.to_string()),
                                 spans: e.spans,
                                 lyrics: e.lyrics.clone(),
                                 fingering: e.fingering.clone(),
@@ -221,7 +221,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         composer: project.composer.clone(),
         instrument: String::new(),
         length: m.length,
-        tempo: m.tempo.iter().map(|t| sc::Tempo { at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
+        tempo: m.tempo.iter().enumerate().map(|(i, t)| sc::Tempo { id: sc::ids::tempo(i), at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
         meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup }).collect(),
         keys: m.keys.iter().map(|k| sc::Key { at: k.at, fifths: k.fifths, minor: k.minor }).collect(),
         barlines: m

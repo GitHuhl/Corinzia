@@ -164,13 +164,13 @@ fn outer_marks_avoid_each_other() {
         (4, 4),
         0,
     );
-    s.tempo = vec![Tempo { at: Frac::ZERO, bpm: 132.0, text: "Allegro".into() }];
+    s.tempo = vec![Tempo { id: 0, at: Frac::ZERO, bpm: 132.0, text: "Allegro".into() }];
     s.marks = vec![Frac::int(1)];
     s.endings = vec![Ending { from: Frac::int(1), to: Frac::int(2), numbers: vec![1] }];
     s.barlines = vec![corinzia_score::score::Barline { at: Frac::int(2), kind: corinzia_score::score::BarKind::RepeatEnd }];
     s.parts[0].name = "Flute".into();
     s.parts[1].name = "Cello".into();
-    s.parts[0].texts = vec![Text { at: Frac::ZERO, text: "dolce".into(), technique: false }, Text { at: Frac::int(1), text: "flz.".into(), technique: true }];
+    s.parts[0].texts = vec![Text { id: 0, at: Frac::ZERO, text: "dolce".into(), technique: false }, Text { id: 0, at: Frac::int(1), text: "flz.".into(), technique: true }];
     s.parts[1].clefs = vec![ClefChange { at: Frac::new(3, 2), clef: "tenor".into() }];
     let l = layout_line(&s, &Options::default());
     preview("outer_marks", &l);

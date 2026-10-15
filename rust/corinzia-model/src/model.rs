@@ -97,7 +97,7 @@ pub struct Event {
     pub duration: Frac,
     pub heads: Vec<Head>,
     pub articulations: u16, // corinzia_score::score::art bits
-    pub dynamic: Option<u8>, // 0 = ppp .. 7 = fff
+    pub dynamic: Option<u8>, // an index into DYNAMICS
     pub spans: u8,           // corinzia_score::score::span bits
     pub lyrics: Vec<Lyric>,  // one syllable per verse
     /// Grace notes before it, in order; they take no time of their own.
@@ -127,7 +127,33 @@ impl Event {
     }
 }
 
-pub const DYNAMICS: [&str; 8] = ["ppp", "pp", "p", "mp", "mf", "f", "ff", "fff"];
+/// Dynamic marks by index: the eight levels ppp..fff first, then the rest
+/// of MusicXML's (and LilyPond's) set.
+pub const DYNAMICS: [&str; 21] = [
+    "ppp", "pp", "p", "mp", "mf", "f", "ff", "fff", "pppp", "ffff", "fp", "sf", "sfz", "sffz", "sfp", "sfpp", "fz", "rf", "rfz", "pf", "n",
+];
+
+/// The dynamic named `text` ("mf", "sfz"...).
+pub fn dynamic_index(text: &str) -> Option<u8> {
+    DYNAMICS.iter().position(|d| *d == text).map(|i| i as u8)
+}
+
+/// How a dynamic plays, in levels 0 = ppp .. 7 = fff, given the level
+/// before it: (the note it is written on, the music after it). Sforzandi
+/// accent one note; fp and its kin drop straight back.
+pub fn dynamic_levels(mark: u8, before: u8) -> (u8, u8) {
+    match DYNAMICS.get(mark as usize).copied().unwrap_or("mf") {
+        "pppp" | "n" => (0, 0),
+        "ffff" => (7, 7),
+        "fp" => (5, 2),
+        "sfp" => (6, 2),
+        "sfpp" => (6, 1),
+        "sffz" => (7, before),
+        "sf" | "sfz" | "fz" | "rf" | "rfz" => ((before + 2).clamp(5, 7), before),
+        "pf" => (2, 5),
+        _ => (mark.min(7), mark.min(7)),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Voice {

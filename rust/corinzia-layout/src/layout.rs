@@ -8,7 +8,7 @@
 use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
-use corinzia_score::score::{art, BarKind, Key, LineKind, Nav, Part, Pitch, Score, SlurShape};
+use corinzia_score::score::{art, ids, BarKind, Key, LineKind, Nav, Part, Pitch, Score, SlurShape};
 use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
@@ -2332,7 +2332,7 @@ impl<'a> Engraver<'a> {
                 } else {
                     self.sky[pi].bottom_over(x, x + w) + 0.4 + 0.72 * TEXT_SIZE
                 };
-                let item = Item::Text { text: t.text.clone(), at: pt(x, y), size: TEXT_SIZE, italic: !above, bold: false, anchor: 0, id: 0 };
+                let item = Item::Text { text: t.text.clone(), at: pt(x, y), size: TEXT_SIZE, italic: !above, bold: false, anchor: 0, id: t.id };
                 let r = item.bounds(self.font);
                 self.sky[pi].add(r);
                 self.out.items.push(item);
@@ -2398,7 +2398,7 @@ impl<'a> Engraver<'a> {
                     let cx = n.x + HEAD_W / 2.0;
                     let w = text_width(&l.text, LYRIC_SIZE, false);
                     let right = cx + w / 2.0;
-                    let item = Item::Text { text: l.text.clone(), at: pt(cx, y), size: LYRIC_SIZE, italic: false, bold: false, anchor: 1, id: n.heads.first().map(|h| h.id).unwrap_or(n.id) };
+                    let item = Item::Text { text: l.text.clone(), at: pt(cx, y), size: LYRIC_SIZE, italic: false, bold: false, anchor: 1, id: ids::lyric(n.id, l.verse) };
                     boxes.push(item.bounds(self.font));
                     self.out.items.push(item);
                     let next = syl.get(k + 1).filter(|(j, _)| self.notes[*j].voice == n.voice);
@@ -2433,6 +2433,10 @@ impl<'a> Engraver<'a> {
                 'p' => Some(Glyph::DynamicP),
                 'm' => Some(Glyph::DynamicM),
                 'f' => Some(Glyph::DynamicF),
+                'r' => Some(Glyph::DynamicR),
+                's' => Some(Glyph::DynamicS),
+                'z' => Some(Glyph::DynamicZ),
+                'n' => Some(Glyph::DynamicN),
                 _ => None,
             })
             .collect()
@@ -2508,7 +2512,7 @@ impl<'a> Engraver<'a> {
             let own = (self.sky[n.part].bottom_over(x, x + w) + 2.0).max(self.top(n.part) + 6.5);
             let y = baseline_for.get(&i).map_or(own, |&b| b.max(own));
             for g in Self::dynamic_glyphs(&text) {
-                self.place(n.part, Item::glyph(g, x, y, n.id));
+                self.place(n.part, Item::glyph(g, x, y, ids::dynamic(n.id)));
                 x += self.width(g) - 0.05;
             }
         }
@@ -2637,13 +2641,13 @@ impl<'a> Engraver<'a> {
             let total = text_width(&words, TEMPO_SIZE, true) + 1.0 + text_width(&tail, TEMPO_SIZE, false);
             let y = (self.sky[0].top_over(x, x + total) - 0.6).min(self.top(0) - 2.0);
             if !words.is_empty() {
-                let item = Item::Text { text: words.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: true, anchor: 0, id: 0 };
+                let item = Item::Text { text: words.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: true, anchor: 0, id: t.id };
                 x += text_width(&words, TEMPO_SIZE, true) + 0.35;
                 self.place(0, item);
             }
-            self.place(0, Item::glyph_scaled(Glyph::MetNoteQuarterUp, x, y - 0.1, 0.6, 0));
+            self.place(0, Item::glyph_scaled(Glyph::MetNoteQuarterUp, x, y - 0.1, 0.6, t.id));
             x += 0.9;
-            self.place(0, Item::Text { text: tail, at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: false, anchor: 0, id: 0 });
+            self.place(0, Item::Text { text: tail, at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: false, anchor: 0, id: t.id });
         }
     }
 }
@@ -3030,21 +3034,22 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     // The header, as LilyPond sets it: the title centred and bold, the
     // movement as a subtitle, the composer flush right below them.
     let (title, subtitle) = if score.work_title.is_empty() { (&score.title, None) } else { (&score.work_title, Some(&score.title).filter(|t| !t.is_empty())) };
-    let text = |s: &str, x: f32, y: f32, size: f32, bold: bool, anchor: u8| Item::Text { text: s.to_string(), at: pt(x, y), size, italic: false, bold, anchor, id: 0 };
+    let text = |s: &str, x: f32, y: f32, size: f32, bold: bool, anchor: u8, id: u64| Item::Text { text: s.to_string(), at: pt(x, y), size, italic: false, bold, anchor, id };
+    let title_id = if score.work_title.is_empty() { ids::MOVEMENT_TITLE } else { ids::PROJECT_TITLE };
     if !title.is_empty() {
-        cur.items.push(text(title, page.width / 2.0, y + 3.0, 3.2, true, 1));
+        cur.items.push(text(title, page.width / 2.0, y + 3.0, 3.2, true, 1, title_id));
         y += 5.0;
         if let Some(sub) = subtitle {
-            cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1));
+            cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1, ids::MOVEMENT_TITLE));
             y += 3.5;
         }
         if !score.composer.is_empty() || !score.instrument.is_empty() {
             // The composer flush right; a part's instrument flush left.
             if !score.composer.is_empty() {
-                cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2));
+                cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2, ids::COMPOSER));
             }
             if !score.instrument.is_empty() {
-                cur.items.push(text(&score.instrument, page.margin_x, y + 1.6, 2.0, false, 0));
+                cur.items.push(text(&score.instrument, page.margin_x, y + 1.6, 2.0, false, 0, 0));
             }
             y += 2.5;
         }

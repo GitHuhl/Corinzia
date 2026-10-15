@@ -44,6 +44,8 @@ struct Popover {
     kind: PopoverKind,
     input: String,
     error: Option<String>,
+    /// The item on the page being retyped (opened by a double-click).
+    target: Option<u64>,
 }
 
 /// The "New score" card.
@@ -441,6 +443,7 @@ impl App {
                     for e in v.events.iter().filter(|e| e.start >= r.from && e.start < r.to) {
                         sel.insert(e.id);
                         sel.extend(e.heads.iter().map(|h| h.id));
+                        sel.extend(e.dynamic.map(|_| corinzia_score::score::ids::dynamic(e.id)));
                     }
                 }
             }
@@ -453,7 +456,25 @@ impl App {
     }
 
     fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {
-        self.popover = Some(Popover { kind, input: String::new(), error: None });
+        self.popover = Some(Popover { kind, input: String::new(), error: None, target: None });
+        iced::widget::operation::focus(POPOVER_INPUT)
+    }
+
+    /// A double-click on the page: a title, tempo mark, text, chord symbol,
+    /// dynamic or lyric opens its popover with its text to retype.
+    fn edit_on_page(&mut self, id: u64) -> Task<Message> {
+        let Some((kind, text)) = self.editor.item_text(id) else { return Task::none() };
+        // Lyrics carry on from the note as when typed (space: the next note).
+        let target = if let Some((ev, verse)) = corinzia_score::score::ids::as_lyric(id) {
+            self.editor.select(Some(ev));
+            self.editor.lyric_verse = verse;
+            None
+        } else {
+            self.editor.select(Some(id));
+            Some(id)
+        };
+        self.popover = Some(Popover { kind, input: text, error: None, target });
+        self.sync();
         iced::widget::operation::focus(POPOVER_INPUT)
     }
 
@@ -896,9 +917,9 @@ impl App {
                 if let (Some(p), true) = (at, ed.input_mode) {
                     ed.caret_lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
                 }
-                // Empty space in a bar (on or near its staff) selects the bar;
-                // Shift extends the passage.
-                if let Some(p) = at.filter(|p| !ed.input_mode && (-4..=12).contains(&p.step_below_top)) {
+                // Empty space inside a bar's staff selects the bar (Shift
+                // extends the passage); the paper around it deselects.
+                if let Some(p) = at.filter(|p| !ed.input_mode && (-1..=9).contains(&p.step_below_top)) {
                     let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
                     let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
                     ed.select_bar(lane, pos, shift);
@@ -969,6 +990,11 @@ impl App {
                 self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));
             }
             Message::Canvas(ViewEvent::SlurDragEnd) => self.editor.end_gesture(),
+            Message::Canvas(ViewEvent::DoubleClick { hit }) => {
+                if let Some(id) = hit.filter(|_| !self.editor.input_mode) {
+                    return self.edit_on_page(id);
+                }
+            }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 if self.popover.is_some() || self.new_score.is_some() || self.confirm.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
@@ -989,11 +1015,12 @@ impl App {
                 // Lyrics and chord symbols are entered as a stream: space (or,
                 // for lyrics, a hyphen or an extender) commits and moves on.
                 let last = s.chars().last();
-                let commits = match p.kind {
-                    PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
-                    PopoverKind::Chord => last == Some(' '),
-                    _ => false,
-                };
+                let commits = p.target.is_none()
+                    && match p.kind {
+                        PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
+                        PopoverKind::Chord => last == Some(' '),
+                        _ => false,
+                    };
                 if !commits {
                     p.input = s;
                     return Task::none();
@@ -1024,7 +1051,11 @@ impl App {
             }
             Message::PopoverSubmit => {
                 if let Some(p) = self.popover.as_mut() {
-                    match self.editor.apply_popover(p.kind, &p.input) {
+                    let done = match p.target {
+                        Some(id) => self.editor.edit_item(id, &p.input),
+                        None => self.editor.apply_popover(p.kind, &p.input),
+                    };
+                    match done {
                         Ok(()) => self.popover = None,
                         Err(e) => p.error = Some(e),
                     }
@@ -1588,6 +1619,7 @@ mod tests {
     use super::*;
     use corinzia_layout::display::Item;
     use crate::editor::SlurHandle;
+    use corinzia_model::dynamic_index;
 
     fn app(view: View) -> App {
         App::new(demo::project(), None, view, String::new())
@@ -1618,6 +1650,116 @@ mod tests {
         let b = app(View::Panorama);
         assert_eq!(b.pages.len(), 1);
         assert!(b.pages[0].width > b.pages[0].height * 3.0, "one long system");
+    }
+
+    /// The desk point (staff spaces) in the middle of the first item with this id.
+    fn item_on_desk(a: &App, id: u64) -> iced::Point {
+        let origins = score_view::page_origins(&a.pages, a.view == View::Page);
+        for (p, o) in a.pages.iter().zip(&origins) {
+            if let Some(it) = p.items.iter().find(|it| it.id() == id) {
+                let r = it.bounds(corinzia_layout::font::Font::bravura());
+                return iced::Point::new((r[0] + r[2]) / 2.0 + o.x, (r[1] + r[3]) / 2.0 + o.y);
+            }
+        }
+        panic!("item {id} not engraved");
+    }
+
+    /// Clicks what is at the middle of item `id`, `n` times (2 = a double-click).
+    fn click_item(a: &mut App, id: u64, n: usize) {
+        let origins = score_view::page_origins(&a.pages, a.view == View::Page);
+        let hit = score_view::hit_test(&a.pages, &origins, item_on_desk(a, id));
+        assert_eq!(hit, Some(id), "item {id} is a click target");
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit, at: None, shift: false }));
+        if n == 2 {
+            let _ = a.update(Message::Canvas(ViewEvent::DoubleClick { hit }));
+        }
+    }
+
+    fn retype(a: &mut App, text: &str) {
+        let _ = a.update(Message::PopoverInput(text.into()));
+        let _ = a.update(Message::PopoverSubmit);
+        assert!(a.popover.is_none(), "accepted: {:?}", a.popover.as_ref().and_then(|p| p.error.clone()));
+        a.sync();
+    }
+
+    #[test]
+    fn words_on_the_page_are_double_clicked_and_retyped() {
+        use corinzia_score::score::ids;
+        let mut a = app(View::Page);
+        let m = |a: &App| a.editor.project.movements[0].clone();
+        // The title, the movement's title and the composer.
+        click_item(&mut a, ids::PROJECT_TITLE, 2);
+        assert_eq!(a.popover.as_ref().map(|p| (p.kind, p.input.clone())), Some((PopoverKind::Title, "Serenade (demo)".into())));
+        retype(&mut a, "Nocturne");
+        assert_eq!(a.editor.project.title, "Nocturne");
+        click_item(&mut a, ids::MOVEMENT_TITLE, 2);
+        retype(&mut a, "II. Lento");
+        assert_eq!(m(&a).title, "II. Lento");
+        click_item(&mut a, ids::COMPOSER, 2);
+        retype(&mut a, "Anon.");
+        assert_eq!(a.editor.project.composer, "Anon.");
+        // The tempo mark.
+        click_item(&mut a, ids::tempo(0), 2);
+        assert_eq!(a.popover.as_ref().unwrap().input, "Andante 84");
+        retype(&mut a, "Allegro 132");
+        assert_eq!((m(&a).tempo[0].text.as_str(), m(&a).tempo[0].bpm), ("Allegro", 132.0));
+        // Expression text.
+        click_item(&mut a, 50, 2);
+        assert_eq!(a.popover.as_ref().map(|p| p.kind), Some(PopoverKind::Expression));
+        retype(&mut a, "espress.");
+        assert_eq!(m(&a).lanes[0].texts[0].text, "espress.");
+        // A dynamic: a click selects it, a double-click retypes it, and
+        // Delete removes it.
+        let first = m(&a).lanes[0].voices[0].events[0].clone();
+        let d = ids::dynamic(first.id);
+        click_item(&mut a, d, 1);
+        assert_eq!(a.editor.selection, Some(d));
+        assert!(a.selected.contains(&d), "drawn selected");
+        assert!(a.editor.selection_label().starts_with("Dynamic mp"), "{}", a.editor.selection_label());
+        click_item(&mut a, d, 2);
+        retype(&mut a, "sfz");
+        assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, dynamic_index("sfz"));
+        assert!(a.pages[0].items.iter().any(|it| matches!(it, Item::Glyph { glyph, id, .. } if *id == d && *glyph == corinzia_layout::font::Glyph::DynamicZ.codepoint())));
+        a.editor.select(Some(d));
+        let _ = a.act(Action::Delete);
+        assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, None);
+        // Shift+D types one on the selected note.
+        a.editor.select(Some(first.heads[0].id));
+        let _ = a.act(Action::Popover(PopoverKind::Dynamic));
+        retype(&mut a, "fp");
+        assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, dynamic_index("fp"));
+        assert!(a.editor.apply_popover(PopoverKind::Dynamic, "loud").is_err());
+        // Every change is one undo step.
+        a.editor.undo();
+        assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, None);
+    }
+
+    #[test]
+    fn escape_and_blank_paper_deselect() {
+        use corinzia_score::score::span;
+        let mut a = app(View::Page);
+        let slur = a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| e.spans & span::SLUR_START != 0).unwrap().id;
+        // A slur, then Escape.
+        assert!(a.editor.select_slur(slur));
+        let _ = a.act(Action::Escape);
+        assert_eq!(a.editor.selected_slur(), None);
+        a.sync();
+        assert!(a.selected.is_empty());
+        // A slur, then a click on the paper (no staff under it).
+        assert!(a.editor.select_slur(slur));
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: None, shift: false }));
+        assert_eq!(a.editor.selected_slur(), None);
+        // A note, then a click on the paper just above the staff.
+        let head = a.editor.project.movements[0].lanes[0].voices[0].events[0].heads[0].id;
+        a.editor.select(Some(head));
+        let above = score_view::StaffPoint { part: 0, quarter: 0.5, step_below_top: -6 };
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(above), shift: false }));
+        assert!(a.editor.selection.is_none() && a.editor.range.is_none());
+        // A dynamic, then Escape.
+        let d = corinzia_score::score::ids::dynamic(a.editor.project.movements[0].lanes[0].voices[0].events[0].id);
+        a.editor.select(Some(d));
+        let _ = a.act(Action::Escape);
+        assert!(a.editor.selection.is_none());
     }
 
     #[test]

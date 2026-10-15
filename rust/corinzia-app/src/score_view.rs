@@ -6,6 +6,7 @@
 
 use crate::editor::SlurHandle;
 use corinzia_layout::display::{DisplayList, Item};
+use corinzia_score::score::ids;
 use corinzia_layout::font::{Font as MusicFont, FONT_DATA};
 use iced::mouse;
 use iced::widget::canvas::{self, path, Cache, Event, Frame, Geometry, Path, Stroke, Text};
@@ -133,9 +134,10 @@ pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<
                 }
                 continue;
             }
-            // Notes and rests, and text that belongs to something (chord symbols, lyrics).
+            // Notes, rests and dynamics, and text that belongs to something
+            // (titles, tempo marks, texts, chord symbols, lyrics).
             let id = match item {
-                Item::Glyph { glyph, id, .. } if *id != 0 && is_hit_target(*glyph) => id,
+                Item::Glyph { glyph, id, .. } if *id != 0 && (is_hit_target(*glyph) || ids::as_dynamic(*id).is_some()) => id,
                 Item::Text { id, .. } if *id != 0 => id,
                 _ => continue,
             };
@@ -244,6 +246,8 @@ pub enum ViewEvent {
     SlurDrag { handle: SlurHandle, at: StaffPoint },
     /// The drag is over: the next one is a new undo step.
     SlurDragEnd,
+    /// A second click on the same spot: edit what is there.
+    DoubleClick { hit: Option<u64> },
 }
 
 /// The input caret: a part and a time.
@@ -278,6 +282,9 @@ pub struct ScoreView<'a> {
     pub cache: &'a Cache,
 }
 
+/// How soon a second click makes a double-click.
+const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(450);
+
 #[derive(Default)]
 pub struct Interaction {
     press: Option<Point>,
@@ -286,6 +293,8 @@ pub struct Interaction {
     panning: Option<Point>,
     /// The end of the selected slur being dragged.
     slur_drag: Option<SlurHandle>,
+    /// When and where the last click was (for double-clicks).
+    last_click: Option<(std::time::Instant, Point)>,
     modifiers: iced::keyboard::Modifiers,
 }
 
@@ -368,6 +377,13 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                 }
                 let desk = self.to_desk(from);
                 let hit = hit_test(self.pages, &origins, desk);
+                // A second click soon after, on the same spot: a double-click.
+                let now = std::time::Instant::now();
+                let double = state.last_click.is_some_and(|(t, p)| now.duration_since(t) < DOUBLE_CLICK && p.distance(from) < 5.0);
+                state.last_click = if double { None } else { Some((now, from)) };
+                if double {
+                    return Some(canvas::Action::publish(ViewEvent::DoubleClick { hit }).and_capture());
+                }
                 let at = locate(self.pages, &origins, desk);
                 Some(canvas::Action::publish(ViewEvent::Click { hit, at, shift }).and_capture())
             }

@@ -5,6 +5,39 @@
 
 use crate::frac::Frac;
 
+/// Ids for what is drawn but is not an element with an id of its own: the
+/// page header, tempo marks (by index) and dynamics (by their event).
+pub mod ids {
+    pub const PROJECT_TITLE: u64 = u64::MAX - 1;
+    pub const MOVEMENT_TITLE: u64 = u64::MAX - 2;
+    pub const COMPOSER: u64 = u64::MAX - 3;
+    const TEMPO: u64 = 1 << 62;
+    const DYNAMIC: u64 = 1 << 61;
+    const LYRIC: u64 = 1 << 60; // verse in bits 52..60
+    const TAGS: u64 = TEMPO | DYNAMIC | LYRIC;
+    pub fn tempo(index: usize) -> u64 {
+        TEMPO | index as u64
+    }
+    pub fn dynamic(event: u64) -> u64 {
+        DYNAMIC | event
+    }
+    pub fn lyric(event: u64, verse: u8) -> u64 {
+        LYRIC | (verse as u64) << 52 | event
+    }
+    /// The tempo mark's index, if `id` is one.
+    pub fn as_tempo(id: u64) -> Option<usize> {
+        (id < PROJECT_TITLE - 8 && id & TAGS == TEMPO).then_some((id & !TAGS) as usize)
+    }
+    /// The event whose dynamic this is, if `id` is one.
+    pub fn as_dynamic(id: u64) -> Option<u64> {
+        (id < PROJECT_TITLE - 8 && id & TAGS == DYNAMIC).then_some(id & !TAGS)
+    }
+    /// The event and verse of a lyric, if `id` is one.
+    pub fn as_lyric(id: u64) -> Option<(u64, u8)> {
+        (id < PROJECT_TITLE - 8 && id & TAGS == LYRIC).then_some((id & ((1 << 52) - 1), (id >> 52) as u8))
+    }
+}
+
 #[derive(Debug)]
 pub struct Score {
     /// The movement's title.
@@ -110,6 +143,7 @@ pub struct NavMark {
 
 #[derive(Debug, Clone)]
 pub struct Tempo {
+    pub id: u64, // `ids::tempo(index)`
     pub at: Frac,
     pub bpm: f64,
     pub text: String,
@@ -248,6 +282,7 @@ pub struct ClefChange {
 
 #[derive(Debug, Clone)]
 pub struct Text {
+    pub id: u64,
     pub at: Frac,
     pub text: String,
     pub technique: bool,

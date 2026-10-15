@@ -34,10 +34,10 @@ pub fn gate_factor(a: u16) -> f64 {
     }
 }
 
-/// ppp..fff -> 0..1; no dynamic = mf.
-pub fn velocity_for_dynamic(mark: Option<u8>) -> f32 {
+/// A level (0 = ppp .. 7 = fff) -> 0..1; none = mf.
+pub fn velocity_for_dynamic(level: Option<u8>) -> f32 {
     const TABLE: [f32; 8] = [0.16, 0.26, 0.38, 0.5, 0.62, 0.75, 0.87, 1.0];
-    TABLE[mark.map(|m| m.min(7) as usize).unwrap_or(4)]
+    TABLE[level.map(|m| m.min(7) as usize).unwrap_or(4)]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -297,15 +297,23 @@ pub struct EventShape {
 /// next dynamic, or ±2 steps), and legato inside slurs (but the last note).
 pub fn expressive_shape(evs: &[Event]) -> Vec<EventShape> {
     let mut out = vec![EventShape { velocity: 0.0, legato: false }; evs.len()];
-    let mut dyn_ = None;
-    let mut level = vec![4i32; evs.len()];
+    // The level each event is played at, and the level the music is at after it.
+    let mut cur = 4u8;
+    let mut attack = vec![4u8; evs.len()];
+    let mut after = vec![4u8; evs.len()];
     let mut slur = false;
     for (i, e) in evs.iter().enumerate() {
-        if e.dynamic.is_some() {
-            dyn_ = e.dynamic;
-        }
-        level[i] = dyn_.map(|d| d as i32).unwrap_or(4);
-        out[i].velocity = velocity_for_dynamic(dyn_);
+        let a = match e.dynamic {
+            Some(d) => {
+                let (a, next) = dynamic_levels(d, cur);
+                cur = next;
+                a
+            }
+            None => cur,
+        };
+        attack[i] = a;
+        after[i] = cur;
+        out[i].velocity = velocity_for_dynamic(Some(a));
         if e.spans & span::SLUR_START != 0 {
             slur = true;
         }
@@ -324,11 +332,11 @@ pub fn expressive_shape(evs: &[Event]) -> Vec<EventShape> {
             j += 1;
         }
         let j = j.min(evs.len() - 1);
-        let mut target = (level[i] + if cresc { 2 } else { -2 }).clamp(0, 7);
-        if let Some(d) = evs[j..].iter().find_map(|e| e.dynamic) {
-            target = d as i32; // the next written dynamic wins
+        let mut target = (after[i] as i32 + if cresc { 2 } else { -2 }).clamp(0, 7) as u8;
+        if let Some((k, d)) = evs.iter().enumerate().skip(j).find_map(|(k, e)| e.dynamic.map(|d| (k, d))) {
+            target = dynamic_levels(d, after[k.saturating_sub(1)]).0; // the next written dynamic wins
         }
-        let (v0, v1) = (velocity_for_dynamic(Some(level[i] as u8)), velocity_for_dynamic(Some(target as u8)));
+        let (v0, v1) = (velocity_for_dynamic(Some(attack[i])), velocity_for_dynamic(Some(target)));
         let (t0, t1) = (q(evs[i].start), q(evs[j].start));
         for k in i..=j {
             let f = if t1 > t0 { (q(evs[k].start) - t0) / (t1 - t0) } else { 1.0 };
