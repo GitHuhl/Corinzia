@@ -10,6 +10,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod arrange;
+mod browser;
 mod demo;
 mod editor;
 mod fader;
@@ -102,6 +103,8 @@ struct App {
     saving: bool,
     undo_tip: String,
     new_score: Option<NewScore>,
+    /// Corinzia's own file browser, when the system's dialog cannot open.
+    browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
     confirm: Option<Box<Message>>,
     path: Option<PathBuf>,
@@ -153,7 +156,12 @@ enum Message {
     Guarded(Box<Message>),
     Proceed(Box<Message>),
     Open,
+    /// Open, showing MusicXML files only.
+    Import,
     Opened(Option<PathBuf>),
+    /// The system file dialog's answer; `failed`: it could not open.
+    Picked { purpose: browser::Purpose, path: Option<PathBuf>, failed: bool },
+    Browser(browser::BrowserMsg),
     /// A file dropped on the window.
     Dropped(PathBuf),
     ExportMenu(bool),
@@ -322,6 +330,7 @@ impl App {
             saving: false,
             undo_tip: String::new(),
             new_score: None,
+            browser: None,
             confirm: None,
             path,
             view,
@@ -453,6 +462,61 @@ impl App {
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
         self.arrange_cache.clear();
+    }
+
+    /// Asks for a file to open (`musicxml`: MusicXML only) with the
+    /// system's dialog, else Corinzia's browser.
+    fn pick_file(&mut self, musicxml: bool) -> Task<Message> {
+        self.pick_file_for(browser::Purpose::Open, musicxml)
+    }
+
+    fn pick_file_for(&mut self, purpose: browser::Purpose, musicxml: bool) -> Task<Message> {
+        if std::env::var("CORINZIA_FILE_DIALOG").is_ok_and(|v| v == "builtin") {
+            return self.open_browser(purpose);
+        }
+        let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
+        let mut d = rfd::AsyncFileDialog::new();
+        if let Some(dir) = dir {
+            d = d.set_directory(dir);
+        }
+        let d = match purpose {
+            browser::Purpose::Open if musicxml => d.set_title("Import MusicXML").add_filter("MusicXML", &["musicxml", "xml", "mxl"]),
+            browser::Purpose::Open => d
+                .set_title("Open")
+                .add_filter("Scores (project, MusicXML)", &["project", "musicxml", "xml", "mxl"])
+                .add_filter("Corinzia project", &["project"])
+                .add_filter("MusicXML", &["musicxml", "xml", "mxl"]),
+            browser::Purpose::Export(format) => {
+                let name = files::sibling(self.path.as_deref(), &self.editor.project.title, format.extension());
+                d.set_title(format!("Export {}", format.label()))
+                    .add_filter(format.label(), &[format.extension()])
+                    .set_file_name(name.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())
+            }
+        };
+        Task::perform(
+            async move {
+                let started = Instant::now();
+                let path = match purpose {
+                    browser::Purpose::Open => d.pick_file().await,
+                    browser::Purpose::Export(_) => d.save_file().await,
+                }
+                .map(|h| h.path().to_path_buf());
+                // Nobody cancels a dialog this fast: it never opened.
+                let failed = path.is_none() && started.elapsed() < std::time::Duration::from_millis(600);
+                (path, failed)
+            },
+            move |(path, failed)| Message::Picked { purpose, path, failed },
+        )
+    }
+
+    fn open_browser(&mut self, purpose: browser::Purpose) -> Task<Message> {
+        let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
+        let name = match purpose {
+            browser::Purpose::Open => String::new(),
+            browser::Purpose::Export(f) => files::sibling(self.path.as_deref(), &self.editor.project.title, f.extension()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        };
+        self.browser = Some(browser::Browser::new(purpose, dir, name));
+        iced::widget::operation::focus(browser::NAME_INPUT)
     }
 
     fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {
@@ -996,9 +1060,9 @@ impl App {
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.confirm.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
-                        if self.confirm.take().is_none() {
+                        if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
                             self.new_score = None;
                         }
@@ -1092,27 +1156,39 @@ impl App {
                 }
             }
             Message::Proceed(next) => match *next {
-                Message::Open => {
-                    let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
-                    return Task::perform(
-                        async move {
-                            let mut d = rfd::AsyncFileDialog::new()
-                                .set_title("Open")
-                                .add_filter("Scores (project, MusicXML)", &["project", "musicxml", "xml", "mxl"])
-                                .add_filter("Corinzia project", &["project"])
-                                .add_filter("MusicXML", &["musicxml", "xml", "mxl"]);
-                            if let Some(dir) = dir {
-                                d = d.set_directory(dir);
-                            }
-                            d.pick_file().await.map(|h| h.path().to_path_buf())
-                        },
-                        Message::Opened,
-                    );
-                }
+                Message::Open => return self.pick_file(false),
+                Message::Import => return self.pick_file(true),
                 Message::NewCreate => self.create_new(),
                 other => return Task::done(other),
             },
             Message::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
+            Message::Import => return Task::done(Message::Guarded(Box::new(Message::Import))),
+            Message::Picked { purpose, path, failed } => {
+                if failed {
+                    // No system dialog here (no xdg-desktop-portal file
+                    // chooser): Corinzia's own browser instead.
+                    return self.open_browser(purpose);
+                }
+                return Task::done(match purpose {
+                    browser::Purpose::Open => Message::Opened(path),
+                    browser::Purpose::Export(f) => Message::ExportTo(f, path),
+                });
+            }
+            Message::Browser(msg) => {
+                let Some(b) = self.browser.as_mut() else { return Task::none() };
+                let purpose = b.purpose;
+                match b.update(msg) {
+                    browser::Outcome::Stay => {}
+                    browser::Outcome::Cancel => self.browser = None,
+                    browser::Outcome::Chosen(path) => {
+                        self.browser = None;
+                        return Task::done(match purpose {
+                            browser::Purpose::Open => Message::Opened(Some(path)),
+                            browser::Purpose::Export(f) => Message::ExportTo(f, Some(path)),
+                        });
+                    }
+                }
+            }
             Message::Opened(None) | Message::SaveTo(None) | Message::ExportTo(_, None) => return Task::none(),
             Message::Opened(Some(path)) => self.open(path),
             Message::SaveTo(Some(path)) => {
@@ -1121,21 +1197,7 @@ impl App {
             }
             Message::Export(format) => {
                 self.export_menu = false;
-                let name = files::sibling(self.path.as_deref(), &self.editor.project.title, format.extension());
-                let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
-                return Task::perform(
-                    async move {
-                        let mut d = rfd::AsyncFileDialog::new()
-                            .set_title(format!("Export {}", format.label()))
-                            .add_filter(format.label(), &[format.extension()])
-                            .set_file_name(name.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
-                        if let Some(dir) = dir {
-                            d = d.set_directory(dir);
-                        }
-                        d.save_file().await.map(|h| h.path().to_path_buf())
-                    },
-                    move |p| Message::ExportTo(format, p),
-                );
+                return self.pick_file_for(browser::Purpose::Export(format), false);
             }
             Message::ExportTo(format, Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
@@ -1230,7 +1292,8 @@ impl App {
             .push(panels::spacer())
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
-            .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open (Ctrl+O)"))
+            .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
+            .push(panels::tip(flat("Import", true, Message::Import), "Import MusicXML (.musicxml, .xml, .mxl) as a new score"))
             .push(panels::tip(
                 flat("Save", self.saving_enabled, Message::Act(Action::Save)),
                 if self.saving_enabled { "Save (Ctrl+S)" } else { "Saving is turned off in this preview build" },
@@ -1329,6 +1392,10 @@ impl App {
 
         if self.help {
             desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
+        }
+        if let Some(b) = &self.browser {
+            let card = b.view().map(Message::Browser);
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
         if self.confirm.is_some() {
             let card = column![
@@ -1732,6 +1799,39 @@ mod tests {
         // Every change is one undo step.
         a.editor.undo();
         assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, None);
+    }
+
+    #[test]
+    fn without_a_system_file_dialog_corinzias_browser_opens() {
+        let mut a = app(View::Page);
+        a.editor.modified = true;
+        // Open asks first; Discard goes on to the file dialog.
+        let _ = a.update(Message::Guarded(Box::new(Message::Open)));
+        assert!(a.confirm.is_some());
+        let _ = a.update(Message::ConfirmDiscard(true));
+        assert!(a.confirm.is_none());
+        // The system dialog could not open: the browser takes its place.
+        let _ = a.update(Message::Picked { purpose: browser::Purpose::Open, path: None, failed: true });
+        assert!(a.browser.is_some());
+        let _ = a.update(Message::Browser(browser::BrowserMsg::Cancel));
+        assert!(a.browser.is_none());
+        // A dialog the user cancelled stays cancelled.
+        let _ = a.update(Message::Picked { purpose: browser::Purpose::Open, path: None, failed: false });
+        assert!(a.browser.is_none());
+        // Exports too, with the file name filled in; Escape closes it.
+        let _ = a.update(Message::Picked { purpose: browser::Purpose::Export(files::Format::Pdf), path: None, failed: true });
+        assert!(a.browser.as_ref().unwrap().name.ends_with(".pdf"));
+        let esc = iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: None,
+            repeat: false,
+        };
+        let _ = a.update(Message::Key(esc));
+        assert!(a.browser.is_none());
     }
 
     #[test]
