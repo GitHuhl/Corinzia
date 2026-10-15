@@ -41,6 +41,7 @@ pub fn project() -> Project {
                 spans: e.spans,
                 lyrics: e.lyrics,
                 fingering: e.fingering,
+                slur: e.slur,
                 graces: e
                     .graces
                     .iter()
@@ -103,7 +104,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)
-                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] })
+                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() })
                 .collect();
             let (change, voice) = (p.allocate_id(), p.allocate_id());
             let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: clef.to_string() }] };

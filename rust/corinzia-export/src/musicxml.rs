@@ -616,7 +616,13 @@ impl<'a> Writer<'a> {
                     *slur_open = false;
                 }
                 if e.spans & span::SLUR_START != 0 {
-                    n.push_str("<slur type=\"start\" number=\"1\"/>");
+                    // A side chosen by hand: MusicXML's placement.
+                    let placement = match e.slur.dir {
+                        1 => " placement=\"above\"",
+                        -1 => " placement=\"below\"",
+                        _ => "",
+                    };
+                    n.push_str(&format!("<slur type=\"start\" number=\"1\"{placement}/>"));
                     *slur_open = true;
                 }
                 let a = e.art;

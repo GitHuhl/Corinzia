@@ -695,11 +695,19 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
     let mut arts = 0u16;
     let mut spans = 0u8;
     let mut finger: Option<u8> = None;
+    let mut slur = corinzia_model::SlurShape::default();
     if let Some(nt) = child(e, "notations") {
         for c in nt.children().filter(|c| c.is_element()) {
             match c.tag_name().name() {
                 "slur" => match c.attribute("type") {
-                    Some("start") => spans |= span::SLUR_START,
+                    Some("start") => {
+                        spans |= span::SLUR_START;
+                        slur.dir = match c.attribute("placement") {
+                            Some("above") => 1,
+                            Some("below") => -1,
+                            _ => 0,
+                        };
+                    }
                     Some("stop") => spans |= span::SLUR_END,
                     _ => {}
                 },
@@ -781,7 +789,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         _ => vec![],
     };
     let kind = if heads.is_empty() { EventKind::Rest } else { EventKind::Note };
-    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces, fingering: finger.filter(|_| !rest).into_iter().collect() });
+    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces, fingering: finger.filter(|_| !rest).into_iter().collect(), slur });
 }
 
 /// `<tuplet type="start|stop">` on a note (nested ones too): the ratio
@@ -890,5 +898,5 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
 }
 
 fn rest(p: &mut Project, start: Frac, duration: Frac) -> Event {
-    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] }
+    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() }
 }

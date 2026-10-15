@@ -14,8 +14,10 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
 
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
-  marquee, Shift-click or Ctrl+A; copy/paste/repeat; articulations,
-  ornaments, dynamics, slurs, hairpins and ties; tuplets of any ratio and
+  marquee, Shift-click, a click in a bar's empty space or Ctrl+A;
+  copy/paste/repeat; articulations, ornaments, dynamics, hairpins and ties;
+  slurs placed as LilyPond places them, adjusted by hand by clicking one
+  and dragging its ends or middle (X flips it, Ctrl+R resets it); tuplets of any ratio and
   grace notes; key, time (with pickups), clef, tempo,
   barlines, repeat endings, rehearsal marks and text through popovers and
   the Structure panel. Every action is one undo step.
@@ -29,10 +31,11 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
   small built-in CLAP instrument (also installed as
   `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
   auditioned.
-* **Mix tab** (Ctrl+2): the arrange view, mixer strips (gain, pan, mute,
-  solo) and a browser of the CLAP instruments found in `CLAP_PATH`,
+* **Mix tab** (Ctrl+2): the arrange view, mixer strips (faders with a dB
+  scale, pan, mute, solo; double-click resets, Shift drags finely) and a browser of the CLAP instruments found in `CLAP_PATH`,
   `~/.clap`, your Nix profiles and `/usr/lib/clap`.
-* **Files:** New (type an instrument list, e.g. "Flute, 2 Violin, Cello"),
+* **Files:** New (a template or an instrument list, e.g. "Flute, 2 Violin,
+  Cello", with title, key, time and pickup, tempo and length),
   Open, Save and autosave to a single SQLite `.project` file. Open also
   imports MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Export writes
   a vector PDF straight from the engraver, MIDI and MusicXML 4.0.

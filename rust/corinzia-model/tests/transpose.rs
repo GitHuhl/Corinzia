@@ -32,7 +32,7 @@ fn transposed_view_writes_pitches_and_keys() {
     let mut proj = Project { next_id: 100, ..Default::default() };
     proj.players.push(Player { id: 1, name: "Clarinet".into(), instruments: vec![2] });
     proj.instruments.push(Instrument { id: 2, player: 1, name: "Clarinet in B♭".into(), engraver_name: "Cl.".into(), transposition: Interval::new(1, 2), clef: "treble".into(), track: None });
-    let note = Event { id: 10, kind: EventKind::Note, start: Frac::ZERO, duration: Frac::int(1), heads: vec![Head { id: 11, pitch: p(6, -1, 4), tie: false, velocity: 0 }], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
+    let note = Event { id: 10, kind: EventKind::Note, start: Frac::ZERO, duration: Frac::int(1), heads: vec![Head { id: 11, pitch: p(6, -1, 4), tie: false, velocity: 0 }], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() };
     let m = Movement {
         id: 3,
         ordinal: 0,

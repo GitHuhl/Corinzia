@@ -283,6 +283,24 @@ pub struct Event {
     pub graces: Vec<Grace>,
     /// Fingers, bottom head to top (0 for none).
     pub fingering: Vec<u8>,
+    /// The placement of the slur starting here, as adjusted by hand.
+    pub slur: SlurShape,
+}
+
+/// A slur's placement adjusted by hand, kept on its first note: the side
+/// (0 automatic, 1 above, -1 below), its ends moved up by `start` and
+/// `end` staff spaces, and `height` spaces more (or less) curvature.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SlurShape {
+    pub dir: i8,
+    pub start: f32,
+    pub end: f32,
+    pub height: f32,
+}
+impl SlurShape {
+    pub fn is_default(&self) -> bool {
+        *self == SlurShape::default()
+    }
 }
 
 #[derive(Debug, Clone)]

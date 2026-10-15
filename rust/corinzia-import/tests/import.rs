@@ -348,3 +348,25 @@ fn bowings_and_fingering_import_and_survive_a_round_trip() {
     let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
     check(&musicxml(out.as_bytes()).unwrap());
 }
+
+#[test]
+fn a_slur_side_chosen_by_hand_survives_a_round_trip() {
+    let n = |step: &str, mark: &str| format!("<note><pitch><step>{step}</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>{mark}</note>");
+    let notes = [n("C", "<notations><slur type=\"start\" number=\"1\" placement=\"below\"/></notations>"), n("D", ""), n("E", ""), n("F", "<notations><slur type=\"stop\" number=\"1\"/></notations>")].join("");
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+{notes}</measure></part></score-partwise>"#
+    );
+    let check = |p: &Project| {
+        let e = &p.movements[0].lanes[0].voices[0].events[0];
+        assert!(e.spans & span::SLUR_START != 0);
+        assert_eq!(e.slur.dir, -1, "below");
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    assert!(out.contains("placement=\"below\""), "{out}");
+    check(&musicxml(out.as_bytes()).unwrap());
+}

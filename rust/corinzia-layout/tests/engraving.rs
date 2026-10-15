@@ -355,13 +355,14 @@ fn spanners_continue_across_system_breaks() {
     let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
     let systems: usize = pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map(|m| m as usize + 1).unwrap_or(0)).sum();
     assert!(systems >= 3, "the example needs several systems: {systems}");
-    let slur_id = s.parts[0].voices[0].events[8].pitches[0].id;
+    let slur_id = s.parts[0].voices[0].events[8].id;
     let slur_pieces: usize = pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Item::Crescent { id, .. } if *id == slur_id)).count();
     assert!(slur_pieces >= 3, "a piece of the slur in each system it crosses: {slur_pieces}");
     // The crescendo: a pair of lines per system; openings grow from piece to piece.
+    let hairpin_id = s.parts[0].voices[0].events[8].pitches[0].id;
     let mut openings: Vec<(f32, f32)> = Vec::new();
     for p in &pages {
-        let lines: Vec<_> = p.items.iter().filter_map(|i| match i { Item::Line { from, to, id, .. } if *id == slur_id => Some((*from, *to)), _ => None }).collect();
+        let lines: Vec<_> = p.items.iter().filter_map(|i| match i { Item::Line { from, to, id, .. } if *id == hairpin_id => Some((*from, *to)), _ => None }).collect();
         for pair in lines.chunks(2) {
             if let [a, b] = pair {
                 openings.push(((a.0.y - b.0.y).abs(), (a.1.y - b.1.y).abs()));
@@ -617,4 +618,36 @@ fn bowings_and_fingering() {
     // Bowings above the fingering.
     assert!(glyphs(&l, Glyph::DownBow)[0].1 < glyphs(&l, Glyph::Fingering(1))[0].1);
     preview("bowings", &l);
+}
+
+#[test]
+fn slurs_follow_their_hand_placement() {
+    use corinzia_score::score::SlurShape;
+    let music = "c''4( b' a' g') | c'4( g' c'' e'') | a'4( c'' e'' c'') | g'4.( a'8 b'4 c'')";
+    let s = score(&[("treble", &[music])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("slurs", &l);
+    let first = s.parts[0].voices[0].events[0].id;
+    let curve = |l: &corinzia_layout::DisplayList| {
+        l.items.iter().find_map(|i| match i {
+            Item::Crescent { from, c1, to, id, .. } if *id == first => Some((from.y, c1.y, to.y)),
+            _ => None,
+        })
+    };
+    let (y0, c, y1) = curve(&l).expect("the first slur");
+    assert!(c < y0.min(y1), "mixed stems: above");
+    // Below by hand, with its start 1 space lower and 1 more space of curve.
+    let mut s = s;
+    s.parts[0].voices[0].events[0].slur = SlurShape { dir: -1, start: -1.0, end: 0.0, height: 1.0 };
+    let shaped = layout_line(&s, &Options::default());
+    preview("slurs-by-hand", &shaped);
+    let (z0, d, z1) = curve(&shaped).unwrap();
+    assert!(d > z0.max(z1), "below");
+    s.parts[0].voices[0].events[0].slur.start = 0.0;
+    let (w0, e, w1) = curve(&layout_line(&s, &Options::default())).unwrap();
+    assert!((z0 - w0 - 1.0).abs() < 1e-3, "the start a space lower: {z0} vs {w0}");
+    assert!((z1 - w1).abs() < 1e-3);
+    s.parts[0].voices[0].events[0].slur.height = 0.0;
+    let (_, f, _) = curve(&layout_line(&s, &Options::default())).unwrap();
+    assert!((e - f - 1.0).abs() < 1e-3, "a space more curve: {e} vs {f}");
 }

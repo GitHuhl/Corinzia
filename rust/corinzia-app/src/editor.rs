@@ -60,6 +60,8 @@ pub struct Editor {
     pub grace_input: Option<bool>,
     pub selection: Option<Id>,
     pub range: Option<Range>,
+    /// A slur selected (its first event's id); see `selected_slur`.
+    slur: Option<Id>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
     /// moves).
     range_anchor: Option<(usize, Frac)>,
@@ -149,6 +151,15 @@ fn set_events_tidy(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) 
     set_events(m, lane, voice, &EditResult { events: evs, ..r.clone() });
 }
 
+/// Which part of a slur a drag moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SlurHandle {
+    Start,
+    Middle,
+    End,
+    Whole,
+}
+
 /// Single note selected: a span from it to the next note in its voice.
 fn span_from_note(evs: &[Event], note: Id) -> Option<(Frac, Frac)> {
     let (e, _) = edit::find_event(evs, note)?;
@@ -181,6 +192,7 @@ impl Editor {
             revision: 0,
             music_revision: 0,
             merge: None,
+            slur: None,
             modified: false,
             status: String::new(),
         }
@@ -386,6 +398,102 @@ impl Editor {
             self.project = before;
         }
         ok
+    }
+
+    // -------------------------------------------------------------- slurs --
+    /// The slur selected: valid while nothing else is selected and the
+    /// slur still exists.
+    pub fn selected_slur(&self) -> Option<Id> {
+        let id = self.slur.filter(|_| self.selection.is_none() && self.range.is_none())?;
+        self.event_of(id).filter(|(_, e)| e.id == id && e.spans & span::SLUR_START != 0).map(|_| id)
+    }
+
+    /// Selects the slur starting at event `id`; false if there is none.
+    pub fn select_slur(&mut self, id: Id) -> bool {
+        self.slur = Some(id);
+        self.selection = None;
+        self.range = None;
+        self.range_anchor = None;
+        if self.selected_slur().is_none() {
+            self.slur = None;
+            return false;
+        }
+        self.status = "Slur · drag its ends or middle · X flips · ↑/↓ move · Ctrl+R resets".into();
+        true
+    }
+
+    fn edit_slur(&mut self, label: &str, merge: bool, f: impl FnOnce(&mut SlurShape)) {
+        let Some(id) = self.selected_slur() else { return };
+        let Some(loc) = self.locate(id) else { return };
+        let before = self.snapshot();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        let events = Arc::make_mut(&mut m.lanes[loc.lane].voices[loc.voice].events);
+        let Some(e) = events.iter_mut().find(|e| e.id == id) else { return };
+        let was = e.slur;
+        f(&mut e.slur);
+        // Hand-placed positions, rounded to hundredths of a space.
+        for v in [&mut e.slur.start, &mut e.slur.end, &mut e.slur.height] {
+            *v = (*v * 100.0).round() / 100.0;
+        }
+        if e.slur == was {
+            self.project = before;
+            return;
+        }
+        self.commit_with(before, label, true, merge.then_some(id));
+    }
+
+    /// A drag on the selected slur by `dy` spaces (up); `above`: the side
+    /// it is drawn on. The middle follows the pointer.
+    pub fn drag_slur(&mut self, handle: SlurHandle, dy: f32, above: bool) {
+        // The curve's middle rises by 3/4 of its control height.
+        let outward = (if above { dy } else { -dy }) / 0.75;
+        self.edit_slur("Move slur", true, |s| match handle {
+            SlurHandle::Start => s.start += dy,
+            SlurHandle::End => s.end += dy,
+            SlurHandle::Middle => s.height = (s.height + outward).max(-4.0),
+            SlurHandle::Whole => {
+                s.start += dy;
+                s.end += dy;
+            }
+        });
+    }
+
+    /// Moves the selected slur up by `dy` spaces (arrow keys).
+    pub fn move_slur(&mut self, dy: f32) {
+        self.edit_slur("Move slur", false, |s| {
+            s.start += dy;
+            s.end += dy;
+        });
+    }
+
+    /// Flips the selected slur to the other side (`above`: where it is
+    /// now); its hand-made offsets go.
+    pub fn flip_slur(&mut self, above: bool) {
+        self.edit_slur("Flip slur", false, |s| *s = SlurShape { dir: if above { -1 } else { 1 }, ..SlurShape::default() });
+        self.status = format!("Slur {}", if above { "below" } else { "above" });
+    }
+
+    /// The selected slur back where the engraver puts it.
+    pub fn reset_slur(&mut self) {
+        self.edit_slur("Reset slur", false, |s| *s = SlurShape::default());
+    }
+
+    /// Removes the selected slur.
+    pub fn delete_slur(&mut self) {
+        let Some(id) = self.selected_slur() else { return };
+        let Some(loc) = self.locate(id) else { return };
+        self.transact("Delete slur", |m, _| {
+            let events = Arc::make_mut(&mut m.lanes[loc.lane].voices[loc.voice].events);
+            let Some(k) = events.iter().position(|e| e.id == id) else { return false };
+            events[k].spans &= !span::SLUR_START;
+            events[k].slur = SlurShape::default();
+            if let Some(end) = events[k + 1..].iter_mut().find(|e| !e.heads.is_empty() && e.spans & span::SLUR_END != 0) {
+                end.spans &= !span::SLUR_END;
+            }
+            true
+        });
+        self.slur = None;
+        self.status = "Slur deleted".into();
     }
 
     // -------------------------------------------------------------- mixer --

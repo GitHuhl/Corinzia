@@ -213,7 +213,7 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         }
         // Sounding time inside tuplets.
         let scale = open.iter().fold(Frac::int(1), |f, &(_, a, n)| f * Frac::new(n, a));
-        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces), fingering: vec![] };
+        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces), fingering: vec![], slur: Default::default() };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;

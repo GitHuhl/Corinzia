@@ -20,6 +20,7 @@ fn sample() -> Project {
         lyrics: vec![Lyric { verse: 1, text: "Glo".into(), hyphen: true, extend: false }, Lyric { verse: 2, text: "Ah".into(), hyphen: false, extend: true }],
         graces: vec![Grace { id: id + 100, heads: vec![Head { id: id + 101, pitch: Pitch { step: 1, alter: 0, octave: 5 }, tie: false, velocity: 0 }], base: 16, slash: true }],
         fingering: vec![3],
+        slur: SlurShape { dir: 1, start: 0.5, end: -0.25, height: 1.0 },
     };
     // Events across two storage chunks (chunk = 4 whole notes).
     let events = vec![ev(10, Frac::ZERO, Frac::new(1, 4), 0, true), ev(12, Frac::new(1, 4), Frac::new(3, 4), 3, false), ev(14, Frac::int(5), Frac::int(1), 4, false)];

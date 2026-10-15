@@ -4,6 +4,7 @@
 //! is cached and rebuilt only when the engraving, zoom, pan or selection
 //! changes.
 
+use crate::editor::SlurHandle;
 use corinzia_layout::display::{DisplayList, Item};
 use corinzia_layout::font::{Font as MusicFont, FONT_DATA};
 use iced::mouse;
@@ -78,6 +79,46 @@ pub fn page_origins(pages: &[DisplayList], vertical: bool) -> Vec<Vector> {
     out
 }
 
+/// A point on a cubic Bézier.
+fn bezier(p: [corinzia_layout::display::Point; 4], t: f32) -> Point {
+    let u = 1.0 - t;
+    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+    Point::new(a * p[0].x + b * p[1].x + c * p[2].x + d * p[3].x, a * p[0].y + b * p[1].y + c * p[2].y + d * p[3].y)
+}
+
+/// A curve's middle line (between its two edges), as points.
+fn midline(item: &Item) -> Option<Vec<Point>> {
+    let Item::Crescent { from, c1, c2, to, d1, d2, .. } = item else { return None };
+    let outer = [*from, *c1, *c2, *to];
+    let inner = [*from, *d1, *d2, *to];
+    Some((0..=24).map(|k| k as f32 / 24.0).map(|t| {
+        let (a, b) = (bezier(outer, t), bezier(inner, t));
+        Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)
+    }).collect())
+}
+
+/// The pieces of curve `id` (a slur, one per system), as (page, item).
+fn curve_pieces<'a>(pages: &'a [DisplayList], id: u64) -> impl Iterator<Item = (usize, &'a Item)> + 'a {
+    pages.iter().enumerate().flat_map(move |(k, p)| p.items.iter().filter(move |i| matches!(i, Item::Crescent { id: c, .. } if *c == id)).map(move |i| (k, i)))
+}
+
+/// Whether slur `id` is drawn above its notes.
+pub fn slur_above(pages: &[DisplayList], id: u64) -> Option<bool> {
+    let (_, item) = curve_pieces(pages, id).next()?;
+    let Item::Crescent { from, c1, c2, to, .. } = item else { return None };
+    Some((c1.y + c2.y) / 2.0 < (from.y + to.y) / 2.0)
+}
+
+/// The drag handles of slur `id` in desk coordinates: its start, its
+/// middle and its end.
+pub fn slur_handles(pages: &[DisplayList], origins: &[Vector], id: u64) -> Vec<(SlurHandle, Point)> {
+    let pieces: Vec<_> = curve_pieces(pages, id).collect();
+    let (Some(&(k0, first)), Some(&(k1, last))) = (pieces.first(), pieces.last()) else { return vec![] };
+    let at = |k: usize, p: Point| Point::new(p.x + origins[k].x, p.y + origins[k].y);
+    let (Some(a), Some(b)) = (midline(first), midline(last)) else { return vec![] };
+    vec![(SlurHandle::Start, at(k0, a[0])), (SlurHandle::Middle, at(k0, a[a.len() / 2])), (SlurHandle::End, at(k1, b[b.len() - 1]))]
+}
+
 /// The element under a point given in staff spaces (desk coordinates).
 pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<u64> {
     let font = MusicFont::bravura();
@@ -85,6 +126,14 @@ pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<
     for (p, o) in pages.iter().zip(origins) {
         let local = Point::new(at.x - o.x, at.y - o.y);
         for item in &p.items {
+            // Slurs (and ties, which select their note) along their curve;
+            // notes and rests under them win.
+            if let (Item::Crescent { id, .. }, Some(line)) = (item, midline(item)) {
+                if *id != 0 && line.iter().any(|q| q.distance(local) < 0.45) && best.is_none_or(|b| b.0 > 3.0) {
+                    best = Some((3.0, *id));
+                }
+                continue;
+            }
             // Notes and rests, and text that belongs to something (chord symbols, lyrics).
             let id = match item {
                 Item::Glyph { glyph, id, .. } if *id != 0 && is_hit_target(*glyph) => id,
@@ -192,6 +241,11 @@ pub enum ViewEvent {
     Marquee { ids: Vec<u64>, shift: bool },
     Pan(Vector),
     Zoom { factor: f32, around: Point },
+    /// The selected slur dragged by a handle (or along its curve) by `dy`
+    /// staff spaces, up.
+    SlurDrag { handle: SlurHandle, dy: f32 },
+    /// The drag is over: the next one is a new undo step.
+    SlurDragEnd,
 }
 
 /// The input caret: a part and a time.
@@ -221,6 +275,8 @@ pub struct ScoreView<'a> {
     pub highlight: Option<Highlight>,
     /// The playback position (written quarters) while playing.
     pub playhead: Option<f64>,
+    /// The slur selected: drawn with drag handles.
+    pub slur: Option<u64>,
     pub cache: &'a Cache,
 }
 
@@ -230,12 +286,26 @@ pub struct Interaction {
     current: Option<Point>,
     marquee: bool,
     panning: Option<Point>,
+    /// A slur drag: the handle and the pointer's last desk y.
+    slur_drag: Option<(SlurHandle, f32)>,
     modifiers: iced::keyboard::Modifiers,
 }
 
 impl ScoreView<'_> {
     fn scale(&self) -> f32 {
         self.zoom * BASE_PX
+    }
+    /// What a press at `desk` grabs of the selected slur.
+    fn slur_target(&self, desk: Point) -> Option<SlurHandle> {
+        let id = self.slur?;
+        let origins = page_origins(self.pages, self.vertical);
+        // Handles keep a usable size when zoomed out.
+        let reach = (0.7f32).max(6.0 / self.scale());
+        let handles = slur_handles(self.pages, &origins, id);
+        if let Some((h, _)) = handles.iter().filter(|(_, p)| p.distance(desk) < reach).min_by(|a, b| a.1.distance(desk).total_cmp(&b.1.distance(desk))) {
+            return Some(*h);
+        }
+        (hit_test(self.pages, &origins, desk) == Some(id)).then_some(SlurHandle::Whole)
     }
     fn to_desk(&self, p: Point) -> Point {
         Point::new((p.x - self.pan.x) / self.scale(), (p.y - self.pan.y) / self.scale())
@@ -250,6 +320,11 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = pos?;
+                // On the selected slur: a handle, or the curve (moves it all).
+                if let Some(h) = self.slur_target(self.to_desk(p)) {
+                    state.slur_drag = Some((h, self.to_desk(p).y));
+                    return Some(canvas::Action::capture());
+                }
                 state.press = Some(p);
                 state.current = Some(p);
                 state.marquee = false;
@@ -264,6 +339,17 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                     state.panning = Some(p);
                     return Some(canvas::Action::publish(ViewEvent::Pan(p - from)).and_capture());
                 }
+                if let (Some((handle, last)), Some(p)) = (state.slur_drag, pos) {
+                    let y = self.to_desk(p).y;
+                    // Shift: fine movement.
+                    let k = if state.modifiers.shift() { 0.25 } else { 1.0 };
+                    let dy = (last - y) * k;
+                    if dy.abs() < 0.01 {
+                        return Some(canvas::Action::capture());
+                    }
+                    state.slur_drag = Some((handle, y));
+                    return Some(canvas::Action::publish(ViewEvent::SlurDrag { handle, dy }).and_capture());
+                }
                 let (from, p) = (state.press?, pos?);
                 let d = p - from;
                 if state.marquee || d.x.abs() + d.y.abs() > 4.0 {
@@ -277,6 +363,9 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                 state.panning.take().map(|_| canvas::Action::capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.slur_drag.take().is_some() {
+                    return Some(canvas::Action::publish(ViewEvent::SlurDragEnd).and_capture());
+                }
                 let from = state.press.take()?;
                 let shift = state.modifiers.shift();
                 let origins = page_origins(self.pages, self.vertical);
@@ -344,6 +433,14 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                     draw_playhead(f, page, *origin, q, px);
                 }
             }
+            if let Some(id) = self.slur {
+                let r = (0.35f32).max(4.0 / px);
+                for (_, at) in slur_handles(self.pages, &origins, id) {
+                    let square = Path::rectangle(Point::new(at.x - r, at.y - r), Size::new(2.0 * r, 2.0 * r));
+                    f.fill(&square, Color::WHITE);
+                    f.stroke(&square, Stroke::default().with_width(1.5).with_color(SELECTED));
+                }
+            }
         });
         if let (true, Some(a), Some(b)) = (state.marquee, state.press, state.current) {
             let r = Rectangle::new(Point::new(a.x.min(b.x), a.y.min(b.y)), Size::new((a.x - b.x).abs(), (a.y - b.y).abs()));
@@ -353,9 +450,13 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
         vec![geometry, overlay.into_geometry()]
     }
 
-    fn mouse_interaction(&self, state: &Interaction, _bounds: Rectangle, _cursor: mouse::Cursor) -> mouse::Interaction {
+    fn mouse_interaction(&self, state: &Interaction, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
         if state.panning.is_some() {
             mouse::Interaction::Grabbing
+        } else if state.slur_drag.is_some() {
+            mouse::Interaction::ResizingVertically
+        } else if cursor.position_in(bounds).and_then(|p| self.slur_target(self.to_desk(p))).is_some() {
+            mouse::Interaction::Grab
         } else if state.marquee {
             mouse::Interaction::Crosshair
         } else {

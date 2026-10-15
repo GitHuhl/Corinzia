@@ -8,7 +8,7 @@
 use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
-use corinzia_score::score::{art, BarKind, Key, LineKind, Nav, Part, Pitch, Score};
+use corinzia_score::score::{art, BarKind, Key, LineKind, Nav, Part, Pitch, Score, SlurShape};
 use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
@@ -1913,9 +1913,6 @@ impl<'a> Engraver<'a> {
         }
     }
 
-    /// Slurs from SLUR_START to the next SLUR_END in the voice: on the
-    /// notehead side when all stems agree, else above; lifted over the notes
-    /// in between.
     /// Slurs and hairpins of the whole movement, so a system can draw the
     /// part of one that started or ends in another system.
     fn spanners(&self) -> Vec<Spanner> {
@@ -1928,7 +1925,8 @@ impl<'a> Engraver<'a> {
                     let id = e.pitches.first().map(|p| p.id).unwrap_or(e.id);
                     if e.spans & span::SLUR_START != 0 {
                         if let Some(end) = notes[k + 1..].iter().find(|o| o.spans & span::SLUR_END != 0) {
-                            out.push(Spanner { part: pi, voice: v.index, from: e.start, to: end.start, kind: SpanKind::Slur, id });
+                            // A slur is an element of its own: its first event's id.
+                            out.push(Spanner { part: pi, voice: v.index, from: e.start, to: end.start, kind: SpanKind::Slur, id: e.id, shape: e.slur });
                         }
                     }
                     if e.spans & (span::CRESC_START | span::DIM_START) != 0 {
@@ -1936,7 +1934,7 @@ impl<'a> Engraver<'a> {
                         let to = notes[k + 1..].iter().find(|o| o.dynamic.is_some() || o.spans & span::HAIRPIN_END != 0).map(|o| o.start);
                         // Without an end: to the end of the note's bar.
                         let to = to.unwrap_or_else(|| self.score_bar_end(e.start));
-                        out.push(Spanner { part: pi, voice: v.index, from: e.start, to, kind, id });
+                        out.push(Spanner { part: pi, voice: v.index, from: e.start, to, kind, id, shape: SlurShape::default() });
                     }
                 }
             }
@@ -1968,6 +1966,9 @@ impl<'a> Engraver<'a> {
         (self.ms.first().map(|m| m.x0 + 0.5).unwrap_or(self.left), self.ms.last().map(|m| m.x1 - 0.3).unwrap_or(self.left))
     }
 
+    /// Slurs from SLUR_START to the next SLUR_END in the voice: on the
+    /// notehead side when all stems agree, else above; placed and curved
+    /// over the notes between as LilyPond does; then as adjusted by hand.
     fn draw_slurs(&mut self) {
         let d = self.font.defaults;
         let (r0, r1) = self.range;
@@ -1985,7 +1986,11 @@ impl<'a> Engraver<'a> {
                 continue;
             }
             let poly = between.iter().any(|b| self.notes.iter().any(|o| o.part == sp.part && o.measure == b.measure && o.voice != sp.voice && !o.whole_bar));
-            let above = if poly { sp.voice % 2 == 1 } else { !between.iter().all(|o| o.stem_up) };
+            let above = match sp.shape.dir {
+                0 if poly => sp.voice % 2 == 1,
+                0 => !between.iter().all(|o| o.stem_up),
+                d => d > 0,
+            };
             let dir = if above { -1.0 } else { 1.0 };
             let top = self.top(sp.part);
             // A stem pointing into the slur: the slur leaves the first note
@@ -2040,7 +2045,15 @@ impl<'a> Engraver<'a> {
                 }
             };
             let dx = (x1 - x0).max(0.5);
-            let (y0, y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
+            let (mut y0, mut y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
+            // Moved by hand (y up); a piece cut at a system break keeps its cut end.
+            if si.is_some() {
+                y0 -= sp.shape.start;
+            }
+            if ei.is_some() {
+                y1 -= sp.shape.end;
+            }
+            let h = (h + sp.shape.height).max(0.0);
             let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
             // The control points are the midline; the thickness is split around it.
             let t = d.slur_midpoint_thickness / 2.0;
@@ -2661,6 +2674,8 @@ struct Spanner {
     to: Frac,
     kind: SpanKind,
     id: u64,
+    /// A slur's placement adjusted by hand.
+    shape: SlurShape,
 }
 
 /// A chord symbol cut into text and SMuFL chord-symbol glyphs: accidentals
