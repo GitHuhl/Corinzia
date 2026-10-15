@@ -568,6 +568,13 @@ impl App {
             Action::Accidental(x) if !ed.input_mode && ed.has_selection() => ed.set_selection_accidental(x),
             Action::Triplet => ed.toggle_triplets(),
             Action::GraceInput(slash) => ed.toggle_grace_input(slash),
+            Action::Movement(i) => ed.switch_movement(i),
+            Action::MovementStep(d) => {
+                let i = (ed.movement as i64 + d).clamp(0, ed.project.movements.len() as i64 - 1) as usize;
+                ed.switch_movement(i);
+            }
+            Action::AddMovement => ed.add_movement(),
+            Action::DeleteMovement => ed.delete_movement(),
             Action::TupletOff => {
                 ed.tuplet_input = None;
                 ed.status = "Tuplet input off".into();
@@ -1150,7 +1157,7 @@ impl App {
                 Space::new().width(16),
                 text(self.playback.problem.clone().unwrap_or_default()).size(12).style(theme::danger),
                 Space::new().width(16),
-                text(title).size(12),
+                movement_picker(ed, title),
                 Space::new().width(16),
                 text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(12),
             ]
@@ -1680,6 +1687,27 @@ mod tests {
             std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf, false).unwrap()).unwrap();
         }
     }
+}
+
+/// The status bar's movement: its title between previous and next.
+fn movement_picker(ed: &editor::Editor, title: String) -> Element<'static, Message> {
+    let n = ed.project.movements.len();
+    let step = |label: &'static str, to: Option<usize>| {
+        let b = iced::widget::button(text(label).size(13).center()).padding([0, 6]).height(22).style(theme::flat(false));
+        match to {
+            Some(i) => b.on_press(Message::Act(Action::Movement(i))),
+            None => b,
+        }
+    };
+    let label = if n > 1 { format!("{title}  ({}/{n})", ed.movement + 1) } else { title };
+    row![
+        step("‹", ed.movement.checked_sub(1)),
+        text(label).size(12),
+        step("›", (ed.movement + 1 < n).then_some(ed.movement + 1)),
+    ]
+    .spacing(2)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 /// The status bar's rhythmic grid: what Alt+arrows move music by and the

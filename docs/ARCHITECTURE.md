@@ -127,6 +127,8 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
     targets;
   * undo. Each action snapshots the project, which is cheap because voices
     are `Arc`-shared. Slider drags merge into one step.
+  * the movement shown, with new (same staves, opening key, meter and
+    tempo), rename and delete as undoable steps;
   * two counters. `revision` moves on every change; `music_revision` moves
     only when the music changes. The app re-engraves and rebuilds the
     playback plan on `music_revision`, so mixer edits do neither.

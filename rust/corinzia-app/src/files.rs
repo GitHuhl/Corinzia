@@ -137,14 +137,28 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
             if corinzia_layout::display::text_fonts().0.is_none() {
                 crate::load_text_fonts();
             }
-            let score = corinzia_model::notation::score_as(project, m, transposed);
-            let pages = layout_pages(&score, &Options::default(), &PageSpec::default());
-            let title = if project.title.is_empty() { m.title.as_str() } else { project.title.as_str() };
-            Ok(corinzia_layout::pdf::to_pdf(&pages, title))
+            Ok(corinzia_layout::pdf::to_pdf(&work_pages(project, transposed), if project.title.is_empty() { "Untitled" } else { &project.title }))
         }
         Format::Midi => corinzia_perform::midi(project, m),
         Format::MusicXml => corinzia_perform::musicxml(project, m).map(String::into_bytes),
     }
+}
+
+/// Every movement's pages, as printed: the first under the work's title
+/// and composer, each later one from a new page under its own title, page
+/// numbers running on.
+pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::DisplayList> {
+    let mut pages = Vec::new();
+    for (i, m) in project.movements.iter().enumerate() {
+        let mut score = corinzia_model::notation::score_as(project, m, transposed);
+        if i > 0 {
+            score.work_title.clear();
+            score.composer.clear();
+        }
+        let spec = PageSpec { first_page: pages.len() + 1, ..PageSpec::default() };
+        pages.extend(layout_pages(&score, &Options::default(), &spec));
+    }
+    pages
 }
 
 pub fn export_to(project: &Project, movement: usize, format: Format, transposed: bool, path: &Path) -> Result<(), String> {

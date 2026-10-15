@@ -15,6 +15,10 @@ pub enum Action {
     Duration(u8), // 0 = whole .. 6 = 64th
     Pitch(i32),   // a letter outside note input: the selection's pitch
     TupletOff,    // ends tuplet input
+    Movement(usize), // show movement i
+    MovementStep(i64), // the previous (-1) or next (+1) movement
+    AddMovement,
+    DeleteMovement,
     GraceInput(bool), // grace note input on/off (slashed?)
     Nudge(i64),   // move the selection by the rhythmic grid
     Grid(usize),  // choose the rhythmic grid (editor::GRIDS)
@@ -103,6 +107,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             // Alt+arrows move the selection by the rhythmic grid.
             (Named::ArrowLeft, false, true) => Nudge(-1),
             (Named::ArrowRight, false, true) => Nudge(1),
+            (Named::PageUp, true, _) => MovementStep(-1),
+            (Named::PageDown, true, _) => MovementStep(1),
             (Named::Home, ..) if !input_mode => Edge { last: false },
             (Named::End, ..) if !input_mode => Edge { last: true },
             (Named::ArrowUp, _, true) => if input_mode { CaretStaff(-1) } else { Staff(-1) },

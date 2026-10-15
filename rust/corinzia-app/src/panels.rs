@@ -161,17 +161,29 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     .into()
 }
 
-pub fn structure(_ed: &Editor) -> Element<'_, Action> {
+pub fn structure(ed: &Editor) -> Element<'_, Action> {
     let pop = |label, kind: PopoverKind, key| wide(label, false, key, Action::Popover(kind));
+    let movements: Vec<Element<'_, Action>> = ed
+        .project
+        .movements
+        .iter()
+        .enumerate()
+        .map(|(i, m)| wide(if m.title.is_empty() { "Untitled" } else { m.title.as_str() }, i == ed.movement, "Show this movement", Action::Movement(i)))
+        .collect();
     column![
+        heading("Movements"),
+        column(movements).spacing(6),
+        wide("New movement", false, "After this one, with the same instruments", Action::AddMovement),
+        pop("Rename movement…", PopoverKind::MovementTitle, "The movement's title"),
+        wide("Delete movement", false, "This movement (undo brings it back)", Action::DeleteMovement),
         heading("At the selection or caret"),
         pop("Key signature…", PopoverKind::Key, "Shift+K"),
         pop("Time signature…", PopoverKind::Time, "Shift+M"),
-        pop("Clef…", PopoverKind::Clef, "Shift+C"),
+        pop("Clef or octave line…", PopoverKind::Clef, "Shift+C: treble, bass… 8va, 8vb, loco"),
         pop("Tempo…", PopoverKind::Tempo, "Shift+T"),
         pop("Barline…", PopoverKind::Barline, "Shift+B"),
         pop("Expression text…", PopoverKind::Expression, "Shift+X"),
-        pop("Technique text…", PopoverKind::Technique, "Shift+P"),
+        pop("Technique text or pedal…", PopoverKind::Technique, "Shift+P: pizz., arco… ped, *"),
         pop("Ornament…", PopoverKind::Ornament, "Shift+O"),
         wide("Rehearsal mark", false, "Shift+A (toggles)", Action::Rehearsal),
         heading("Lyrics and chords"),
@@ -180,7 +192,7 @@ pub fn structure(_ed: &Editor) -> Element<'_, Action> {
         wide("Lyrics, verse 3…", false, "Verse 3", Action::Lyrics(3)),
         pop("Chord symbol…", PopoverKind::Chord, "Ctrl+K: space moves to the next beat"),
         heading("Repeats"),
-        pop("Ending…", PopoverKind::Ending, "Shift+R"),
+        pop("Ending or jump…", PopoverKind::Ending, "Shift+R: 1, 2… segno, coda, D.C. al Fine"),
         wide("1st and 2nd endings", false, "The selected bars and as many after", Action::FirstSecondEndings),
         heading("Bars"),
         wide("Insert bar", false, "Ctrl+B: before the selected bar", Action::InsertBar),

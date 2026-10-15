@@ -2733,10 +2733,12 @@ pub struct PageSpec {
     pub margin_y: f32,
     /// Space between systems (between their outermost marks).
     pub system_gap: f32,
+    /// The number of the first page (a later movement goes on counting).
+    pub first_page: usize,
 }
 impl Default for PageSpec {
     fn default() -> Self {
-        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0 }
+        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1 }
     }
 }
 
@@ -2888,8 +2890,11 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     // (The last page stays ragged at the bottom, as in LilyPond.)
     pages.push(cur);
     // Page numbers from page 2, in the outer corner of the top margin.
-    for (k, p) in pages.iter_mut().enumerate().skip(1) {
-        let n = k + 1;
+    for (k, p) in pages.iter_mut().enumerate() {
+        let n = k + page.first_page;
+        if n < 2 {
+            continue;
+        }
         let (x, anchor) = if n % 2 == 0 { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
         p.items.push(Item::Text { text: n.to_string(), at: pt(x, page.margin_y * 0.6), size: 2.0, italic: false, bold: false, anchor, id: 0 });
     }

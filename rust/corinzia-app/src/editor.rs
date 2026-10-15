@@ -225,6 +225,8 @@ impl Editor {
             self.music_revision += 1;
         }
         self.modified = true;
+        // Undo may take away the movement shown.
+        self.movement = self.movement.min(self.project.movements.len().saturating_sub(1));
         // Keep the selection valid.
         if let Some(id) = self.selection {
             if self.locate(id).is_none() && self.movement().and_then(|m| edit::describe_item(m, id)).is_none() {
@@ -236,6 +238,108 @@ impl Editor {
                 self.range = None;
             }
         }
+    }
+
+    // ---------------------------------------------------------- movements --
+    /// Shows movement `i`: the caret at its start, nothing selected.
+    pub fn switch_movement(&mut self, i: usize) {
+        if i >= self.project.movements.len() || i == self.movement {
+            return;
+        }
+        self.movement = i;
+        self.selection = None;
+        self.range = None;
+        self.caret = Frac::ZERO;
+        self.caret_lane = 0;
+        self.revision += 1;
+        self.music_revision += 1;
+        self.status = format!("Movement {}: {}", i + 1, self.project.movements[i].title);
+    }
+
+    /// A new movement after this one: the same staves and instruments
+    /// (their opening ones), empty, in this movement's opening key, meter
+    /// and tempo, as many bars as this one up to 32.
+    pub fn add_movement(&mut self) {
+        let Some(cur) = self.movement().cloned() else { return };
+        let before = self.snapshot();
+        let n = self.project.movements.len();
+        let mut id = || self.project.allocate_id();
+        let meter: Vec<Meter> = cur.meter.iter().filter(|x| !x.pickup).take(1).map(|x| Meter { at: Frac::ZERO, ..*x }).collect();
+        let bar = meter.first().map(|x| Frac::new(x.num, x.den)).unwrap_or(Frac::int(1));
+        let bars = edit::bar_starts(&cur).len().clamp(4, 32) as i64;
+        let length = bar * Frac::int(bars);
+        let lanes: Vec<Lane> = cur
+            .lanes
+            .iter()
+            .map(|l| Lane {
+                player: l.player,
+                changes: l.changes.first().map(|c| InstrumentChange { id: id(), at: Frac::ZERO, instrument: c.instrument }).into_iter().collect(),
+                // A staff starting in another clef than its instrument's keeps it.
+                clefs: l.clefs.iter().filter(|c| c.at == Frac::ZERO).map(|c| ClefChange { id: id(), at: Frac::ZERO, clef: c.clef.clone() }).collect(),
+                texts: vec![],
+                chords: vec![],
+                lines: vec![],
+                voices: vec![Voice { id: id(), index: 1, events: Arc::new(Vec::new()), tuplets: vec![] }],
+            })
+            .collect();
+        let new = Movement {
+            id: id(),
+            ordinal: 0,
+            title: format!("Movement {}", n + 1),
+            length,
+            revision: 0,
+            tempo: cur.tempo.iter().take(1).map(|t| Tempo { at: Frac::ZERO, ..t.clone() }).collect(),
+            meter,
+            keys: cur.keys.iter().take(1).map(|k| Key { at: Frac::ZERO, ..*k }).collect(),
+            barlines: vec![],
+            rehearsal: vec![],
+            endings: vec![],
+            navigation: vec![],
+            lanes,
+        };
+        let at = self.movement + 1;
+        self.project.movements.insert(at, new);
+        for (k, m) in self.project.movements.iter_mut().enumerate() {
+            m.ordinal = k as i64;
+        }
+        self.commit(before, "New movement");
+        self.switch_movement_force(at);
+    }
+
+    fn switch_movement_force(&mut self, i: usize) {
+        self.movement = i.min(self.project.movements.len().saturating_sub(1));
+        self.selection = None;
+        self.range = None;
+        self.caret = Frac::ZERO;
+        self.caret_lane = 0;
+        self.revision += 1;
+        self.music_revision += 1;
+    }
+
+    /// Deletes the movement shown (not the last one left).
+    pub fn delete_movement(&mut self) {
+        if self.project.movements.len() < 2 {
+            self.status = "A score needs at least one movement".into();
+            return;
+        }
+        let before = self.snapshot();
+        let gone = self.project.movements.remove(self.movement);
+        for (k, m) in self.project.movements.iter_mut().enumerate() {
+            m.ordinal = k as i64;
+        }
+        self.commit(before, &format!("Delete movement \"{}\"", gone.title));
+        self.switch_movement_force(self.movement.saturating_sub(1));
+    }
+
+    pub fn rename_movement(&mut self, title: &str) {
+        let title = title.trim().to_string();
+        if self.movement().is_none_or(|m| m.title == title) {
+            return;
+        }
+        let before = self.snapshot();
+        let i = self.movement;
+        self.project.movements[i].title = title;
+        self.commit(before, "Rename movement");
     }
 
     pub fn can_undo(&self) -> bool {
@@ -1419,6 +1523,10 @@ impl Editor {
     /// Applies a popover; `Err` carries the hint to show.
     pub fn apply_popover(&mut self, kind: PopoverKind, input: &str) -> Result<(), String> {
         let text = input.trim().to_string();
+        if kind == PopoverKind::MovementTitle {
+            self.rename_movement(&text);
+            return Ok(());
+        }
         if kind == PopoverKind::Tuplet {
             let (a, n) = edit::tuplets::parse_tuplet(&text).ok_or("Tuplet not understood: try 3, 5, 5:4 or 7:8")?;
             self.apply_tuplet(a, n);
@@ -1554,7 +1662,7 @@ impl Editor {
                 let verse = self.lyric_verse;
                 return self.enter_lyric(verse, &text, false, false).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -1697,6 +1805,7 @@ pub enum PopoverKind {
     Lyrics,
     Chord,
     Tuplet,
+    MovementTitle,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -1714,6 +1823,7 @@ impl PopoverKind {
             PopoverKind::Lyrics => "Lyrics",
             PopoverKind::Chord => "Chord symbol",
             PopoverKind::Tuplet => "Tuplet",
+            PopoverKind::MovementTitle => "Movement title",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -1731,6 +1841,7 @@ impl PopoverKind {
             PopoverKind::Lyrics => "Syllable; space = next note, - = hyphen, _ = extender",
             PopoverKind::Chord => "C, F#m7, Bbmaj7, G7/B; space = next beat",
             PopoverKind::Tuplet => "3, 5, 6, 7, 2 (duplet), 5:4, 7:8",
+            PopoverKind::MovementTitle => "II. Adagio",
         }
     }
 }
@@ -2049,6 +2160,48 @@ mod tests {
         e.delete_selection();
         assert!(events(&e, 0, 0)[1].graces.is_empty());
         assert!(!events(&e, 0, 0)[1].is_rest());
+    }
+
+    #[test]
+    fn movements_are_added_switched_renamed_and_deleted() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        e.apply_popover(PopoverKind::Key, "D").unwrap();
+        e.add_movement();
+        assert_eq!(e.project.movements.len(), 2);
+        assert_eq!(e.movement, 1);
+        let m = e.movement().unwrap();
+        // The same staves and key, empty.
+        assert_eq!(m.lanes.len(), 2);
+        assert_eq!(m.keys[0].fifths, 2);
+        assert!(m.lanes.iter().all(|l| l.voices[0].events.is_empty()));
+        assert_eq!(m.title, "Movement 2");
+        e.apply_popover(PopoverKind::MovementTitle, "II. Scherzo").unwrap();
+        assert_eq!(e.movement().unwrap().title, "II. Scherzo");
+        // Notes typed here stay here.
+        e.set_input_mode(true);
+        e.enter_note(4, false);
+        e.set_input_mode(false);
+        e.switch_movement(0);
+        assert_eq!(notes(&e, 0)[..4], ["C5", "D5", "E5", "F5"]);
+        e.switch_movement(1);
+        assert_eq!(notes(&e, 0)[0], "G4");
+        // Delete it; undo brings it back.
+        e.delete_movement();
+        assert_eq!((e.project.movements.len(), e.movement), (1, 0));
+        e.undo();
+        assert_eq!(e.project.movements.len(), 2);
+        assert_eq!(e.project.movements[1].title, "II. Scherzo");
+        // The last movement cannot go.
+        e.switch_movement(0);
+        e.delete_movement();
+        e.delete_movement();
+        assert_eq!(e.project.movements.len(), 1);
+        assert_eq!(e.status, "A score needs at least one movement");
+        // The PDF has every movement, numbered on.
+        e.undo();
+        let pages = crate::files::work_pages(&e.project, false);
+        assert!(pages.len() >= 2);
     }
 
     #[test]
