@@ -199,6 +199,12 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* Parts (`Options::multirest`): runs of bars where nothing sounds or
+  changes become one bar with an H-bar and its count, as LilyPond's
+  compressed multi-measure rests; a run breaks at key, time, tempo,
+  rehearsal marks, barlines, endings, jumps, clef changes, text and lines.
+  `notation::part_score` gives a player's staves as written, named in the
+  header.
 * Octave lines: the SMuFL sign, a dashed line to the last note and a hook
   at the end, above (8va, 15ma) or below (8vb, 15mb). The pedal: Ped.
   under its first note and the release sign at its end (before the

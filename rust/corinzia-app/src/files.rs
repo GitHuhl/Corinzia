@@ -106,13 +106,15 @@ pub fn new_project(title: &str, instruments: &str, bars: i64) -> Result<Project,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Pdf,
+    /// Every player's part, one after another, in one PDF.
+    Parts,
     Midi,
     MusicXml,
 }
 impl Format {
     pub fn extension(self) -> &'static str {
         match self {
-            Format::Pdf => "pdf",
+            Format::Pdf | Format::Parts => "pdf",
             Format::Midi => "mid",
             Format::MusicXml => "musicxml",
         }
@@ -120,6 +122,7 @@ impl Format {
     pub fn label(self) -> &'static str {
         match self {
             Format::Pdf => "PDF",
+            Format::Parts => "Parts (PDF)",
             Format::Midi => "MIDI file",
             Format::MusicXml => "MusicXML",
         }
@@ -139,6 +142,12 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
             }
             Ok(corinzia_layout::pdf::to_pdf(&work_pages(project, transposed), if project.title.is_empty() { "Untitled" } else { &project.title }))
         }
+        Format::Parts => {
+            if corinzia_layout::display::text_fonts().0.is_none() {
+                crate::load_text_fonts();
+            }
+            Ok(corinzia_layout::pdf::to_pdf(&parts_pages(project), if project.title.is_empty() { "Parts" } else { &project.title }))
+        }
         Format::Midi => corinzia_perform::midi(project, m),
         Format::MusicXml => corinzia_perform::musicxml(project, m).map(String::into_bytes),
     }
@@ -157,6 +166,30 @@ pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::D
         }
         let spec = PageSpec { first_page: pages.len() + 1, ..PageSpec::default() };
         pages.extend(layout_pages(&score, &Options::default(), &spec));
+    }
+    pages
+}
+
+/// Every player's part (all movements, as written, with multi-bar rests),
+/// each from a new page, its page numbers from 1.
+pub fn parts_pages(project: &Project) -> Vec<corinzia_layout::DisplayList> {
+    let opt = Options { multirest: true, names: false, ..Options::default() };
+    let mut pages = Vec::new();
+    for player in &project.players {
+        let mut part: Vec<corinzia_layout::DisplayList> = Vec::new();
+        for (i, m) in project.movements.iter().enumerate() {
+            if !m.lanes.iter().any(|l| l.player == player.id) {
+                continue;
+            }
+            let mut score = corinzia_model::notation::part_score(project, m, player.id);
+            if i > 0 {
+                score.work_title.clear();
+                score.composer.clear();
+            }
+            let spec = PageSpec { first_page: part.len() + 1, ..PageSpec::default() };
+            part.extend(layout_pages(&score, &opt, &spec));
+        }
+        pages.extend(part);
     }
     pages
 }

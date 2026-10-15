@@ -281,6 +281,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
         title: String::new(),
         work_title: String::new(),
         composer: String::new(),
+        instrument: String::new(),
         length: bar * Frac::int(bars.max(1)),
         tempo: vec![],
         meter: vec![Meter { at: Frac::ZERO, num: meter.0, den: meter.1, pickup: false }],

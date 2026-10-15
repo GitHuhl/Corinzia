@@ -1,7 +1,7 @@
 //! Corinzia: a music notation editor and CLAP DAW (iced).
 //!
 //! `corinzia [file.project] [--view page|panorama] [--keys "n c d"]
-//! [--screenshot out.png] [--export out.pdf|mid|musicxml]`
+//! [--screenshot out.png] [--export out.pdf|mid|musicxml] [--part N]`
 //! (in `--keys`, `type:TEXT` and `enter` fill and submit an open popover)
 //!
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
@@ -112,6 +112,10 @@ struct App {
     saving_enabled: bool,
     /// The Export menu is open.
     export_menu: bool,
+    /// The part shown (a player), or the full score.
+    part: Option<corinzia_model::Id>,
+    /// The lane each engraved staff shows.
+    staff_lanes: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +142,8 @@ enum Message {
     /// A file dropped on the window.
     Dropped(PathBuf),
     ExportMenu(bool),
+    /// Show a player's part (None: the full score).
+    SetPart(Option<corinzia_model::Id>),
     Resized(Size),
     SaveTo(Option<PathBuf>),
     Export(files::Format),
@@ -155,15 +161,18 @@ struct Args {
     screenshot: Option<PathBuf>,
     keys: Vec<String>,
     export: Option<PathBuf>,
+    /// Show player N's part (from 1).
+    part: Option<usize>,
 }
 
 fn args() -> Args {
-    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None };
+    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--view" => a.view = if it.next().as_deref() == Some("panorama") { View::Panorama } else { View::Page },
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
+            "--part" => a.part = it.next().and_then(|n| n.parse().ok()),
             // Scripted key presses (testing and demos): "n c d shift+e ctrl+z".
             // Export the (edited) movement and exit: format from the extension.
             "--export" => a.export = it.next().map(PathBuf::from),
@@ -250,6 +259,8 @@ impl App {
         };
         let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
+        app.part = a.part.and_then(|n| app.editor.project.players.get(n.wrapping_sub(1))).map(|p| p.id);
+        app.engraved = None;
         for t in &a.keys {
             // An open popover takes typed text ("type:5:4") and Enter.
             if app.popover.is_some() {
@@ -312,6 +323,8 @@ impl App {
             help: false,
             saving_enabled: SAVING_ENABLED,
             export_menu: false,
+            part: None,
+            staff_lanes: Vec::new(),
         };
         app.sync();
         app
@@ -323,6 +336,28 @@ impl App {
         format!("{}{name} — Corinzia", if self.editor.modified { "• " } else { "" })
     }
 
+    /// Full score, or a player's part.
+    fn part_picker(&self) -> Element<'_, Message> {
+        let ed = &self.editor;
+        let mut names = vec!["Full score".to_string()];
+        let mut ids = vec![None];
+        for pl in &ed.project.players {
+            // Named by their first instrument, as the part is.
+            let name = pl.instruments.first().and_then(|i| ed.project.instrument(*i)).map(|i| i.name.clone()).unwrap_or_else(|| pl.name.clone());
+            names.push(name);
+            ids.push(Some(pl.id));
+        }
+        let current = ids.iter().position(|&i| i == self.part).map(|k| names[k].clone());
+        iced::widget::pick_list(names.clone(), current, move |chosen: String| {
+            let k = names.iter().position(|n| *n == chosen).unwrap_or(0);
+            Message::SetPart(ids[k])
+        })
+        .text_size(13)
+        .padding([5, 9])
+        .width(150)
+        .into()
+    }
+
     /// Native engraving of the current movement (milliseconds).
     fn engrave(&mut self) {
         self.engraved = Some(self.editor.music_revision);
@@ -331,8 +366,13 @@ impl App {
             return;
         };
         let t = Instant::now();
-        let score = corinzia_model::notation::score_as(&self.editor.project, m, self.editor.transposed);
-        let opt = Options::default();
+        // A part: the player's staves, as written, with multi-bar rests.
+        let part = self.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
+        self.staff_lanes = (0..m.lanes.len()).filter(|&li| part.is_none_or(|p| m.lanes[li].player == p)).collect();
+        let (score, opt) = match part {
+            Some(p) => (corinzia_model::notation::part_score(&self.editor.project, m, p), Options { multirest: true, names: false, ..Options::default() }),
+            None => (corinzia_model::notation::score_as(&self.editor.project, m, self.editor.transposed), Options::default()),
+        };
         self.pages = match self.view {
             View::Page => layout_pages(&score, &opt, &PageSpec::default()),
             View::Panorama => {
@@ -736,10 +776,11 @@ impl App {
         let ed = &mut self.editor;
         if ed.input_mode && (hit.is_none() || shift) {
             if let (Some(p), Some(m)) = (at, ed.movement()) {
-                if p.part < m.lanes.len() {
+                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                if lane < m.lanes.len() {
                     let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
-                    let diatonic = top_line(&clef_at(&ed.project, m, p.part, pos)) - p.step_below_top;
-                    ed.place_note_at(p.part, p.quarter, diatonic, shift);
+                    let diatonic = top_line(&clef_at(&ed.project, m, lane, pos)) - p.step_below_top;
+                    ed.place_note_at(lane, p.quarter, diatonic, shift);
                     self.audition();
                     return;
                 }
@@ -750,7 +791,7 @@ impl App {
             (Some(id), false) => ed.select(Some(id)),
             (None, _) => {
                 if let (Some(p), true) = (at, ed.input_mode) {
-                    ed.caret_lane = p.part;
+                    ed.caret_lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
                 }
                 ed.clear_selection()
             }
@@ -789,6 +830,10 @@ impl App {
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
             Message::ExportMenu(open) => self.export_menu = open,
+            Message::SetPart(p) => {
+                self.part = p;
+                self.engraved = None;
+            }
             Message::Dropped(path) => {
                 if path.extension().is_some_and(|e| e == "project") || files::is_musicxml(&path) {
                     return Task::done(Message::Guarded(Box::new(Message::Opened(Some(path)))));
@@ -1029,14 +1074,12 @@ impl App {
                     "Note input (N)",
                 ))
                 .push(segmented(vec![("Page", self.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama))]))
+                .push(panels::tip(self.part_picker(), "Full score or one player's part (written pitch, multi-bar rests)"))
                 .push(panels::tip(
                     button(text("Transposed").size(13)).padding([5, 10]).style(theme::tool(ed.transposed)).on_press(Message::Act(Action::Transposed)),
                     "Transposed score (Ctrl+T); off: concert pitch",
                 ))
-                .push(rule())
-                .push(panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"))
-                .push(text(format!("{:.0}%", self.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center))
-                .push(panels::tip(flat("+", true, Message::ZoomBy(1.25)), "Zoom in (Ctrl+=)"));
+;
         }
         let title = ed.movement().map(|m| m.title.clone()).unwrap_or_default();
         let toolbar = toolbar
@@ -1051,8 +1094,13 @@ impl App {
             .push(button(text("Export ▾").size(13)).padding([5, 9]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
-        let caret = ed.input_mode.then(|| Caret { part: ed.caret_lane, quarter: quarters(ed.caret) });
-        let highlight = ed.range.map(|r| Highlight { part_from: r.lane_from, part_to: r.lane_to, start: quarters(r.from), end: quarters(r.to) });
+        // Lanes to the staves they are engraved on (a part shows some).
+        let staff_of = |lane: usize| self.staff_lanes.iter().position(|&l| l == lane);
+        let caret = ed.input_mode.then(|| staff_of(ed.caret_lane)).flatten().map(|s| Caret { part: s, quarter: quarters(ed.caret) });
+        let highlight = ed.range.and_then(|r| {
+            let shown: Vec<usize> = (r.lane_from..=r.lane_to).filter_map(staff_of).collect();
+            Some(Highlight { part_from: *shown.first()?, part_to: *shown.last()?, start: quarters(r.from), end: quarters(r.to) })
+        });
         let score = canvas(ScoreView {
             pages: &self.pages,
             vertical: self.view == View::Page,
@@ -1125,6 +1173,7 @@ impl App {
             let menu = container(
                 column![
                     item("PDF…", what, files::Format::Pdf),
+                    item("Parts (PDF)…", "each player's part, as written", files::Format::Parts),
                     item("MIDI…", "the performance, track by track", files::Format::Midi),
                     item("MusicXML…", "for other notation programs", files::Format::MusicXml),
                 ]
@@ -1149,17 +1198,31 @@ impl App {
         let middle = if ed.input_mode { ed.caret_label() } else if ed.status.is_empty() { String::new() } else { ed.selection_label() };
         let status = container(
             row![
-                text(left).size(12).style(|_: &Theme| text::Style { color: Some(theme::TEXT) }),
-                Space::new().width(24),
-                text(middle).size(12),
-                panels::spacer(),
+                // The messages give way (clipped) to the controls on the right.
+                container(
+                    row![
+                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::TEXT) }),
+                        Space::new().width(24),
+                        text(middle).size(12).wrapping(text::Wrapping::None),
+                    ]
+                )
+                .width(Length::Fill)
+                .clip(true),
+                Space::new().width(12),
                 grid_picker(ed),
                 Space::new().width(16),
                 text(self.playback.problem.clone().unwrap_or_default()).size(12).style(theme::danger),
                 Space::new().width(16),
                 movement_picker(ed, title),
                 Space::new().width(16),
-                text(format!("Engraved in {:.1} ms · {} page{}", self.engrave_ms, self.pages.len(), if self.pages.len() == 1 { "" } else { "s" })).size(12),
+                panels::tip(
+                    text(format!("{} page{} · {:.0} ms", self.pages.len(), if self.pages.len() == 1 { "" } else { "s" }, self.engrave_ms)).size(12).style(theme::dim),
+                    "Pages, and how long engraving took",
+                ),
+                Space::new().width(12),
+                panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"),
+                text(format!("{:.0}%", self.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center),
+                panels::tip(flat("+", true, Message::ZoomBy(1.25)), "Zoom in (Ctrl+=)"),
             ]
             .align_y(iced::Alignment::Center)
             .padding([0, 12]),
@@ -1469,6 +1532,42 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
+        let p = files::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
+        let mut a = App::new(p, None, View::Page, String::new());
+        a.sync();
+        assert_eq!(a.staff_lanes, [0, 1, 2, 3]);
+        let clarinet = a.editor.project.players[1].id;
+        let piano = a.editor.project.players[2].id;
+        let _ = a.update(Message::SetPart(Some(piano)));
+        a.sync();
+        // The piano's two staves, engraved as staves 0 and 1.
+        assert_eq!(a.staff_lanes, [2, 3]);
+        assert_eq!(a.pages[0].staves.iter().filter(|s| s.system == 0).count(), 2);
+        // Eight empty bars: one multi-bar rest, counted 8.
+        let eight = corinzia_layout::font::Glyph::TimeSigDigit(8).codepoint();
+        assert!(a.pages[0].items.iter().any(|i| matches!(i, corinzia_layout::display::Item::Glyph { glyph, .. } if *glyph == eight)));
+        // A click on the part's first staff enters into the piano's right hand.
+        a.editor.set_input_mode(true);
+        a.click(None, Some(StaffPoint { part: 0, quarter: 0.0, step_below_top: 4 }), false);
+        assert_eq!(a.editor.caret_lane, 2);
+        assert!(!a.editor.project.movements[0].lanes[2].voices[0].events.iter().all(|e| e.is_rest()));
+        // The clarinet's part is written a tone up: concert C is written D.
+        let _ = a.update(Message::SetPart(Some(clarinet)));
+        a.editor.caret_lane = 1;
+        a.editor.caret = Frac::ZERO;
+        a.editor.transposed = false;
+        a.editor.enter_note(0, false);
+        let score = corinzia_model::notation::part_score(&a.editor.project, &a.editor.project.movements[0], clarinet);
+        assert_eq!(score.parts.len(), 1);
+        assert!(score.instrument.starts_with("Clarinet") && score.instrument == score.parts[0].name);
+        assert_eq!(score.parts[0].voices[0].events[0].pitches[0].step, 1, "written D");
+        // Parts PDF: every player's part.
+        let pages = files::parts_pages(&a.editor.project);
+        assert!(pages.len() >= 3);
     }
 
     #[test]

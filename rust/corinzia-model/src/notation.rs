@@ -93,6 +93,23 @@ fn bracket_groups(project: &Project, m: &Movement) -> Vec<u32> {
     out
 }
 
+/// One player's part: their staves alone, as written (transposed), named
+/// in the header.
+pub fn part_score(project: &Project, m: &Movement, player: Id) -> sc::Score {
+    let mut s = score_as(project, m, true);
+    let keep: Vec<bool> = m.lanes.iter().map(|l| l.player == player).collect();
+    let mut k = 0;
+    s.parts.retain(|_| {
+        k += 1;
+        keep[k - 1]
+    });
+    for p in s.parts.iter_mut() {
+        p.group = 0;
+    }
+    s.instrument = s.parts.first().map(|p| p.name.clone()).or_else(|| project.player(player).map(|p| p.name.clone())).unwrap_or_default();
+    s
+}
+
 /// The movement for the engraver: at concert pitch, or `transposed` with
 /// each transposing instrument's notes, key and chord symbols as written.
 pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score {
@@ -199,6 +216,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         title: m.title.clone(),
         work_title: project.title.clone(),
         composer: project.composer.clone(),
+        instrument: String::new(),
         length: m.length,
         tempo: m.tempo.iter().map(|t| sc::Tempo { at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
         meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup }).collect(),

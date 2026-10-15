@@ -12,6 +12,8 @@ pub struct Score {
     /// The work's title and composer (the page header).
     pub work_title: String,
     pub composer: String,
+    /// A part's instrument, printed top left of the first page.
+    pub instrument: String,
     pub length: Frac,
     pub tempo: Vec<Tempo>,
     pub meter: Vec<Meter>,

@@ -20,10 +20,12 @@ pub struct Options {
     pub margin: f32,
     /// Instrument names left of the system.
     pub names: bool,
+    /// Runs of empty bars as one multi-bar rest (parts).
+    pub multirest: bool,
 }
 impl Default for Options {
     fn default() -> Self {
-        Options { staff_distance: 9.0, margin: 1.0, names: true }
+        Options { staff_distance: 9.0, margin: 1.0, names: true, multirest: false }
     }
 }
 
@@ -244,6 +246,7 @@ struct Measure {
     stretch: f32,     // the stretchability of the bar's springs
     phase: Frac,      // a pickup's missing beginning (beats count from it)
     number: usize,    // the bar number (a pickup is bar 0)
+    multi: usize,     // bars of rest it stands for (a multi-bar rest when > 1)
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
@@ -281,7 +284,7 @@ fn measures(s: &Score) -> Vec<Measure> {
             (Some(p), Some(k)) if k.at > p.start => Some(k),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0 });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0, multi: 1 });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
@@ -449,6 +452,9 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         continue;
                     }
                     let rest = e.pitches.is_empty();
+                    if rest && m.multi > 1 {
+                        continue; // the bar's own rest stands for them
+                    }
                     // Under an octave line notes are written octaves from where they sound.
                     let ottava = part.lines.iter().find_map(|l| match l.kind {
                         LineKind::Octave(k) if a >= l.from && a < l.to => Some(k as i32 * 7),
@@ -1069,6 +1075,10 @@ impl<'a> Engraver<'a> {
             let (spring, k) = ideal(tlast, end - tlast, &prev_here).map(|(s, k)| (s + bar_corr + BAR_HALF_WIDTH, k)).unwrap_or((0.0, 0.0));
             stretch += k;
             let mut x1 = cx + spring.max(prev_right + 0.8);
+            if m.multi > 1 {
+                // A multi-bar rest: a little wider for longer ones.
+                x1 = x1.max(x + 10.0 + 2.0 * (m.multi as f32).log2());
+            }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
                 stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0);
@@ -1288,6 +1298,27 @@ impl<'a> Engraver<'a> {
                 let mut y = if n.value.base <= 1 { top + 1.0 } else { top + 2.0 };
                 if poly {
                     y += if n.voice % 2 == 1 { -2.0 } else { 2.0 };
+                }
+                if n.whole_bar && self.ms[n.measure].multi > 1 {
+                    // An H-bar on the middle line between serifs, the count above.
+                    let m = self.ms[n.measure].clone();
+                    let (a, b) = (m.x0 + 1.2, m.x1 - 1.2);
+                    let mid = top + 2.0;
+                    let h = 0.5;
+                    self.push(Item::Quad { p: [pt(a, mid - h), pt(b, mid - h), pt(b, mid + h), pt(a, mid + h)], id: n.id });
+                    let t = self.font.defaults.thin_barline_thickness * 1.5;
+                    for xs in [a, b] {
+                        self.push(Item::line(xs, top + 1.0, xs, top + 3.0, t, n.id));
+                    }
+                    let digits: Vec<Glyph> = m.multi.to_string().bytes().map(|c| Glyph::TimeSigDigit(c - b'0')).collect();
+                    let w: f32 = digits.iter().map(|&g| self.width(g)).sum();
+                    let mut dx = (a + b) / 2.0 - w / 2.0;
+                    for g in digits {
+                        // Digits stand on their middle: one above the top line.
+                        self.push(Item::glyph(g, dx, top - 1.6, n.id));
+                        dx += self.width(g);
+                    }
+                    continue;
                 }
                 let x = if n.whole_bar {
                     let m = &self.ms[n.measure];
@@ -2648,8 +2679,55 @@ impl<'a> Engraver<'a> {
 }
 
 /// Notes split and prepared (stems, accidentals) for the whole movement.
+/// Runs of bars where nothing sounds and nothing changes become one bar
+/// standing for them all (LilyPond's compressed multi-measure rests): a
+/// run breaks at a key, time, tempo, rehearsal mark, barline, ending,
+/// jump, clef change, text or line.
+fn compress_empty(score: &Score, ms: Vec<Measure>) -> Vec<Measure> {
+    let empty = |m: &Measure| {
+        let (a, b) = (m.start, m.start + m.len);
+        let inside = |t: Frac| t >= a && t < b;
+        m.phase.is_zero()
+            && score.parts.iter().all(|p| {
+                p.voices.iter().all(|v| v.events.iter().all(|e| e.pitches.is_empty() || e.start + e.dur <= a || e.start >= b))
+                    && !p.texts.iter().any(|t| inside(t.at))
+                    && !p.chords.iter().any(|c| inside(c.at))
+                    && !p.clefs.iter().any(|c| inside(c.at) && c.at > Frac::ZERO)
+                    && !p.lines.iter().any(|l| l.from < b && l.to > a)
+            })
+    };
+    // Nothing may happen where bar `m` joins the one before.
+    let joins = |m: &Measure| {
+        let t = m.start;
+        m.key.is_none()
+            && !m.show_time
+            && !score.barlines.iter().any(|x| x.at == t)
+            && !score.marks.contains(&t)
+            && !score.tempo.iter().any(|x| x.at == t)
+            && !score.navigation.iter().any(|x| x.at == t)
+            && !score.endings.iter().any(|e| e.from <= t && e.to >= t)
+    };
+    let mut out: Vec<Measure> = Vec::with_capacity(ms.len());
+    for m in ms {
+        if let Some(last) = out.last_mut() {
+            let last_empty = last.multi > 1 || empty(last);
+            if last_empty && empty(&m) && joins(&m) && !score.endings.iter().any(|e| e.from < m.start + m.len && e.to > last.start) {
+                last.len = last.len + m.len;
+                last.multi += 1;
+                last.last = m.last;
+                continue;
+            }
+        }
+        out.push(m);
+    }
+    out
+}
+
 fn prepared(score: &Score, opt: &Options) -> (Vec<Measure>, Vec<Note>) {
     let mut ms = measures(score);
+    if opt.multirest {
+        ms = compress_empty(score, ms);
+    }
     let notes = split(score, &ms);
     let shortest = common_shortest(&ms, &notes);
     for m in ms.iter_mut() {
@@ -2824,8 +2902,14 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
             cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1));
             y += 3.5;
         }
-        if !score.composer.is_empty() {
-            cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2));
+        if !score.composer.is_empty() || !score.instrument.is_empty() {
+            // The composer flush right; a part's instrument flush left.
+            if !score.composer.is_empty() {
+                cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2));
+            }
+            if !score.instrument.is_empty() {
+                cur.items.push(text(&score.instrument, page.margin_x, y + 1.6, 2.0, false, 0));
+            }
             y += 2.5;
         }
         y += 2.0;

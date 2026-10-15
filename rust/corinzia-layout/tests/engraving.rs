@@ -579,3 +579,24 @@ fn octave_lines_lower_the_notes_and_pedals_sit_below() {
     assert!(ped[0].1 > b.staves[0].top + 4.0 && up[0].0 > ped[0].0);
     preview("lines", &b);
 }
+
+#[test]
+fn empty_bars_become_multi_bar_rests_in_parts() {
+    use corinzia_score::Frac;
+    // A bar of notes, five empty bars, a rehearsal mark, two more empty, a bar of notes.
+    let mut s = score(&[("treble", &["c''1 | r1 | r1 | r1 | r1 | r1 | r1 | r1 | d''1"])], (4, 4), 0);
+    s.marks = vec![Frac::int(6)];
+    let opt = Options { multirest: true, ..Options::default() };
+    let l = layout_line(&s, &opt);
+    // Two H-bars (5 bars, then 2 after the mark), counted above.
+    let hbars = l.items.iter().filter(|i| matches!(i, Item::Quad { p, .. } if (p[2].y - p[0].y - 1.0).abs() < 1e-4)).count();
+    assert_eq!(hbars, 2);
+    assert_eq!(glyphs(&l, Glyph::TimeSigDigit(5)).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::TimeSigDigit(2)).len(), 1);
+    assert!(glyphs(&l, Glyph::RestWhole).is_empty());
+    // Without the option: seven whole-bar rests.
+    let full = layout_line(&s, &Options::default());
+    assert_eq!(glyphs(&full, Glyph::RestWhole).len(), 7);
+    assert!(l.width < full.width);
+    preview("multirest", &l);
+}

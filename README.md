@@ -116,6 +116,10 @@ Shift+P expression or technique text, Shift+O ornaments, Shift+R endings,
 Shift+A rehearsal mark; Ctrl+B inserts a bar. The full key map is in
 `rust/corinzia-app/src/keys.rs`.
 
+**Parts:** the toolbar's picker shows one player's part, as written, with
+runs of empty bars as multi-bar rests; it edits like the score. Export →
+Parts (PDF) prints every part. `--part N` opens on player N's part.
+
 **Movements:** the Structure panel lists them (new, rename, delete);
 Ctrl+PageUp/PageDown or the arrows in the status bar switch. PDF export
 prints the whole work, each movement from a new page.
