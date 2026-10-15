@@ -73,8 +73,9 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
     chord symbols at that interval.
   * Its key moves round the circle of fifths. It is kept within seven
     accidentals, so C♯ major for a B♭ instrument becomes E♭ major.
-  * In the transposed view, typed letters are written pitches. Playback,
-    MIDI and MusicXML stay at concert pitch; PDF follows the view.
+  * In the transposed view, typed letters are written pitches. Playback
+    and MIDI stay at concert pitch; PDF follows the view; MusicXML is
+    written as MusicXML expects (written pitch with `<transpose>`).
 
 **Storage** (`store.rs`, `schema/project.sql`):
 
