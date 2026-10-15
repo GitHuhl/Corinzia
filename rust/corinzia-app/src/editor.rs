@@ -22,12 +22,15 @@ pub struct Range {
     pub to: Frac,
 }
 
+/// A note in the clipboard: (staff offset, voice index, time from the start).
+type ClipNote = (usize, u8, Frac);
+
 #[derive(Clone, Debug)]
 struct Clip {
     lanes: Vec<Vec<(u8, Vec<Event>, Vec<Tuplet>)>>, // per staff: (voice index, events and tuplets from 0)
     length: Frac,
-    /// Slurs within the passage: each end as (staff offset, voice index, time from the start).
-    slurs: Vec<([(usize, u8, Frac); 2], i8)>,
+    /// Slurs within the passage, and their sides.
+    slurs: Vec<([ClipNote; 2], i8)>,
 }
 
 const UNDO_LIMIT: usize = 500;

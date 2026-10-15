@@ -161,7 +161,8 @@ fn harmony_text(h: Node) -> Option<String> {
 struct StaffMusic {
     clef: Option<String>,
     clefs: Vec<(Frac, String)>,
-    texts: Vec<(Frac, String)>,
+    /// Words: (at, text, written above the staff).
+    texts: Vec<(Frac, String, bool)>,
     chords: Vec<(Frac, String)>,
     /// MusicXML voice name -> events (in time order).
     voices: BTreeMap<String, Vec<Event>>,
@@ -179,11 +180,14 @@ struct StaffMusic {
     wedges: Vec<(Frac, u8)>,
 }
 
+/// A <slur> mark: (time, staff and voice, note, start?, number, side).
+type SlurMark = (Frac, (usize, String), Id, bool, u8, i8);
+
 /// A part's slurs, paired by their `number` across its voices and staves.
 #[derive(Default)]
 struct PartSlurs {
     /// Every <slur> mark: (time, staff and voice, note, start?, number, side).
-    marks: Vec<(Frac, (usize, String), Id, bool, u8, i8)>,
+    marks: Vec<SlurMark>,
 }
 
 impl PartSlurs {
@@ -192,17 +196,18 @@ impl PartSlurs {
     /// voices, and a voice written later can hold an earlier start).
     fn pair(mut self, p: &mut Project) -> Vec<Slur> {
         self.marks.sort_by(|a, b| a.0.cmp(&b.0).then(a.3.cmp(&b.3))); // stops first at a time
-        let mut open: Vec<(Frac, (usize, String), Id, u8, i8)> = Vec::new();
+        let mut open: Vec<SlurMark> = Vec::new();
         let mut out = Vec::new();
-        for (at, voice, note, start, number, dir) in self.marks {
+        for mark in self.marks {
+            let (at, voice, note, start, number, _) = mark.clone();
             if start {
-                open.push((at, voice, note, number, dir));
+                open.push(mark);
                 continue;
             }
-            let cands = || open.iter().enumerate().filter(|(_, o)| o.3 == number && o.0 < at && o.2 != note);
-            let pick = cands().filter(|(_, o)| o.1 == voice).last().or_else(|| cands().last()).map(|(i, _)| i);
+            let cands = || open.iter().enumerate().filter(|(_, o)| o.4 == number && o.0 < at && o.2 != note);
+            let pick = cands().filter(|(_, o)| o.1 == voice).next_back().or_else(|| cands().next_back()).map(|(i, _)| i);
             if let Some(i) = pick {
-                let (_, _, from, _, dir) = open.remove(i);
+                let (_, _, from, _, _, dir) = open.remove(i);
                 out.push(Slur { id: p.allocate_id(), from, to: note, dir });
             }
         }
@@ -522,7 +527,7 @@ fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff
                             Some(i) => staff.dynamics.push((at, i as u8)),
                             None => {
                                 let t = if name == "other-dynamics" { d.text().unwrap_or_default().trim().to_string() } else { name.to_string() };
-                                staff.texts.push((at, t));
+                                staff.texts.push((at, t, false));
                             }
                         }
                     }
@@ -626,8 +631,11 @@ fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff
             movement.tempo.push(Tempo { at, bpm: b, ramp: false, text: words.join(" ") });
         }
         _ => {
+            // Words above the staff are directions (technique text, set
+            // above); below, expression.
+            let above = e.attribute("placement") == Some("above");
             for w in words {
-                staff.texts.push((at, w));
+                staff.texts.push((at, w, above));
             }
         }
     }
@@ -932,7 +940,7 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
     s.lines.sort_by(|a, b| a.from.cmp(&b.from));
     let change = p.allocate_id();
     let clefs = s.clefs.into_iter().map(|(at, clef)| ClefChange { id: p.allocate_id(), at, clef }).collect();
-    let texts = s.texts.into_iter().map(|(at, text)| TextItem { id: p.allocate_id(), at, text, kind: TextKind::Expression }).collect();
+    let texts = s.texts.into_iter().map(|(at, text, above)| TextItem { id: p.allocate_id(), at, text, kind: if above { TextKind::Technique } else { TextKind::Expression } }).collect();
     let chords = s.chords.into_iter().map(|(at, text)| ChordSymbol { id: p.allocate_id(), at, text }).collect();
     Lane { player, changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }], clefs, texts, chords, lines: s.lines, voices: lane_voices }
 }

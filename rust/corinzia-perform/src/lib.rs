@@ -111,20 +111,19 @@ pub fn playback_order(m: &Movement) -> Vec<(Frac, Frac)> {
     let bar_at = |at: Frac| bars.iter().find(|b| b.at == at);
     let ending_at = |at: Frac| ends.iter().find(|e| e.from == at && e.from < e.to);
     let passes_for = |from: Frac, end: Frac| {
-        for e in ends.iter().filter(|e| e.from >= from && e.from < end) {
-            let mut top = 0;
-            let mut c = Some(e);
-            while let Some(x) = c {
-                for n in 1..=8 {
-                    if x.passes & (1 << (n - 1)) != 0 {
-                        top = top.max(n);
-                    }
+        // The first ending in the section and those chained after it.
+        let Some(e) = ends.iter().find(|e| e.from >= from && e.from < end) else { return 2 };
+        let mut top = 0;
+        let mut c = Some(e);
+        while let Some(x) = c {
+            for n in 1..=8 {
+                if x.passes & (1 << (n - 1)) != 0 {
+                    top = top.max(n);
                 }
-                c = ending_at(x.to);
             }
-            return top.max(2);
+            c = ending_at(x.to);
         }
-        2
+        top.max(2)
     };
     let is_end = |k: BarKind| matches!(k, BarKind::RepeatEnd | BarKind::RepeatBoth);
     let is_start = |k: BarKind| matches!(k, BarKind::RepeatStart | BarKind::RepeatBoth);

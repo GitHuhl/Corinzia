@@ -15,12 +15,16 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
   marquee, Shift-click, a click in a bar's empty space or Ctrl+A;
-  copy/paste/repeat; articulations, ornaments, dynamics, hairpins and ties;
-  slurs placed and curved as LilyPond does it; click one and drag an end
-  to another note (or Shift/Alt+←→), X flips it; tuplets of any ratio and
-  grace notes; key, time (with pickups), clef, tempo,
-  barlines, repeat endings, rehearsal marks and text through popovers and
-  the Structure panel. Every action is one undo step.
+  copy/paste/repeat; articulations, ornaments, ties, hairpins and dynamics
+  (Shift+D types any of pppp…ffff, sf, sfz, fp, rfz…); slurs that nest,
+  overlap and cross between voices and staves, placed and curved as
+  LilyPond does it; click one and drag an end to another note (or
+  Shift/Alt+←→), X flips it; tuplets of any ratio and grace notes; key,
+  time (with pickups), clef, tempo, barlines, repeat endings, rehearsal
+  marks and text through popovers and the Structure panel. Double-click a
+  title, tempo mark, text, chord symbol, dynamic or lyric to retype it.
+  Escape or a click on blank paper deselects. Every action is one undo
+  step.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is
@@ -36,8 +40,10 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
   `~/.clap`, your Nix profiles and `/usr/lib/clap`.
 * **Files:** New (a template or an instrument list, e.g. "Flute, 2 Violin,
   Cello", with title, key, time and pickup, tempo and length),
-  Open, Save and autosave to a single SQLite `.project` file. Open also
-  imports MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Export writes
+  Open, Save and autosave to a single SQLite `.project` file. Import (or
+  Open) reads MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Where the
+  desktop has no file-dialog portal, Corinzia's own file browser opens
+  instead (`CORINZIA_FILE_DIALOG=builtin` always uses it). Export writes
   a vector PDF straight from the engraver, MIDI and MusicXML 4.0.
   `corinzia score.project --export score.pdf` works headless.
 

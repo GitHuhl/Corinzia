@@ -1730,7 +1730,7 @@ impl<'a> Engraver<'a> {
                     let (a, b) = (self.notes[g[s]].stem_x, self.notes[g[k]].stem_x);
                     if s == k {
                         let hook = 1.1;
-                        let item = if s + 1 < g.len() && (s == 0 || self.notes[g[s]].value.dots == 0 && s == 0) {
+                        let item = if s + 1 < g.len() && s == 0 {
                             quad(a - half, a + hook, level)
                         } else {
                             quad(a - hook, a + half, level)
