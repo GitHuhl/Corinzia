@@ -8,7 +8,7 @@ use corinzia_layout::display::Item;
 use corinzia_layout::font::Glyph;
 use corinzia_layout::notation::score;
 use corinzia_layout::{layout_line, layout_line_at, Options};
-use corinzia_score::score::{Event, Score};
+use corinzia_score::score::{span, Event, Score};
 use corinzia_score::values::decompose;
 use corinzia_score::Frac;
 use std::collections::HashMap;
@@ -53,7 +53,14 @@ fn ly_event(e: &Event, ratio: Frac) -> String {
             format!("<{}>{d}", heads.join(" "))
         };
         let tie = k + 1 < values.len() || e.pitches.iter().any(|p| p.tie);
-        let _ = write!(out, "{body}{} ", if tie && !e.pitches.is_empty() { "~" } else { "" });
+        // Slurs open on the first piece and close on the last.
+        let slur = match (k == 0 && e.spans & span::SLUR_START != 0, k + 1 == values.len() && e.spans & span::SLUR_END != 0) {
+            (true, true) => ")(",
+            (true, false) => "(",
+            (false, true) => ")",
+            _ => "",
+        };
+        let _ = write!(out, "{body}{}{slur} ", if tie && !e.pitches.is_empty() { "~" } else { "" });
         if v.triplet {
             out = format!("\\tuplet 3/2 {{ {out}}} ");
         }
@@ -76,9 +83,22 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
        (if (and (> id 0) (ly:grob? st) (not (equal? (ly:grob-extent st sys Y) '(+inf.0 . -inf.0))))
            (let ((dir (ly:grob-property st 'direction)) (ext (ly:grob-extent st sys Y)))
              (format #t "ST ~a ~a ~,4f ~,4f ~a\n" id dir y (if (> dir 0) (cdr ext) (car ext)) (if (ly:grob? (ly:grob-object st 'beam)) 1 0)))))))
+#(define (report-slur grob)
+   (let* ((sys (ly:grob-system grob))
+          (x (ly:grob-relative-coordinate grob sys X))
+          (y (ly:grob-relative-coordinate grob sys Y))
+          (cps (ly:grob-property grob 'control-points))
+          (left (ly:spanner-bound grob LEFT))
+          (heads (ly:grob-object left 'note-heads))
+          (hl (if (ly:grob-array? heads) (ly:grob-array->list heads) '()))
+          (ids (filter (lambda (i) (> i 0)) (map (lambda (h) (ly:assoc-get 'cz-id (ly:grob-property h 'details) 0)) hl))))
+     (format #t "SL ~a" (if (null? ids) 0 (car ids)))
+     (for-each (lambda (p) (format #t " ~,4f ~,4f" (+ x (car p)) (+ y (cdr p)))) cps)
+     (newline)))
 @PAPER@
 \layout { \context { \Voice
   \override NoteHead.after-line-breaking = #report
+  \override Slur.after-line-breaking = #report-slur
   \override Rest.after-line-breaking = #report } }
 "#,
     );
@@ -446,4 +466,95 @@ fn staff_distances_against_lilypond() {
     }
     eprintln!("staff distance vs LilyPond: worst difference {worst:.2} spaces");
     assert!(worst < 0.25, "staff distances drifted from LilyPond's");
+}
+
+/// Slurs from LilyPond: first head's id -> control points (x, y down).
+fn lilypond_slurs(ly: &str) -> Option<(HashMap<u64, [(f32, f32); 4]>, HashMap<u64, (u32, f32, f32)>)> {
+    let text = run_lilypond(ly)?;
+    let mut slurs = HashMap::new();
+    let mut heads = HashMap::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() == 10 && f[0] == "SL" {
+            let v: Vec<f32> = f[2..].iter().map(|x| x.parse().unwrap()).collect();
+            slurs.insert(f[1].parse().unwrap(), [(v[0], -v[1]), (v[2], -v[3]), (v[4], -v[5]), (v[6], -v[7])]);
+        } else if f.len() == 5 && f[0] == "NH" {
+            heads.insert(f[1].parse().unwrap(), (0, f[3].parse().unwrap(), -f[4].parse::<f32>().unwrap()));
+        }
+    }
+    Some((slurs, heads))
+}
+
+/// A slur measured against its notes: (start end's height above or below
+/// the first head, the same at the last head, the curve's rise at its
+/// middle over the line joining its ends). Staff spaces, y down.
+fn slur_shape(p: [(f32, f32); 4], first_head_y: f32, last_head_y: f32) -> (f32, f32, f32) {
+    let mid = (p[0].1 + 3.0 * p[1].1 + 3.0 * p[2].1 + p[3].1) / 8.0;
+    (p[0].1 - first_head_y, p[3].1 - last_head_y, mid - (p[0].1 + p[3].1) / 2.0)
+}
+
+/// Slur ends and heights compared with LilyPond's.
+#[test]
+fn slurs_against_lilypond() {
+    let pieces = [
+        ("steps up", "c'4( d' e' f') | g'2( a'2)"),
+        ("steps down", "c''4( b' a' g') | f'2( e'2)"),
+        ("high", "e''4( f'' g'' a'') | b''( a'' g'' f'')"),
+        ("leaps", "c'4( g' c'' e'') | e''( c'' g' c')"),
+        ("arch", "c'4( e' g' e') | g'4( c'' g' e')"),
+        ("eighths", "c''8( d'' e'' f'') g''8( f'' e'' d'') | c'8( e' g' c'') b'8( g' e' c')"),
+        ("two notes", "c''4( d'') e''( c'') | g'( a') a'( g')"),
+        ("long", "c'4( d' e' f' g' a' b' c'')"),
+        ("mixed stems", "a'4( c'' e'' c'') | b'( g' d'' b')"),
+        ("dotted", "g'4.( a'8 b'4 c'') | d''2.( b'4)"),
+    ];
+    let (mut n, mut e_ends, mut e_height, mut worst) = (0, 0.0f32, 0.0f32, 0.0f32);
+    for (name, music) in pieces {
+        let s = score(&[("treble", &[music])], (4, 4), 0);
+        let Some((lily, lheads)) = lilypond_slurs(&to_ly(&s, None)) else {
+            eprintln!("lilypond not found; skipping");
+            return;
+        };
+        let list = layout_line(&s, &Options { names: false, ..Options::default() });
+        let heads: HashMap<u64, f32> = list.items.iter().filter_map(|i| match i { Item::Glyph { at, id, .. } => Some((*id, at.y)), _ => None }).collect();
+        eprintln!("{name}:");
+        let evs = &s.parts[0].voices[0].events;
+        for (k, e) in evs.iter().enumerate() {
+            if e.spans & span::SLUR_START == 0 {
+                continue;
+            }
+            let Some(end) = evs[k..].iter().find(|x| x.spans & span::SLUR_END != 0) else { continue };
+            let (h0, h1) = (e.pitches[0].id, end.pitches[0].id);
+            let Some(lp) = lily.get(&h0) else { continue };
+            // Ours: the slur's middle line (between its two curves).
+            let Some(ours) = list.items.iter().find_map(|i| match i {
+                Item::Crescent { from, c1, c2, to, d1, d2, id } if *id == e.id || *id == h0 => {
+                    let m = |a: corinzia_layout::display::Point, b: corinzia_layout::display::Point| ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                    Some([(from.x, from.y), m(*c1, *d1), m(*c2, *d2), (to.x, to.y)])
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            let (Some(&l0), Some(&l1), Some(&o0), Some(&o1)) = (lheads.get(&h0), lheads.get(&h1), heads.get(&h0), heads.get(&h1)) else { continue };
+            let l = slur_shape(*lp, l0.2, l1.2);
+            let o = slur_shape(ours, o0, o1);
+            n += 1;
+            let ends = ((l.0 - o.0).abs() + (l.1 - o.1).abs()) / 2.0;
+            let height = (l.2 - o.2).abs();
+            e_ends += ends;
+            e_height += height;
+            worst = worst.max(ends.max(height));
+            eprintln!(
+                "  start {:+.2} / {:+.2}  end {:+.2} / {:+.2}  rise {:+.2} / {:+.2}   width {:.1} / {:.1}  (lilypond / ours)",
+                l.0, o.0, l.1, o.1, l.2, o.2, lp[3].0 - lp[0].0, ours[3].0 - ours[0].0
+            );
+        }
+    }
+    eprintln!("slurs vs LilyPond over {n}: end error mean {:.2}, rise error mean {:.2}, worst {worst:.2} spaces", e_ends / n.max(1) as f32, e_height / n.max(1) as f32);
+    assert!(n >= 15, "slurs compared: {n}");
+    // Measured: ends 0.24, rise 0.08, worst 1.58.
+    assert!(e_ends / n as f32 <= 0.35, "slur ends drift from LilyPond's");
+    assert!(e_height / n as f32 <= 0.15, "slur heights drift from LilyPond's");
+    assert!(worst <= 2.0, "a slur far from LilyPond's: {worst}");
 }

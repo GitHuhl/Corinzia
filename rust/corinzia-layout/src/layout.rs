@@ -633,6 +633,89 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
     a.brace || a.group != 0 && a.group == b.group
 }
 
+/// A slur end's distance from its head's centre (LilyPond's).
+const SLUR_HEAD_GAP: f32 = 1.05;
+/// The least gap between a slur end and a staff line inside the staff.
+const SLUR_LINE_GAP: f32 = 0.2;
+/// A slur end's distance past the tip of a stem pointing into it.
+const SLUR_STEM_GAP: f32 = 0.2;
+/// What the slur keeps clear of the notes it passes over.
+const SLUR_FREE: f32 = 0.3;
+
+/// A slur end inside the staff moved off a line (outwards, `dir`).
+fn off_lines(y: f32, top: f32, dir: f32) -> f32 {
+    let rel = y - top;
+    if (-0.01..=4.01).contains(&rel) {
+        let line = rel.round();
+        if (rel - line).abs() < SLUR_LINE_GAP && (0.0..=4.0).contains(&line) {
+            return top + line + dir * SLUR_LINE_GAP;
+        }
+    }
+    y
+}
+
+/// LilyPond's slur height law: the control points' height over a slur of
+/// width `w` (height limit 2, ratio 1/4).
+fn slur_height(w: f32) -> f32 {
+    const LIMIT: f32 = 2.0;
+    const RATIO: f32 = 0.25;
+    2.0 * LIMIT / std::f32::consts::PI * (std::f32::consts::PI * RATIO / (2.0 * LIMIT) * w).atan()
+}
+
+/// The slur from (x0, b0) to (x1, b1) (the ends' bases), on the side
+/// `dir` (-1 above): ends tried from their bases outwards in quarter
+/// spaces, each with the least height that clears the obstacles (x0, x1,
+/// y), scored as LilyPond scores slurs: the ends' distance from their
+/// bases, height beyond the law, and a slope steeper than the music's.
+/// Returns (y0, y1, control height).
+fn best_slur(x0: f32, b0: f32, x1: f32, b1: f32, dir: f32, top: f32, obstacles: &[(f32, f32, f32)]) -> (f32, f32, f32) {
+    const EDGE_ATTRACTION: f32 = 4.0;
+    const EDGE_EXPONENT: f32 = 1.7;
+    const HEIGHT_FACTOR: f32 = 20.0;
+    const STEEPER_SLOPE: f32 = 50.0;
+    const MAX_SLOPE: f32 = 1.1;
+    const MAX_SLOPE_FACTOR: f32 = 10.0;
+    let dx = (x1 - x0).max(0.5);
+    let law = slur_height(dx);
+    let music = (b1 - b0) / dx;
+    // The height needed over an obstacle at t, for ends y0, y1.
+    let need = |y0: f32, y1: f32| -> f32 {
+        let mut h = law;
+        for &(ox0, ox1, oy) in obstacles {
+            for ox in [ox0, ox1] {
+                let t = (ox - x0) / dx;
+                if t <= 0.05 || t >= 0.95 {
+                    continue;
+                }
+                let line = y0 + (y1 - y0) * t;
+                // > 0: the chord runs into it; the curve's rise at t is 3t(1-t)h.
+                let poke = (line - (oy + dir * SLUR_FREE)) * -dir;
+                if poke > 0.0 {
+                    h = h.max(poke / (3.0 * t * (1.0 - t)));
+                }
+            }
+        }
+        h
+    };
+    let mut best = (f32::MAX, b0, b1, law);
+    for k0 in 0..=20 {
+        let y0 = off_lines(b0 + dir * 0.25 * k0 as f32, top, dir);
+        for k1 in 0..=20 {
+            let y1 = off_lines(b1 + dir * 0.25 * k1 as f32, top, dir);
+            let h = need(y0, y1).min(6.0);
+            let slope = (y1 - y0) / dx;
+            let mut cost = EDGE_ATTRACTION * ((y0 - b0).abs().powf(EDGE_EXPONENT) + (y1 - b1).abs().powf(EDGE_EXPONENT));
+            cost += HEIGHT_FACTOR * (h - law).max(0.0);
+            cost += STEEPER_SLOPE * (slope.abs() - music.abs()).max(0.0);
+            cost += MAX_SLOPE_FACTOR * (slope.abs() - MAX_SLOPE).max(0.0);
+            if cost < best.0 {
+                best = (cost, y0, y1, h);
+            }
+        }
+    }
+    (best.1, best.2, best.3)
+}
+
 /// A brace from `top` to `bottom` whose right edge is at `right`: two
 /// filled halves meeting at a point in the middle, thickest half-way along
 /// each.
@@ -1904,33 +1987,52 @@ impl<'a> Engraver<'a> {
             let poly = between.iter().any(|b| self.notes.iter().any(|o| o.part == sp.part && o.measure == b.measure && o.voice != sp.voice && !o.whole_bar));
             let above = if poly { sp.voice % 2 == 1 } else { !between.iter().all(|o| o.stem_up) };
             let dir = if above { -1.0 } else { 1.0 };
-            // Endpoint: at the head on the head side, at the stem tip on the stem side.
-            let end_y = |n: &Note, s: &Self| -> f32 {
-                let (lo, hi) = (s.y(n.part, n.heads[0].pos), s.y(n.part, n.heads[n.heads.len() - 1].pos));
-                if above {
-                    if n.stem_up && n.has_stem() { n.stem_end - 0.5 } else { hi - 0.7 }
-                } else if !n.stem_up && n.has_stem() {
-                    n.stem_end + 0.5
-                } else {
-                    lo + 0.7
+            let top = self.top(sp.part);
+            // A stem pointing into the slur: the slur leaves the first note
+            // beside it, and goes over the tip of the last note's.
+            let stem_side = |n: &Note| n.has_stem() && n.stem_up == above;
+            let end_x = |n: &Note| if stem_side(n) { n.stem_x } else { n.x + HEAD_W / 2.0 };
+            // An end's base: clear of its outer head (LilyPond's 1.05 spaces
+            // from the head's centre), kept off the staff lines.
+            let base_y = |n: &Note, s: &Self, last: bool| -> f32 {
+                if stem_side(n) && last {
+                    return off_lines(n.stem_end + dir * SLUR_STEM_GAP, top, dir);
                 }
+                let h = if above { s.y(n.part, n.heads[n.heads.len() - 1].pos) } else { s.y(n.part, n.heads[0].pos) };
+                off_lines(h + dir * SLUR_HEAD_GAP, top, dir)
             };
-            // A cut end continues at the height of the music it leaves.
-            let edge_y = |n: &Note, s: &Self| end_y(n, s) + dir * 0.6;
-            let (x0, y0, x1, y1) = match (si, ei) {
+            // The obstacles: what the notes between show on the slur's side
+            // (heads, stems, flags, beams, marks), as (x0, x1, extreme y).
+            let ids: std::collections::HashSet<u64> = between.iter().flat_map(|n| std::iter::once(n.id).chain(n.heads.iter().map(|h| h.id))).collect();
+            let firsts = (si.map(|i| self.notes[i].id), ei.map(|i| self.notes[i].id));
+            let obstacles: Vec<(f32, f32, f32)> = self
+                .out
+                .items
+                .iter()
+                .filter(|it| ids.contains(&it.id()) && !matches!(it, Item::Crescent { .. }))
+                .filter_map(|it| {
+                    let r = it.bounds(self.font);
+                    // The end notes' own stems and beams don't count.
+                    let own = Some(it.id()) == firsts.0 || Some(it.id()) == firsts.1;
+                    if own && matches!(it, Item::Line { .. } | Item::Quad { .. }) {
+                        return None;
+                    }
+                    Some((r[0], r[2], if above { r[1] } else { r[3] }))
+                })
+                .collect();
+            let edge_y = |n: &Note, s: &Self| base_y(n, s, false) + dir * 0.6;
+            let (x0, b0, x1, b1) = match (si, ei) {
                 (Some(a), Some(b)) => {
                     let (a, b) = (&self.notes[a], &self.notes[b]);
-                    (a.x + HEAD_W / 2.0 + 0.2, end_y(a, self), b.x + HEAD_W / 2.0 - 0.2, end_y(b, self))
+                    (end_x(a), base_y(a, self, false), end_x(b), base_y(b, self, true))
                 }
                 (Some(a), None) => {
                     let a = &self.notes[a];
-                    let last = between.last().unwrap();
-                    (a.x + HEAD_W / 2.0 + 0.2, end_y(a, self), right, edge_y(last, self))
+                    (end_x(a), base_y(a, self, false), right, edge_y(between.last().unwrap(), self))
                 }
                 (None, Some(b)) => {
                     let b = &self.notes[b];
-                    let first = between.first().unwrap();
-                    (left, edge_y(first, self), b.x + HEAD_W / 2.0 - 0.2, end_y(b, self))
+                    (left, edge_y(between.first().unwrap(), self), end_x(b), base_y(b, self, true))
                 }
                 (None, None) => {
                     let y = between.iter().map(|n| edge_y(n, self)).fold(if above { f32::MAX } else { f32::MIN }, |a, b| if above { a.min(b) } else { a.max(b) });
@@ -1938,28 +2040,17 @@ impl<'a> Engraver<'a> {
                 }
             };
             let dx = (x1 - x0).max(0.5);
-            let mut h = (0.6 + 0.07 * dx).min(2.2);
-            for o in &between {
-                let t = ((o.x + HEAD_W / 2.0 - x0) / dx).clamp(0.05, 0.95);
-                if t <= 0.06 || t >= 0.94 {
-                    continue;
-                }
-                let line = y0 + (y1 - y0) * t;
-                let extreme = end_y(o, self);
-                let poke = (extreme - line) * dir + 0.4; // > 0: the note reaches past the chord
-                if poke > 0.0 {
-                    h = h.max(poke / (3.0 * t * (1.0 - t)));
-                }
-            }
-            h = h.min(5.0);
+            let (y0, y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
             let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
+            // The control points are the midline; the thickness is split around it.
+            let t = d.slur_midpoint_thickness / 2.0;
             items.push(Item::Crescent {
                 from: pt(x0, y0),
-                c1: c(1.0 / 3.0, h + d.slur_midpoint_thickness),
-                c2: c(2.0 / 3.0, h + d.slur_midpoint_thickness),
+                c1: c(1.0 / 3.0, h + t),
+                c2: c(2.0 / 3.0, h + t),
                 to: pt(x1, y1),
-                d1: c(1.0 / 3.0, h),
-                d2: c(2.0 / 3.0, h),
+                d1: c(1.0 / 3.0, h - t),
+                d2: c(2.0 / 3.0, h - t),
                 id: sp.id,
             });
         }
