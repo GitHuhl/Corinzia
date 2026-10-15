@@ -123,7 +123,7 @@ fn audio_graph_round_trip() {
     let _ = std::fs::remove_file(&path);
     let mut a = sample();
     a.nodes = vec![
-        AudioNode { id: 500, kind: NodeKind::Clap, name: "Sine".into(), bundle: "builtin:corinzia-sine".into(), plugin_id: "org.corinzia.sine".into(), bypassed: false },
+        AudioNode { id: 500, kind: NodeKind::Plugin, name: "Sine".into(), bundle: "builtin:corinzia-sine".into(), plugin_id: "org.corinzia.sine".into(), bypassed: false },
         AudioNode { id: 501, kind: NodeKind::Master, name: "Master".into(), bundle: String::new(), plugin_id: String::new(), bypassed: false },
     ];
     a.edges = vec![AudioEdge { from: 500, from_port: 0, to: 501, to_port: 0, gain: 0.5 }];

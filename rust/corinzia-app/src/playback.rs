@@ -151,6 +151,12 @@ impl Playback {
         self.pool.idle();
     }
 
+    /// Plugin editors are open, or plugins have timers or descriptors to
+    /// look after: the app keeps ticking.
+    pub fn editors_busy(&self) -> bool {
+        self.pool.any_editor_open() || corinzia_audio::gui::has_work()
+    }
+
     /// Needs per-frame ticks (playing, or previews pending).
     pub fn busy(&self) -> bool {
         self.is_playing() || !self.previews.is_empty()

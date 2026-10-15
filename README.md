@@ -9,8 +9,9 @@
 
 
 Corinzia is written in Rust. The score is engraved by its own engraver
-(Bravura/SMuFL) and drawn on the GPU with iced; playback hosts CLAP
-instruments in a lock-free realtime engine that outputs through PipeWire.
+(Bravura/SMuFL) and drawn on the GPU with iced; playback hosts CLAP and
+VST3 instruments in a lock-free realtime engine that outputs through
+PipeWire.
 
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
@@ -36,8 +37,13 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
   `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
   auditioned.
 * **Mix tab** (Ctrl+2): the arrange view, mixer strips (faders with a dB
-  scale, pan, mute, solo; double-click resets, Shift drags finely) and a browser of the CLAP instruments found in `CLAP_PATH`,
-  `~/.clap`, your Nix profiles and `/usr/lib/clap`.
+  scale, pan, mute, solo; double-click resets, Shift drags finely) and a
+  browser of the CLAP and VST3 instruments found in `CLAP_PATH`, `~/.clap`,
+  `/usr/lib/clap`, `VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` and your Nix
+  profiles. Click a strip's instrument to open the plugin's own editor in a
+  window and change its sound; click again (or close the window) to close
+  it. Click the track name to select the strip without opening anything.
+  Plugin settings are not saved with the project yet.
 * **Files:** New (a template or an instrument list, e.g. "Flute, 2 Violin,
   Cello", with title, key, time and pickup, tempo and length),
   Open, Save and autosave to a single SQLite `.project` file. Import (or
@@ -61,14 +67,18 @@ chmod +x Corinzia-*-x86_64.AppImage
 
 It runs on x86-64 distributions with glibc 2.31 or newer (Ubuntu 20.04,
 Debian 11, Fedora 32 and later). It uses your system's graphics driver
-(Vulkan), PipeWire for audio, and the CLAP plugins installed in `~/.clap`
-or `/usr/lib/clap`. Without PipeWire it still runs, without sound. On NixOS
+(Vulkan), PipeWire for audio, and the CLAP and VST3 plugins installed in
+`~/.clap`, `/usr/lib/clap`, `~/.vst3` or `/usr/lib/vst3`. Plugin editors
+open as X11 windows (through XWayland on Wayland desktops). Without
+PipeWire it still runs, without sound. On NixOS
 use the flake below, or `appimage-run`.
 
 **Windows (x86-64):** get `Corinzia-…-x86_64-windows.zip`, unzip it and run
 `corinzia.exe`, keeping the `fonts` folder next to it. Audio goes to the
 default output device (WASAPI). CLAP instruments are found in
-`%LOCALAPPDATA%\Programs\Common\CLAP` and `%COMMONPROGRAMFILES%\CLAP`.
+`%LOCALAPPDATA%\Programs\Common\CLAP` and `%COMMONPROGRAMFILES%\CLAP`, VST3
+instruments in `%LOCALAPPDATA%\Programs\Common\VST3` and
+`%COMMONPROGRAMFILES%\VST3`.
 
 **This is a preview:** saving projects is turned off while the file format
 is still changing. Open and import scores, edit, play, and export to PDF,
@@ -101,7 +111,7 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 | `rust/corinzia-model` | project model and `.project` storage (SQLite, `schema/project.sql`) |
 | `rust/corinzia-layout` | the engraver: display lists, page layout, PDF |
 | `rust/corinzia-perform` | performance: repeats, ties, ornaments, dynamics; tempo maps; export documents |
-| `rust/corinzia-audio` | CLAP host, realtime engine, PipeWire output |
+| `rust/corinzia-audio` | CLAP and VST3 host, plugin editors, realtime engine, PipeWire output |
 | `rust/corinzia-sine` | Corinzia Sine, the built-in CLAP instrument |
 | `rust/corinzia-export` | MIDI and MusicXML writers |
 | `rust/corinzia-score` | exact fractions, note values, the engraver's input types |
@@ -136,5 +146,5 @@ Ctrl+PageUp/PageDown or the arrows in the status bar switch. PDF export
 prints the whole work, each movement from a new page.
 
 Not yet: bus routing and plugin delay compensation (tracks mix straight to
-the output), automation playback, plugin GUIs, and the movements shown
+the output), automation playback, saving plugin settings, and the movements shown
 one after another in the view.

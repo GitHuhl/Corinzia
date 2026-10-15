@@ -1,7 +1,7 @@
 //! Plugin instances per track, on the main thread: created from the
-//! track's audio node (a CLAP bundle) or the built-in instrument, state
-//! restored from the project, activated, and kept across snapshot rebuilds
-//! so edits never reload a plugin.
+//! track's audio node (a CLAP or VST3 bundle) or the built-in instrument,
+//! state restored from the project, activated, and kept across snapshot
+//! rebuilds so edits never reload a plugin. Their editors open from here.
 
 use crate::host::{Library, Plugin, BUILTIN};
 use corinzia_model::{Id, NodeKind, Project};
@@ -31,7 +31,7 @@ impl PluginPool {
     }
 
     fn key(project: &Project, track: Id) -> Key {
-        let node = project.track(track).and_then(|t| t.instrument_node).and_then(|n| project.node(n)).filter(|n| n.kind == NodeKind::Clap && !n.bypassed && !n.bundle.is_empty());
+        let node = project.track(track).and_then(|t| t.instrument_node).and_then(|n| project.node(n)).filter(|n| n.kind == NodeKind::Plugin && !n.bypassed && !n.bundle.is_empty());
         match node {
             Some(n) => Key { bundle: n.bundle.clone(), plugin_id: n.plugin_id.clone(), node: Some(n.id) },
             None => Key { bundle: BUILTIN.into(), plugin_id: corinzia_sine::PLUGIN_ID.to_string_lossy().into_owned(), node: None },
@@ -56,6 +56,11 @@ impl PluginPool {
             if *k == key {
                 return Some(p.clone());
             }
+        }
+        // The track changes plugin: the old one's editor goes now (the
+        // instance itself when the audio thread lets go of it).
+        if let Some((_, old)) = self.tracks.get(&track) {
+            old.close_editor();
         }
         let made = self.instantiate(&key).and_then(|p| {
             if let Some(state) = key.node.and_then(|n| project.plugin_state.get(&n)) {
@@ -88,11 +93,50 @@ impl PluginPool {
     /// Forgets tracks that are gone (their plugins are destroyed once the
     /// audio thread has retired the plans that use them).
     pub fn retain_tracks(&mut self, project: &Project) {
-        self.tracks.retain(|t, _| project.track(*t).is_some());
+        self.tracks.retain(|t, (_, p)| {
+            let keep = project.track(*t).is_some();
+            if !keep {
+                p.close_editor();
+            }
+            keep
+        });
     }
 
-    /// Main-thread housekeeping for every instance.
+    /// Shows the editor of a track's plugin (brings it to the front when
+    /// it is open already).
+    pub fn open_editor(&self, track: Id, title: &str) -> Result<(), String> {
+        let p = self.plugin_of_track(track).ok_or("The track has no instrument loaded yet")?;
+        if !p.has_editor() {
+            return Err(format!("{} has no editor of its own", p.info.name));
+        }
+        p.open_editor(title)
+    }
+
+    pub fn close_editor(&self, track: Id) {
+        if let Some(p) = self.plugin_of_track(track) {
+            p.close_editor();
+        }
+    }
+
+    pub fn editor_is_open(&self, track: Id) -> bool {
+        self.plugin_of_track(track).is_some_and(|p| p.editor_is_open())
+    }
+
+    /// Whether any editor is open (the app then pumps the plugin run loop).
+    pub fn any_editor_open(&self) -> bool {
+        self.tracks.values().any(|(_, p)| p.editor_is_open())
+    }
+
+    pub fn close_editors(&self) {
+        for (_, p) in self.tracks.values() {
+            p.close_editor();
+        }
+    }
+
+    /// Main-thread housekeeping for every instance: plugin timers and
+    /// descriptors, deferred work, editor windows.
     pub fn idle(&self) {
+        crate::gui::pump();
         for (_, p) in self.tracks.values() {
             p.idle();
         }

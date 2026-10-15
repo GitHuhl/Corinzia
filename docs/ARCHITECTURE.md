@@ -1,6 +1,6 @@
 # Corinzia architecture
 
-Corinzia is a music notation editor and CLAP DAW for Linux, written in Rust.
+Corinzia is a music notation editor and CLAP/VST3 DAW for Linux, written in Rust.
 One process, one window (iced on wgpu), one project file (SQLite).
 
 ## 1. Crates and threads
@@ -12,7 +12,7 @@ rust/
   corinzia-model     project model + .project storage
   corinzia-layout    the engraver: display lists, pages, PDF
   corinzia-perform   the performance of a movement; tempo maps; export documents
-  corinzia-audio     CLAP host, realtime engine, PipeWire output
+  corinzia-audio     CLAP and VST3 host, plugin editors, realtime engine, PipeWire output
   corinzia-sine      Corinzia Sine, the built-in CLAP instrument
   corinzia-export    MIDI and MusicXML writers
   corinzia-import    MusicXML reader (.musicxml, .xml, compressed .mxl)
@@ -21,7 +21,7 @@ rust/
 
 | Thread | Does | Never |
 |---|---|---|
-| UI (iced) | editing, engraving (milliseconds), plan building, plugin main-thread calls | blocks on audio |
+| UI (iced) | editing, engraving (milliseconds), plan building, plugin main-thread calls, plugin editors | blocks on audio |
 | Audio (PipeWire's RT thread; WASAPI's on Windows) | `Engine::process`: notes, plugins, mixing | allocates, locks, touches the model |
 | Worker (iced executor) | autosave, file dialogs | — |
 
@@ -316,19 +316,49 @@ Every example score in the W3C MusicXML repository imports and engraves
 
 ## 6. Audio (`corinzia-audio`)
 
-* **`host`** loads `.clap` bundles with `libloading` and `clap-sys`. It
-  scans `CLAP_PATH`, `~/.clap`, the Nix profiles, `/run/current-system/sw/lib/clap`
-  and `/usr/lib/clap`. Corinzia Sine is hosted in-process through the same
-  CLAP entry point.
-  * Lifecycle follows CLAP's thread rules:
-    * create, activate, deactivate, destroy, state and `on_main_thread`
-      run on the UI thread;
-    * `start_processing`, `process` and `stop_processing` run on the audio
-      thread.
-  * The host provides the `thread-check` and `state` extensions. Plugins
-    that only speak MIDI get MIDI events.
+* **`host`** loads plugin bundles with `libloading`. It scans `CLAP_PATH`,
+  `~/.clap`, `/usr/lib/clap`, `VST3_PATH`, `~/.vst3`, `/usr/lib/vst3`, the
+  Nix profiles and `/run/current-system/sw/lib/{clap,vst3}`. A `Library` is
+  a `.clap` bundle (`clap-sys`), a `.vst3` bundle (`vst3`), or Corinzia Sine,
+  hosted in-process through the same CLAP entry point. A `Plugin` is one
+  instance of either format; the engine sees CLAP only.
+  * Lifecycle follows the formats' thread rules:
+    * create, activate, deactivate, destroy, state, `on_main_thread` and
+      editors run on the UI thread;
+    * `start_processing`, `process` and `stop_processing` (VST3:
+      `setProcessing`, `process`) run on the audio thread.
+  * The CLAP host provides the `thread-check`, `state`, `gui`,
+    `timer-support`, `posix-fd-support`, `params` and `log` extensions.
+    Plugins that only speak MIDI get MIDI events.
+* **`vst3`** hosts VST3 modules through the `vst3` crate's bindings:
+  * the module's factory lists its audio processors (the class id in hex is
+    the plugin id; the subcategories are its features);
+  * an instance is the component, its audio processor and its edit
+    controller. A separate controller is connected to the processor both
+    ways and given its state. `IHostApplication` creates messages and
+    attribute lists for them;
+  * `process` translates the engine's CLAP call: notes and MIDI become VST3
+    events, the transport a `ProcessContext`, and the engine's stereo
+    buffers are the main output bus (other buses get scratch buffers);
+  * parameters moved in the editor reach our `IComponentHandler` on the UI
+    thread; a wait-free queue takes them to the audio thread, where they
+    are given to the processor as `IParameterChanges` in the next block.
+* **`gui`** holds the editors' windows and the run loop their GUIs need:
+  * editors are embedded in a window the host owns: X11 through `x11rb` on
+    Linux (XWayland under Wayland), Win32 on Windows. Plugins that only
+    float open their own (CLAP). Closing the window closes the editor;
+    resizing follows the plugin's constraints, and plugins may resize it;
+  * the run loop carries the timers and file descriptors plugins register
+    (CLAP `timer-support`/`posix-fd-support`, VST3 `Linux::IRunLoop` on the
+    editor's frame). On Linux plugin GUIs have no event loop of their own;
+  * the app pumps it about 60 times a second while an editor is open, from
+    a clock subscription independent of the main window's redraws.
+  * Before a plugin is made, the X connection interns the window-manager
+    atoms toolkits such as JUCE look up "only if they exist".
 * **`pool`** keeps one activated instance per track. Instances survive plan
-  rebuilds; state is restored from the project and written back on save.
+  rebuilds; state is restored from the project and written back on save
+  (CLAP only for now). Editors open from here, and close when a track's
+  plugin changes or the track goes.
 * **`snapshot`** is the render plan. It holds the performance compiler's
   notes, resolved to tracks and placed in samples, with movements laid end
   to end. Notes are sorted with note-offs before note-ons at the same
@@ -353,7 +383,7 @@ Every example score in the W3C MusicXML repository imports and engraves
   * on Windows, the default WASAPI device through `cpal`.
 
 Not yet: buses and plugin delay compensation (tracks mix straight to the
-output), automation, plugin GUIs.
+output), automation, VST3 state in the project.
 
 ## 7. The application (`corinzia-app`)
 
@@ -365,7 +395,7 @@ output), automation, plugin GUIs.
 | `score_view.rs` | the score canvas |
 | `panels.rs` | the Notes and Structure panels (SMuFL glyph buttons) |
 | `playback.rs` | the engine handle, PipeWire output, plugin pool; the plan kept in step with the editor |
-| `mix.rs`, `arrange.rs` | mixer strips, plugin browser, arrange view |
+| `mix.rs`, `arrange.rs` | mixer strips (a click on the instrument shows its editor), plugin browser, arrange view |
 | `files.rs` | New Score from an instrument list; PDF/MIDI/MusicXML export |
 
 **The score canvas** (`score_view.rs`):
@@ -398,7 +428,8 @@ distributions:
   for bootstrapping, plus the matching official Windows standard library.
   nixpkgs' mingw-w64 GCC links it, with a static C runtime.
 * Audio goes through WASAPI (`cpal`, the `wasapi` feature).
-* CLAP plugins are found in the CLAP specification's Windows folders.
+* CLAP and VST3 plugins are found in the specifications' Windows folders;
+  editors open in Win32 windows, whose messages winit's loop dispatches.
 * The interface and score fonts (DejaVu) ship in `fonts/` next to the
   executable.
 
@@ -418,6 +449,11 @@ distributions:
   * playback order and ornaments;
   * MIDI and MusicXML;
   * CLAP loading, both in-process and via dlopen, and state;
+  * VST3 hosting against a test instrument (separate processor and
+    controller): scanning, connection, events, transport, editor parameter
+    edits reaching the processor, and, under X (`xvfb-run`), the editor and
+    its run loop;
+  * the run loop's timers and descriptors;
   * sample-accurate offline renders, transport, mixing and plan swaps;
   * the app's flows: typing, clicking, marquee, popovers, lyrics and chord
     streams, mixer undo, autosave, playback and the playhead.

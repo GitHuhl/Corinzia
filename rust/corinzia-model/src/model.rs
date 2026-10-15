@@ -382,7 +382,7 @@ pub struct Player {
 pub struct Track {
     pub id: Id,
     pub name: String,
-    pub instrument_node: Option<Id>, // CLAP plugin node; none = the built-in instrument
+    pub instrument_node: Option<Id>, // plugin node (CLAP or VST3); none = the built-in instrument
     pub note_port: u16,
     pub output_bus: Option<Id>,
     pub midi_channel: u8,
@@ -392,10 +392,12 @@ pub struct Track {
     pub solo: bool,
 }
 
-/// An audio-graph node: a CLAP plugin, a bus, or the master output.
+/// An audio-graph node: a plugin, a bus, or the master output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
-    Clap,
+    /// A CLAP or VST3 plugin (the bundle's extension says which); stored
+    /// as "clap".
+    Plugin,
     Bus,
     Master,
 }
@@ -405,8 +407,8 @@ pub struct AudioNode {
     pub id: Id,
     pub kind: NodeKind,
     pub name: String,
-    pub bundle: String,    // .clap path ("builtin:corinzia-sine" for the built-in instrument)
-    pub plugin_id: String, // clap_plugin_descriptor.id
+    pub bundle: String,    // .clap or .vst3 path ("builtin:corinzia-sine" for the built-in instrument)
+    pub plugin_id: String, // clap_plugin_descriptor.id, or the VST3 class id in hex
     pub bypassed: bool,
 }
 
@@ -429,7 +431,7 @@ pub struct Project {
     pub instruments: Vec<Instrument>,
     pub tracks: Vec<Track>,
     pub movements: Vec<Movement>,
-    /// The audio graph and the CLAP state chunks of its plugin nodes.
+    /// The audio graph and the state chunks of its plugin nodes.
     pub nodes: Vec<AudioNode>,
     pub edges: Vec<AudioEdge>,
     pub plugin_state: std::collections::BTreeMap<Id, Arc<Vec<u8>>>,

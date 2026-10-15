@@ -1,6 +1,8 @@
 //! Corinzia's audio engine in Rust.
 //!
-//! * [`host`]: CLAP hosting (bundles on disk and the built-in Corinzia Sine);
+//! * [`host`]: plugin hosting (CLAP bundles, VST3 bundles through [`vst3`],
+//!   and the built-in Corinzia Sine);
+//! * [`gui`]: plugin editor windows and the run loop their GUIs need;
 //! * [`pool`]: plugin instances per track, on the main thread;
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
@@ -9,9 +11,11 @@
 //!   WASAPI on Windows (feature `wasapi`).
 
 pub mod engine;
+pub mod gui;
 pub mod host;
 pub mod pool;
 pub mod snapshot;
+pub mod vst3;
 #[cfg(all(feature = "pipewire", target_os = "linux"))]
 pub mod backend;
 #[cfg(all(feature = "wasapi", windows))]

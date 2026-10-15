@@ -518,7 +518,7 @@ impl Editor {
         self.commit_with(before, label, false, merge.then_some(track));
     }
 
-    /// Assigns a CLAP plugin (name, bundle, plugin id) to a track, or the
+    /// Assigns a plugin (name, bundle, plugin id; CLAP or VST3) to a track, or the
     /// built-in instrument (`None`). The track's previous plugin node goes.
     pub fn set_track_plugin(&mut self, track: Id, plugin: Option<(&str, &str, &str)>) {
         let before = self.snapshot();
@@ -534,7 +534,7 @@ impl Editor {
         let name = match plugin {
             Some((name, bundle, id)) => {
                 let node = self.project.allocate_id();
-                self.project.nodes.push(AudioNode { id: node, kind: NodeKind::Clap, name: name.into(), bundle: bundle.into(), plugin_id: id.into(), bypassed: false });
+                self.project.nodes.push(AudioNode { id: node, kind: NodeKind::Plugin, name: name.into(), bundle: bundle.into(), plugin_id: id.into(), bypassed: false });
                 self.project.tracks[ti].instrument_node = Some(node);
                 name.to_string()
             }
