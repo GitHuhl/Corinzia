@@ -210,6 +210,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
                 group: groups[li],
                 lines: lane.lines.clone(),
+                transposition: first.map(|i| (i.transposition.steps, i.transposition.semitones)).unwrap_or((0, 0)),
             }
         })
         .collect();

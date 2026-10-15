@@ -172,10 +172,18 @@ impl<'a> Writer<'a> {
                     let _ = writeln!(self.out, "        <divisions>{}</divisions>", self.divisions);
                 }
                 if let Some(k) = key_here.or(if mi == 0 { keys.first() } else { None }) {
+                    // A transposing staff's written key.
+                    let mut fifths = k.fifths + part.key_shift;
+                    while fifths > 7 {
+                        fifths -= 12;
+                    }
+                    while fifths < -7 {
+                        fifths += 12;
+                    }
                     let _ = writeln!(
                         self.out,
                         "        <key><fifths>{}</fifths><mode>{}</mode></key>",
-                        k.fifths,
+                        fifths,
                         if k.minor { "minor" } else { "major" }
                     );
                 }
@@ -185,6 +193,15 @@ impl<'a> Writer<'a> {
                 }
                 if mi == 0 {
                     let _ = writeln!(self.out, "        {}", clef_xml(&part.clef));
+                    // From written to sounding: the transposition reversed.
+                    let (steps, semis) = part.transposition;
+                    if (steps, semis) != (0, 0) {
+                        // Whole octaves go in <octave-change> (a bass clarinet's ninth).
+                        let oct = semis / 12;
+                        let (d, c) = (-(steps - 7 * oct), -(semis - 12 * oct));
+                        let change = if oct != 0 { format!("<octave-change>{}</octave-change>", -oct) } else { String::new() };
+                        let _ = writeln!(self.out, "        <transpose><diatonic>{d}</diatonic><chromatic>{c}</chromatic>{change}</transpose>");
+                    }
                 }
                 self.line("      </attributes>");
             }

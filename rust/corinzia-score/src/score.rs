@@ -175,6 +175,9 @@ pub struct Part {
     pub group: u32,
     /// Octave lines and pedal marks on this staff.
     pub lines: Vec<LineSpan>,
+    /// The instrument's transposition as (diatonic steps, semitones),
+    /// written minus sounding: (1, 2) for a B♭ clarinet.
+    pub transposition: (i32, i32),
 }
 
 /// A line over `[from, to)` of a staff.

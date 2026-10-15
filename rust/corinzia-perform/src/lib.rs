@@ -546,7 +546,8 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
     doc::Document {
         title: project.title.clone(),
         composer: project.composer.clone(),
-        score: corinzia_model::notation::score(project, m),
+        // Written pitch with <transpose>, as MusicXML expects.
+        score: corinzia_model::notation::score_as(project, m, true),
         performance: doc::Performance {
             tempo: perf.tempo_points.iter().map(|t| doc::PerfTempo { q: t.quarter, bpm: t.bpm, ramp: t.ramp_to_next }).collect(),
             meters: perf.meter_points.iter().map(|x| doc::PerfMeter { q: x.quarter, num: x.num, den: x.den }).collect(),

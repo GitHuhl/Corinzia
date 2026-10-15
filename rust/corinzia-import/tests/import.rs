@@ -173,6 +173,16 @@ fn transposing_parts_come_in_at_concert_pitch() {
     assert_eq!(m.keys[0].fifths, 0, "D major written is C major at concert pitch");
     assert_eq!(names(&m.lanes[0].voices[0].events), ["D5"]);
     assert_eq!(m.lanes[0].chords[0].text, "Dm");
+    // Out again: written in D major with the same <transpose>, and back in.
+    let out = corinzia_perform::musicxml(&p, m).unwrap();
+    assert!(out.contains("<transpose><diatonic>-1</diatonic><chromatic>-2</chromatic></transpose>"), "{out}");
+    assert!(out.contains("<fifths>2</fifths>"));
+    assert!(out.contains("<step>E</step><octave>5</octave>"), "written E5");
+    let q = musicxml(out.as_bytes()).unwrap();
+    assert_eq!(q.instruments[0].transposition, corinzia_model::Interval::new(1, 2));
+    assert_eq!(names(&q.movements[0].lanes[0].voices[0].events), ["D5"]);
+    assert_eq!(q.movements[0].keys[0].fifths, 0);
+    assert_eq!(q.movements[0].lanes[0].chords[0].text, "Dm");
 }
 
 #[test]
