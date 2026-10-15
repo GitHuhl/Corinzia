@@ -166,7 +166,12 @@
       };
     in {
       packages = forAll (pkgs: { default = corinzia pkgs; }
-        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") { appimage = appimage pkgs; windows = windows pkgs; });
+        // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          appimage = appimage pkgs;
+          windows = windows pkgs;
+          # Both downloads in one ./result: `nix build .#release`.
+          release = pkgs.symlinkJoin { name = "corinzia-release-0.2.0"; paths = [ (appimage pkgs) (windows pkgs) ]; };
+        });
 
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {

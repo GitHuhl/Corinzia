@@ -75,6 +75,7 @@ nix run . -- score.project                    # open a project
 nix build                                     # sandboxed build running every test
 nix build .#appimage                          # the portable AppImage (x86-64)
 nix build .#windows                           # the Windows zip (cross-compiled)
+nix build .#release                           # both: result/ holds the AppImage and the zip
 
 nix develop                                   # pinned nixos-26.05 toolchain
 cd rust && cargo test --workspace             # all crates

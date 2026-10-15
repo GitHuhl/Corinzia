@@ -49,7 +49,11 @@ struct Popover {
 #[derive(Default)]
 struct NewScore {
     title: String,
+    composer: String,
     instruments: String,
+    key: String,
+    time: String,
+    tempo: String,
     bars: String,
     error: Option<String>,
 }
@@ -57,7 +61,11 @@ struct NewScore {
 #[derive(Debug, Clone, Copy)]
 enum NewField {
     Title,
+    Composer,
     Instruments,
+    Key,
+    Time,
+    Tempo,
     Bars,
 }
 
@@ -91,6 +99,8 @@ struct App {
     saving: bool,
     undo_tip: String,
     new_score: Option<NewScore>,
+    /// What waits for "discard unsaved changes?" to be answered.
+    confirm: Option<Box<Message>>,
     path: Option<PathBuf>,
     view: View,
     pages: Vec<DisplayList>,
@@ -134,6 +144,8 @@ enum Message {
     NewInput(NewField, String),
     NewCreate,
     NewCancel,
+    /// The answer to "discard unsaved changes?".
+    ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
     Guarded(Box<Message>),
     Proceed(Box<Message>),
@@ -154,6 +166,7 @@ enum Message {
 }
 
 const POPOVER_INPUT: &str = "popover-input";
+const NEW_TITLE: &str = "new-score-title";
 
 struct Args {
     file: Option<PathBuf>,
@@ -306,6 +319,7 @@ impl App {
             saving: false,
             undo_tip: String::new(),
             new_score: None,
+            confirm: None,
             path,
             view,
             pages: vec![],
@@ -661,7 +675,8 @@ impl App {
             Action::Save | Action::SaveAs => return self.ask_save_path(),
             Action::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
             Action::New => {
-                self.new_score = Some(NewScore { bars: "32".into(), ..Default::default() });
+                self.new_score = Some(NewScore { bars: "32".into(), key: "C".into(), time: "4/4".into(), ..Default::default() });
+                return iced::widget::operation::focus(NEW_TITLE);
             }
             Action::Popover(kind) => {
                 let t = self.open_popover(kind);
@@ -707,7 +722,54 @@ impl App {
         let Some(n) = self.new_score.as_mut() else { return };
         let bars = n.bars.trim().parse::<i64>().unwrap_or(32).clamp(1, 2000);
         let title = if n.title.trim().is_empty() { "Untitled" } else { n.title.trim() };
-        match files::new_project(title, &n.instruments, bars) {
+        // Key, time (a pickup too: "3/4 pickup 1/4") and tempo, checked first.
+        let key = if n.key.trim().is_empty() { None } else {
+            match corinzia_edit::parse_key(&n.key) {
+                Some(k) => Some(k),
+                None => return n.error = Some(format!("Key not understood: {} (try C, Eb, f# minor)", n.key.trim())),
+            }
+        };
+        let (time_text, pickup_text) = match n.time.to_lowercase().split_once("pickup") {
+            Some((t, p)) => (t.trim().to_string(), Some(format!("pickup {}", p.trim()))),
+            None => (n.time.trim().to_string(), None),
+        };
+        let time = if time_text.is_empty() { None } else {
+            match corinzia_edit::parse_time(&time_text) {
+                Some(t) => Some(t),
+                None => return n.error = Some(format!("Time not understood: {time_text} (try 3/4, 6/8, C)")),
+            }
+        };
+        let tempo = if n.tempo.trim().is_empty() { None } else {
+            match corinzia_edit::parse_tempo(&n.tempo) {
+                Some(t) => Some(t),
+                None => return n.error = Some(format!("Tempo not understood: {} (try Allegro, Andante 84, q=96)", n.tempo.trim())),
+            }
+        };
+        match files::new_project(title, &n.instruments, bars).map(|mut p| {
+            p.composer = n.composer.trim().to_string();
+            if let Some(m) = p.movements.first_mut() {
+                if let Some(k) = key {
+                    corinzia_edit::set_key(m, Frac::ZERO, k);
+                }
+                if let Some((num, den)) = time {
+                    corinzia_edit::set_meter(m, Frac::ZERO, num, den);
+                    m.length = Frac::new(num, den) * Frac::int(bars);
+                }
+                if let Some(t) = &tempo {
+                    corinzia_edit::set_tempo(m, Frac::ZERO, t);
+                }
+                if let Some(len) = pickup_text.as_deref().and_then(|t| corinzia_edit::parse_pickup(t, Frac::new(1, time.map(|t| t.1).unwrap_or(4)))) {
+                    corinzia_edit::set_pickup(m, len);
+                }
+                // Voice 1 is rests to the end in the new meter.
+                for l in m.lanes.iter_mut() {
+                    for v in l.voices.iter_mut() {
+                        v.events = std::sync::Arc::new(Vec::new());
+                    }
+                }
+            }
+            p
+        }) {
             Ok(p) => {
                 let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
                 *self = App::with_playback(p, None, view, "New score · N starts note input".into(), pb);
@@ -855,10 +917,12 @@ impl App {
             }
             Message::Canvas(ViewEvent::Marquee { ids, shift }) => self.editor.select_elements(&ids, shift),
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.confirm.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
-                        self.popover = None;
-                        self.new_score = None;
+                        if self.confirm.take().is_none() {
+                            self.popover = None;
+                            self.new_score = None;
+                        }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
                     return t;
@@ -918,7 +982,11 @@ impl App {
                 if let Some(n) = self.new_score.as_mut() {
                     match field {
                         NewField::Title => n.title = v,
+                        NewField::Composer => n.composer = v,
                         NewField::Instruments => n.instruments = v,
+                        NewField::Key => n.key = v,
+                        NewField::Time => n.time = v,
+                        NewField::Tempo => n.tempo = v,
                         NewField::Bars => n.bars = v,
                     }
                     n.error = None;
@@ -931,21 +999,13 @@ impl App {
                 if !self.editor.modified {
                     return Task::done(Message::Proceed(next));
                 }
-                return Task::perform(
-                    async {
-                        rfd::AsyncMessageDialog::new()
-                            .set_title("Unsaved changes")
-                            .set_description("The score has unsaved changes. Discard them?")
-                            .set_buttons(rfd::MessageButtons::OkCancelCustom("Discard".into(), "Cancel".into()))
-                            .show()
-                            .await
-                    },
-                    move |r| match r {
-                        rfd::MessageDialogResult::Custom(c) if c == "Discard" => Message::Proceed(next.clone()),
-                        rfd::MessageDialogResult::Ok | rfd::MessageDialogResult::Yes => Message::Proceed(next.clone()),
-                        _ => Message::PopoverClose,
-                    },
-                );
+                // Asked in the window (no system dialog needed).
+                self.confirm = Some(next);
+            }
+            Message::ConfirmDiscard(yes) => {
+                if let (Some(next), true) = (self.confirm.take(), yes) {
+                    return Task::done(Message::Proceed(next));
+                }
             }
             Message::Proceed(next) => match *next {
                 Message::Open => {
@@ -1140,14 +1200,34 @@ impl App {
             let field = |label: &'static str, hint: &'static str, value: &str, f: NewField| {
                 column![text(label).size(12).style(theme::dim), text_input(hint, value).on_input(move |v| Message::NewInput(f, v)).on_submit(Message::NewCreate).padding(6).size(14)].spacing(3)
             };
+            let title = column![
+                text("Title").size(12).style(theme::dim),
+                text_input("Untitled", &n.title).id(NEW_TITLE).on_input(|v| Message::NewInput(NewField::Title, v)).on_submit(Message::NewCreate).padding(6).size(14)
+            ]
+            .spacing(3);
+            // Ready-made ensembles fill in the instruments.
+            let templates = iced::widget::Row::with_children(files::TEMPLATES.iter().map(|(label, list)| {
+                let on = n.instruments == *list;
+                button(text(*label).size(12)).padding([3, 8]).style(theme::segment(on)).on_press(Message::NewInput(NewField::Instruments, list.to_string())).into()
+            }))
+            .spacing(4)
+            .wrap();
             let mut card = column![
                 text("New score").size(18).font(bold),
-                field("Title", "Untitled", &n.title, NewField::Title),
-                field("Instruments (comma separated; \"2 Violin\" for two)", "Flute, Clarinet, Violin, Cello", &n.instruments, NewField::Instruments),
-                field("Bars", "32", &n.bars, NewField::Bars),
+                row![title.width(Length::FillPortion(3)), field("Composer", "", &n.composer, NewField::Composer).width(Length::FillPortion(2))].spacing(10),
+                text("Ensemble").size(12).style(theme::dim),
+                templates,
+                field("Instruments (comma separated; \"2 Violin\" for two; any name)", "Flute, Clarinet, Violin, Cello", &n.instruments, NewField::Instruments),
+                row![
+                    field("Key", "C", &n.key, NewField::Key).width(Length::Fill),
+                    field("Time", "4/4 (3/4 pickup 1/4)", &n.time, NewField::Time).width(Length::Fill),
+                    field("Tempo", "Allegro 120", &n.tempo, NewField::Tempo).width(Length::Fill),
+                    field("Bars", "32", &n.bars, NewField::Bars).width(Length::Fill),
+                ]
+                .spacing(10),
             ]
             .spacing(10)
-            .width(420);
+            .width(560);
             if let Some(e) = &n.error {
                 card = card.push(text(e).size(12).style(theme::danger));
             }
@@ -1164,6 +1244,21 @@ impl App {
 
         if self.help {
             desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
+        }
+        if self.confirm.is_some() {
+            let card = column![
+                text("Discard the changes to this score?").size(16).font(bold),
+                text("Saving is not available in this preview, so they cannot be kept; export first if you need them.").size(12).style(theme::dim),
+                row![
+                    panels::spacer(),
+                    button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::ConfirmDiscard(false)),
+                    button(text("Discard").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::ConfirmDiscard(true)),
+                ]
+                .spacing(8),
+            ]
+            .spacing(12)
+            .width(420);
+            desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
         if self.export_menu {
             let item = |label: &'static str, hint: &'static str, f: files::Format| {
@@ -1632,12 +1727,53 @@ mod tests {
     }
 
     #[test]
+    fn new_score_with_key_time_pickup_tempo_any_instrument_and_an_in_app_confirmation() {
+        let mut a = app(View::Page);
+        // An edit makes the score "unsaved": Create asks in the window first.
+        a.editor.set_input_mode(true);
+        a.editor.enter_note(0, false);
+        let _ = a.update(Message::Act(Action::New));
+        let _ = a.update(Message::NewInput(NewField::Instruments, files::TEMPLATES[2].1.to_string() + ", Kazoo"));
+        for (f, v) in [(NewField::Title, "Suite"), (NewField::Composer, "J. Doe"), (NewField::Key, "Eb"), (NewField::Time, "3/4 pickup 1/4"), (NewField::Tempo, "Allegro 132"), (NewField::Bars, "8")] {
+            let _ = a.update(Message::NewInput(f, v.into()));
+        }
+        // Create -> Guarded -> the confirmation card (no system dialog).
+        let mut msg = Some(Message::NewCreate);
+        while let Some(m) = msg.take() {
+            let _ = a.update(m.clone());
+            msg = match m {
+                Message::NewCreate => Some(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
+                _ => None,
+            };
+        }
+        assert!(a.confirm.is_some() && a.new_score.is_some(), "asked first");
+        let _ = a.update(Message::ConfirmDiscard(true));
+        let _ = a.update(Message::Proceed(Box::new(Message::NewCreate)));
+        assert!(a.new_score.is_none());
+        let p = &a.editor.project;
+        assert_eq!((p.title.as_str(), p.composer.as_str()), ("Suite", "J. Doe"));
+        assert_eq!(p.instruments.last().unwrap().name, "Kazoo");
+        let m = &p.movements[0];
+        assert_eq!(m.lanes.len(), 5);
+        assert_eq!(m.keys[0].fifths, -3);
+        assert_eq!((m.tempo[0].bpm, m.tempo[0].text.as_str()), (132.0, "Allegro"));
+        assert!(m.meter[0].pickup && (m.meter[1].num, m.meter[1].den) == (3, 4));
+        assert_eq!(m.length, Frac::new(1, 4) + Frac::new(3, 4) * Frac::int(8));
+        assert!(!a.pages.is_empty());
+    }
+
+    #[test]
     fn new_score_from_an_instrument_list() {
         let mut a = app(View::Page);
         let _ = a.update(Message::Act(Action::New));
-        let _ = a.update(Message::NewInput(NewField::Instruments, "Flute, kazoo".into()));
+        let _ = a.update(Message::NewInput(NewField::Instruments, "".into()));
         a.create_new();
-        assert_eq!(a.new_score.as_ref().unwrap().error.as_deref(), Some("Unknown instrument: kazoo"));
+        assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Name at least one instrument"));
+        let _ = a.update(Message::NewInput(NewField::Time, "7/5".into()));
+        let _ = a.update(Message::NewInput(NewField::Instruments, "Flute".into()));
+        a.create_new();
+        assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Time not understood"));
+        let _ = a.update(Message::NewInput(NewField::Time, "4/4".into()));
         let _ = a.update(Message::NewInput(NewField::Instruments, "2 Violin, Viola, Cello".into()));
         let _ = a.update(Message::NewInput(NewField::Title, "Quartet".into()));
         let _ = a.update(Message::NewInput(NewField::Bars, "12".into()));

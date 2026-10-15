@@ -66,12 +66,40 @@ pub fn transposition_of(name: &str) -> Interval {
     TRANSPOSITIONS.iter().find(|(n, _)| name.starts_with(n)).map(|t| t.1).unwrap_or_default()
 }
 
+/// Ready-made ensembles for the New score card: (label, instrument list).
+pub const TEMPLATES: &[(&str, &str)] = &[
+    ("Piano", "Piano"),
+    ("Voice and piano", "Soprano, Piano"),
+    ("String quartet", "2 Violin, Viola, Cello"),
+    ("SATB choir", "Soprano, Alto, Tenor, Bass"),
+    ("Wind quintet", "Flute, Oboe, Clarinet, Horn, Bassoon"),
+    ("Brass quintet", "2 Trumpet, Horn, Trombone, Tuba"),
+    ("Piano trio", "Violin, Cello, Piano"),
+    ("Orchestra", "2 Flute, 2 Oboe, 2 Clarinet, 2 Bassoon, 2 Horn, 2 Trumpet, Timpani, 2 Violin, Viola, Cello, Double bass"),
+];
+
+/// The staff clef for an instrument not in the list, from its name.
+fn guess_clef(name: &str) -> &'static str {
+    let n = name.to_lowercase();
+    if ["bass", "cello", "tuba", "bassoon", "trombone", "baritone", "contra", "timpani"].iter().any(|w| n.contains(w)) {
+        "bass"
+    } else if n.contains("viola") {
+        "alto"
+    } else if ["keyboard", "synth", "piano", "harpsichord", "marimba"].iter().any(|w| n.contains(w)) {
+        "treble+bass"
+    } else if ["drum", "perc", "kit"].iter().any(|w| n.contains(w)) {
+        "percussion"
+    } else {
+        "treble"
+    }
+}
+
 /// A comma-separated instrument list ("Flute, 2 Violin, Cello") ->
 /// (name, abbreviation, clef) per staff. A leading count repeats an
-/// instrument, numbered. Unknown names are an error naming them.
+/// instrument, numbered. A name not in the list is taken as written, with
+/// a clef guessed from it.
 pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, String> {
     let mut out = Vec::new();
-    let mut unknown = Vec::new();
     for item in text.split([',', ';', '\n']).map(str::trim).filter(|s| !s.is_empty()) {
         let (count, name) = match item.split_once(' ') {
             Some((n, rest)) if n.parse::<u32>().is_ok() => (n.parse::<u32>().unwrap().clamp(1, 16), rest.trim()),
@@ -85,11 +113,19 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
                     out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), clef.to_string()));
                 }
             }
-            None => unknown.push(name.to_string()),
+            None => {
+                // As typed, capitalised; abbreviated to its first syllable.
+                let mut full: String = name.chars().take(40).collect();
+                if let Some(c) = full.get(..1) {
+                    full = c.to_uppercase() + &full[1..];
+                }
+                let abbr = format!("{}.", full.chars().take(3).collect::<String>());
+                for i in 1..=count {
+                    let suffix = if count > 1 { format!(" {i}") } else { String::new() };
+                    out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), guess_clef(name).to_string()));
+                }
+            }
         }
-    }
-    if !unknown.is_empty() {
-        return Err(format!("Unknown instrument{}: {}", if unknown.len() == 1 { "" } else { "s" }, unknown.join(", ")));
     }
     if out.is_empty() {
         return Err("Name at least one instrument, e.g. \"Flute, Violin, Cello\"".into());
