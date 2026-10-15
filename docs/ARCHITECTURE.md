@@ -215,6 +215,9 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
 * Staves of one instrument family next to each other (woodwinds, brass,
   percussion, voices, strings; from the instrument names) share a bracket
   with serifs, as LilyPond's StaffGroup, and their barlines run through.
+* Fingering (SMuFL digits) sits just above the note, or above its stem
+  tip, stacked for a chord; bowings stack above the staff with fermatas
+  and ornaments.
 * Grace notes are drawn at LilyPond's grace size (0.707) left of their
   note and its accidentals, with their own accidentals and ledger lines,
   stems up in voices 1 and 3, a flag or a beam over a group, and the

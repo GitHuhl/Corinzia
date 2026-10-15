@@ -167,6 +167,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             'x' => Some(PopoverKind::Expression),
             'p' => Some(PopoverKind::Technique),
             'o' => Some(PopoverKind::Ornament),
+            'f' if !input_mode => Some(PopoverKind::Fingering),
             'c' if !input_mode => Some(PopoverKind::Clef),
             'b' if !input_mode => Some(PopoverKind::Barline),
             'r' if !input_mode => Some(PopoverKind::Ending),

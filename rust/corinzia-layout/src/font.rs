@@ -28,6 +28,7 @@ pub enum Glyph {
     CsymSharp, CsymFlat, CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh,
     BracketTop, BracketBottom, Segno, Coda,
     Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp,
+    UpBow, DownBow, Fingering(u8),
 }
 
 impl Glyph {
@@ -116,6 +117,10 @@ impl Glyph {
             QuindicesimaBassa => ("quindicesimaBassaMb", 0xE51D),
             PedalPed => ("keyboardPedalPed", 0xE650),
             PedalUp => ("keyboardPedalUp", 0xE655),
+            UpBow => ("stringsUpBow", 0xE612),
+            DownBow => ("stringsDownBow", 0xE610),
+            // Fingers 0-5 (thumb 0 or 1 to little finger 5).
+            Fingering(d) => (["fingering0", "fingering1", "fingering2", "fingering3", "fingering4", "fingering5"][d.min(5) as usize], 0xED10 + d.min(5) as u32),
         }
     }
     pub fn name(self) -> &'static str {
@@ -133,8 +138,9 @@ impl Glyph {
             StaccatissimoBelow, MarcatoAbove, MarcatoBelow, FermataAbove, FermataBelow, DynamicP, DynamicM, DynamicF, Trill,
             Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot, MetNoteQuarterUp, CsymSharp, CsymFlat,
             CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh, BracketTop, BracketBottom, Segno, Coda,
-            Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp,
+            Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp, UpBow, DownBow,
         ];
+        v.extend((0..6).map(Fingering));
         v.extend((0..10).map(TimeSigDigit));
         v.extend((0..10).map(TupletDigit));
         v
@@ -151,6 +157,9 @@ pub struct BBox {
     pub ne: (f32, f32),
 }
 impl BBox {
+    pub fn height(&self) -> f32 {
+        self.ne.1 - self.sw.1
+    }
     pub fn width(&self) -> f32 {
         self.ne.0 - self.sw.0
     }

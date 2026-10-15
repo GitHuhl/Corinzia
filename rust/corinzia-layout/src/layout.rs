@@ -2107,6 +2107,36 @@ impl<'a> Engraver<'a> {
         b != 0 && g.iter().all(|&i| self.beam_of.get(i) == Some(&b)) && self.beam_of.iter().filter(|&&x| x == b).count() == g.len()
     }
 
+    /// Fingering just above the note (above the stem tip when the stem is
+    /// up), one digit per head stacked from the bottom head's.
+    fn draw_fingering(&mut self) {
+        for i in 0..self.notes.len() {
+            let n = self.notes[i].clone();
+            if !n.first || n.rest || n.heads.is_empty() {
+                continue;
+            }
+            let Some(e) = self.score.parts.get(n.part).and_then(|p| p.voices.iter().find(|v| v.index == n.voice)).and_then(|v| v.events.iter().find(|e| e.id == n.id || e.pitches.first().is_some_and(|p| p.id == n.heads[0].id))) else { continue };
+            let fingers: Vec<u8> = e.fingering.iter().copied().filter(|&f| f > 0).collect();
+            if fingers.is_empty() {
+                continue;
+            }
+            let top = self.y(n.part, n.heads[n.heads.len() - 1].pos);
+            let mut y = if n.stem_up && n.has_stem() { n.stem_end.min(top) - 0.5 } else { top - 0.9 };
+            // Clear of a beam or flag at the stem tip.
+            if n.stem_up && n.beamed {
+                y -= 0.6;
+            }
+            // Bottom head's finger lowest.
+            for f in fingers.iter() {
+                let g = Glyph::Fingering(*f);
+                let b = self.font.bbox(g);
+                let x = n.x + HEAD_W / 2.0 - b.width() / 2.0;
+                self.place(n.part, Item::glyph(g, x, y, n.heads[0].id));
+                y -= b.height() + 0.15;
+            }
+        }
+    }
+
     /// Fermatas and ornaments above the note, clear of everything there.
     fn draw_ornaments(&mut self) {
         for i in 0..self.notes.len() {
@@ -2114,7 +2144,14 @@ impl<'a> Engraver<'a> {
             if !n.first || n.rest {
                 continue;
             }
-            for (bit, g) in [(art::FERMATA, Glyph::FermataAbove), (art::TRILL, Glyph::Trill), (art::MORDENT, Glyph::Mordent), (art::TURN, Glyph::Turn)] {
+            for (bit, g) in [
+                (art::DOWN_BOW, Glyph::DownBow),
+                (art::UP_BOW, Glyph::UpBow),
+                (art::FERMATA, Glyph::FermataAbove),
+                (art::TRILL, Glyph::Trill),
+                (art::MORDENT, Glyph::Mordent),
+                (art::TURN, Glyph::Turn),
+            ] {
                 if n.art & bit == 0 {
                     continue;
                 }
@@ -2663,6 +2700,7 @@ impl<'a> Engraver<'a> {
         self.draw_slurs();
         self.build_skylines();
         self.draw_tuplets();
+        self.draw_fingering();
         self.draw_ornaments();
         self.draw_lines(false);
         self.draw_texts(true);

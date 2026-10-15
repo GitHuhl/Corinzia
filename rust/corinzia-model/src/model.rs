@@ -102,6 +102,8 @@ pub struct Event {
     pub lyrics: Vec<Lyric>,  // one syllable per verse
     /// Grace notes before it, in order; they take no time of their own.
     pub graces: Vec<Grace>,
+    /// Fingers, bottom head to top (0 for none).
+    pub fingering: Vec<u8>,
 }
 
 /// A grace note (or chord): written small before its event.

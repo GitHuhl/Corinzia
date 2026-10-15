@@ -107,7 +107,8 @@ natural, Alt+←/→ move notes by the rhythmic grid chosen in the status
 bar (Alt+[ / Alt+] change it). Shift+M "pickup 1/4" adds an upbeat bar.
 Shift+C also takes "8va", "8vb", "15ma", "loco"; Shift+P "ped" (and "*")
 puts a pedal under the selection. Shift+R also takes jumps: "segno", "coda", "to coda", "fine", "D.C. al
-Fine", "D.S. al Coda" (played back too). `;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
+Fine", "D.S. al Coda" (played back too). Shift+F types fingering ("1", or "1 3 5" for a chord); "up bow" and "down
+bow" go in Shift+O or Shift+P. `;` makes tuplets ("3", "5", "5:4", "7:8"): in note input the notes you
 type go into them until `:`; with a note selected it starts one. `/` in
 note input types grace notes (slashed; `?` plain) before the next note.
 Popovers: Shift+K key ("Eb", "f#" minor), Shift+M time ("6/8"), Shift+T

@@ -694,6 +694,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         || child(e, "notations").is_some_and(|n| children(n, "tied").any(|t| t.attribute("type") == Some("start")));
     let mut arts = 0u16;
     let mut spans = 0u8;
+    let mut finger: Option<u8> = None;
     if let Some(nt) = child(e, "notations") {
         for c in nt.children().filter(|c| c.is_element()) {
             match c.tag_name().name() {
@@ -703,6 +704,16 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
                     _ => {}
                 },
                 "fermata" => arts |= art::FERMATA,
+                "technical" => {
+                    for t in c.children().filter(|t| t.is_element()) {
+                        match t.tag_name().name() {
+                            "up-bow" => arts |= art::UP_BOW,
+                            "down-bow" => arts |= art::DOWN_BOW,
+                            "fingering" => finger = t.text().and_then(|x| x.trim().parse::<u8>().ok()).filter(|f| *f <= 5),
+                            _ => {}
+                        }
+                    }
+                }
                 "arpeggiate" => arts |= art::ARPEGGIO,
                 "articulations" => {
                     for a in c.children().filter(|a| a.is_element()) {
@@ -748,8 +759,15 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         if let (Some(last), Some(pitch)) = (events.last_mut(), pitch) {
             if last.start == start && !last.is_rest() {
                 let id = p.allocate_id();
-                last.heads.push(Head { id, pitch, tie, velocity: 0 });
-                last.heads.sort_by_key(|h| h.pitch.diatonic());
+                // Fingers stay with their heads as the chord is sorted.
+                let mut fingers = std::mem::take(&mut last.fingering);
+                fingers.resize(last.heads.len(), 0);
+                let mut both: Vec<(Head, u8)> = last.heads.drain(..).zip(fingers).collect();
+                both.push((Head { id, pitch, tie, velocity: 0 }, finger.unwrap_or(0)));
+                both.sort_by_key(|(h, _)| h.pitch.diatonic());
+                let (heads, fingers): (Vec<Head>, Vec<u8>) = both.into_iter().unzip();
+                last.heads = heads;
+                last.fingering = if fingers.iter().any(|&f| f > 0) { fingers } else { vec![] };
                 last.kind = EventKind::Chord;
                 last.articulations |= arts;
                 last.spans |= spans;
@@ -763,7 +781,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         _ => vec![],
     };
     let kind = if heads.is_empty() { EventKind::Rest } else { EventKind::Note };
-    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces });
+    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces, fingering: finger.filter(|_| !rest).into_iter().collect() });
 }
 
 /// `<tuplet type="start|stop">` on a note (nested ones too): the ratio
@@ -872,5 +890,5 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
 }
 
 fn rest(p: &mut Project, start: Frac, duration: Frac) -> Event {
-    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] }
+    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] }
 }

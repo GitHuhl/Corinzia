@@ -1523,6 +1523,24 @@ impl Editor {
     /// Applies a popover; `Err` carries the hint to show.
     pub fn apply_popover(&mut self, kind: PopoverKind, input: &str) -> Result<(), String> {
         let text = input.trim().to_string();
+        if kind == PopoverKind::Fingering {
+            let fingers = edit::parse_fingering(&text).ok_or("Fingering not understood: 1, 2… or \"1 3 5\" for a chord")?;
+            if self.range.is_none() && self.selection.is_none() {
+                return Err("Select a note first".into());
+            }
+            self.edit_selected("Fingering", |evs, id, _, _| edit::modify_event(evs, id, |e, _| e.fingering = fingers.clone()));
+            return Ok(());
+        }
+        // Bowings in the technique popover are marks on the notes.
+        if kind == PopoverKind::Technique {
+            if let Some(bit) = edit::parse_bowing(&text) {
+                if self.range.is_none() && self.selection.is_none() {
+                    return Err("Select notes first".into());
+                }
+                self.toggle_articulation(bit);
+                return Ok(());
+            }
+        }
         if kind == PopoverKind::MovementTitle {
             self.rename_movement(&text);
             return Ok(());
@@ -1662,7 +1680,7 @@ impl Editor {
                 let verse = self.lyric_verse;
                 return self.enter_lyric(verse, &text, false, false).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -1806,6 +1824,7 @@ pub enum PopoverKind {
     Chord,
     Tuplet,
     MovementTitle,
+    Fingering,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -1824,6 +1843,7 @@ impl PopoverKind {
             PopoverKind::Chord => "Chord symbol",
             PopoverKind::Tuplet => "Tuplet",
             PopoverKind::MovementTitle => "Movement title",
+            PopoverKind::Fingering => "Fingering",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -1834,7 +1854,7 @@ impl PopoverKind {
             PopoverKind::Barline => "||  |.  |:  :|  :|:",
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",
             PopoverKind::Expression => "dolce, espress.",
-            PopoverKind::Technique => "pizz., arco, con sord.; ped, *",
+            PopoverKind::Technique => "pizz., arco, con sord.; ped, *; up bow, down bow",
             PopoverKind::Ending => "1, 2, 1-3; segno, coda, to coda, fine, D.C. al Fine, D.S. al Coda",
             PopoverKind::Rehearsal => "",
             PopoverKind::Ornament => "tr, mordent, turn, trem, arp, fermata",
@@ -1842,6 +1862,7 @@ impl PopoverKind {
             PopoverKind::Chord => "C, F#m7, Bbmaj7, G7/B; space = next beat",
             PopoverKind::Tuplet => "3, 5, 6, 7, 2 (duplet), 5:4, 7:8",
             PopoverKind::MovementTitle => "II. Adagio",
+            PopoverKind::Fingering => "1, 1 3 5 (a chord, bottom up), empty clears",
         }
     }
 }

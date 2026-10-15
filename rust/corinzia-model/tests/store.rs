@@ -19,6 +19,7 @@ fn sample() -> Project {
         spans: 4,
         lyrics: vec![Lyric { verse: 1, text: "Glo".into(), hyphen: true, extend: false }, Lyric { verse: 2, text: "Ah".into(), hyphen: false, extend: true }],
         graces: vec![Grace { id: id + 100, heads: vec![Head { id: id + 101, pitch: Pitch { step: 1, alter: 0, octave: 5 }, tie: false, velocity: 0 }], base: 16, slash: true }],
+        fingering: vec![3],
     };
     // Events across two storage chunks (chunk = 4 whole notes).
     let events = vec![ev(10, Frac::ZERO, Frac::new(1, 4), 0, true), ev(12, Frac::new(1, 4), Frac::new(3, 4), 3, false), ev(14, Frac::int(5), Frac::int(1), 4, false)];
@@ -86,6 +87,7 @@ fn save_and_load_round_trip() {
     assert_eq!(mb.navigation, ma.navigation);
     assert_eq!(mb.lanes[0].voices[0].tuplets, ma.lanes[0].voices[0].tuplets);
     assert_eq!(*mb.lanes[0].voices[0].events[0].graces, *ma.lanes[0].voices[0].events[0].graces);
+    assert_eq!(mb.lanes[0].voices[0].events[0].fingering, [3]);
     // A player's two staves stay two, each with its own clef and lines.
     assert_eq!(mb.lanes.len(), 2);
     assert_eq!((mb.lanes[0].clefs.len(), mb.lanes[1].clefs[0].clef.as_str()), (1, "bass"));

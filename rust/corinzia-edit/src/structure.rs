@@ -231,8 +231,25 @@ pub fn parse_ornament(text: &str) -> Option<u16> {
         "tenuto" | "-" => art::TENUTO,
         "marcato" | "^" => art::MARCATO,
         "fermata" | "ferm" => art::FERMATA,
+        "up bow" | "upbow" | "up-bow" | "v" => art::UP_BOW,
+        "down bow" | "downbow" | "down-bow" | "n" => art::DOWN_BOW,
         _ => return None,
     })
+}
+
+/// Bowings typed into the technique popover.
+pub fn parse_bowing(text: &str) -> Option<u16> {
+    parse_ornament(text).filter(|b| *b & (art::UP_BOW | art::DOWN_BOW) != 0)
+}
+
+/// The fingering popover: "1", "1 3 5" (a chord's fingers, bottom up),
+/// "0" for the thumb (or open string); "" clears. Fingers 0-5.
+pub fn parse_fingering(text: &str) -> Option<Vec<u8>> {
+    let t = text.trim();
+    if t.is_empty() || t == "-" {
+        return Some(vec![]);
+    }
+    t.split(|c: char| c.is_whitespace() || c == ',').filter(|x| !x.is_empty()).map(|x| x.parse::<u8>().ok().filter(|d| *d <= 5)).collect()
 }
 
 /// A chord symbol as typed ("C", "f#m7", "Bbmaj7", "Eb7(#9)/G", "Do",

@@ -318,6 +318,8 @@ struct StoredEvent {
     ly: Vec<StoredLyric>,
     #[serde(default)]
     g: Vec<StoredGrace>,
+    #[serde(default)]
+    fg: Vec<u8>,
 }
 #[derive(Deserialize)]
 struct StoredGrace {
@@ -363,6 +365,7 @@ impl StoredEvent {
             dynamic: self.dynamic,
             spans: self.sp,
             lyrics: self.ly.into_iter().map(|l| Lyric { verse: l.v.max(1), text: l.t, hyphen: l.h, extend: l.x }).collect(),
+            fingering: self.fg,
             graces: self.g.iter().map(|g| Grace { id: g.id, heads: g.h.iter().map(StoredHead::head).collect(), base: if g.b == 0 { 8 } else { g.b }, slash: g.sl }).collect(),
         }
     }
@@ -377,6 +380,9 @@ fn event_json(e: &Event) -> Value {
         "a": e.articulations,
         "h": e.heads.iter().map(head_json).collect::<Vec<_>>(),
     });
+    if !e.fingering.is_empty() {
+        o["fg"] = json!(e.fingering);
+    }
     if !e.graces.is_empty() {
         o["g"] = Value::Array(e.graces.iter().map(|g| json!({"id": g.id, "h": g.heads.iter().map(head_json).collect::<Vec<_>>(), "b": g.base, "sl": g.slash})).collect());
     }

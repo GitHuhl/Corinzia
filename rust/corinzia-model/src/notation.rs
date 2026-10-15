@@ -182,6 +182,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                                 dynamic: e.dynamic.map(|d| DYNAMICS[(d as usize).min(7)].to_string()),
                                 spans: e.spans,
                                 lyrics: e.lyrics.clone(),
+                                fingering: e.fingering.clone(),
                                 graces: {
                                     let by = interval_at(e.start);
                                     e.graces

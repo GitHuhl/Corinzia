@@ -244,7 +244,7 @@ fn pickup_bars() {
     assert_eq!(parse_pickup("pickup 0/4", q), None);
 
     let mut h = header();
-    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] };
+    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
     Arc::make_mut(&mut h.lanes[0].voices[0].events).push(n(f(1, 1)));
     set_pickup(&mut h, Some(f(1, 4)));
     assert_eq!(pickup(&h), Some(f(1, 4)));
@@ -589,4 +589,17 @@ fn octave_lines_and_pedals_are_set_split_and_moved() {
     assert_eq!(spans(&h), [(f(2, 1), f(3, 1), LineKind::Pedal)]);
     let id = h.lanes[0].lines[0].id;
     assert_eq!(describe_item(&h, id).as_deref(), Some("Pedal"));
+}
+
+#[test]
+fn fingering_and_bowing_popovers() {
+    assert_eq!(parse_fingering("3"), Some(vec![3]));
+    assert_eq!(parse_fingering("1 3 5"), Some(vec![1, 3, 5]));
+    assert_eq!(parse_fingering("1,2"), Some(vec![1, 2]));
+    assert_eq!(parse_fingering(""), Some(vec![]));
+    assert!(parse_fingering("7").is_none() && parse_fingering("x").is_none());
+    assert_eq!(parse_bowing("down bow"), Some(art::DOWN_BOW));
+    assert_eq!(parse_bowing("upbow"), Some(art::UP_BOW));
+    assert_eq!(parse_bowing("pizz."), None);
+    assert_eq!(parse_ornament("up bow"), Some(art::UP_BOW));
 }

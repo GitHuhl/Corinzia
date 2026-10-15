@@ -113,7 +113,7 @@ pub fn make_event(ids: &mut Ids, start: Frac, duration: Frac, pitches: &[Pitch],
         1 => EventKind::Note,
         _ => EventKind::Chord,
     };
-    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0, lyrics: vec![], graces: vec![] }
+    Event { id, kind, start, duration, heads, articulations, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] }
 }
 
 fn rest_of(ids: &mut Ids, start: Frac, dur: Frac) -> Event {

@@ -309,3 +309,32 @@ fn octave_lines_and_pedals_import_and_survive_a_round_trip() {
     let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
     check(&musicxml(out.as_bytes()).unwrap());
 }
+
+#[test]
+fn bowings_and_fingering_import_and_survive_a_round_trip() {
+    use corinzia_score::score::art;
+    let n = |step: &str, chord: bool, tech: &str| {
+        format!(
+            "<note>{}<pitch><step>{step}</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type><notations><technical>{tech}</technical></notations></note>",
+            if chord { "<chord/>" } else { "" }
+        )
+    };
+    let xml = format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Violin</part-name></score-part></part-list><part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>{}{}{}</measure></part></score-partwise>"#,
+        n("G", false, "<down-bow/><fingering>1</fingering>"),
+        n("B", false, "<up-bow/><fingering>3</fingering>"),
+        n("E", true, "<fingering>2</fingering>"),
+    );
+    let check = |p: &Project| {
+        let v = &p.movements[0].lanes[0].voices[0].events;
+        assert!(v[0].articulations & art::DOWN_BOW != 0 && v[1].articulations & art::UP_BOW != 0);
+        assert_eq!(v[0].fingering, [1]);
+        // The chord E4+B4: fingers bottom up.
+        assert_eq!(names(&v[1..2]), ["E4+B4"]);
+        assert_eq!(v[1].fingering, [2, 3]);
+    };
+    let p = musicxml(xml.as_bytes()).unwrap();
+    check(&p);
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    check(&musicxml(out.as_bytes()).unwrap());
+}

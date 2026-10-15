@@ -636,6 +636,23 @@ impl<'a> Writer<'a> {
                     n.push_str("<fermata type=\"upright\"/>");
                 }
             }
+            // Bowings (on the first head) and each head's finger.
+            if event_start && !is_rest {
+                let mut tech = String::new();
+                if hi == 0 {
+                    for (bit, tag) in [(art::UP_BOW, "up-bow"), (art::DOWN_BOW, "down-bow")] {
+                        if e.art & bit != 0 {
+                            let _ = write!(tech, "<{tag}/>");
+                        }
+                    }
+                }
+                if let Some(&f) = e.fingering.get(hi).filter(|f| **f > 0) {
+                    let _ = write!(tech, "<fingering>{f}</fingering>");
+                }
+                if !tech.is_empty() {
+                    let _ = write!(n, "<technical>{tech}</technical>");
+                }
+            }
             if event_start && !is_rest && e.art & art::ARPEGGIO != 0 && e.pitches.len() > 1 {
                 n.push_str("<arpeggiate/>");
             }

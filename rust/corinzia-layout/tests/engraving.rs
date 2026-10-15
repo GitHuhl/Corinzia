@@ -600,3 +600,21 @@ fn empty_bars_become_multi_bar_rests_in_parts() {
     assert!(l.width < full.width);
     preview("multirest", &l);
 }
+
+#[test]
+fn bowings_and_fingering() {
+    let s = score(&[("treble", &["g'4-1\\downbow a'-2\\upbow b'-3 c''-4 | d''1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    assert_eq!(glyphs(&l, Glyph::DownBow).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::UpBow).len(), 1);
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    for (k, d) in [1u8, 2, 3, 4].iter().enumerate() {
+        let f = glyphs(&l, Glyph::Fingering(*d));
+        assert_eq!(f.len(), 1);
+        // Over its note, above its head.
+        assert!((f[0].0 - heads[k].0).abs() < 1.0 && f[0].1 < heads[k].1, "finger {d}");
+    }
+    // Bowings above the fingering.
+    assert!(glyphs(&l, Glyph::DownBow)[0].1 < glyphs(&l, Glyph::Fingering(1))[0].1);
+    preview("bowings", &l);
+}

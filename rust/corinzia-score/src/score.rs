@@ -278,6 +278,8 @@ pub struct Event {
     pub lyrics: Vec<Lyric>,
     /// Grace notes before it.
     pub graces: Vec<Grace>,
+    /// Fingers, bottom head to top (0 for none).
+    pub fingering: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +314,8 @@ pub mod art {
     pub const ARPEGGIO: u16 = 1 << 10;
     pub const BREATH: u16 = 1 << 11;
     pub const CAESURA: u16 = 1 << 12;
+    pub const UP_BOW: u16 = 1 << 13;
+    pub const DOWN_BOW: u16 = 1 << 14;
 }
 pub mod span {
     pub const SLUR_START: u8 = 1 << 0;

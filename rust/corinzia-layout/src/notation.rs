@@ -9,6 +9,7 @@
 //!   \arpeggio \breathe`, dynamics `\pp` … `\ff`;
 //! * `(` `)` slurs, `\cr` `\decr` `\!` hairpins (LilyPond's spellings);
 //! * `\ly=Glo-` lyrics (`\ly2=` for verse 2; `-` hyphen, `_` extender);
+//! * fingering `-1` … `-5`, bowings `\upbow` `\downbow`;
 //! * `\tuplet 5/4 { … }` tuplets (nestable; durations inside are written);
 //! * `\grace c''16`, `\acciaccatura d''8`, `\grace { c''16 d'' }`: grace
 //!   notes before the next note.
@@ -148,6 +149,8 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
                     "turn" => e.art |= art::TURN,
                     "arpeggio" => e.art |= art::ARPEGGIO,
                     "breathe" => e.art |= art::BREATH,
+                    "upbow" => e.art |= art::UP_BOW,
+                    "downbow" => e.art |= art::DOWN_BOW,
                     "cr" => e.spans |= span::CRESC_START,
                     "decr" => e.spans |= span::DIM_START,
                     "!" => e.spans |= span::HAIRPIN_END,
@@ -210,7 +213,7 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         }
         // Sounding time inside tuplets.
         let scale = open.iter().fold(Frac::int(1), |f, &(_, a, n)| f * Frac::new(n, a));
-        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces) };
+        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces), fingering: vec![] };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;
@@ -222,6 +225,12 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
                 e.spans |= span::SLUR_START;
             } else if r.starts_with(')') {
                 e.spans |= span::SLUR_END;
+            }
+            // Fingering: -1 .. -5.
+            if let Some(d) = r.strip_prefix('-').and_then(|x| x.chars().next()).and_then(|c| c.to_digit(10)) {
+                e.fingering.push(d as u8);
+                r = &r[2..];
+                continue;
             }
             let (bit, n) = match r {
                 s if s.starts_with('~') => (0, 1),
