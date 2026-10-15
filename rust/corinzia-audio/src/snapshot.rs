@@ -119,12 +119,16 @@ impl Timeline {
 }
 
 /// Mixer settings -> (linear gain, pan, audible) per track, solo aware.
+/// The fader's lowest value: at or below it a track is silent.
+pub const MIN_DB: f64 = -60.0;
+
 pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
     let any_solo = project.tracks.iter().any(|t| t.solo);
     project
         .tracks
         .iter()
-        .map(|t| (t.id, 10f32.powf(t.gain_db as f32 / 20.0), t.pan.clamp(-1.0, 1.0) as f32, !t.mute && (!any_solo || t.solo)))
+        // The fader's bottom is silence (−∞ dB).
+        .map(|t| (t.id, if t.gain_db <= MIN_DB { 0.0 } else { 10f32.powf(t.gain_db as f32 / 20.0) }, t.pan.clamp(-1.0, 1.0) as f32, !t.mute && (!any_solo || t.solo)))
         .collect()
 }
 

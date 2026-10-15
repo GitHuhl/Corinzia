@@ -3,7 +3,8 @@
 
 use crate::playback::Playback;
 use corinzia_model::{Id, Project};
-use iced::widget::{button, column, container, row, scrollable, slider, text, vertical_slider, Space};
+use crate::fader::{Fader, PanBar, MIN_DB};
+use iced::widget::{button, canvas, column, container, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
 #[derive(Debug, Clone)]
@@ -26,16 +27,29 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         text(&t.name).size(14),
         text(players.join(", ")).size(11).style(crate::theme::dim),
         button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(false)).on_press(MixMsg::Select(t.id)),
-        container(vertical_slider(-60.0..=12.0, t.gain_db, move |v| MixMsg::Gain(t.id, v)).step(0.5).on_release(MixMsg::Released).height(130)).center_x(Length::Fill),
-        text(if t.gain_db <= -59.9 { "−∞ dB".to_string() } else { format!("{:+.1} dB", t.gain_db) }).size(12),
-        slider(-1.0..=1.0, t.pan, move |v| MixMsg::Pan(t.id, v)).step(0.01).on_release(MixMsg::Released),
-        text(match t.pan {
-            x if x.abs() < 0.005 => "C".to_string(),
-            x if x < 0.0 => format!("L{:.0}", -x * 100.0),
-            x => format!("R{:.0}", x * 100.0),
-        })
-        .size(11),
-        row![toggle("M", t.mute, MixMsg::Mute(t.id)), toggle("S", t.solo, MixMsg::Solo(t.id))].spacing(6),
+        crate::panels::tip(
+            canvas(Fader { track: t.id, db: t.gain_db }).width(Length::Fill).height(160),
+            "Drag (Shift: fine), click to jump, double-click: 0 dB, wheel: ±0.5 dB",
+        ),
+        row![
+            text(if t.gain_db <= MIN_DB { "−∞ dB".to_string() } else { format!("{:+.1} dB", t.gain_db) }).size(12).width(Length::Fill),
+            toggle("M", t.mute, MixMsg::Mute(t.id)),
+            toggle("S", t.solo, MixMsg::Solo(t.id)),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+        row![
+            crate::panels::tip(canvas(PanBar { track: t.id, pan: t.pan }).width(Length::Fill).height(18), "Pan: drag, double-click to centre"),
+            text(match t.pan {
+                x if x.abs() < 0.005 => "C".to_string(),
+                x if x < 0.0 => format!("L{:.0}", -x * 100.0),
+                x => format!("R{:.0}", x * 100.0),
+            })
+            .size(11)
+            .width(28)
+            .align_x(Alignment::End),
+        ]
+        .align_y(Alignment::Center),
     ]
     .spacing(8)
     .align_x(Alignment::Center)

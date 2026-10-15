@@ -141,13 +141,16 @@ fn transport_mix_and_swaps() {
     ui.seek(0);
     ui.send(Command::Mix { node: 0, gain: 1.0, pan: 0.0, audible: false }).ok();
     ui.play();
+    // (Mixer changes ramp over one 256-frame block: no clicks.)
     let (l, _) = eng.render_offline(beat / 2);
-    assert!(rms(&l) < 1e-6);
+    assert!(rms(&l[256..]) < 1e-6);
     // Hard left pan.
     ui.send(Command::Mix { node: 0, gain: 1.0, pan: -1.0, audible: true }).ok();
     ui.seek(0);
     let (l, r) = eng.render_offline(beat / 4);
-    assert!(rms(&l) > 0.01 && rms(&r) < 1e-6);
+    assert!(rms(&l[256..]) > 0.01 && rms(&r[256..]) < 1e-6);
+    // The ramp: the first block rises from silence instead of jumping.
+    assert!(l[10].abs() < l[200].abs() + 1e-3);
     // An edit swaps in a new plan mid-play; the same plugin instance is kept
     // and the old plan comes back to the UI thread.
     let plugin = pool.plugin_of_track(1).unwrap().clone();

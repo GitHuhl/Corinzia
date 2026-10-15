@@ -12,6 +12,7 @@
 mod arrange;
 mod demo;
 mod editor;
+mod fader;
 mod files;
 mod keys;
 mod mix;
@@ -810,14 +811,19 @@ impl App {
         match m {
             Select(t) => self.strip = Some(t),
             Gain(t, db) => {
-                self.editor.set_track(t, "Gain", true, |x| x.gain_db = (db * 2.0).round() / 2.0);
-                self.playback.live_mix(&self.editor.project, t);
+                if self.editor.project.track(t).is_some_and(|x| x.gain_db != db) {
+                    self.editor.set_track(t, "Gain", true, |x| x.gain_db = db);
+                    self.playback.live_mix(&self.editor.project, t);
+                }
             }
             Pan(t, pan) => {
-                self.editor.set_track(t, "Pan", true, |x| x.pan = if pan.abs() < 0.03 { 0.0 } else { pan });
-                self.playback.live_mix(&self.editor.project, t);
+                if self.editor.project.track(t).is_some_and(|x| x.pan != pan) {
+                    self.editor.set_track(t, "Pan", true, |x| x.pan = pan);
+                    self.playback.live_mix(&self.editor.project, t);
+                }
             }
-            Released => {}
+            // The gesture is over: the next one is its own undo step.
+            Released => self.editor.end_gesture(),
             Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
             Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
             Assign(t, i) => {
@@ -1828,6 +1834,11 @@ mod tests {
         let _ = a.update(Message::Mix(mix::MixMsg::Released));
         assert_eq!(a.editor.project.tracks[0].gain_db, -4.0);
         assert_eq!(a.engraved, engraved, "mixer edits do not re-engrave");
+        // A second drag is a step of its own.
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(track, -10.0)));
+        let _ = a.update(Message::Mix(mix::MixMsg::Released));
+        a.editor.undo();
+        assert_eq!(a.editor.project.tracks[0].gain_db, -4.0, "the second drag undone alone");
         a.editor.undo();
         assert_eq!(a.editor.project.tracks[0].gain_db, 0.0, "one drag, one undo step");
         // Solo the cello: the flute is silent.

@@ -256,7 +256,10 @@ mod tests {
         let names: Vec<_> = l.iter().map(|x| x.0.as_str()).collect();
         assert_eq!(names, ["Flute", "Violin 1", "Violin 2", "Cello"]);
         assert_eq!(l[3].2, "bass");
-        assert_eq!(parse_instruments("Flute, kazoo").unwrap_err(), "Unknown instrument: kazoo");
+        // Any other name is taken as typed, with a clef from the name.
+        let k = parse_instruments("Flute, kazoo, bass guitar").unwrap();
+        assert_eq!((k[1].0.as_str(), k[1].2.as_str()), ("Kazoo", "treble"));
+        assert_eq!(k[2].2, "bass");
         assert!(parse_instruments(" , ").is_err());
         let p = new_project("Quartet", "violin, violin, viola, cello", 4).unwrap();
         assert_eq!(p.movements[0].lanes.len(), 4);

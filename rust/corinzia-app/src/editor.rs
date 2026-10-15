@@ -390,6 +390,11 @@ impl Editor {
 
     // -------------------------------------------------------------- mixer --
     /// A mixer change on a track; `merge` folds a slider drag into one step.
+    /// Ends a slider gesture: what follows is a new undo step.
+    pub fn end_gesture(&mut self) {
+        self.merge = None;
+    }
+
     pub fn set_track(&mut self, track: Id, label: &str, merge: bool, f: impl FnOnce(&mut Track)) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };

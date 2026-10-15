@@ -123,6 +123,9 @@ struct NodeState {
     pan: f32,
     audible: bool,
     midi: bool, // the plugin takes MIDI rather than CLAP notes
+    /// The left/right gains applied at the end of the last block: changes
+    /// ramp from them across the next one (no zipper noise, no clicks).
+    applied: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -163,7 +166,7 @@ pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
                 events: Vec::with_capacity(EVENTS_PER_NODE),
             });
             events.list.ctx = &mut *events as *mut InputEvents as *mut c_void;
-            NodeState { events, left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false }
+            NodeState { events, left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None }
         })
         .collect();
     let engine = Engine {
@@ -432,15 +435,20 @@ impl Engine {
                 out_events: &self.out_events,
             };
             unsafe { node.plugin.rt_process(&p) };
-            if !ns.audible {
+            // Equal-power pan; silent when muted (or another track soloed).
+            let angle = (ns.pan + 1.0) * std::f32::consts::FRAC_PI_4;
+            let g = if ns.audible { ns.gain } else { 0.0 };
+            let (gl, gr) = (g * angle.cos() * std::f32::consts::SQRT_2, g * angle.sin() * std::f32::consts::SQRT_2);
+            let (l0, r0) = ns.applied.unwrap_or((gl, gr));
+            ns.applied = Some((gl, gr));
+            if l0 == 0.0 && r0 == 0.0 && gl == 0.0 && gr == 0.0 {
                 continue;
             }
-            // Equal-power pan.
-            let angle = (ns.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            let (gl, gr) = (ns.gain * angle.cos() * std::f32::consts::SQRT_2, ns.gain * angle.sin() * std::f32::consts::SQRT_2);
+            let n = frames.max(1) as f32;
             for f in 0..frames {
-                left[f] += ns.left[f] * gl;
-                right[f] += ns.right[f] * gr;
+                let k = (f + 1) as f32 / n;
+                left[f] += ns.left[f] * (l0 + (gl - l0) * k);
+                right[f] += ns.right[f] * (r0 + (gr - r0) * k);
             }
         }
         self.snap = Some(snap);
