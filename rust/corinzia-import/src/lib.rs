@@ -18,7 +18,7 @@ use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
     RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo,
 };
-use corinzia_score::score::{art, span, Lyric};
+use corinzia_score::score::{art, span, Lyric, Slur};
 use corinzia_score::Frac;
 use roxmltree::{Document, Node};
 use std::collections::BTreeMap;
@@ -179,6 +179,37 @@ struct StaffMusic {
     wedges: Vec<(Frac, u8)>,
 }
 
+/// A part's slurs, paired by their `number` across its voices and staves.
+#[derive(Default)]
+struct PartSlurs {
+    /// Every <slur> mark: (time, staff and voice, note, start?, number, side).
+    marks: Vec<(Frac, (usize, String), Id, bool, u8, i8)>,
+}
+
+impl PartSlurs {
+    /// In time order, each stop takes the open start of its number, the
+    /// one in its own voice if there is one (files reuse numbers across
+    /// voices, and a voice written later can hold an earlier start).
+    fn pair(mut self, p: &mut Project) -> Vec<Slur> {
+        self.marks.sort_by(|a, b| a.0.cmp(&b.0).then(a.3.cmp(&b.3))); // stops first at a time
+        let mut open: Vec<(Frac, (usize, String), Id, u8, i8)> = Vec::new();
+        let mut out = Vec::new();
+        for (at, voice, note, start, number, dir) in self.marks {
+            if start {
+                open.push((at, voice, note, number, dir));
+                continue;
+            }
+            let cands = || open.iter().enumerate().filter(|(_, o)| o.3 == number && o.0 < at && o.2 != note);
+            let pick = cands().filter(|(_, o)| o.1 == voice).last().or_else(|| cands().last()).map(|(i, _)| i);
+            if let Some(i) = pick {
+                let (_, _, from, _, dir) = open.remove(i);
+                out.push(Slur { id: p.allocate_id(), from, to: note, dir });
+            }
+        }
+        out
+    }
+}
+
 struct PartInfo {
     name: String,
     abbr: String,
@@ -284,6 +315,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         barlines: vec![],
         rehearsal: vec![],
         navigation: vec![],
+        slurs: vec![],
         endings: vec![],
         lanes: vec![],
     };
@@ -292,6 +324,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         let pid = part.attribute("id").unwrap_or_default();
         let first = pi == 0;
         let mut staves: Vec<StaffMusic> = vec![StaffMusic::default()];
+        let mut slurs = PartSlurs::default();
         let mut divisions: i64 = 1;
         let mut open_endings: BTreeMap<String, Frac> = BTreeMap::new();
         // A transposing part is written: <transpose> says what turns its
@@ -405,7 +438,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                         if !chord {
                             tuplet_marks(e, start, dur, &voice, &mut staves[staff]);
                         }
-                        note(e, start, dur, chord, &mut staves[staff], voice, to_concert, &mut p);
+                        note(e, start, dur, chord, &mut staves[staff], staff, voice, to_concert, &mut slurs, &mut p);
                     }
                     _ => {}
                 }
@@ -432,6 +465,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
             let lane = finish_staff(staff, player, inst, movement.length, &mut p);
             movement.lanes.push(lane);
         }
+        movement.slurs.extend(slurs.pair(&mut p));
     }
 
     // Defaults where the first part had none.
@@ -687,30 +721,32 @@ fn note_pitch(e: Node, to_concert: corinzia_model::Interval) -> Option<Pitch> {
     })
 }
 
-fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, voice: String, to_concert: corinzia_model::Interval, p: &mut Project) {
+#[allow(clippy::too_many_arguments)]
+fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, staff_index: usize, voice: String, to_concert: corinzia_model::Interval, slurs: &mut PartSlurs, p: &mut Project) {
     let rest = child(e, "rest").is_some();
     let pitch = note_pitch(e, to_concert);
     let tie = children(e, "tie").any(|t| t.attribute("type") == Some("start"))
         || child(e, "notations").is_some_and(|n| children(n, "tied").any(|t| t.attribute("type") == Some("start")));
     let mut arts = 0u16;
-    let mut spans = 0u8;
     let mut finger: Option<u8> = None;
-    let mut slur = corinzia_model::SlurShape::default();
-    if let Some(nt) = child(e, "notations") {
+    let mut slur_marks: Vec<(bool, u8, i8)> = Vec::new();
+    // Every <notations> of the note (some files split them).
+    for nt in children(e, "notations") {
         for c in nt.children().filter(|c| c.is_element()) {
             match c.tag_name().name() {
-                "slur" => match c.attribute("type") {
-                    Some("start") => {
-                        spans |= span::SLUR_START;
-                        slur.dir = match c.attribute("placement") {
-                            Some("above") => 1,
-                            Some("below") => -1,
-                            _ => 0,
-                        };
+                "slur" => {
+                    let number = c.attribute("number").and_then(|n| n.parse::<u8>().ok()).unwrap_or(1);
+                    let dir = match c.attribute("placement").or(c.attribute("orientation")) {
+                        Some("above" | "over") => 1,
+                        Some("below" | "under") => -1,
+                        _ => 0,
+                    };
+                    match c.attribute("type") {
+                        Some("start") => slur_marks.push((true, number, dir)),
+                        Some("stop") => slur_marks.push((false, number, 0)),
+                        _ => {}
                     }
-                    Some("stop") => spans |= span::SLUR_END,
-                    _ => {}
-                },
+                }
                 "fermata" => arts |= art::FERMATA,
                 "technical" => {
                     for t in c.children().filter(|t| t.is_element()) {
@@ -762,7 +798,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         })
         .collect();
     let graces = if chord { vec![] } else { staff.graces.remove(&voice).unwrap_or_default() };
-    let events = staff.voices.entry(voice).or_default();
+    let events = staff.voices.entry(voice.clone()).or_default();
     if chord && !rest {
         if let (Some(last), Some(pitch)) = (events.last_mut(), pitch) {
             if last.start == start && !last.is_rest() {
@@ -778,7 +814,8 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
                 last.fingering = if fingers.iter().any(|&f| f > 0) { fingers } else { vec![] };
                 last.kind = EventKind::Chord;
                 last.articulations |= arts;
-                last.spans |= spans;
+                let note = last.id;
+                slurs.marks.extend(slur_marks.iter().map(|&(st, n, d)| (start, (staff_index, voice.clone()), note, st, n, d)));
                 return;
             }
         }
@@ -789,7 +826,10 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, vo
         _ => vec![],
     };
     let kind = if heads.is_empty() { EventKind::Rest } else { EventKind::Note };
-    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans, lyrics, graces, fingering: finger.filter(|_| !rest).into_iter().collect(), slur });
+    events.push(Event { id, kind, start, duration: dur, heads, articulations: arts, dynamic: None, spans: 0, lyrics, graces, fingering: finger.filter(|_| !rest).into_iter().collect() });
+    if !rest {
+        slurs.marks.extend(slur_marks.iter().map(|&(st, n, d)| (start, (staff_index, voice.clone()), id, st, n, d)));
+    }
 }
 
 /// `<tuplet type="start|stop">` on a note (nested ones too): the ratio
@@ -898,5 +938,5 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
 }
 
 fn rest(p: &mut Project, start: Frac, duration: Frac) -> Event {
-    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() }
+    Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] }
 }

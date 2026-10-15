@@ -29,6 +29,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         barlines: vec![],
         rehearsal: vec![],
         navigation: vec![],
+        slurs: vec![],
         endings: vec![],
         lanes: vec![Lane {
             player: 2,
@@ -63,10 +64,9 @@ fn hairpins_and_slurs_shape_playback() {
     let mut ids = Ids(1);
     let mut v: Vec<Event> = (0..5).map(|i| make_event(&mut ids, f(i, 4), f(1, 4), &[p(i as i8, 0, 4)], 0)).collect();
     v[0].dynamic = Some(2);
-    v[0].spans = span::CRESC_START | span::SLUR_START;
-    v[3].spans = span::SLUR_END;
+    v[0].spans = span::CRESC_START;
     v[4].dynamic = Some(5);
-    let s = expressive_shape(&v);
+    let s = expressive_shape(&v, &[(v[0].start, v[3].start)]);
     assert!((s[0].velocity - velocity_for_dynamic(Some(2))).abs() < 1e-6);
     assert!((s[4].velocity - velocity_for_dynamic(Some(5))).abs() < 1e-6);
     assert!(s[1].velocity > s[0].velocity && s[2].velocity > s[1].velocity && s[3].velocity > s[2].velocity);
@@ -80,7 +80,7 @@ fn hairpins_and_slurs_shape_playback() {
     d[0].dynamic = Some(5);
     d[0].spans = span::DIM_START;
     d[2].spans = span::HAIRPIN_END;
-    let ds = expressive_shape(&d);
+    let ds = expressive_shape(&d, &[]);
     assert!((ds[2].velocity - velocity_for_dynamic(Some(3))).abs() < 1e-6);
     assert!((ds[4].velocity - velocity_for_dynamic(Some(3))).abs() < 1e-6);
 }
@@ -93,7 +93,7 @@ fn sforzandi_accent_one_note_and_fp_drops_back() {
     v[0].dynamic = d("p");
     v[1].dynamic = d("sfz");
     v[3].dynamic = d("fp");
-    let s = expressive_shape(&v);
+    let s = expressive_shape(&v, &[]);
     let level = |l: u8| velocity_for_dynamic(Some(l));
     assert!(s[1].velocity >= level(5), "the sforzando is accented");
     assert!((s[2].velocity - level(2)).abs() < 1e-6, "and the music goes on at p");

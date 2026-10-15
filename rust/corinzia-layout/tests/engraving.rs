@@ -355,7 +355,7 @@ fn spanners_continue_across_system_breaks() {
     let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
     let systems: usize = pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map(|m| m as usize + 1).unwrap_or(0)).sum();
     assert!(systems >= 3, "the example needs several systems: {systems}");
-    let slur_id = s.parts[0].voices[0].events[8].id;
+    let slur_id = s.slurs.iter().find(|x| x.from == s.parts[0].voices[0].events[8].id).unwrap().id;
     let slur_pieces: usize = pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Item::Crescent { id, .. } if *id == slur_id)).count();
     assert!(slur_pieces >= 3, "a piece of the slur in each system it crosses: {slur_pieces}");
     // The crescendo: a pair of lines per system; openings grow from piece to piece.
@@ -622,12 +622,11 @@ fn bowings_and_fingering() {
 
 #[test]
 fn a_slur_takes_the_side_chosen_by_hand() {
-    use corinzia_score::score::SlurShape;
     let music = "c''4( b' a' g') | c'4( g' c'' e'') | a'4( c'' e'' c'') | g'4.( a'8 b'4 c'')";
     let s = score(&[("treble", &[music])], (4, 4), 0);
     let l = layout_line(&s, &Options::default());
     preview("slurs", &l);
-    let first = s.parts[0].voices[0].events[0].id;
+    let first = s.slurs.iter().find(|x| x.from == s.parts[0].voices[0].events[0].id).unwrap().id;
     let curve = |l: &corinzia_layout::DisplayList| {
         l.items.iter().find_map(|i| match i {
             Item::Crescent { from, c1, to, id, .. } if *id == first => Some((from.y, c1.y, to.y)),
@@ -637,9 +636,58 @@ fn a_slur_takes_the_side_chosen_by_hand() {
     let (y0, c, y1) = curve(&l).expect("the first slur");
     assert!(c < y0.min(y1), "mixed stems: above");
     let mut s = s;
-    s.parts[0].voices[0].events[0].slur = SlurShape { dir: -1 };
+    s.slurs.iter_mut().find(|x| x.id == first).unwrap().dir = -1;
     let below = layout_line(&s, &Options::default());
     preview("slurs-below", &below);
     let (z0, d, z1) = curve(&below).unwrap();
     assert!(d > z0.max(z1), "below");
+}
+
+#[test]
+fn nested_and_cross_staff_slurs() {
+    use corinzia_layout::display::Point;
+    // A phrase over a bar with two slurs inside it, all above (stems down).
+    let music = "c'''4( b''( a'') g''( f'')) | e''1";
+    let s = score(&[("treble", &[music])], (4, 4), 0);
+    assert_eq!(s.slurs.len(), 3);
+    let l = layout_line(&s, &Options::default());
+    preview("slurs-nested", &l);
+    type Curve = (Point, Point, Point, Point, Point, Point);
+    let curve = |l: &corinzia_layout::DisplayList, id: u64| -> Option<Curve> {
+        l.items.iter().find_map(|i| match i {
+            Item::Crescent { from, c1, c2, to, d1, d2, id: x } if *x == id => Some((*from, *c1, *c2, *to, *d1, *d2)),
+            _ => None,
+        })
+    };
+    // The midline at f of a crescent.
+    let at = |c: Curve, f: f32| {
+        let u = 1.0 - f;
+        let p1 = ((c.1.x + c.4.x) / 2.0, (c.1.y + c.4.y) / 2.0);
+        let p2 = ((c.2.x + c.5.x) / 2.0, (c.2.y + c.5.y) / 2.0);
+        (
+            u * u * u * c.0.x + 3.0 * u * u * f * p1.0 + 3.0 * u * f * f * p2.0 + f * f * f * c.3.x,
+            u * u * u * c.0.y + 3.0 * u * u * f * p1.1 + 3.0 * u * f * f * p2.1 + f * f * f * c.3.y,
+        )
+    };
+    let starts: std::collections::HashMap<u64, corinzia_score::Frac> = s.parts[0].voices[0].events.iter().map(|e| (e.id, e.start)).collect();
+    let outer = s.slurs.iter().max_by_key(|x| starts[&x.to] - starts[&x.from]).unwrap();
+    let o = curve(&l, outer.id).expect("the phrase");
+    for inner in s.slurs.iter().filter(|x| x.id != outer.id) {
+        let c = curve(&l, inner.id).expect("an inner slur");
+        // The phrase stays above every point of the inner slur.
+        for k in 1..10 {
+            let (x, y) = at(c, k as f32 / 10.0);
+            let outer_y = (0..=200).map(|j| at(o, j as f32 / 200.0)).min_by(|a, b| (a.0 - x).abs().total_cmp(&(b.0 - x).abs())).unwrap().1;
+            assert!(outer_y < y - 0.2, "the phrase clears the inner slur at x {x}: {outer_y} vs {y}");
+        }
+    }
+    // A slur from the lower staff up to a note of the upper staff.
+    let mut s = score(&[("treble", &["r2 e''4 d''"]), ("bass", &["c4 g c' r"])], (4, 4), 0);
+    let (from, to) = (s.parts[1].voices[0].events[1].id, s.parts[0].voices[0].events[1].id);
+    s.slurs = vec![corinzia_score::score::Slur { id: 9999, from, to, dir: 0 }];
+    let l = layout_line(&s, &Options::default());
+    preview("slurs-cross-staff", &l);
+    let c = curve(&l, 9999).expect("drawn from staff to staff");
+    let (top0, top1) = (l.staves.iter().find(|x| x.part == 0).unwrap().top, l.staves.iter().find(|x| x.part == 1).unwrap().top);
+    assert!(c.0.y > top1 - 3.0 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
 }

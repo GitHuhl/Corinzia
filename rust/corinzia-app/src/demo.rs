@@ -14,6 +14,7 @@ pub fn project() -> Project {
         ("Cello", "Vc.", "bass", "c2\\p g, a, e, f, c f, g, c4( e g c') a,( c e a) f,2 g, c1\\fermata"),
     ];
     let mut lanes = Vec::new();
+    let mut slurs = Vec::new();
     let mut id = 1000u64;
     for (k, (name, abbr, clef, music)) in staves.iter().enumerate() {
         let track = 10 + k as u64;
@@ -22,7 +23,8 @@ pub fn project() -> Project {
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: k as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
         p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track) });
         p.players.push(Player { id: player, name: format!("Player {}", k + 1), instruments: vec![inst] });
-        let v = notation::voice(music, 1, &mut id);
+        let (v, s) = notation::voice_and_slurs(music, 1, &mut id);
+        slurs.extend(s);
         let events = v
             .events
             .into_iter()
@@ -41,7 +43,6 @@ pub fn project() -> Project {
                 spans: e.spans,
                 lyrics: e.lyrics,
                 fingering: e.fingering,
-                slur: e.slur,
                 graces: e
                     .graces
                     .iter()
@@ -76,6 +77,7 @@ pub fn project() -> Project {
         barlines: vec![Barline { id: 70, at: Frac::int(4), kind: BarKind::Double }],
         rehearsal: vec![RehearsalMark { id: 71, at: Frac::int(4) }],
         navigation: vec![],
+        slurs,
         endings: vec![],
         lanes,
     });
@@ -104,7 +106,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)
-                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() })
+                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] })
                 .collect();
             let (change, voice) = (p.allocate_id(), p.allocate_id());
             let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: clef.to_string() }] };
@@ -132,6 +134,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         barlines: vec![],
         rehearsal: vec![],
         navigation: vec![],
+        slurs: vec![],
         endings: vec![],
         lanes,
     });

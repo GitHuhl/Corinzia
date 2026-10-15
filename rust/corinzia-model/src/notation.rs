@@ -183,7 +183,6 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                                 spans: e.spans,
                                 lyrics: e.lyrics.clone(),
                                 fingering: e.fingering.clone(),
-                                slur: e.slur,
                                 graces: {
                                     let by = interval_at(e.start);
                                     e.graces
@@ -246,5 +245,6 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         marks: m.rehearsal.iter().map(|r| r.at).collect(),
         navigation: m.navigation.clone(),
         parts,
+        slurs: m.slurs.clone(),
     }
 }

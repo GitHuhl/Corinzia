@@ -14,7 +14,7 @@
 //! * `\grace c''16`, `\acciaccatura d''8`, `\grace { c''16 d'' }`: grace
 //!   notes before the next note.
 
-use corinzia_score::score::{art, span, Event, Grace, Meter, Part, Pitch, Score, Tuplet, Voice};
+use corinzia_score::score::{art, span, Event, Grace, Meter, Part, Pitch, Score, Slur, Tuplet, Voice};
 use corinzia_score::Frac;
 
 fn parse_pitch(tok: &str) -> Option<(Pitch, &str)> {
@@ -77,6 +77,13 @@ fn parse_duration(s: &str) -> Option<(Frac, &str)> {
 
 /// One voice from notation; ids are assigned from `next_id`.
 pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
+    voice_and_slurs(text, index, next_id).0
+}
+
+/// One voice and its slurs (`(` … `)`, which may nest).
+pub fn voice_and_slurs(text: &str, index: u8, next_id: &mut u64) -> (Voice, Vec<Slur>) {
+    let mut slurs: Vec<Slur> = Vec::new();
+    let mut open_slurs: Vec<u64> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
     let mut at = Frac::ZERO;
     let mut dur = Frac::new(1, 4);
@@ -213,7 +220,7 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         }
         // Sounding time inside tuplets.
         let scale = open.iter().fold(Frac::int(1), |f, &(_, a, n)| f * Frac::new(n, a));
-        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces), fingering: vec![], slur: Default::default() };
+        let mut e = Event { id: *next_id, start: at, dur: dur * scale, pitches, art: 0, dynamic: None, spans: 0, lyrics: vec![], graces: std::mem::take(&mut graces), fingering: vec![] };
         *next_id += 1;
         for p in e.pitches.iter_mut() {
             p.id = *next_id;
@@ -222,9 +229,12 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         let mut r = rest.as_str();
         while !r.is_empty() {
             if r.starts_with('(') {
-                e.spans |= span::SLUR_START;
+                open_slurs.push(e.id);
             } else if r.starts_with(')') {
-                e.spans |= span::SLUR_END;
+                if let Some(from) = open_slurs.pop() {
+                    slurs.push(Slur { id: *next_id, from, to: e.id, dir: 0 });
+                    *next_id += 1;
+                }
             }
             // Fingering: -1 .. -5.
             if let Some(d) = r.strip_prefix('-').and_then(|x| x.chars().next()).and_then(|c| c.to_digit(10)) {
@@ -254,12 +264,13 @@ pub fn voice(text: &str, index: u8, next_id: &mut u64) -> Voice {
         events.push(e);
     }
     tuplets.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
-    Voice { index, events, tuplets }
+    (Voice { index, events, tuplets }, slurs)
 }
 
 /// A score from (clef, voices) per staff, in one meter and key.
 pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Score {
     let mut id = 1;
+    let mut slurs = Vec::new();
     let parts: Vec<Part> = staves
         .iter()
         .enumerate()
@@ -275,7 +286,15 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
             group: 0,
             lines: vec![],
             transposition: (0, 0),
-            voices: voices.iter().enumerate().map(|(vi, v)| voice(v, vi as u8 + 1, &mut id)).collect(),
+            voices: voices
+                .iter()
+                .enumerate()
+                .map(|(vi, v)| {
+                    let (v, s) = voice_and_slurs(v, vi as u8 + 1, &mut id);
+                    slurs.extend(s);
+                    v
+                })
+                .collect(),
         })
         .collect();
     let end = parts
@@ -301,6 +320,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
         marks: vec![],
         navigation: vec![],
         parts,
+        slurs,
     }
 }
 

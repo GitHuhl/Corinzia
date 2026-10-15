@@ -1,7 +1,7 @@
 //! Model types. Music is immutable-shared per voice (`Arc<Vec<Event>>`), so
 //! snapshots for undo, engraving and playback are cheap.
 
-pub use corinzia_score::score::{LineKind, LineSpan, Lyric, Nav, NavMark, NavTo, SlurShape};
+pub use corinzia_score::score::{LineKind, LineSpan, Lyric, Nav, NavMark, NavTo, Slur};
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -104,8 +104,6 @@ pub struct Event {
     pub graces: Vec<Grace>,
     /// Fingers, bottom head to top (0 for none).
     pub fingering: Vec<u8>,
-    /// The side of the slur starting here, if chosen by hand.
-    pub slur: SlurShape,
 }
 
 /// A grace note (or chord): written small before its event.
@@ -326,6 +324,39 @@ pub struct Movement {
     /// Segno, coda, Fine, D.C./D.S. (sorted by position).
     pub navigation: Vec<NavMark>,
     pub lanes: Vec<Lane>,
+    /// Slurs between notes (event ids), in any voices or staves of a player.
+    pub slurs: Vec<Slur>,
+}
+
+impl Movement {
+    /// Each note's (lane, voice index into `lane.voices`, start), by event id.
+    pub fn note_places(&self) -> std::collections::HashMap<Id, (usize, usize, Frac)> {
+        let mut out = std::collections::HashMap::new();
+        for (li, l) in self.lanes.iter().enumerate() {
+            for (vi, v) in l.voices.iter().enumerate() {
+                for e in v.events.iter().filter(|e| !e.is_rest()) {
+                    out.insert(e.id, (li, vi, e.start));
+                }
+            }
+        }
+        out
+    }
+
+    /// Drops the slurs whose notes are gone, that no longer go forwards,
+    /// or that join two players. True if any went.
+    pub fn tidy_slurs(&mut self) -> bool {
+        if self.slurs.is_empty() {
+            return false;
+        }
+        let places = self.note_places();
+        let n = self.slurs.len();
+        let lanes = &self.lanes;
+        self.slurs.retain(|s| match (places.get(&s.from), places.get(&s.to)) {
+            (Some(a), Some(b)) => a.2 < b.2 && lanes[a.0].player == lanes[b.0].player,
+            _ => false,
+        });
+        self.slurs.len() != n
+    }
 }
 
 #[derive(Clone, Debug)]

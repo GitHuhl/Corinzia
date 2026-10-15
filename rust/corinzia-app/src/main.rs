@@ -1836,9 +1836,8 @@ mod tests {
 
     #[test]
     fn escape_and_blank_paper_deselect() {
-        use corinzia_score::score::span;
         let mut a = app(View::Page);
-        let slur = a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| e.spans & span::SLUR_START != 0).unwrap().id;
+        let slur = a.editor.project.movements[0].slurs[0].id;
         // A slur, then Escape.
         assert!(a.editor.select_slur(slur));
         let _ = a.act(Action::Escape);
@@ -1864,35 +1863,33 @@ mod tests {
 
     #[test]
     fn slurs_are_selected_and_moved_to_other_notes_with_the_mouse() {
-        use corinzia_score::score::span;
         let mut a = app(View::Page);
         let events = |a: &App| a.editor.project.movements[0].lanes[0].voices[0].events.clone();
         let notes = |a: &App| events(a).iter().filter(|e| !e.heads.is_empty()).cloned().collect::<Vec<_>>();
-        // Free the flute's first notes of slurs, then slur its first two.
-        for e in std::sync::Arc::make_mut(&mut a.editor.project.movements[0].lanes[0].voices[0].events).iter_mut() {
-            e.spans &= !(span::SLUR_START | span::SLUR_END);
-        }
+        // Only the flute's first two notes slurred.
+        a.editor.project.movements[0].slurs.clear();
         let n = notes(&a);
         a.editor.select(Some(n[0].heads[0].id));
         let _ = a.act(Action::Slur);
+        let slur = a.editor.project.movements[0].slurs[0].id;
         let slur_of = |a: &App| {
             let n = notes(a);
-            let k = n.iter().position(|e| e.spans & span::SLUR_START != 0)?;
-            let j = n.iter().position(|e| e.spans & span::SLUR_END != 0)?;
-            Some((k, j))
+            let s = a.editor.project.movements[0].slurs.iter().find(|s| s.id == slur)?;
+            Some((n.iter().position(|e| e.id == s.from)?, n.iter().position(|e| e.id == s.to)?))
         };
         assert_eq!(slur_of(&a), Some((0, 1)));
+        a.editor.clear_selection();
         a.sync();
         // A click on its curve selects it (not its note), with a handle at each end.
         let origins = score_view::page_origins(&a.pages, true);
-        let handles = score_view::slur_handles(&a.pages, &origins, n[0].id);
+        let handles = score_view::slur_handles(&a.pages, &origins, slur);
         assert_eq!(handles.len(), 2, "start and end handles");
         let curve = iced::Point::new((handles[0].1.x + handles[1].1.x) / 2.0, (handles[0].1.y + handles[1].1.y) / 2.0);
-        let on_curve = (0..12).map(|k| iced::Point::new(curve.x, curve.y - 1.5 + 0.25 * k as f32)).find(|p| score_view::hit_test(&a.pages, &origins, *p) == Some(n[0].id));
+        let on_curve = (0..12).map(|k| iced::Point::new(curve.x, curve.y - 1.5 + 0.25 * k as f32)).find(|p| score_view::hit_test(&a.pages, &origins, *p) == Some(slur));
         assert!(on_curve.is_some(), "the curve is a hit target");
-        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(n[0].id), at: None, shift: false }));
-        assert_eq!(a.editor.selected_slur(), Some(n[0].id));
-        assert!(a.selected.contains(&n[0].id), "drawn selected");
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(slur), at: None, shift: false }));
+        assert_eq!(a.editor.selected_slur(), Some(slur));
+        assert!(a.selected.contains(&slur), "drawn selected");
         // Dragging the end handle over to the fourth note: the end snaps from
         // note to note, and the whole drag is one undo step.
         let q = |e: &corinzia_model::Event| score_view::StaffPoint { part: 0, quarter: quarters(e.start), step_below_top: 4 };
@@ -1906,11 +1903,11 @@ mod tests {
         assert_eq!(slur_of(&a), Some((0, 1)), "one drag, one undo step");
         a.editor.redo();
         // The start dragged onto the second note; the slur stays selected.
-        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(n[0].id), at: None, shift: false }));
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(slur), at: None, shift: false }));
         let _ = a.update(Message::Canvas(ViewEvent::SlurDrag { handle: SlurHandle::Start, at: q(&n[1]) }));
         let _ = a.update(Message::Canvas(ViewEvent::SlurDragEnd));
         assert_eq!(slur_of(&a), Some((1, 3)));
-        assert_eq!(a.editor.selected_slur(), Some(n[1].id));
+        assert_eq!(a.editor.selected_slur(), Some(slur));
         // A start can't pass its end.
         let _ = a.update(Message::Canvas(ViewEvent::SlurDrag { handle: SlurHandle::Start, at: q(&n[6]) }));
         let _ = a.update(Message::Canvas(ViewEvent::SlurDragEnd));
@@ -1920,9 +1917,9 @@ mod tests {
         let _ = a.act(Action::Nudge(-1));
         assert_eq!(slur_of(&a), Some((1, 4)));
         // X flips it; Delete removes it and leaves the notes.
-        let above = score_view::slur_above(&a.pages, n[1].id).unwrap();
+        let above = score_view::slur_above(&a.pages, slur).unwrap();
         let _ = a.act(Action::Flip);
-        assert_eq!(score_view::slur_above(&a.pages, n[1].id), Some(!above));
+        assert_eq!(score_view::slur_above(&a.pages, slur), Some(!above));
         let count = events(&a).len();
         let _ = a.act(Action::Delete);
         assert_eq!(slur_of(&a), None);

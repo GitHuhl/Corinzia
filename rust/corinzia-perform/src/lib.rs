@@ -295,13 +295,13 @@ pub struct EventShape {
 
 /// Velocity from dynamics with hairpins interpolated over time (towards the
 /// next dynamic, or ±2 steps), and legato inside slurs (but the last note).
-pub fn expressive_shape(evs: &[Event]) -> Vec<EventShape> {
+/// `slurs`: the [first note, last note) times of the slurs in the voice.
+pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape> {
     let mut out = vec![EventShape { velocity: 0.0, legato: false }; evs.len()];
     // The level each event is played at, and the level the music is at after it.
     let mut cur = 4u8;
     let mut attack = vec![4u8; evs.len()];
     let mut after = vec![4u8; evs.len()];
-    let mut slur = false;
     for (i, e) in evs.iter().enumerate() {
         let a = match e.dynamic {
             Some(d) => {
@@ -314,13 +314,7 @@ pub fn expressive_shape(evs: &[Event]) -> Vec<EventShape> {
         attack[i] = a;
         after[i] = cur;
         out[i].velocity = velocity_for_dynamic(Some(a));
-        if e.spans & span::SLUR_START != 0 {
-            slur = true;
-        }
-        out[i].legato = slur && e.spans & span::SLUR_END == 0;
-        if e.spans & span::SLUR_END != 0 {
-            slur = false;
-        }
+        out[i].legato = slurs.iter().any(|&(from, to)| from <= e.start && e.start < to);
     }
     for i in 0..evs.len() {
         let (cresc, dim) = (evs[i].spans & span::CRESC_START != 0, evs[i].spans & span::DIM_START != 0);
@@ -414,15 +408,26 @@ pub fn perform(m: &Movement) -> Performance {
     }
     let tempo = TempoMap::new(&tempo_points, &meter_points);
     let key_at = |at: Frac| m.keys.iter().filter(|k| k.at <= at).last().map(|k| k.fifths).unwrap_or(0);
+    // Each voice's slurs, as times (a slur between voices is in both).
+    let places = m.note_places();
+    let mut voice_slurs: std::collections::HashMap<(usize, usize), Vec<(Frac, Frac)>> = Default::default();
+    for sl in &m.slurs {
+        if let (Some(a), Some(b)) = (places.get(&sl.from), places.get(&sl.to)) {
+            voice_slurs.entry((a.0, a.1)).or_default().push((a.2, b.2));
+            if (a.0, a.1) != (b.0, b.1) {
+                voice_slurs.entry((b.0, b.1)).or_default().push((a.2, b.2));
+            }
+        }
+    }
     let mut notes = Vec::new();
     for (si, &(a, b)) in order.iter().enumerate() {
         let base = spans[si].performed_q;
         let to_q = |f: Frac| base + q(f - a);
-        for lane in &m.lanes {
-            for voice in &lane.voices {
+        for (li, lane) in m.lanes.iter().enumerate() {
+            for (vi, voice) in lane.voices.iter().enumerate() {
                 let evs = &voice.events;
                 let mut consumed: HashSet<Id> = HashSet::new(); // tie continuations
-                let shape = expressive_shape(evs);
+                let shape = expressive_shape(evs, voice_slurs.get(&(li, vi)).map(Vec::as_slice).unwrap_or(&[]));
                 for (ei, ev) in evs.iter().enumerate() {
                     if ev.is_rest() || ev.start < a || ev.start >= b {
                         continue;

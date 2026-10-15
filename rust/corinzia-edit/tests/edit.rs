@@ -150,13 +150,11 @@ fn range_transpose_apply_and_spans() {
     assert!(t.events[0].heads[0].pitch.step == 2 && t.events[4].heads[0].pitch.step == 4);
     let a = apply_to_range(&v, Frac::ZERO, f(1, 2), |e| e.articulations |= art::STACCATO).unwrap();
     assert!(a.events[1].articulations & art::STACCATO != 0 && a.events[2].articulations & art::STACCATO == 0);
-    let s = mark_span(&v, Frac::ZERO, f(1, 1), span::SLUR_START, span::SLUR_END).unwrap();
-    assert!(s.events[0].spans & span::SLUR_START != 0 && s.events[3].spans & span::SLUR_END != 0);
-    assert!(mark_span(&v, Frac::ZERO, f(1, 4), span::SLUR_START, span::SLUR_END).is_none());
-    let h = mark_span(&s.events, Frac::ZERO, f(2, 1), span::CRESC_START, span::HAIRPIN_END).unwrap();
+    let h = mark_span(&v, Frac::ZERO, f(2, 1), span::CRESC_START, span::HAIRPIN_END).unwrap();
+    assert!(h.events[0].spans & span::CRESC_START != 0);
+    assert!(mark_span(&v, Frac::ZERO, f(1, 4), span::CRESC_START, span::HAIRPIN_END).is_none(), "one note");
     let d = mark_span(&h.events, Frac::ZERO, f(2, 1), span::DIM_START, span::HAIRPIN_END).unwrap();
     assert!(d.events[0].spans & span::DIM_START != 0 && d.events[0].spans & span::CRESC_START == 0);
-    assert!(d.events[0].spans & span::SLUR_START != 0);
 }
 
 // ------------------------------------------------------------ structure --
@@ -173,6 +171,7 @@ fn header() -> Movement {
         barlines: vec![],
         rehearsal: vec![],
         navigation: vec![],
+        slurs: vec![],
         endings: vec![],
         lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
     }
@@ -244,7 +243,7 @@ fn pickup_bars() {
     assert_eq!(parse_pickup("pickup 0/4", q), None);
 
     let mut h = header();
-    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![], slur: Default::default() };
+    let n = |at: Frac| Event { id: 9, kind: EventKind::Rest, start: at, duration: f(1, 4), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
     Arc::make_mut(&mut h.lanes[0].voices[0].events).push(n(f(1, 1)));
     set_pickup(&mut h, Some(f(1, 4)));
     assert_eq!(pickup(&h), Some(f(1, 4)));

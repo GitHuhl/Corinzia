@@ -8,7 +8,7 @@ use corinzia_layout::display::Item;
 use corinzia_layout::font::Glyph;
 use corinzia_layout::notation::score;
 use corinzia_layout::{layout_line, layout_line_at, Options};
-use corinzia_score::score::{span, Event, Score};
+use corinzia_score::score::{Event, Score};
 use corinzia_score::values::decompose;
 use corinzia_score::Frac;
 use std::collections::HashMap;
@@ -34,7 +34,8 @@ fn ly_pitch(step: u8, alter: i8, octave: i8) -> String {
 }
 
 /// `ratio`: sounding to written time (the tuplets around the event).
-fn ly_event(e: &Event, ratio: Frac) -> String {
+/// `slur`: (slurs starting here, slurs ending here).
+fn ly_event(e: &Event, ratio: Frac, slur: (bool, bool)) -> String {
     let values = decompose(e.dur * ratio);
     let mut out = String::new();
     for (k, v) in values.iter().enumerate() {
@@ -54,7 +55,7 @@ fn ly_event(e: &Event, ratio: Frac) -> String {
         };
         let tie = k + 1 < values.len() || e.pitches.iter().any(|p| p.tie);
         // Slurs open on the first piece and close on the last.
-        let slur = match (k == 0 && e.spans & span::SLUR_START != 0, k + 1 == values.len() && e.spans & span::SLUR_END != 0) {
+        let slur = match (k == 0 && slur.0, k + 1 == values.len() && slur.1) {
             (true, true) => ")(",
             (true, false) => "(",
             (false, true) => ")",
@@ -131,7 +132,7 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
                 open.push(*t);
             }
             let ratio = open.iter().fold(Frac::int(1), |r, t| r * Frac::new(t.actual, t.normal));
-            ly.push_str(&ly_event(e, ratio));
+            ly.push_str(&ly_event(e, ratio, (s.slurs.iter().any(|x| x.from == e.id), s.slurs.iter().any(|x| x.to == e.id))));
         }
         for _ in open {
             ly.push_str("} ");
@@ -519,16 +520,13 @@ fn slurs_against_lilypond() {
         let heads: HashMap<u64, f32> = list.items.iter().filter_map(|i| match i { Item::Glyph { at, id, .. } => Some((*id, at.y)), _ => None }).collect();
         eprintln!("{name}:");
         let evs = &s.parts[0].voices[0].events;
-        for (k, e) in evs.iter().enumerate() {
-            if e.spans & span::SLUR_START == 0 {
-                continue;
-            }
-            let Some(end) = evs[k..].iter().find(|x| x.spans & span::SLUR_END != 0) else { continue };
+        for sl in &s.slurs {
+            let (Some(e), Some(end)) = (evs.iter().find(|x| x.id == sl.from), evs.iter().find(|x| x.id == sl.to)) else { continue };
             let (h0, h1) = (e.pitches[0].id, end.pitches[0].id);
             let Some(lp) = lily.get(&h0) else { continue };
             // Ours: the slur's middle line (between its two curves).
             let Some(ours) = list.items.iter().find_map(|i| match i {
-                Item::Crescent { from, c1, c2, to, d1, d2, id } if *id == e.id || *id == h0 => {
+                Item::Crescent { from, c1, c2, to, d1, d2, id } if *id == sl.id => {
                     let m = |a: corinzia_layout::display::Point, b: corinzia_layout::display::Point| ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
                     Some([(from.x, from.y), m(*c1, *d1), m(*c2, *d2), (to.x, to.y)])
                 }

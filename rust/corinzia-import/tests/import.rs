@@ -65,7 +65,7 @@ fn notes_chords_ties_marks_and_lyrics() {
     assert_eq!(names(v), ["C5", "F4", "G4", "A4", "Bb4", "Bb4", "r", "C5"]);
     assert_eq!(v[0].lyrics[0].text, "Oh");
     assert!(v[1].lyrics[0].hyphen && !v[2].lyrics[0].hyphen);
-    assert!(v[1].spans & span::SLUR_START != 0 && v[3].spans & span::SLUR_END != 0);
+    assert_eq!(m.slurs.iter().map(|s| (s.from, s.to)).collect::<Vec<_>>(), [(v[1].id, v[3].id)]);
     assert!(v[3].articulations & art::STACCATO != 0);
     assert_eq!(v[1].dynamic, Some(2)); // p
     assert!(v[1].spans & span::CRESC_START != 0);
@@ -360,13 +360,62 @@ fn a_slur_side_chosen_by_hand_survives_a_round_trip() {
 {notes}</measure></part></score-partwise>"#
     );
     let check = |p: &Project| {
-        let e = &p.movements[0].lanes[0].voices[0].events[0];
-        assert!(e.spans & span::SLUR_START != 0);
-        assert_eq!(e.slur.dir, -1, "below");
+        let m = &p.movements[0];
+        let e = &m.lanes[0].voices[0].events;
+        assert_eq!(m.slurs.len(), 1);
+        assert_eq!((m.slurs[0].from, m.slurs[0].to), (e[0].id, e[3].id));
+        assert_eq!(m.slurs[0].dir, -1, "below");
     };
     let p = musicxml(xml.as_bytes()).unwrap();
     check(&p);
     let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
     assert!(out.contains("placement=\"below\""), "{out}");
     check(&musicxml(out.as_bytes()).unwrap());
+}
+
+#[test]
+fn nested_overlapping_and_cross_voice_slurs() {
+    let n = |step: &str, voice: u8, mark: &str| format!("<note><pitch><step>{step}</step><octave>{}</octave></pitch><duration>1</duration><voice>{voice}</voice><type>quarter</type><notations>{mark}</notations></note>", if voice == 1 { 5 } else { 4 });
+    let start = |k: u8| format!("<slur type=\"start\" number=\"{k}\"/>");
+    let stop = |k: u8| format!("<slur type=\"stop\" number=\"{k}\"/>");
+    // Voice 1: a phrase (1) over the bar with a slur (2) inside it, and a
+    // third (3) overlapping the phrase's end into bar 2. Voice 2: a slur
+    // from its first note up to voice 1's second (its stop comes first in
+    // the file).
+    let bar1 = [
+        n("C", 1, &start(1)),
+        n("D", 1, &(stop(4) + &start(2))),
+        n("E", 1, &(stop(2) + &start(3))),
+        n("F", 1, &stop(1)),
+    ]
+    .join("");
+    let bar1v2 = [n("A", 2, &start(4)), n("B", 2, ""), n("A", 2, ""), n("B", 2, "")].join("");
+    let bar2 = [n("G", 1, &stop(3)), n("A", 1, ""), n("B", 1, ""), n("C", 1, "")].join("");
+    let xml = format!(
+        r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>
+{bar1}<backup><duration>4</duration></backup>{bar1v2}</measure><measure number="2">{bar2}</measure></part></score-partwise>"#
+    );
+    let spans = |p: &Project| {
+        let m = &p.movements[0];
+        let name = |id| {
+            for v in &m.lanes[0].voices {
+                if let Some(e) = v.events.iter().find(|e| e.id == id) {
+                    return format!("{}{}", names(std::slice::from_ref(e))[0], v.index);
+                }
+            }
+            "?".into()
+        };
+        let mut s: Vec<(String, String)> = m.slurs.iter().map(|s| (name(s.from), name(s.to))).collect();
+        s.sort();
+        s
+    };
+    let want: Vec<(String, String)> = [("A42", "D51"), ("C51", "F51"), ("D51", "E51"), ("E51", "G51")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    let p = musicxml(xml.as_bytes()).unwrap();
+    assert_eq!(spans(&p), want);
+    // Written back out, each open slur has its own number, and they come back.
+    let out = corinzia_perform::musicxml(&p, &p.movements[0]).unwrap();
+    assert!(out.contains("number=\"2\""), "{out}");
+    assert_eq!(spans(&musicxml(out.as_bytes()).unwrap()), want);
 }

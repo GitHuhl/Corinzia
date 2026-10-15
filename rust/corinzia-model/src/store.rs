@@ -178,6 +178,7 @@ pub fn load(path: &Path) -> Result<Project> {
             barlines: vec![],
             rehearsal: vec![],
             navigation: vec![],
+            slurs: vec![],
             endings: vec![],
             lanes: vec![],
         };
@@ -245,6 +246,10 @@ pub fn load(path: &Path) -> Result<Project> {
                 if let Some(kind) = r["k"].as_str().and_then(Nav::from_code) {
                     m.navigation.push(NavMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]), kind });
                 }
+            }
+            for s in n["slurs"].as_array().into_iter().flatten() {
+                let id = |k: &str| s[k].as_u64().unwrap_or(0);
+                m.slurs.push(Slur { id: id("id"), from: id("from"), to: id("to"), dir: s["dir"].as_i64().unwrap_or(0) as i8 });
             }
             for e in n["endings"].as_array().into_iter().flatten() {
                 m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
@@ -320,9 +325,6 @@ struct StoredEvent {
     g: Vec<StoredGrace>,
     #[serde(default)]
     fg: Vec<u8>,
-    /// The slur's side (1 above, -1 below).
-    #[serde(default)]
-    sld: i8,
 }
 #[derive(Deserialize)]
 struct StoredGrace {
@@ -369,7 +371,6 @@ impl StoredEvent {
             spans: self.sp,
             lyrics: self.ly.into_iter().map(|l| Lyric { verse: l.v.max(1), text: l.t, hyphen: l.h, extend: l.x }).collect(),
             fingering: self.fg,
-            slur: SlurShape { dir: self.sld },
             graces: self.g.iter().map(|g| Grace { id: g.id, heads: g.h.iter().map(StoredHead::head).collect(), base: if g.b == 0 { 8 } else { g.b }, slash: g.sl }).collect(),
         }
     }
@@ -386,9 +387,6 @@ fn event_json(e: &Event) -> Value {
     });
     if !e.fingering.is_empty() {
         o["fg"] = json!(e.fingering);
-    }
-    if !e.slur.is_default() {
-        o["sld"] = json!(e.slur.dir);
     }
     if !e.graces.is_empty() {
         o["g"] = Value::Array(e.graces.iter().map(|g| json!({"id": g.id, "h": g.heads.iter().map(head_json).collect::<Vec<_>>(), "b": g.base, "sl": g.slash})).collect());
@@ -538,6 +536,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "marks": m.rehearsal.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at)})).collect::<Vec<_>>(),
             "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
+            "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,
             "chords": chords,

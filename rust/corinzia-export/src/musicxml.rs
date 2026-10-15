@@ -102,6 +102,8 @@ struct Writer<'a> {
     out: String,
     /// Inside a hyphenated word, per (voice, verse): for <syllabic>.
     in_word: std::collections::HashMap<(u8, u8), bool>,
+    /// The <slur> elements on each note (by event id): stops, then starts.
+    slurs: std::collections::HashMap<u64, (Vec<String>, Vec<String>)>,
 }
 
 impl<'a> Writer<'a> {
@@ -125,7 +127,6 @@ impl<'a> Writer<'a> {
         tempo.sort_by(|a, b| a.at.cmp(&b.at));
         let mut marks = s.marks.clone();
         marks.sort();
-        let mut slur_open = [false; 4];
         let mut wedge_open = false;
         let mut prev_meter = (0, 0);
         for (mi, m) in ms.iter().enumerate() {
@@ -313,7 +314,6 @@ impl<'a> Writer<'a> {
                 if cursor > Frac::ZERO {
                     let _ = writeln!(self.out, "      <backup><duration>{}</duration></backup>", self.dur(cursor));
                 }
-                let vi = (v.index.clamp(1, 4) - 1) as usize;
                 if v.index == 1 && pieces.is_empty() {
                     self.emit_directions(&mut directions, end);
                     self.measure_rest(m, 1);
@@ -361,7 +361,7 @@ impl<'a> Writer<'a> {
                                 }
                             }
                             let tm = Tm { actual, normal, marks, real };
-                            self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut slur_open[vi], &mut wedge_open, first);
+                            self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut wedge_open, first);
                         }
                         triplet_run = 0;
                         at = p.to;
@@ -397,7 +397,7 @@ impl<'a> Writer<'a> {
                             marks: tuplet.map(|t| format!("<tuplet type=\"{t}\"/>")).unwrap_or_default(),
                             real: nv.length(),
                         };
-                        self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut slur_open[vi], &mut wedge_open, first);
+                        self.note(p, *nv, v.index, first && p.event_first, last, &tm, &mut wedge_open, first);
                     }
                     at = p.to;
                 }
@@ -514,7 +514,6 @@ impl<'a> Writer<'a> {
         event_start: bool,
         piece_last: bool,
         tm: &Tm,
-        slur_open: &mut bool,
         wedge_open: &mut bool,
         piece_first: bool,
     ) {
@@ -611,19 +610,10 @@ impl<'a> Writer<'a> {
                 n.push_str(&tm.marks);
             }
             if event_start && hi == 0 && !is_rest {
-                if e.spans & span::SLUR_END != 0 && *slur_open {
-                    n.push_str("<slur type=\"stop\" number=\"1\"/>");
-                    *slur_open = false;
-                }
-                if e.spans & span::SLUR_START != 0 {
-                    // A side chosen by hand: MusicXML's placement.
-                    let placement = match e.slur.dir {
-                        1 => " placement=\"above\"",
-                        -1 => " placement=\"below\"",
-                        _ => "",
-                    };
-                    n.push_str(&format!("<slur type=\"start\" number=\"1\"{placement}/>"));
-                    *slur_open = true;
+                if let Some((stops, starts)) = self.slurs.get(&e.id) {
+                    for x in stops.iter().chain(starts) {
+                        n.push_str(x);
+                    }
                 }
                 let a = e.art;
                 let mut arts = String::new();
@@ -768,6 +758,30 @@ fn harmony_xml(text: &str) -> Option<String> {
     Some(x)
 }
 
+/// The <slur> elements of every slur, numbered so that slurs open at the
+/// same time (nested or overlapping) differ; a hand-chosen side is the
+/// start's placement.
+fn slur_elements(s: &Score) -> std::collections::HashMap<u64, (Vec<String>, Vec<String>)> {
+    let starts: std::collections::HashMap<u64, Frac> = s.parts.iter().flat_map(|p| p.voices.iter()).flat_map(|v| v.events.iter()).map(|e| (e.id, e.start)).collect();
+    let mut slurs: Vec<(Frac, Frac, &corinzia_score::score::Slur)> = s.slurs.iter().filter_map(|sl| Some((*starts.get(&sl.from)?, *starts.get(&sl.to)?, sl))).collect();
+    slurs.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let mut out: std::collections::HashMap<u64, (Vec<String>, Vec<String>)> = Default::default();
+    let mut open: Vec<(u8, Frac)> = Vec::new(); // (number, end)
+    for (from, to, sl) in slurs {
+        open.retain(|&(_, end)| end >= from); // not reused on a note where another ends
+        let number = (1..=16u8).find(|n| open.iter().all(|o| o.0 != *n)).unwrap_or(1);
+        open.push((number, to));
+        let placement = match sl.dir {
+            1 => " placement=\"above\"",
+            -1 => " placement=\"below\"",
+            _ => "",
+        };
+        out.entry(sl.from).or_default().1.push(format!("<slur type=\"start\" number=\"{number}\"{placement}/>"));
+        out.entry(sl.to).or_default().0.push(format!("<slur type=\"stop\" number=\"{number}\"/>"));
+    }
+    out
+}
+
 pub fn write(doc: &Document) -> Result<String, String> {
     let s = &doc.score;
     if s.parts.is_empty() {
@@ -804,7 +818,7 @@ pub fn write(doc: &Document) -> Result<String, String> {
         return Err("positions too fine to export".into());
     }
 
-    let mut w = Writer { score: s, divisions: div, out: String::new(), in_word: Default::default() };
+    let mut w = Writer { score: s, divisions: div, out: String::new(), in_word: Default::default(), slurs: slur_elements(s) };
     w.line("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>");
     w.line("<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" \"http://www.musicxml.org/dtds/partwise.dtd\">");
     w.line("<score-partwise version=\"4.0\">");

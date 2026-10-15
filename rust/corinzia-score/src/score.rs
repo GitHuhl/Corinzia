@@ -57,6 +57,7 @@ pub struct Score {
     /// Segno, coda, Fine and the D.C./D.S. jumps.
     pub navigation: Vec<NavMark>,
     pub parts: Vec<Part>,
+    pub slurs: Vec<Slur>,
 }
 
 /// A navigation mark: the segno and coda signs at the start of their bar;
@@ -318,20 +319,18 @@ pub struct Event {
     pub graces: Vec<Grace>,
     /// Fingers, bottom head to top (0 for none).
     pub fingering: Vec<u8>,
-    /// The side of the slur starting here, if chosen by hand.
-    pub slur: SlurShape,
 }
 
-/// A slur's side chosen by hand, kept on its first note (0 automatic,
-/// 1 above, -1 below). Its shape is always the engraver's.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SlurShape {
+/// A slur from one note to another: event ids, possibly in different
+/// voices or staves of a player. Slurs may nest and overlap. `dir`: the
+/// side chosen by hand (0 automatic, 1 above, -1 below); the shape is
+/// always the engraver's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Slur {
+    pub id: u64,
+    pub from: u64,
+    pub to: u64,
     pub dir: i8,
-}
-impl SlurShape {
-    pub fn is_default(&self) -> bool {
-        *self == SlurShape::default()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -370,8 +369,6 @@ pub mod art {
     pub const DOWN_BOW: u16 = 1 << 14;
 }
 pub mod span {
-    pub const SLUR_START: u8 = 1 << 0;
-    pub const SLUR_END: u8 = 1 << 1;
     pub const CRESC_START: u8 = 1 << 2;
     pub const DIM_START: u8 = 1 << 3;
     pub const HAIRPIN_END: u8 = 1 << 4;
