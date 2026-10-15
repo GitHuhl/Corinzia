@@ -320,9 +320,9 @@ struct StoredEvent {
     g: Vec<StoredGrace>,
     #[serde(default)]
     fg: Vec<u8>,
-    /// The slur's shape: [side, start, end, height].
+    /// The slur's side (1 above, -1 below).
     #[serde(default)]
-    sls: Option<[f32; 4]>,
+    sld: i8,
 }
 #[derive(Deserialize)]
 struct StoredGrace {
@@ -369,7 +369,7 @@ impl StoredEvent {
             spans: self.sp,
             lyrics: self.ly.into_iter().map(|l| Lyric { verse: l.v.max(1), text: l.t, hyphen: l.h, extend: l.x }).collect(),
             fingering: self.fg,
-            slur: self.sls.map(|[d, s, e, h]| SlurShape { dir: d as i8, start: s, end: e, height: h }).unwrap_or_default(),
+            slur: SlurShape { dir: self.sld },
             graces: self.g.iter().map(|g| Grace { id: g.id, heads: g.h.iter().map(StoredHead::head).collect(), base: if g.b == 0 { 8 } else { g.b }, slash: g.sl }).collect(),
         }
     }
@@ -388,7 +388,7 @@ fn event_json(e: &Event) -> Value {
         o["fg"] = json!(e.fingering);
     }
     if !e.slur.is_default() {
-        o["sls"] = json!([e.slur.dir as f32, e.slur.start, e.slur.end, e.slur.height]);
+        o["sld"] = json!(e.slur.dir);
     }
     if !e.graces.is_empty() {
         o["g"] = Value::Array(e.graces.iter().map(|g| json!({"id": g.id, "h": g.heads.iter().map(head_json).collect::<Vec<_>>(), "b": g.base, "sl": g.slash})).collect());

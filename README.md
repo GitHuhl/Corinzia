@@ -16,8 +16,8 @@ instruments in a lock-free realtime engine that outputs through PipeWire.
   input from the keyboard, the mouse and the Notes panel; passages by
   marquee, Shift-click, a click in a bar's empty space or Ctrl+A;
   copy/paste/repeat; articulations, ornaments, dynamics, hairpins and ties;
-  slurs placed as LilyPond places them, adjusted by hand by clicking one
-  and dragging its ends or middle (X flips it, Ctrl+R resets it); tuplets of any ratio and
+  slurs placed and curved as LilyPond does it; click one and drag an end
+  to another note (or Shift/Alt+←→), X flips it; tuplets of any ratio and
   grace notes; key, time (with pickups), clef, tempo,
   barlines, repeat endings, rehearsal marks and text through popovers and
   the Structure panel. Every action is one undo step.

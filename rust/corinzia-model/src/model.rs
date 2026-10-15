@@ -104,7 +104,7 @@ pub struct Event {
     pub graces: Vec<Grace>,
     /// Fingers, bottom head to top (0 for none).
     pub fingering: Vec<u8>,
-    /// The placement of the slur starting here, as adjusted by hand.
+    /// The side of the slur starting here, if chosen by hand.
     pub slur: SlurShape,
 }
 

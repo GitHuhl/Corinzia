@@ -75,8 +75,6 @@ pub enum Action {
     Help,
     /// Flip the selected slur to the other side.
     Flip,
-    /// Put the selected slur back where the engraver places it.
-    ResetPosition,
     // Panel-only actions.
     SetInput(bool),
     SetVoice(u8),
@@ -150,7 +148,6 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('s', true) => SaveAs,
             ('o', _) => Open,
             ('n', _) => New,
-            ('r', false) => ResetPosition,
             ('=' | '+', _) => ZoomIn,
             ('0', _) => FitWidth,
             ('t', _) => Transposed,
@@ -251,6 +248,5 @@ mod tests {
         assert_eq!(map(&k("l"), Modifiers::CTRL, false), Some(Action::Lyrics(1)));
         assert_eq!(map(&k("k"), Modifiers::CTRL, false), Some(Action::Popover(PopoverKind::Chord)));
         assert_eq!(map(&k("x"), none, false), Some(Action::Flip));
-        assert_eq!(map(&k("r"), Modifiers::CTRL, false), Some(Action::ResetPosition));
     }
 }

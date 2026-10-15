@@ -621,7 +621,7 @@ fn bowings_and_fingering() {
 }
 
 #[test]
-fn slurs_follow_their_hand_placement() {
+fn a_slur_takes_the_side_chosen_by_hand() {
     use corinzia_score::score::SlurShape;
     let music = "c''4( b' a' g') | c'4( g' c'' e'') | a'4( c'' e'' c'') | g'4.( a'8 b'4 c'')";
     let s = score(&[("treble", &[music])], (4, 4), 0);
@@ -636,18 +636,10 @@ fn slurs_follow_their_hand_placement() {
     };
     let (y0, c, y1) = curve(&l).expect("the first slur");
     assert!(c < y0.min(y1), "mixed stems: above");
-    // Below by hand, with its start 1 space lower and 1 more space of curve.
     let mut s = s;
-    s.parts[0].voices[0].events[0].slur = SlurShape { dir: -1, start: -1.0, end: 0.0, height: 1.0 };
-    let shaped = layout_line(&s, &Options::default());
-    preview("slurs-by-hand", &shaped);
-    let (z0, d, z1) = curve(&shaped).unwrap();
+    s.parts[0].voices[0].events[0].slur = SlurShape { dir: -1 };
+    let below = layout_line(&s, &Options::default());
+    preview("slurs-below", &below);
+    let (z0, d, z1) = curve(&below).unwrap();
     assert!(d > z0.max(z1), "below");
-    s.parts[0].voices[0].events[0].slur.start = 0.0;
-    let (w0, e, w1) = curve(&layout_line(&s, &Options::default())).unwrap();
-    assert!((z0 - w0 - 1.0).abs() < 1e-3, "the start a space lower: {z0} vs {w0}");
-    assert!((z1 - w1).abs() < 1e-3);
-    s.parts[0].voices[0].events[0].slur.height = 0.0;
-    let (_, f, _) = curve(&layout_line(&s, &Options::default())).unwrap();
-    assert!((e - f - 1.0).abs() < 1e-3, "a space more curve: {e} vs {f}");
 }

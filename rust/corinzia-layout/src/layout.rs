@@ -1967,8 +1967,8 @@ impl<'a> Engraver<'a> {
     }
 
     /// Slurs from SLUR_START to the next SLUR_END in the voice: on the
-    /// notehead side when all stems agree, else above; placed and curved
-    /// over the notes between as LilyPond does; then as adjusted by hand.
+    /// notehead side when all stems agree, else above (or the side chosen
+    /// by hand); placed and curved over the notes between as LilyPond does.
     fn draw_slurs(&mut self) {
         let d = self.font.defaults;
         let (r0, r1) = self.range;
@@ -2045,15 +2045,7 @@ impl<'a> Engraver<'a> {
                 }
             };
             let dx = (x1 - x0).max(0.5);
-            let (mut y0, mut y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
-            // Moved by hand (y up); a piece cut at a system break keeps its cut end.
-            if si.is_some() {
-                y0 -= sp.shape.start;
-            }
-            if ei.is_some() {
-                y1 -= sp.shape.end;
-            }
-            let h = (h + sp.shape.height).max(0.0);
+            let (y0, y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
             let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
             // The control points are the midline; the thickness is split around it.
             let t = d.slur_midpoint_thickness / 2.0;
@@ -2674,7 +2666,7 @@ struct Spanner {
     to: Frac,
     kind: SpanKind,
     id: u64,
-    /// A slur's placement adjusted by hand.
+    /// A slur's side chosen by hand.
     shape: SlurShape,
 }
 
