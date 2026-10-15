@@ -79,7 +79,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 kind: match r.get::<_, String>(1)?.as_str() {
                     "bus" => NodeKind::Bus,
                     "master" => NodeKind::Master,
-                    _ => NodeKind::Clap,
+                    _ => NodeKind::Plugin,
                 },
                 name: r.get(2)?,
                 bundle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
@@ -432,7 +432,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
     // delete it first and cascade to its state and edges.
     for n in &project.nodes {
         let kind = match n.kind {
-            NodeKind::Clap => "clap",
+            NodeKind::Plugin => "clap",
             NodeKind::Bus => "bus",
             NodeKind::Master => "master",
         };

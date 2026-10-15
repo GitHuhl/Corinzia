@@ -172,6 +172,8 @@ enum Message {
     Export(files::Format),
     ExportTo(files::Format, Option<PathBuf>),
     Frame,
+    /// While plugin editors are open: their timers, descriptors and windows.
+    PluginTick,
     Autosaved(u64, Result<(), String>),
     Shot(iced::window::Screenshot),
 }
@@ -924,6 +926,10 @@ impl App {
         use mix::MixMsg::*;
         match m {
             Select(t) => self.strip = Some(t),
+            Editor(t) => {
+                self.strip = Some(t);
+                self.toggle_editor(t);
+            }
             Gain(t, db) => {
                 if self.editor.project.track(t).is_some_and(|x| x.gain_db != db) {
                     self.editor.set_track(t, "Gain", true, |x| x.gain_db = db);
@@ -950,6 +956,19 @@ impl App {
                 }
             }
             Rescan => self.playback.scan(),
+        }
+    }
+
+    /// Shows a track's plugin editor, or closes it when open.
+    fn toggle_editor(&mut self, track: corinzia_model::Id) {
+        if self.playback.pool.editor_is_open(track) {
+            self.playback.pool.close_editor(track);
+            return;
+        }
+        let Some(t) = self.editor.project.track(track) else { return };
+        let title = format!("{} — {}", t.name, self.playback.plugin_name(track));
+        if let Err(e) = self.playback.pool.open_editor(track, &title) {
+            self.editor.status = e;
         }
     }
 
@@ -1205,6 +1224,10 @@ impl App {
                     Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
                     Err(e) => format!("Export failed: {e}"),
                 };
+            }
+            Message::PluginTick => {
+                self.playback.tick();
+                return Task::none();
             }
             Message::Frame => {
                 self.playback.tick();
@@ -1512,12 +1535,29 @@ impl App {
             _ => None,
         });
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
+        let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
         if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
         }
     }
+}
+
+/// Ticks for plugin editors (their timers, descriptors and windows), about
+/// 60 a second, whatever the main window is doing. The thread ends when the
+/// subscription is dropped.
+fn plugin_clock() -> impl iced::futures::Stream<Item = Message> {
+    let (mut tx, rx) = iced::futures::channel::mpsc::channel(1);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        if let Err(e) = tx.try_send(Message::PluginTick) {
+            if e.is_disconnected() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// The keyboard shortcut overview (F1).
@@ -2203,6 +2243,23 @@ mod tests {
         render(&mut a, 256);
         let (_, q) = a.playback.playhead().unwrap();
         assert!((q - 16.0).abs() < 0.1, "from bar 5: {q}");
+    }
+
+    #[test]
+    fn a_strip_click_shows_the_plugin_editor() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let track = a.editor.project.tracks[0].id;
+        // The built-in instrument has no editor: the strip says so.
+        let _ = a.update(Message::Mix(mix::MixMsg::Editor(track)));
+        assert_eq!(a.strip, Some(track), "the click selects the strip");
+        assert!(!a.playback.pool.editor_is_open(track));
+        assert_eq!(a.editor.status, "Corinzia Sine has no editor of its own");
+        assert!(!a.playback.editors_busy());
+        // Selecting by name leaves editors alone.
+        let cello = a.editor.project.tracks[1].id;
+        let _ = a.update(Message::Mix(mix::MixMsg::Select(cello)));
+        assert_eq!(a.strip, Some(cello));
     }
 
     #[test]
