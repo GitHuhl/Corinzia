@@ -3,6 +3,8 @@
 
 ## A Hybrid DAW/Music Notation Program with CLAPi and VST3 Instrument Support
 
+Note: Corinzia is under active development and is considered pre-alpha quality software by its developer at this point in time.
+
 <img width="1280" height="860" alt="image-1792010138652" src="https://github.com/user-attachments/assets/957cb598-5eaf-4b5c-ae24-09278e3d42c7" />
 <img width="1280" height="860" alt="image-1792010442842" src="https://github.com/user-attachments/assets/5c9861a4-19e2-4038-85a9-016a5d3afff5" />
 
