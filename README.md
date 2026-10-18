@@ -1,7 +1,7 @@
 # Corinzia
 
 ## A Hybrid DAW/Music Notation Program with CLAPi and VST3 Instrument Support
-[![Listed on Remade](https://remade.wiki/badges/listed-on-remade.svg)](https://remade.wiki/projects/earthcraft/)
+[![Listed on Remade](https://remade.wiki/badges/listed-on-remade.svg)](https://remade.wiki/projects/corinzia/)
 
 Note: Corinzia is under active development and is considered pre-alpha quality software by its developer at this point in time.
 
