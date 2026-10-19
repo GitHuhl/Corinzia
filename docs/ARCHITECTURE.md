@@ -406,6 +406,14 @@ output), automation, VST3 state in the project.
   columns. That drives mouse note input.
 * Hit testing covers notes, rests, chord symbols and lyrics.
 
+**Players.** The Players card edits a list of players (kept ones by id,
+new ones by name, abbreviation, clef and transposition) and applies it
+with `Editor::set_players` as one undo step: dropped players take their
+staves in every movement, their instruments and the tracks only they used
+(with plugin nodes); new ones get an instrument, a track on a free MIDI
+channel and staves of whole-bar rests in every movement; players, staves
+and mixer tracks then follow the list's order.
+
 **Files and saving.**
 * File dialogs go through the XDG desktop portal (`rfd`).
 * Projects with a file are saved 0.8 s after a change, on a worker thread.

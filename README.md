@@ -26,6 +26,10 @@ PipeWire.
   title, tempo mark, text, chord symbol, dynamic or lyric to retype it.
   Escape or a click on blank paper deselects. Every action is one undo
   step.
+* **Players** (toolbar): add instruments (quick-add buttons, or a list
+  such as "Flute, 2 Violin" with any name), remove players with their
+  music, and reorder them; Apply makes it one undo step. New players get
+  staves of rests in every movement and a mixer track of their own.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

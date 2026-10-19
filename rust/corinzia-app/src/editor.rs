@@ -156,6 +156,15 @@ fn set_events_tidy(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) 
     set_events(m, lane, voice, &EditResult { events: evs, ..r.clone() });
 }
 
+/// A player in the Players dialog's list: one already in the score, or one
+/// to add (name, abbreviation, clef — "treble+bass" for a grand staff —
+/// and transposition).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerSlot {
+    Keep(Id),
+    New { name: String, abbr: String, clef: String, transposition: Interval },
+}
+
 /// Which end of a slur a drag or key moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SlurHandle {
@@ -542,6 +551,104 @@ impl Editor {
         };
         self.status = format!("{} plays {name}", self.project.tracks[ti].name);
         self.commit_with(before, "Instrument plugin", true, None);
+    }
+
+    // ------------------------------------------------------------ players --
+    /// Sets the instrumentation: the players in `list`, in its order. Players
+    /// left out go with their staves (in every movement), instruments and
+    /// tracks; new ones get an instrument, a track and staves of whole-bar
+    /// rests in every movement. One undo step.
+    pub fn set_players(&mut self, list: &[PlayerSlot]) -> Result<(), String> {
+        if list.is_empty() {
+            return Err("A score needs at least one player".into());
+        }
+        let before = self.snapshot();
+        let p = &mut self.project;
+        let kept: Vec<Id> = list.iter().filter_map(|s| if let PlayerSlot::Keep(id) = s { Some(*id) } else { None }).collect();
+        // Removed players, their instruments, and the tracks only they used.
+        let gone: Vec<Id> = p.players.iter().map(|pl| pl.id).filter(|id| !kept.contains(id)).collect();
+        p.instruments.retain(|i| !gone.contains(&i.player));
+        let used: Vec<Id> = p.instruments.iter().filter_map(|i| i.track).collect();
+        let gone_nodes: Vec<Id> = p.tracks.iter().filter(|t| !used.contains(&t.id)).filter_map(|t| t.instrument_node).collect();
+        p.tracks.retain(|t| used.contains(&t.id));
+        let still_used: Vec<Id> = p.tracks.iter().filter_map(|t| t.instrument_node).collect();
+        for n in gone_nodes.into_iter().filter(|n| !still_used.contains(n)) {
+            p.nodes.retain(|x| x.id != n);
+            p.edges.retain(|e| e.from != n && e.to != n);
+            p.plugin_state.remove(&n);
+        }
+        p.players.retain(|pl| !gone.contains(&pl.id));
+        for m in p.movements.iter_mut() {
+            m.lanes.retain(|l| !gone.contains(&l.player));
+        }
+        // New players.
+        let mut order = Vec::new();
+        for slot in list {
+            let id = match slot {
+                PlayerSlot::Keep(id) => *id,
+                PlayerSlot::New { name, abbr, clef, transposition } => {
+                    let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
+                    let used_channels: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
+                    let midi_channel = (0..16).find(|c| !used_channels.contains(c)).unwrap_or((p.tracks.len() % 16) as u8);
+                    p.tracks.push(Track { id: track, name: name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+                    let clefs: Vec<&str> = clef.split('+').collect();
+                    p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr.clone(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track) });
+                    p.players.push(Player { id: player, name: name.clone(), instruments: vec![inst] });
+                    for mi in 0..p.movements.len() {
+                        let bars: Vec<(Frac, Frac)> = {
+                            let m = &p.movements[mi];
+                            edit::bar_starts(m).into_iter().map(|b| (b, edit::bar_length(m, b).min(m.length - b))).collect()
+                        };
+                        for (si, c) in clefs.iter().enumerate() {
+                            let rests: Vec<Event> = bars
+                                .iter()
+                                .map(|&(start, duration)| Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] })
+                                .collect();
+                            let (change, voice) = (p.allocate_id(), p.allocate_id());
+                            let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: c.to_string() }] };
+                            p.movements[mi].lanes.push(Lane {
+                                player,
+                                changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
+                                clefs: clef_changes,
+                                texts: vec![],
+                                chords: vec![],
+                                lines: vec![],
+                                voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests), tuplets: vec![] }],
+                            });
+                        }
+                    }
+                    player
+                }
+            };
+            order.push(id);
+        }
+        // The list's order: players, their staves (a player's own staves
+        // keep theirs), and the mixer's tracks.
+        let rank = |player: Id| order.iter().position(|x| *x == player).unwrap_or(usize::MAX);
+        p.players.sort_by_key(|pl| rank(pl.id));
+        for m in p.movements.iter_mut() {
+            m.lanes.sort_by_key(|l| rank(l.player)); // stable
+        }
+        let track_rank: std::collections::HashMap<Id, usize> = p.instruments.iter().filter_map(|i| Some((i.track?, rank(i.player)))).fold(std::collections::HashMap::new(), |mut acc, (t, r)| {
+            let e = acc.entry(t).or_insert(r);
+            *e = (*e).min(r);
+            acc
+        });
+        p.tracks.sort_by_key(|t| track_rank.get(&t.id).copied().unwrap_or(usize::MAX));
+        // Nothing to point at in staves that may be gone.
+        self.selection = None;
+        self.range = None;
+        self.caret = Frac::ZERO;
+        self.caret_lane = 0;
+        let (added, removed) = (list.len() - kept.len(), gone.len());
+        self.status = match (added, removed) {
+            (0, 0) => "Players reordered".into(),
+            (a, 0) => format!("{a} player{} added", if a == 1 { "" } else { "s" }),
+            (0, r) => format!("{r} player{} removed", if r == 1 { "" } else { "s" }),
+            (a, r) => format!("{a} player{} added, {r} removed", if a == 1 { "" } else { "s" }),
+        };
+        self.commit(before, "Players");
+        Ok(())
     }
 
     /// Marks the project saved (the app calls this after writing the file).
