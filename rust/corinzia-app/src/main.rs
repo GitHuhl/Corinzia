@@ -73,6 +73,36 @@ enum NewField {
     Bars,
 }
 
+/// The Players card: the instrumentation being edited, applied as a whole.
+struct PlayersDialog {
+    rows: Vec<PlayerRow>,
+    /// Instruments to add ("Flute, 2 Violin").
+    add: String,
+    error: Option<String>,
+}
+
+struct PlayerRow {
+    slot: editor::PlayerSlot,
+    name: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+enum PlayersMsg {
+    Open,
+    Move(usize, isize),
+    Remove(usize),
+    AddInput(String),
+    Add,
+    /// One of the quick-add buttons.
+    Quick(&'static str),
+    Apply,
+    Cancel,
+}
+
+/// The quick-add buttons of the Players card.
+const QUICK_ADD: [&str; 16] = ["Flute", "Oboe", "Clarinet", "Bassoon", "Horn", "Trumpet", "Trombone", "Piano", "Soprano", "Alto", "Tenor", "Bass", "Violin", "Viola", "Cello", "Double bass"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Score,
@@ -103,6 +133,7 @@ struct App {
     saving: bool,
     undo_tip: String,
     new_score: Option<NewScore>,
+    players: Option<PlayersDialog>,
     /// Corinzia's own file browser, when the system's dialog cannot open.
     browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
@@ -150,6 +181,7 @@ enum Message {
     NewInput(NewField, String),
     NewCreate,
     NewCancel,
+    Players(PlayersMsg),
     /// The answer to "discard unsaved changes?".
     ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
@@ -180,6 +212,7 @@ enum Message {
 
 const POPOVER_INPUT: &str = "popover-input";
 const NEW_TITLE: &str = "new-score-title";
+const PLAYERS_ADD: &str = "players-add";
 
 struct Args {
     file: Option<PathBuf>,
@@ -332,6 +365,7 @@ impl App {
             saving: false,
             undo_tip: String::new(),
             new_score: None,
+            players: None,
             browser: None,
             confirm: None,
             path,
@@ -382,7 +416,7 @@ impl App {
         })
         .text_size(13)
         .padding([5, 9])
-        .width(150)
+        .width(130)
         .into()
     }
 
@@ -959,6 +993,88 @@ impl App {
         }
     }
 
+    /// The Players card: open it on the score's players, edit the list,
+    /// apply it as one undo step.
+    fn players_msg(&mut self, m: PlayersMsg) {
+        if let PlayersMsg::Open = m {
+            let p = &self.editor.project;
+            let lanes = self.editor.movement().map(|m| m.lanes.clone()).unwrap_or_default();
+            let rows = p
+                .players
+                .iter()
+                .map(|pl| {
+                    let instruments: Vec<String> = pl.instruments.iter().filter_map(|i| p.instrument(*i)).map(|i| i.name.clone()).collect();
+                    let staves = lanes.iter().filter(|l| l.player == pl.id).count();
+                    let name = instruments.first().cloned().unwrap_or_else(|| pl.name.clone());
+                    let mut detail = if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") };
+                    if instruments.len() > 1 {
+                        detail = format!("{} · {detail}", instruments.join(", "));
+                    }
+                    PlayerRow { slot: editor::PlayerSlot::Keep(pl.id), name, detail }
+                })
+                .collect();
+            self.players = Some(PlayersDialog { rows, add: String::new(), error: None });
+            self.help = false;
+            self.export_menu = false;
+            return;
+        }
+        let Some(d) = self.players.as_mut() else { return };
+        d.error = None;
+        let add = |d: &mut PlayersDialog, text: &str| match files::parse_instruments(text) {
+            Ok(list) => {
+                for (name, abbr, clef) in list {
+                    let staves = clef.split('+').count();
+                    let detail = format!("new · {}", if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") });
+                    let transposition = files::transposition_of(&name);
+                    d.rows.push(PlayerRow { slot: editor::PlayerSlot::New { name: name.clone(), abbr, clef, transposition }, name, detail });
+                }
+                true
+            }
+            Err(e) => {
+                d.error = Some(e);
+                false
+            }
+        };
+        match m {
+            PlayersMsg::Open => {}
+            PlayersMsg::Move(i, by) => {
+                let j = i as isize + by;
+                if i < d.rows.len() && j >= 0 && (j as usize) < d.rows.len() {
+                    d.rows.swap(i, j as usize);
+                }
+            }
+            PlayersMsg::Remove(i) => {
+                if i < d.rows.len() {
+                    d.rows.remove(i);
+                }
+            }
+            PlayersMsg::AddInput(v) => d.add = v,
+            PlayersMsg::Add => {
+                let text = d.add.clone();
+                if add(d, &text) {
+                    d.add.clear();
+                }
+            }
+            PlayersMsg::Quick(name) => {
+                add(d, name);
+            }
+            PlayersMsg::Cancel => self.players = None,
+            PlayersMsg::Apply => {
+                let slots: Vec<editor::PlayerSlot> = d.rows.iter().map(|r| r.slot.clone()).collect();
+                match self.editor.set_players(&slots) {
+                    Ok(()) => {
+                        self.players = None;
+                        // A part whose player went shows the full score.
+                        if self.part.is_some_and(|p| self.editor.project.player(p).is_none()) {
+                            self.part = None;
+                        }
+                    }
+                    Err(e) => d.error = Some(e),
+                }
+            }
+        }
+    }
+
     /// Shows a track's plugin editor, or closes it when open.
     fn toggle_editor(&mut self, track: corinzia_model::Id) {
         if self.playback.pool.editor_is_open(track) {
@@ -1079,11 +1195,12 @@ impl App {
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
                             self.new_score = None;
+                            self.players = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -1161,6 +1278,7 @@ impl App {
                 return Task::none();
             }
             Message::NewCancel => self.new_score = None,
+            Message::Players(m) => self.players_msg(m),
             Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
@@ -1277,7 +1395,7 @@ impl App {
             }
             container(r).padding(2).style(theme::trough).into()
         };
-        let flat = |label: &'static str, enabled: bool, m: Message| button(text(label).size(13)).padding([5, 9]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m));
+        let flat = |label: &'static str, enabled: bool, m: Message| button(text(label).size(13)).padding([5, 7]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m));
         let rule = || container(Space::new()).width(1).height(22).style(theme::rule);
         let mut toolbar = row![
             text("Corinzia").size(15).font(bold).style(theme::accent),
@@ -1293,13 +1411,13 @@ impl App {
             panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
             panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(iced::Alignment::Center);
         if self.tab == Tab::Score {
             toolbar = toolbar
                 .push(rule())
                 .push(panels::tip(
-                    button(text("✎  Note input").size(13)).padding([5, 12]).style(theme::tool(ed.input_mode)).on_press(Message::Act(Action::SetInput(!ed.input_mode))),
+                    button(text("✎  Note input").size(13)).padding([5, 10]).style(theme::tool(ed.input_mode)).on_press(Message::Act(Action::SetInput(!ed.input_mode))),
                     "Note input (N)",
                 ))
                 .push(segmented(vec![("Page", self.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama))]))
@@ -1314,6 +1432,7 @@ impl App {
         let toolbar = toolbar
             .push(panels::spacer())
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
+            .push(panels::tip(flat("Players", true, Message::Players(PlayersMsg::Open)), "Add, remove or reorder players (the instrumentation)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
             .push(panels::tip(flat("Import", true, Message::Import), "Import MusicXML (.musicxml, .xml, .mxl) as a new score"))
@@ -1321,7 +1440,7 @@ impl App {
                 flat("Save", self.saving_enabled, Message::Act(Action::Save)),
                 if self.saving_enabled { "Save (Ctrl+S)" } else { "Saving is turned off in this preview build" },
             ))
-            .push(button(text("Export ▾").size(13)).padding([5, 9]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
+            .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
         // Lanes to the staves they are engraved on (a part shows some).
@@ -1413,6 +1532,10 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if let Some(d) = &self.players {
+            // Anchored at the top, so its controls stay put as the list grows.
+            desk = desk.push(container(iced::widget::opaque(container(players_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
         if self.help {
             desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
         }
@@ -1558,6 +1681,60 @@ fn plugin_clock() -> impl iced::futures::Stream<Item = Message> {
         }
     });
     rx
+}
+
+/// The Players card: the list (reorder, remove), and instruments to add.
+fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let small = |label: &'static str, hint: &'static str, m: Option<PlayersMsg>| {
+        let mut b = button(text(label).size(12)).padding([2, 7]).style(theme::flat(false));
+        if let Some(m) = m {
+            b = b.on_press(Message::Players(m));
+        }
+        panels::tip(b, hint)
+    };
+    let n = d.rows.len();
+    let rows = column(d.rows.iter().enumerate().map(|(i, r)| {
+        row![
+            text(format!("{}", i + 1)).size(12).style(theme::dim).width(22),
+            column![text(&r.name).size(14), text(&r.detail).size(11).style(theme::dim)].spacing(1).width(Length::Fill),
+            small("↑", "Move up", (i > 0).then_some(PlayersMsg::Move(i, -1))),
+            small("↓", "Move down", (i + 1 < n).then_some(PlayersMsg::Move(i, 1))),
+            small("✕", "Remove the player and its music", (n > 1).then_some(PlayersMsg::Remove(i))),
+        ]
+        .spacing(4)
+        .align_y(iced::Alignment::Center)
+        .into()
+    }))
+    .spacing(6);
+    let quick = iced::widget::Row::with_children(QUICK_ADD.iter().map(|name| button(text(*name).size(12)).padding([3, 8]).style(theme::segment(false)).on_press(Message::Players(PlayersMsg::Quick(name))).into())).spacing(4).wrap();
+    // Add first, the list below: the buttons stay put while the list grows.
+    let mut card = column![
+        text("Players").size(18).font(bold),
+        text("Add").size(12).style(theme::dim),
+        quick,
+        row![
+            text_input("Instruments to add: \"Flute, 2 Violin\"; any name", &d.add).id(PLAYERS_ADD).on_input(|v| Message::Players(PlayersMsg::AddInput(v))).on_submit(Message::Players(PlayersMsg::Add)).padding(6).size(14),
+            button(text("Add").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::Players(PlayersMsg::Add)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(10)
+    .width(480);
+    if let Some(e) = &d.error {
+        card = card.push(text(e).size(12).style(theme::danger));
+    }
+    card.push(text("In the score, top to bottom. Each player has its own staves and mixer track; removing one removes its music.").size(12).style(theme::dim))
+        .push(iced::widget::scrollable(rows).height(Length::Fixed((n.max(1) as f32 * 38.0).min(380.0))))
+        .push(
+        row![
+            panels::spacer(),
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::Players(PlayersMsg::Cancel)),
+            button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::Players(PlayersMsg::Apply)),
+        ]
+        .spacing(8),
+    )
+    .into()
 }
 
 /// The keyboard shortcut overview (F1).
@@ -2243,6 +2420,80 @@ mod tests {
         render(&mut a, 256);
         let (_, q) = a.playback.playhead().unwrap();
         assert!((q - 16.0).abs() < 0.1, "from bar 5: {q}");
+    }
+
+    #[test]
+    fn the_players_card_adds_removes_and_reorders_players() {
+        let mut a = app(View::Page);
+        let players = |a: &App| a.editor.project.players.iter().map(|p| a.editor.project.instrument(p.instruments[0]).unwrap().name.clone()).collect::<Vec<_>>();
+        assert_eq!(players(&a), ["Flute", "Cello"]);
+        let flute = a.editor.project.players[0].id;
+        let pl = |m: PlayersMsg| Message::Players(m);
+        let _ = a.update(pl(PlayersMsg::Open));
+        assert_eq!(a.players.as_ref().unwrap().rows.len(), 2);
+        // Escape and Cancel change nothing.
+        let _ = a.update(pl(PlayersMsg::Cancel));
+        assert!(a.players.is_none());
+        let _ = a.update(pl(PlayersMsg::Open));
+        // Add a piano (a grand staff) and two violins; a bad list says why.
+        let _ = a.update(pl(PlayersMsg::Quick("Piano")));
+        let _ = a.update(pl(PlayersMsg::AddInput(" , ".into())));
+        let _ = a.update(pl(PlayersMsg::Add));
+        assert!(a.players.as_ref().unwrap().error.is_some());
+        let _ = a.update(pl(PlayersMsg::AddInput("2 Violin".into())));
+        let _ = a.update(pl(PlayersMsg::Add));
+        let d = a.players.as_ref().unwrap();
+        assert!(d.error.is_none() && d.add.is_empty());
+        assert_eq!(d.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Flute", "Cello", "Piano", "Violin 1", "Violin 2"]);
+        // Remove the flute, put the piano first.
+        let _ = a.update(pl(PlayersMsg::Remove(0)));
+        let _ = a.update(pl(PlayersMsg::Move(1, -1)));
+        let _ = a.update(pl(PlayersMsg::Move(0, -1))); // already first: nothing
+        let tracks_before = a.editor.project.tracks.len();
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert!(a.players.is_none());
+        assert_eq!(players(&a), ["Piano", "Cello", "Violin 1", "Violin 2"]);
+        assert!(a.editor.project.player(flute).is_none());
+        assert_eq!(a.editor.project.tracks.len(), tracks_before - 1 + 3);
+        assert_eq!(a.editor.project.tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Piano", "Cello", "Violin 1", "Violin 2"], "mixer in score order");
+        let m = &a.editor.project.movements[0];
+        // Piano: two staves; every staff has music or rests through the movement.
+        assert_eq!(m.lanes.len(), 5);
+        assert_eq!(m.lanes[0].player, m.lanes[1].player);
+        assert_eq!(m.lanes[1].clefs[0].clef, "bass");
+        for l in &m.lanes {
+            assert_eq!(corinzia_edit::voice_end(&l.voices[0].events), m.length);
+        }
+        assert_eq!(a.editor.status, "3 players added, 1 removed");
+        // The new instruments play: on their own MIDI channels.
+        let mut channels: Vec<u8> = a.editor.project.tracks.iter().map(|t| t.midi_channel).collect();
+        channels.sort();
+        channels.dedup();
+        assert_eq!(channels.len(), 4);
+        // One undo step brings the flute back.
+        a.editor.undo();
+        assert_eq!(players(&a), ["Flute", "Cello"]);
+        // Removing every player is not allowed.
+        let _ = a.update(pl(PlayersMsg::Open));
+        let _ = a.update(pl(PlayersMsg::Remove(0)));
+        let _ = a.update(pl(PlayersMsg::Remove(0)));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert_eq!(a.players.as_ref().unwrap().error.as_deref(), Some("A score needs at least one player"));
+        assert_eq!(players(&a), ["Flute", "Cello"]);
+    }
+
+    #[test]
+    fn a_shown_part_whose_player_goes_shows_the_full_score() {
+        let mut a = app(View::Page);
+        let cello = a.editor.project.players[1].id;
+        let _ = a.update(Message::SetPart(Some(cello)));
+        let _ = a.update(Message::Players(PlayersMsg::Open));
+        let _ = a.update(Message::Players(PlayersMsg::Remove(1)));
+        let _ = a.update(Message::Players(PlayersMsg::Apply));
+        assert_eq!(a.part, None);
+        assert_eq!(a.editor.project.movements[0].lanes.len(), 1);
+        a.engrave();
+        assert!(!a.pages.is_empty());
     }
 
     #[test]
