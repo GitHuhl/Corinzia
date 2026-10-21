@@ -372,7 +372,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                                 if let (Some(b), Some(bt)) = (beats(t), int(t, "beat-type")) {
                                     let at = if mi == 0 { Frac::ZERO } else { bar };
                                     movement.meter.retain(|x| x.at != at);
-                                    movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false });
+                                    movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false, beams: [0; 8] });
                                 }
                             }
                         }
@@ -475,7 +475,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
 
     // Defaults where the first part had none.
     if movement.meter.is_empty() {
-        movement.meter.push(Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false });
+        movement.meter.push(Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
     if movement.keys.is_empty() {
         movement.keys.push(Key { at: Frac::ZERO, fifths: 0, minor: false });
@@ -492,7 +492,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         } else {
             movement.meter.remove(0);
         }
-        movement.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true });
+        movement.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true, beams: [0; 8] });
     }
     movement.keys.sort_by(|a, b| a.at.cmp(&b.at));
     movement.tempo.sort_by(|a, b| a.at.cmp(&b.at));

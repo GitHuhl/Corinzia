@@ -128,6 +128,13 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("\u{E53F}", true, false, "Diminuendo (Shift+H)", Action::Hairpin { crescendo: false }),
         tool("‿", false, false, "Tie (T)", Action::Tie),
     ];
+    use corinzia_score::score::span;
+    let beams = vec![
+        tool("↺", false, false, "Automatic beams", Action::Beam(0)),
+        tool("⌇", false, false, "A new beam starts at this note", Action::Beam(span::BEAM_BREAK)),
+        tool("⁀", false, false, "Join the beam into this note (across beat groups)", Action::Beam(span::BEAM_JOIN)),
+        tool("♪", false, false, "No beam (flagged)", Action::Beam(span::NO_BEAM)),
+    ];
     let editing = vec![
         tool("▲", false, false, "Transpose up (↑, Ctrl+↑ octave)", Action::Transpose(1)),
         tool("▼", false, false, "Transpose down (↓, Ctrl+↓ octave)", Action::Transpose(-1)),
@@ -137,6 +144,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("↻", false, false, "Repeat selection (R)", Action::Repeat),
         tool("⌫", false, false, "Delete (Del)", Action::Delete),
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),
+        tool("≈", false, false, "Select similar (Ctrl+Shift+A)", Action::SelectSimilar),
+        tool("⧩", false, false, "Select only… top, voice 2, above C5, F#, staccato, dynamics (Ctrl+F)", Action::Popover(PopoverKind::Filter)),
     ];
     column![
         heading("Duration"),
@@ -154,6 +163,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         grid(dynamics, 7),
         heading("Lines"),
         grid(lines, 7),
+        heading("Beams"),
+        grid(beams, 7),
         heading("Edit"),
         grid(editing, 7),
     ]
@@ -180,6 +191,10 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         pop("Key signature…", PopoverKind::Key, "Shift+K"),
         pop("Time signature…", PopoverKind::Time, "Shift+M"),
         pop("Clef or octave line…", PopoverKind::Clef, "Shift+C: treble, bass… 8va, 8vb, loco"),
+        pop("Instrument change…", PopoverKind::Instrument, "Shift+I: a doubling (Piccolo…), from here on"),
+        pop("Transpose…", PopoverKind::Transpose, "Ctrl+Shift+T: the passage, or the whole score"),
+        wide("Explode chords", false, "Select the chords' staff and the staves to fill: top note to the top staff", Action::Explode),
+        wide("Reduce to chords", false, "Select staves: combined on an empty one among them, else the top one", Action::Reduce),
         pop("Tempo…", PopoverKind::Tempo, "Shift+T"),
         pop("Barline…", PopoverKind::Barline, "Shift+B"),
         pop("Expression text…", PopoverKind::Expression, "Shift+X"),

@@ -65,6 +65,9 @@ pub struct Editor {
     pub grace_input: Option<bool>,
     pub selection: Option<Id>,
     pub range: Option<Range>,
+    /// Elements picked by a filter or Select similar (noteheads, rests,
+    /// dynamics, lyrics, chord symbols, text): edits apply to each.
+    pub picked: Vec<Id>,
     /// A slur selected (its first event's id); see `selected_slur`.
     slur: Option<Id>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -156,13 +159,22 @@ fn set_events_tidy(m: &mut Movement, lane: usize, voice: usize, r: &EditResult) 
     set_events(m, lane, voice, &EditResult { events: evs, ..r.clone() });
 }
 
+/// An instrument as the Players dialog and instrument changes give it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstrumentSpec {
+    pub name: String,
+    pub abbr: String,
+    /// "treble", "bass"…; "treble+bass" for a grand staff.
+    pub clef: String,
+    pub transposition: Interval,
+}
+
 /// A player in the Players dialog's list: one already in the score, or one
-/// to add (name, abbreviation, clef — "treble+bass" for a grand staff —
-/// and transposition).
+/// to add, with its instruments (the first, then doublings).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerSlot {
-    Keep(Id),
-    New { name: String, abbr: String, clef: String, transposition: Interval },
+    Keep { id: Id, instruments: Vec<InstrumentSpec> },
+    New { instruments: Vec<InstrumentSpec> },
 }
 
 /// Which end of a slur a drag or key moves.
@@ -176,6 +188,94 @@ pub enum SlurHandle {
 fn span_from_note(evs: &[Event], note: Id) -> Option<(Frac, Frac)> {
     let (e, _) = edit::find_event(evs, note)?;
     evs.iter().find(|n| n.start > e.start && !n.heads.is_empty()).map(|n| (e.start, n.end()))
+}
+
+/// A new instrument for `player` (not yet in its list), with a track of
+/// its own on a free MIDI channel.
+fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
+    let (track, inst) = (p.allocate_id(), p.allocate_id());
+    let used: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
+    let midi_channel = (0..16).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8);
+    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+    let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track) });
+    inst
+}
+
+/// Brings a kept player's instruments in line with `specs` (see
+/// [`Editor::set_players`]); returns how many were changed or added/removed.
+fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) -> usize {
+    let Some(held) = p.player(player).map(|pl| pl.instruments.clone()) else { return 0 };
+    let mut free = held.clone();
+    let mut result: Vec<Option<Id>> = vec![None; specs.len()];
+    let name_of = |p: &Project, i: Id| p.instrument(i).map(|x| x.name.clone()).unwrap_or_default();
+    for (k, s) in specs.iter().enumerate() {
+        if let Some(pos) = free.iter().position(|i| name_of(p, *i).eq_ignore_ascii_case(&s.name)) {
+            result[k] = Some(free.remove(pos));
+        }
+    }
+    let mut changed = 0;
+    for (k, s) in specs.iter().enumerate() {
+        if result[k].is_some() {
+            continue;
+        }
+        changed += 1;
+        if !free.is_empty() {
+            // The instrument changes; its music and track stay.
+            let id = free.remove(0);
+            let clef = s.clef.split('+').next().unwrap_or("treble").to_string();
+            let mut track = None;
+            if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id) {
+                i.name = s.name.clone();
+                i.engraver_name = s.abbr.clone();
+                i.clef = clef;
+                i.transposition = s.transposition;
+                track = i.track;
+            }
+            if let Some(t) = p.tracks.iter_mut().find(|t| Some(t.id) == track) {
+                t.name = s.name.clone();
+            }
+            result[k] = Some(id);
+        } else {
+            result[k] = Some(add_instrument(p, player, s));
+        }
+    }
+    // Instruments no longer listed, and the changes to them.
+    changed += free.len();
+    p.instruments.retain(|i| !free.contains(&i.id));
+    let ids: Vec<Id> = result.into_iter().flatten().collect();
+    let first = ids[0];
+    for m in p.movements.iter_mut() {
+        for l in m.lanes.iter_mut().filter(|l| l.player == player) {
+            l.changes.retain(|c| c.at == Frac::ZERO || !free.contains(&c.instrument));
+            match l.changes.first_mut() {
+                // The player starts on its first instrument.
+                Some(c) if c.at == Frac::ZERO => c.instrument = first,
+                _ => {}
+            }
+        }
+    }
+    if let Some(pl) = p.players.iter_mut().find(|pl| pl.id == player) {
+        if changed == 0 && ids != pl.instruments {
+            changed = 1; // reordered: another instrument starts
+        }
+        pl.name = specs[0].name.clone();
+        pl.instruments = ids;
+    }
+    changed
+}
+
+/// Drops tracks no instrument uses, and plugin nodes no track uses.
+fn drop_unused_tracks(p: &mut Project) {
+    let used: Vec<Id> = p.instruments.iter().filter_map(|i| i.track).collect();
+    let gone_nodes: Vec<Id> = p.tracks.iter().filter(|t| !used.contains(&t.id)).filter_map(|t| t.instrument_node).collect();
+    p.tracks.retain(|t| used.contains(&t.id));
+    let still: Vec<Id> = p.tracks.iter().filter_map(|t| t.instrument_node).collect();
+    for n in gone_nodes.into_iter().filter(|n| !still.contains(n)) {
+        p.nodes.retain(|x| x.id != n);
+        p.edges.retain(|e| e.from != n && e.to != n);
+        p.plugin_state.remove(&n);
+    }
 }
 
 impl Editor {
@@ -192,6 +292,7 @@ impl Editor {
             caret_lane: 0,
             caret: Frac::ZERO,
             selection: None,
+            picked: Vec::new(),
             range: None,
             range_anchor: None,
             transposed: false,
@@ -554,46 +655,51 @@ impl Editor {
     }
 
     // ------------------------------------------------------------ players --
-    /// Sets the instrumentation: the players in `list`, in its order. Players
-    /// left out go with their staves (in every movement), instruments and
-    /// tracks; new ones get an instrument, a track and staves of whole-bar
-    /// rests in every movement. One undo step.
+    /// Sets the instrumentation: the players in `list`, in its order, each
+    /// with its instruments (the first, then doublings). Players left out go
+    /// with their staves (in every movement), instruments and tracks; new
+    /// ones get staves of whole-bar rests in every movement. A kept player's
+    /// instruments are matched by name: a name still listed keeps its
+    /// instrument; a new name takes the place of one no longer listed (the
+    /// instrument changes, its music and track stay); any others are added
+    /// as doublings with tracks of their own, and instruments left over go.
+    /// One undo step.
     pub fn set_players(&mut self, list: &[PlayerSlot]) -> Result<(), String> {
         if list.is_empty() {
             return Err("A score needs at least one player".into());
         }
+        if list.iter().any(|s| match s {
+            PlayerSlot::Keep { instruments, .. } | PlayerSlot::New { instruments } => instruments.is_empty(),
+        }) {
+            return Err("Each player needs an instrument".into());
+        }
         let before = self.snapshot();
         let p = &mut self.project;
-        let kept: Vec<Id> = list.iter().filter_map(|s| if let PlayerSlot::Keep(id) = s { Some(*id) } else { None }).collect();
-        // Removed players, their instruments, and the tracks only they used.
+        let kept: Vec<Id> = list.iter().filter_map(|s| if let PlayerSlot::Keep { id, .. } = s { Some(*id) } else { None }).collect();
+        // Removed players and their instruments.
         let gone: Vec<Id> = p.players.iter().map(|pl| pl.id).filter(|id| !kept.contains(id)).collect();
         p.instruments.retain(|i| !gone.contains(&i.player));
-        let used: Vec<Id> = p.instruments.iter().filter_map(|i| i.track).collect();
-        let gone_nodes: Vec<Id> = p.tracks.iter().filter(|t| !used.contains(&t.id)).filter_map(|t| t.instrument_node).collect();
-        p.tracks.retain(|t| used.contains(&t.id));
-        let still_used: Vec<Id> = p.tracks.iter().filter_map(|t| t.instrument_node).collect();
-        for n in gone_nodes.into_iter().filter(|n| !still_used.contains(n)) {
-            p.nodes.retain(|x| x.id != n);
-            p.edges.retain(|e| e.from != n && e.to != n);
-            p.plugin_state.remove(&n);
-        }
         p.players.retain(|pl| !gone.contains(&pl.id));
         for m in p.movements.iter_mut() {
             m.lanes.retain(|l| !gone.contains(&l.player));
+        }
+        // Kept players' instruments.
+        let mut changed = 0;
+        for slot in list {
+            if let PlayerSlot::Keep { id, instruments } = slot {
+                changed += reconcile_instruments(p, *id, instruments);
+            }
         }
         // New players.
         let mut order = Vec::new();
         for slot in list {
             let id = match slot {
-                PlayerSlot::Keep(id) => *id,
-                PlayerSlot::New { name, abbr, clef, transposition } => {
-                    let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
-                    let used_channels: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
-                    let midi_channel = (0..16).find(|c| !used_channels.contains(c)).unwrap_or((p.tracks.len() % 16) as u8);
-                    p.tracks.push(Track { id: track, name: name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-                    let clefs: Vec<&str> = clef.split('+').collect();
-                    p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr.clone(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track) });
-                    p.players.push(Player { id: player, name: name.clone(), instruments: vec![inst] });
+                PlayerSlot::Keep { id, .. } => *id,
+                PlayerSlot::New { instruments } => {
+                    let player = p.allocate_id();
+                    let ids: Vec<Id> = instruments.iter().map(|spec| add_instrument(p, player, spec)).collect();
+                    p.players.push(Player { id: player, name: instruments[0].name.clone(), instruments: ids.clone() });
+                    let clefs: Vec<String> = instruments[0].clef.split('+').map(str::to_string).collect();
                     for mi in 0..p.movements.len() {
                         let bars: Vec<(Frac, Frac)> = {
                             let m = &p.movements[mi];
@@ -605,10 +711,10 @@ impl Editor {
                                 .map(|&(start, duration)| Event { id: p.allocate_id(), kind: EventKind::Rest, start, duration, heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] })
                                 .collect();
                             let (change, voice) = (p.allocate_id(), p.allocate_id());
-                            let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: c.to_string() }] };
+                            let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: c.clone() }] };
                             p.movements[mi].lanes.push(Lane {
                                 player,
-                                changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
+                                changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: ids[0] }],
                                 clefs: clef_changes,
                                 texts: vec![],
                                 chords: vec![],
@@ -622,6 +728,7 @@ impl Editor {
             };
             order.push(id);
         }
+        drop_unused_tracks(p);
         // The list's order: players, their staves (a player's own staves
         // keep theirs), and the mixer's tracks.
         let rank = |player: Id| order.iter().position(|x| *x == player).unwrap_or(usize::MAX);
@@ -629,25 +736,116 @@ impl Editor {
         for m in p.movements.iter_mut() {
             m.lanes.sort_by_key(|l| rank(l.player)); // stable
         }
-        let track_rank: std::collections::HashMap<Id, usize> = p.instruments.iter().filter_map(|i| Some((i.track?, rank(i.player)))).fold(std::collections::HashMap::new(), |mut acc, (t, r)| {
-            let e = acc.entry(t).or_insert(r);
-            *e = (*e).min(r);
-            acc
-        });
-        p.tracks.sort_by_key(|t| track_rank.get(&t.id).copied().unwrap_or(usize::MAX));
+        let mut track_rank: std::collections::HashMap<Id, (usize, usize)> = std::collections::HashMap::new();
+        for pl in &p.players {
+            for (k, i) in pl.instruments.iter().enumerate() {
+                if let Some(t) = p.instruments.iter().find(|x| x.id == *i).and_then(|x| x.track) {
+                    let r = (rank(pl.id), k);
+                    let e = track_rank.entry(t).or_insert(r);
+                    *e = (*e).min(r);
+                }
+            }
+        }
+        p.tracks.sort_by_key(|t| track_rank.get(&t.id).copied().unwrap_or((usize::MAX, 0)));
+        let (added, removed) = (list.len() - kept.len(), gone.len());
+        let same_order = before.players.iter().map(|pl| pl.id).eq(self.project.players.iter().map(|pl| pl.id));
+        if added == 0 && removed == 0 && changed == 0 && same_order {
+            self.project = before;
+            self.status = "No changes to the players".into();
+            return Ok(());
+        }
         // Nothing to point at in staves that may be gone.
         self.selection = None;
         self.range = None;
         self.caret = Frac::ZERO;
         self.caret_lane = 0;
-        let (added, removed) = (list.len() - kept.len(), gone.len());
-        self.status = match (added, removed) {
-            (0, 0) => "Players reordered".into(),
-            (a, 0) => format!("{a} player{} added", if a == 1 { "" } else { "s" }),
-            (0, r) => format!("{r} player{} removed", if r == 1 { "" } else { "s" }),
-            (a, r) => format!("{a} player{} added, {r} removed", if a == 1 { "" } else { "s" }),
-        };
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        let mut parts = Vec::new();
+        if added > 0 {
+            parts.push(format!("{added} player{} added", plural(added)));
+        }
+        if removed > 0 {
+            parts.push(format!("{removed} player{} removed", plural(removed)));
+        }
+        if changed > 0 {
+            parts.push(format!("{changed} instrument{} changed", plural(changed)));
+        }
+        self.status = if parts.is_empty() { "Players updated".into() } else { parts.join(", ") };
         self.commit(before, "Players");
+        Ok(())
+    }
+
+    /// An instrument change at the caret, the selection's start or the
+    /// selected bar, on its player's staves: to an instrument the player
+    /// holds, or one added as a doubling (with a track). The clef follows
+    /// the instrument. Empty text removes the change there.
+    pub fn change_instrument(&mut self, text: &str) -> Result<(), String> {
+        let (lane, target) = self.structure_target().ok_or("No movement")?;
+        let m = self.movement().ok_or("No movement")?;
+        let player = m.lanes.get(lane).ok_or("No staves")?.player;
+        let mi = self.movement;
+        let before = self.snapshot();
+        if text.trim().is_empty() {
+            let mut removed = false;
+            for l in self.project.movements[mi].lanes.iter_mut().filter(|l| l.player == player) {
+                let n = l.changes.len();
+                l.changes.retain(|c| c.at == Frac::ZERO || c.at != target);
+                removed |= l.changes.len() != n;
+            }
+            if !removed {
+                return Err("No instrument change here".into());
+            }
+            self.commit(before, "Remove instrument change");
+            self.status = "Instrument change removed".into();
+            return Ok(());
+        }
+        let spec = crate::files::instrument_spec(text).ok_or("Name an instrument")?;
+        let p = &mut self.project;
+        let held = p.player(player).map(|pl| pl.instruments.clone()).unwrap_or_default();
+        let inst = match held.iter().copied().find(|i| p.instrument(*i).is_some_and(|x| x.name.eq_ignore_ascii_case(&spec.name))) {
+            Some(i) => i,
+            None => {
+                let i = add_instrument(p, player, &spec);
+                if let Some(pl) = p.players.iter_mut().find(|pl| pl.id == player) {
+                    pl.instruments.push(i);
+                }
+                i
+            }
+        };
+        let name = p.instrument(inst).map(|i| i.name.clone()).unwrap_or_default();
+        let new_clef = p.instrument(inst).map(|i| i.clef.split('+').next().unwrap_or("treble").to_string()).unwrap_or_default();
+        let first_clef = |p: &Project, l: &Lane| l.changes.first().and_then(|c| p.instrument(c.instrument)).map(|i| i.clef.split('+').next().unwrap_or("treble").to_string()).unwrap_or_default();
+        let lanes: Vec<usize> = p.movements[mi].lanes.iter().enumerate().filter(|(_, l)| l.player == player).map(|(i, _)| i).collect();
+        // The player's first staff: the clef in force here, before the change.
+        let first_lane = lanes[0];
+        let clef_before = {
+            let l = &p.movements[mi].lanes[first_lane];
+            l.clefs.iter().rfind(|c| c.at <= target).map(|c| c.clef.clone()).unwrap_or_else(|| first_clef(p, l))
+        };
+        let mut ids = Ids(p.next_id);
+        for &li in &lanes {
+            let l = &mut p.movements[mi].lanes[li];
+            if target == Frac::ZERO {
+                match l.changes.first_mut() {
+                    Some(c) => c.instrument = inst,
+                    None => l.changes.push(InstrumentChange { id: ids.next(), at: Frac::ZERO, instrument: inst }),
+                }
+            } else {
+                l.changes.retain(|c| c.at != target);
+                l.changes.push(InstrumentChange { id: ids.next(), at: target, instrument: inst });
+                l.changes.sort_by_key(|c| c.at);
+            }
+        }
+        if target > Frac::ZERO && new_clef != clef_before && !new_clef.is_empty() {
+            let l = &mut p.movements[mi].lanes[first_lane];
+            l.clefs.retain(|c| c.at != target);
+            l.clefs.push(ClefChange { id: ids.next(), at: target, clef: new_clef });
+            l.clefs.sort_by_key(|c| c.at);
+        }
+        p.next_id = ids.0;
+        self.commit(before, "Instrument change");
+        let m = self.movement().unwrap();
+        self.status = format!("{name} · bar {}", edit::bar_number(m, target.min(m.length)).0);
         Ok(())
     }
 
@@ -1083,6 +1281,7 @@ impl Editor {
     pub fn select(&mut self, id: Option<Id>) {
         self.selection = id;
         self.range = None;
+        self.picked.clear();
         self.slur = None;
         if let Some((lane, start)) = id.and_then(|id| self.event_of(id)).map(|(loc, e)| (loc.lane, e.start)) {
             if !self.input_mode {
@@ -1095,6 +1294,7 @@ impl Editor {
     pub fn clear_selection(&mut self) {
         self.selection = None;
         self.range = None;
+        self.picked.clear();
         self.range_anchor = None;
         self.slur = None;
     }
@@ -1110,6 +1310,7 @@ impl Editor {
 
     fn set_range(&mut self, r: Range) {
         self.selection = None;
+        self.picked.clear();
         self.caret_lane = r.lane_from;
         self.caret = r.from;
         self.range = Some(r);
@@ -1204,6 +1405,10 @@ impl Editor {
     }
 
     pub fn delete_selection(&mut self) {
+        if !self.picked.is_empty() {
+            self.delete_picked();
+            return;
+        }
         if let Some(r) = self.range {
             self.edit_range_voices("Delete", |evs, index, ids| Some(edit::erase_range(evs, r.from, r.to, index == 1, ids)));
             // Tuplets inside the passage go with it.
@@ -1225,6 +1430,12 @@ impl Editor {
     }
 
     pub fn toggle_articulation(&mut self, flag: u16) {
+        if !self.picked.is_empty() {
+            let Some(m) = self.movement() else { return };
+            let set = !self.picked_events(m).iter().all(|(_, e, _)| e.articulations & flag != 0);
+            self.modify_picked("Articulation", |e, _| e.articulations = if set { e.articulations | flag } else { e.articulations & !flag });
+            return;
+        }
         if let Some(r) = self.range {
             // If every note in the passage already has it, remove it; else add it.
             let Some(m) = self.movement() else { return };
@@ -1254,6 +1465,10 @@ impl Editor {
     /// `None` clears the dynamic.
     pub fn set_dynamic(&mut self, mark: Option<u8>) {
         let mark = mark.filter(|&m| (m as usize) < DYNAMICS.len());
+        if !self.picked.is_empty() {
+            self.modify_picked("Dynamic", |e, _| e.dynamic = mark);
+            return;
+        }
         // A selected dynamic: that one.
         if let Some(ev) = self.selection.and_then(ids::as_dynamic) {
             self.set_dynamic_of(ev, mark);
@@ -1271,6 +1486,31 @@ impl Editor {
             return;
         }
         self.edit_selected("Dynamic", |evs, id, _, _| edit::modify_event(evs, id, |e, _| e.dynamic = mark));
+    }
+
+    /// Beams by hand on the selected notes: `span::BEAM_BREAK` (a new beam
+    /// starts here), `BEAM_JOIN` (the beam goes on into it), `NO_BEAM`, or
+    /// 0 (automatic).
+    pub fn set_beam(&mut self, mode: u8) {
+        let set = |e: &mut Event| {
+            if !e.is_rest() {
+                e.spans = (e.spans & !span::BEAMS) | mode;
+            }
+        };
+        let label = match mode {
+            span::BEAM_BREAK => "Break beam",
+            span::BEAM_JOIN => "Join beam",
+            span::NO_BEAM => "No beam",
+            _ => "Automatic beams",
+        };
+        if !self.picked.is_empty() {
+            self.modify_picked(label, |e, _| set(e));
+        } else if let Some(r) = self.range {
+            self.edit_range_voices(label, |evs, _, _| edit::apply_to_range(evs, r.from, r.to, set));
+        } else {
+            self.edit_selected(label, |evs, id, _, _| edit::modify_event(evs, id, |e, _| set(e)));
+        }
+        self.status = label.into();
     }
 
     pub fn toggle_tie(&mut self) {
@@ -1293,7 +1533,7 @@ impl Editor {
 
     /// True when a note, rest or passage is selected.
     pub fn has_selection(&self) -> bool {
-        self.range.is_some() || self.selection.is_some_and(|id| self.event_of(id).is_some())
+        !self.picked.is_empty() || self.range.is_some() || self.selection.is_some_and(|id| self.event_of(id).is_some())
     }
 
     /// Changes the rhythm of the selection (a note or rest, or every event
@@ -1508,6 +1748,16 @@ impl Editor {
     /// An accidental key with music selected (outside note input): the
     /// selected heads take it; pressing it again returns to the key's.
     pub fn set_selection_accidental(&mut self, alter: i8) {
+        if !self.picked.is_empty() {
+            self.modify_picked("Accidental", |e, heads| {
+                for &k in heads {
+                    let h = &mut e.heads[k];
+                    h.pitch.alter = if h.pitch.alter == alter { 0 } else { alter };
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            return;
+        }
         let Some(m) = self.movement() else { return };
         let keys: Vec<(Frac, i32)> = m.keys.iter().map(|k| (k.at, k.fifths)).collect();
         let key_at = move |at: Frac| keys.iter().filter(|k| k.0 <= at).last().map(|k| k.1).unwrap_or(0);
@@ -1553,7 +1803,318 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    // ------------------------------------------------------ explode/reduce --
+    /// The passage's staves, its voice-1 index on each, checked for
+    /// explode/reduce: two staves or more, no tuplets.
+    fn staves_passage(&self, what: &str) -> Result<(Range, Vec<usize>), String> {
+        let r = self.range.filter(|r| r.lane_to > r.lane_from).ok_or_else(|| format!("{what}: select a passage across two or more staves"))?;
+        let m = self.movement().ok_or("No movement")?;
+        let mut voice1 = Vec::new();
+        for li in r.lane_from..=r.lane_to {
+            let l = m.lanes.get(li).ok_or("No such staff")?;
+            if l.voices.iter().any(|v| v.tuplets.iter().any(|t| t.start < r.to && t.end() > r.from)) {
+                return Err(format!("{what} does not handle tuplets yet"));
+            }
+            voice1.push(l.voices.iter().position(|v| v.index == 1).ok_or("A staff has no voice 1")?);
+        }
+        Ok((r, voice1))
+    }
+
+    /// Spreads the chords of a staff in the passage over all its staves,
+    /// top note to the top staff. One undo step.
+    pub fn explode(&mut self) -> Result<(), String> {
+        let (r, voice1) = self.staves_passage("Explode")?;
+        let m = self.movement().unwrap();
+        let has_chords = |li: usize| m.lanes[li].voices[voice1[li - r.lane_from]].events.iter().any(|e| e.start >= r.from && e.start < r.to && e.heads.len() > 1);
+        let source = (r.lane_from..=r.lane_to).find(|&li| has_chords(li)).ok_or("Explode: no chords in the passage")?;
+        let src = m.lanes[source].voices[voice1[source - r.lane_from]].events.clone();
+        let parts = edit::staves::explode(&src, r.from, r.to, r.lane_to - r.lane_from + 1);
+        self.transact("Explode", |m, ids| {
+            for (j, clip) in parts.iter().enumerate() {
+                let (li, vi) = (r.lane_from + j, voice1[j]);
+                let res = edit::paste_events(&m.lanes[li].voices[vi].events, clip, r.from, r.to - r.from, true, ids);
+                set_events(m, li, vi, &res);
+            }
+            true
+        });
+        self.status = format!("Exploded onto {} staves", parts.len());
+        Ok(())
+    }
+
+    /// Combines the passage's staves into chords on one: an empty staff of
+    /// the passage if there is one, else the top one. One undo step.
+    pub fn reduce(&mut self) -> Result<(), String> {
+        let (r, voice1) = self.staves_passage("Reduce")?;
+        let m = self.movement().unwrap();
+        let empty = |li: usize| m.lanes[li].voices.iter().all(|v| v.events.iter().all(|e| e.start < r.from || e.start >= r.to || e.is_rest()));
+        let dest = (r.lane_from..=r.lane_to).find(|&li| empty(li)).unwrap_or(r.lane_from);
+        let sources: Vec<std::sync::Arc<Vec<Event>>> = (r.lane_from..=r.lane_to).filter(|&li| li != dest || !empty(li)).flat_map(|li| m.lanes[li].voices.iter().map(|v| v.events.clone())).collect();
+        let lists: Vec<&[Event]> = sources.iter().map(|v| v.as_slice()).collect();
+        let clip = edit::staves::reduce(&lists, r.from, r.to);
+        if clip.iter().all(|e| e.is_rest()) {
+            return Err("Reduce: no notes in the passage".into());
+        }
+        let vi = voice1[dest - r.lane_from];
+        self.transact("Reduce", |m, ids| {
+            let res = edit::paste_events(&m.lanes[dest].voices[vi].events, &clip, r.from, r.to - r.from, true, ids);
+            set_events(m, dest, vi, &res);
+            true
+        });
+        let name = self.movement().and_then(|m| m.lanes[dest].changes.first()).and_then(|c| self.project.instrument(c.instrument)).map(|i| i.name.clone()).unwrap_or_default();
+        self.status = format!("Reduced onto {name}");
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ filters --
+    /// Picks what a filter query finds ("top", "voice 2", "above C5", "F#",
+    /// "staccato", "rests", "dynamics mf"…) in the selected passage, among
+    /// the elements already picked, or else in the whole movement.
+    pub fn filter(&mut self, text: &str) -> Result<(), String> {
+        let q = edit::select::parse_query(text)?;
+        let m = self.movement().ok_or("No movement")?;
+        if m.lanes.is_empty() {
+            return Err("No staves".into());
+        }
+        let (lanes, from, to, scope) = match self.range {
+            Some(r) => (r.lane_from..=r.lane_to, r.from, r.to, "in the passage"),
+            None => (0..=m.lanes.len() - 1, Frac::ZERO, m.length, "in the movement"),
+        };
+        let mut found = edit::select::find(m, lanes, from, to, &q);
+        if self.range.is_none() && !self.picked.is_empty() {
+            found.retain(|id| self.picked.contains(id));
+        }
+        self.pick(found, &q.pick, scope)
+    }
+
+    /// Picks what is like the selected element in the movement (or the
+    /// passage): notes on its staff, rests, the same dynamic, the same
+    /// verse's lyrics, chord symbols, the same text.
+    pub fn select_similar(&mut self) -> Result<(), String> {
+        let id = self.selection.or(self.picked.first().copied()).ok_or("Select something first")?;
+        let m = self.movement().ok_or("No movement")?;
+        let all = 0..=m.lanes.len().saturating_sub(1);
+        let (q, lanes) = if let Some(ev) = ids::as_dynamic(id) {
+            let mark = self.event_of(ev).and_then(|(_, e)| e.dynamic);
+            (edit::select::Query::of(edit::select::Pick::Dynamics(mark)), all)
+        } else if let Some((_, verse)) = ids::as_lyric(id) {
+            (edit::select::Query::of(edit::select::Pick::Lyrics(Some(verse))), all)
+        } else if m.lanes.iter().any(|l| l.chords.iter().any(|c| c.id == id)) {
+            (edit::select::Query::of(edit::select::Pick::ChordSymbols), all)
+        } else if let Some(t) = m.lanes.iter().flat_map(|l| l.texts.iter()).find(|t| t.id == id) {
+            (edit::select::Query::of(edit::select::Pick::Texts(Some(t.text.to_lowercase()))), all)
+        } else if let Some((loc, e)) = self.event_of(id) {
+            if e.is_rest() {
+                (edit::select::Query::of(edit::select::Pick::Rests), all)
+            } else {
+                (edit::select::Query::notes(), loc.lane..=loc.lane)
+            }
+        } else {
+            return Err("Nothing like it to select".into());
+        };
+        let (lanes, from, to, scope) = match self.range {
+            Some(r) => (r.lane_from..=r.lane_to, r.from, r.to, "in the passage"),
+            None if q.pick == edit::select::Pick::Notes => (lanes, Frac::ZERO, m.length, "on the staff"),
+            None => (lanes, Frac::ZERO, m.length, "in the movement"),
+        };
+        let found = edit::select::find(m, lanes, from, to, &q);
+        self.pick(found, &q.pick, scope)
+    }
+
+    fn pick(&mut self, found: Vec<Id>, what: &edit::select::Pick, scope: &str) -> Result<(), String> {
+        if found.is_empty() {
+            return Err(format!("No {} {scope}", edit::select::describe(what, 2).trim_start_matches("2 ")));
+        }
+        self.status = format!("{} picked {scope}", edit::select::describe(what, found.len()));
+        self.selection = None;
+        self.range = None;
+        self.slur = None;
+        self.picked = found;
+        self.revision += 1; // shown, not changed
+        Ok(())
+    }
+
+    /// The events holding picked noteheads (or picked dynamics, whose
+    /// events they are): (lane, event, picked head indices).
+    fn picked_events<'m>(&self, m: &'m Movement) -> Vec<(usize, &'m Event, Vec<usize>)> {
+        let mut out = Vec::new();
+        for (li, l) in m.lanes.iter().enumerate() {
+            for v in &l.voices {
+                for e in v.events.iter() {
+                    let heads: Vec<usize> = e.heads.iter().enumerate().filter(|(_, h)| self.picked.contains(&h.id)).map(|(k, _)| k).collect();
+                    if !heads.is_empty() || self.picked.contains(&ids::dynamic(e.id)) && !e.is_rest() {
+                        out.push((li, e, heads));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Changes every event holding a picked note (given the picked heads'
+    /// indices; all of them for a picked dynamic). One undo step.
+    fn modify_picked(&mut self, label: &str, mut f: impl FnMut(&mut Event, &[usize])) -> bool {
+        let before = self.snapshot();
+        let picked = self.picked.clone();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return false };
+        let mut any = false;
+        for l in m.lanes.iter_mut() {
+            for v in l.voices.iter_mut() {
+                let touched = v.events.iter().any(|e| e.heads.iter().any(|h| picked.contains(&h.id)) || (!e.is_rest() && picked.contains(&ids::dynamic(e.id))));
+                if !touched {
+                    continue;
+                }
+                let mut evs = (*v.events).clone();
+                for e in evs.iter_mut() {
+                    let mut heads: Vec<usize> = e.heads.iter().enumerate().filter(|(_, h)| picked.contains(&h.id)).map(|(k, _)| k).collect();
+                    if heads.is_empty() && !e.is_rest() && picked.contains(&ids::dynamic(e.id)) {
+                        heads = (0..e.heads.len()).collect();
+                    }
+                    if !heads.is_empty() {
+                        f(e, &heads);
+                        any = true;
+                    }
+                }
+                v.events = Arc::new(evs);
+            }
+        }
+        if any {
+            self.commit(before, label);
+        } else {
+            self.project = before;
+        }
+        any
+    }
+
+    /// Deletes what is picked: notes (rests in voice 1), dynamics, lyrics,
+    /// chord symbols and text. One undo step.
+    fn delete_picked(&mut self) {
+        let before = self.snapshot();
+        let picked = std::mem::take(&mut self.picked);
+        let mut ids = Ids(self.project.next_id);
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        let mut n = 0;
+        for id in &picked {
+            if edit::remove_item(m, *id).is_some() {
+                n += 1;
+            }
+        }
+        for l in m.lanes.iter_mut() {
+            for v in l.voices.iter_mut() {
+                let mut evs = (*v.events).clone();
+                let mut changed = false;
+                for e in evs.iter_mut() {
+                    if picked.contains(&ids::dynamic(e.id)) && e.dynamic.is_some() {
+                        e.dynamic = None;
+                        changed = true;
+                        n += 1;
+                    }
+                    let before = e.lyrics.len();
+                    e.lyrics.retain(|ly| !picked.contains(&ids::lyric(e.id, ly.verse)));
+                    if e.lyrics.len() != before {
+                        changed = true;
+                        n += before - e.lyrics.len();
+                    }
+                }
+                // Notes, one by one (a chord loses heads, the last leaves a rest).
+                let heads: Vec<Id> = evs.iter().flat_map(|e| e.heads.iter().map(|h| h.id)).filter(|h| picked.contains(h)).collect();
+                for h in heads {
+                    if let Some(r) = edit::delete_element(&evs, h, v.index == 1, &mut ids) {
+                        evs = r.events;
+                        changed = true;
+                        n += 1;
+                    }
+                }
+                if changed {
+                    v.events = Arc::new(evs);
+                }
+            }
+        }
+        self.project.next_id = ids.0;
+        if n > 0 {
+            self.commit(before, "Delete");
+            self.status = format!("{n} deleted");
+        } else {
+            self.project = before;
+        }
+    }
+
+    /// Transposes by an interval ("up M2", "down P5") or to a key ("to
+    /// Eb", by the nearer way from the key in force): the selected passage
+    /// (notes and chord symbols), or with nothing selected the whole score,
+    /// key signatures included. One undo step.
+    pub fn transpose(&mut self, text: &str) -> Result<(), String> {
+        let spec = edit::parse_transpose(text).ok_or("Not understood: an interval (up M2, down P5, -m3, octave) or a key (to Eb)")?;
+        let range = self.range;
+        let m = self.movement().ok_or("No movement")?;
+        let by = match spec {
+            edit::TransposeSpec::By(i) => i,
+            edit::TransposeSpec::To { step, alter } => {
+                let at = range.map(|r| r.from).unwrap_or(Frac::ZERO);
+                let k = m.keys.iter().rfind(|k| k.at <= at).copied().unwrap_or(Key { at: Frac::ZERO, fifths: 0, minor: false });
+                edit::interval_between(edit::key_tonic(k.fifths, k.minor), (step, alter))
+            }
+        };
+        if by.is_zero() {
+            return Err("That is the key it is in".into());
+        }
+        if !self.picked.is_empty() {
+            self.modify_picked("Transpose", |e, heads| {
+                for &k in heads {
+                    e.heads[k].pitch = e.heads[k].pitch.transposed(by);
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            self.status = format!("{} notes transposed {}", self.picked.len(), interval_name(by));
+            return Ok(());
+        }
+        let before = self.snapshot();
+        let chord = |c: &mut ChordSymbol| c.text = notation::transpose_chord_text(&c.text, by);
+        match range {
+            Some(r) => {
+                let m = &mut self.project.movements[self.movement];
+                for li in r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1)) {
+                    let lane = &mut m.lanes[li];
+                    for v in lane.voices.iter_mut() {
+                        if let Some(res) = edit::transpose_by(&v.events, r.from, r.to, by) {
+                            v.events = Arc::new(res.events);
+                        }
+                    }
+                    lane.chords.iter_mut().filter(|c| c.at >= r.from && c.at < r.to).for_each(chord);
+                }
+            }
+            None => {
+                for m in self.project.movements.iter_mut() {
+                    for k in m.keys.iter_mut() {
+                        k.fifths = shift_key(k.fifths, by.fifths());
+                    }
+                    for lane in m.lanes.iter_mut() {
+                        for v in lane.voices.iter_mut() {
+                            let mut evs = (*v.events).clone();
+                            evs.iter_mut().for_each(|e| edit::transpose_event(e, by));
+                            v.events = Arc::new(evs);
+                        }
+                        lane.chords.iter_mut().for_each(chord);
+                    }
+                }
+            }
+        }
+        self.commit(before, "Transpose");
+        let what = if range.is_some() { "The passage" } else { "The score" };
+        self.status = format!("{what} transposed {}", interval_name(by));
+        Ok(())
+    }
+
     pub fn transpose_selection(&mut self, steps: i32) {
+        if !self.picked.is_empty() {
+            self.modify_picked("Transpose", |e, heads| {
+                for &k in heads {
+                    let h = &mut e.heads[k];
+                    h.pitch = edit::from_diatonic(edit::diatonic(h.pitch) + steps, h.pitch.alter as i32);
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            return;
+        }
         if let Some(r) = self.range {
             self.edit_range_voices("Transpose", |evs, _, _| edit::transpose_range(evs, r.from, r.to, steps));
             return;
@@ -1843,6 +2404,15 @@ impl Editor {
                 return Ok(());
             }
         }
+        if kind == PopoverKind::Instrument {
+            return self.change_instrument(&text);
+        }
+        if kind == PopoverKind::Transpose {
+            return self.transpose(&text);
+        }
+        if kind == PopoverKind::Filter {
+            return self.filter(&text);
+        }
         if kind == PopoverKind::MovementTitle {
             self.rename_movement(&text);
             return Ok(());
@@ -1897,11 +2467,11 @@ impl Editor {
                 Box::new(move |m, _| edit::set_pickup(m, len))
             }
             PopoverKind::Time => {
-                let (n, d) = edit::parse_time(&text).ok_or("Time signature not understood: try 3/4, 6/8, C, C| or \"pickup 1/4\"")?;
+                let (n, d, beams) = edit::parse_time_grouped(&text).ok_or("Time signature not understood: try 3/4, 6/8, C, C|, \"7/8 2+2+3\" or \"pickup 1/4\"")?;
                 at = bar;
                 label = "Time signature".into();
                 Box::new(move |m, _| {
-                    edit::set_meter(m, bar, n, d);
+                    edit::set_meter_grouped(m, bar, n, d, beams);
                     // Keep the movement a whole number of bars in the new meter.
                     let last = edit::bar_start_at_or_before(m, m.length);
                     if last != m.length {
@@ -1998,7 +2568,7 @@ impl Editor {
                 };
                 return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -2298,6 +2868,9 @@ impl Editor {
     /// The selection in words: "E5 · Flute", "Bars 2–4 · 3 staves".
     pub fn selection_label(&self) -> String {
         let Some(m) = self.movement() else { return String::new() };
+        if !self.picked.is_empty() {
+            return format!("{} picked", self.picked.len());
+        }
         if let Some(r) = self.range {
             let b0 = edit::bar_number(m, r.from).0;
             let b1 = edit::bar_number(m, (r.to - Frac::new(1, 1024)).max(r.from)).0;
@@ -2343,6 +2916,9 @@ pub enum PopoverKind {
     Dynamic,
     Title,
     Composer,
+    Instrument,
+    Transpose,
+    Filter,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -2365,12 +2941,15 @@ impl PopoverKind {
             PopoverKind::Dynamic => "Dynamic",
             PopoverKind::Title => "Title",
             PopoverKind::Composer => "Composer",
+            PopoverKind::Instrument => "Instrument change",
+            PopoverKind::Transpose => "Transpose",
+            PopoverKind::Filter => "Select only",
         }
     }
     pub fn placeholder(self) -> &'static str {
         match self {
             PopoverKind::Key => "C, Eb, f#, a minor",
-            PopoverKind::Time => "3/4, 6/8, C, C|, pickup 1/4",
+            PopoverKind::Time => "3/4, 6/8, C, C|, 7/8 2+2+3, pickup 1/4",
             PopoverKind::Clef => "treble, bass, alto, tenor; 8va, 8vb, 15ma, loco",
             PopoverKind::Barline => "||  |.  |:  :|  :|:",
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",
@@ -2387,7 +2966,38 @@ impl PopoverKind {
             PopoverKind::Dynamic => "pp, mf, ff, sfz, fp, rfz…; empty clears",
             PopoverKind::Title => "Serenade",
             PopoverKind::Composer => "J. S. Bach",
+            PopoverKind::Instrument => "Piccolo, Clarinet in A, Flute…; empty removes",
+            PopoverKind::Transpose => "up M2, down P5, -m3, octave; to Eb",
+            PopoverKind::Filter => "top, bottom, voice 2, above C5, F#, staccato, tied, rests, dynamics mf, lyrics",
         }
+    }
+}
+
+/// "up a major 2nd", "down a perfect 5th".
+pub fn interval_name(i: Interval) -> String {
+    let (dir, i) = if i.semitones < 0 || (i.semitones == 0 && i.steps < 0) { ("down", i.inverse()) } else { ("up", i) };
+    const BASE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let class = i.steps.rem_euclid(7);
+    let diff = i.semitones - BASE[class as usize] - 12 * i.steps.div_euclid(7);
+    let perfect = matches!(class, 0 | 3 | 4);
+    let quality = match (perfect, diff) {
+        (true, 0) => "perfect",
+        (false, 0) => "major",
+        (false, -1) => "minor",
+        (_, d) if d > 0 => "augmented",
+        _ => "diminished",
+    };
+    let n = i.steps + 1;
+    let suffix = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "st",
+        (2, x) if x != 12 => "nd",
+        (3, x) if x != 13 => "rd",
+        _ => "th",
+    };
+    let article = if quality.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    match (quality, n) {
+        ("perfect", 8) => format!("{dir} an octave"),
+        _ => format!("{dir} {article} {quality} {n}{suffix}"),
     }
 }
 

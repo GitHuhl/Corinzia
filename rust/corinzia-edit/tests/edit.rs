@@ -166,7 +166,7 @@ fn header() -> Movement {
         length: f(8, 1),
         revision: 0,
         tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
@@ -221,7 +221,7 @@ fn parse_tempo_cases() {
 #[test]
 fn bar_positions() {
     let mut h = header();
-    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4, pickup: false });
+    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4, pickup: false, beams: [0; 8] });
     assert_eq!(bar_start_at_or_before(&h, f(3, 2)), f(1, 1));
     assert_eq!(bar_start_at_or_before(&h, f(2, 1)), f(2, 1));
     assert_eq!(bar_start_at_or_before(&h, f(23, 8)), f(11, 4));
@@ -601,4 +601,169 @@ fn fingering_and_bowing_popovers() {
     assert_eq!(parse_bowing("upbow"), Some(art::UP_BOW));
     assert_eq!(parse_bowing("pizz."), None);
     assert_eq!(parse_ornament("up bow"), Some(art::UP_BOW));
+}
+
+#[test]
+fn transposition_intervals_and_keys() {
+    use corinzia_edit::{interval_between, key_tonic, parse_interval, parse_transpose, TransposeSpec};
+    use corinzia_model::Interval;
+    assert_eq!(parse_interval("M2"), Some(Interval::new(1, 2)));
+    assert_eq!(parse_interval("up m3"), Some(Interval::new(2, 3)));
+    assert_eq!(parse_interval("down P5"), Some(Interval::new(-4, -7)));
+    assert_eq!(parse_interval("-M2"), Some(Interval::new(-1, -2)));
+    assert_eq!(parse_interval("A4"), Some(Interval::new(3, 6)));
+    assert_eq!(parse_interval("d5"), Some(Interval::new(4, 6)));
+    assert_eq!(parse_interval("P8"), Some(Interval::new(7, 12)));
+    assert_eq!(parse_interval("down an octave"), Some(Interval::new(-7, -12)));
+    assert_eq!(parse_interval("M10"), Some(Interval::new(9, 16)));
+    assert_eq!(parse_interval("P3"), None, "no perfect third");
+    assert_eq!(parse_interval("M5"), None);
+    assert_eq!(parse_interval("x"), None);
+    // Tonics on the line of fifths.
+    assert_eq!(key_tonic(0, false), (0, 0)); // C
+    assert_eq!(key_tonic(-3, false), (2, -1)); // E-flat
+    assert_eq!(key_tonic(0, true), (5, 0)); // a
+    assert_eq!(key_tonic(6, false), (3, 1)); // F-sharp
+    assert_eq!(key_tonic(3, true), (3, 1)); // f-sharp minor (A major's relative)
+    // The nearer way: C to E-flat is up a minor third; C to A down a minor third.
+    assert_eq!(interval_between((0, 0), (2, -1)), Interval::new(2, 3));
+    assert_eq!(interval_between((0, 0), (5, 0)), Interval::new(-2, -3));
+    assert_eq!(parse_transpose("to Eb"), Some(TransposeSpec::To { step: 2, alter: -1 }));
+    assert_eq!(parse_transpose("to f#"), Some(TransposeSpec::To { step: 3, alter: 1 }));
+    assert_eq!(parse_transpose("to H"), None);
+    assert_eq!(parse_transpose("up M2"), Some(TransposeSpec::By(Interval::new(1, 2))));
+}
+
+#[test]
+fn filters_pick_notes_by_place_pitch_voice_and_marks() {
+    use corinzia_edit::select::{find, parse_query, Pick};
+    use corinzia_model::*;
+    use corinzia_score::Frac;
+    use std::sync::Arc;
+    let p = |step, octave| Pitch { step, alter: 0, octave };
+    let head = |id, pitch: Pitch, tie| Head { id, pitch, tie, velocity: 0 };
+    let ev = |id, start: i64, heads: Vec<Head>, art: u16, dynamic: Option<u8>| Event {
+        id,
+        kind: if heads.is_empty() { EventKind::Rest } else if heads.len() > 1 { EventKind::Chord } else { EventKind::Note },
+        start: Frac::new(start, 4),
+        duration: Frac::new(1, 4),
+        heads,
+        articulations: art,
+        dynamic,
+        spans: 0,
+        lyrics: vec![],
+        graces: vec![],
+        fingering: vec![],
+    };
+    // C-E-G chord (staccato, mf), D5 tied, a rest, F#4 in voice 2.
+    let v1 = vec![
+        ev(1, 0, vec![head(10, p(0, 4), false), head(11, p(2, 4), false), head(12, p(4, 4), false)], corinzia_score::score::art::STACCATO, Some(4)),
+        ev(2, 1, vec![head(20, p(1, 5), true)], 0, None),
+        ev(3, 2, vec![], 0, None),
+        ev(4, 3, vec![head(40, p(0, 5), false)], 0, Some(4)),
+    ];
+    let v2 = vec![ev(5, 0, vec![head(50, Pitch { step: 3, alter: 1, octave: 4 }, false)], 0, None)];
+    let lane = Lane {
+        player: 1,
+        changes: vec![],
+        clefs: vec![],
+        texts: vec![TextItem { id: 70, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
+        chords: vec![ChordSymbol { id: 80, at: Frac::ZERO, text: "C".into() }],
+        lines: vec![],
+        voices: vec![Voice { id: 6, index: 1, events: Arc::new(v1), tuplets: vec![] }, Voice { id: 7, index: 2, events: Arc::new(v2), tuplets: vec![] }],
+    };
+    let m = Movement { id: 1, ordinal: 0, title: String::new(), length: Frac::int(1), revision: 0, tempo: vec![], meter: vec![], keys: vec![], barlines: vec![], rehearsal: vec![], endings: vec![], navigation: vec![], lanes: vec![lane], slurs: vec![] };
+    let all = |q: &str| find(&m, 0..=0, Frac::ZERO, Frac::int(1), &parse_query(q).unwrap());
+    assert_eq!(all("notes"), [10, 11, 12, 20, 40, 50]);
+    assert_eq!(all("top"), [12, 20, 40, 50]);
+    assert_eq!(all("bottom"), [10, 20, 40, 50]);
+    assert_eq!(all("top voice 1"), [12, 20, 40]);
+    assert_eq!(all("chords"), [10, 11, 12]);
+    assert_eq!(all("voice 2"), [50]);
+    assert_eq!(all("above C5"), [20]);
+    assert_eq!(all("below E4"), [10]);
+    assert_eq!(all("C"), [10, 40]);
+    assert_eq!(all("C5"), [40]);
+    assert_eq!(all("f#"), [50]);
+    assert_eq!(all("staccato"), [10, 11, 12]);
+    assert_eq!(all("stacc top"), [12]);
+    assert_eq!(all("tied"), [20]);
+    assert_eq!(all("rests"), [3]);
+    assert_eq!(all("dynamics"), [corinzia_score::score::ids::dynamic(1), corinzia_score::score::ids::dynamic(4)]);
+    assert_eq!(all("mf").len(), 2);
+    assert!(all("dynamics ff").is_empty());
+    assert_eq!(all("chord symbols"), [80]);
+    assert_eq!(all("text dolce"), [70]);
+    assert!(all("text espress.").is_empty());
+    // Only what starts inside the passage.
+    assert_eq!(find(&m, 0..=0, Frac::new(1, 4), Frac::new(3, 4), &parse_query("notes").unwrap()), [20]);
+    assert!(parse_query("purple").is_err());
+    assert!(parse_query("above C").is_err(), "needs an octave");
+    assert_eq!(parse_query("lyrics verse 2").unwrap().pick, Pick::Lyrics(Some(2)));
+}
+
+#[test]
+fn explode_spreads_chords_and_reduce_combines_staves() {
+    use corinzia_edit::staves::{explode, reduce};
+    use corinzia_model::*;
+    use corinzia_score::Frac;
+    let p = |step, octave| Pitch { step, alter: 0, octave };
+    let h = |pitch| Head { id: 1, pitch, tie: false, velocity: 0 };
+    let ev = |start: Frac, dur: Frac, heads: Vec<Head>| Event {
+        id: 1,
+        kind: if heads.is_empty() { EventKind::Rest } else { EventKind::Note },
+        start,
+        duration: dur,
+        heads,
+        articulations: 0,
+        dynamic: None,
+        spans: 0,
+        lyrics: vec![],
+        graces: vec![],
+        fingering: vec![],
+    };
+    let q = Frac::new(1, 4);
+    // C-E-G-C chord, E-G, a single A, a rest.
+    let src = vec![
+        ev(Frac::ZERO, q, vec![h(p(0, 4)), h(p(2, 4)), h(p(4, 4)), h(p(0, 5))]),
+        ev(q, q, vec![h(p(2, 4)), h(p(4, 4))]),
+        ev(q * Frac::int(2), q, vec![h(p(5, 4))]),
+        ev(q * Frac::int(3), q, vec![]),
+    ];
+    let names = |e: &Event| e.heads.iter().map(|h| format!("{}{}", "CDEFGAB".as_bytes()[h.pitch.step as usize] as char, h.pitch.octave)).collect::<Vec<_>>().join("-");
+    let three = explode(&src, Frac::ZERO, Frac::int(1), 3);
+    assert_eq!(three.len(), 3);
+    let col = |k: usize| three.iter().map(|s| names(&s[k])).collect::<Vec<_>>();
+    assert_eq!(col(0), ["C5", "G4", "C4-E4"], "more notes than staves: the bottom keeps the rest");
+    assert_eq!(col(1), ["G4", "E4", "E4"], "fewer: the lowest is doubled");
+    assert_eq!(col(2), ["A4", "A4", "A4"]);
+    assert!(three.iter().all(|s| s[3].is_rest()));
+    // Reduce: a half note against two quarters; a rest against a note.
+    let top = vec![ev(Frac::ZERO, q * Frac::int(2), vec![h(p(4, 5))]), ev(q * Frac::int(2), q * Frac::int(2), vec![])];
+    let bottom = vec![ev(Frac::ZERO, q, vec![h(p(0, 4))]), ev(q, q, vec![h(p(4, 5))]), ev(q * Frac::int(2), q, vec![h(p(2, 4))]), ev(q * Frac::int(3), q, vec![])];
+    let r = reduce(&[&top, &bottom], Frac::ZERO, Frac::int(1));
+    assert_eq!(r.iter().map(names).collect::<Vec<_>>(), ["C4-G5", "G5", "E4", ""]);
+    assert!(r[0].heads[1].tie, "the held G is tied over the cut");
+    assert!(!r[0].heads[0].tie);
+    assert_eq!(r[1].heads.len(), 1, "G in both staves sounds once");
+    assert_eq!(r[3].duration, q, "the closing rest");
+    assert_eq!(r.iter().map(|e| e.duration).fold(Frac::ZERO, |a, b| a + b), Frac::int(1));
+}
+
+#[test]
+fn time_signatures_with_beam_groups() {
+    use corinzia_edit::parse_time_grouped;
+    let g = |v: &[u8]| {
+        let mut b = [0u8; 8];
+        b[..v.len()].copy_from_slice(v);
+        b
+    };
+    assert_eq!(parse_time_grouped("7/8 2+2+3"), Some((7, 8, g(&[2, 2, 3]))));
+    assert_eq!(parse_time_grouped("2+2+3/8"), Some((7, 8, g(&[2, 2, 3]))));
+    assert_eq!(parse_time_grouped("(3+2)/8"), Some((5, 8, g(&[3, 2]))));
+    assert_eq!(parse_time_grouped("4/4 3+3+2"), None, "groups in quarters must make 4");
+    assert_eq!(parse_time_grouped("4/4 1+3"), Some((4, 4, g(&[1, 3]))));
+    assert_eq!(parse_time_grouped("6/8"), Some((6, 8, [0; 8])));
+    assert_eq!(parse_time_grouped("C"), Some((4, 4, [0; 8])));
+    assert_eq!(parse_time_grouped("7/8 2+x"), None);
 }

@@ -61,7 +61,7 @@ fn measures(s: &Score) -> Vec<Measure> {
     let mut meters = s.meter.clone();
     meters.sort_by(|a, b| a.at.cmp(&b.at));
     if meters.is_empty() || meters[0].at > Frac::ZERO {
-        meters.insert(0, crate::doc::Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false });
+        meters.insert(0, crate::doc::Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
     let mut out = Vec::new();
     let mut at = Frac::ZERO;

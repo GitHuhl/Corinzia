@@ -50,6 +50,14 @@ pub enum Action {
     Cut,
     Paste,
     SelectAll,
+    /// Pick what is like the selected element.
+    SelectSimilar,
+    /// Beams by hand: a `span::BEAMS` bit, or 0 for automatic.
+    Beam(u8),
+    /// Chords of one staff spread over the selected staves.
+    Explode,
+    /// The selected staves combined into chords on one.
+    Reduce,
     InsertBar,
     DeleteBars,
     Undo,
@@ -142,7 +150,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('c', _) => Copy,
             ('x', _) => Cut,
             ('v', _) => Paste,
-            ('a', _) => SelectAll,
+            ('a', false) => SelectAll,
+            ('a', true) => SelectSimilar,
+            ('f', _) => Popover(PopoverKind::Filter),
             ('b', _) => InsertBar,
             ('s', false) => Save,
             ('s', true) => SaveAs,
@@ -150,7 +160,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('n', _) => New,
             ('=' | '+', _) => ZoomIn,
             ('0', _) => FitWidth,
-            ('t', _) => Transposed,
+            ('t', false) => Transposed,
+            ('t', true) => Popover(PopoverKind::Transpose),
             ('-', _) => ZoomOut,
             ('l', false) => Lyrics(1),
             ('l', true) => Lyrics(2),
@@ -174,6 +185,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             'c' if !input_mode => Some(PopoverKind::Clef),
             'b' if !input_mode => Some(PopoverKind::Barline),
             'r' if !input_mode => Some(PopoverKind::Ending),
+            'i' => Some(PopoverKind::Instrument),
             _ => None,
         };
         if let Some(p) = pop {

@@ -133,6 +133,44 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
     Ok(out)
 }
 
+/// One instrument by name: from the known list (a trailing number is kept,
+/// "Violin 2"), or as typed with a clef guessed from it.
+pub fn instrument_spec(name: &str) -> Option<crate::editor::InstrumentSpec> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let (base, number) = match name.rsplit_once(' ') {
+        Some((b, n)) if n.chars().all(|c| c.is_ascii_digit()) && !b.trim().is_empty() => (b.trim(), Some(n)),
+        _ => (name, None),
+    };
+    let suffix = number.map(|n| format!(" {n}")).unwrap_or_default();
+    let key = base.to_lowercase();
+    let (full, abbr, clef) = match INSTRUMENTS.iter().find(|(names, ..)| names.contains(&key.as_str())) {
+        Some((_, full, abbr, clef)) => (format!("{full}{suffix}"), format!("{abbr}{suffix}"), clef.to_string()),
+        None => {
+            let full: String = name.chars().take(40).collect();
+            let full = match full.get(..1) {
+                Some(c) => c.to_uppercase() + &full[1..],
+                None => full,
+            };
+            let abbr = format!("{}.", full.chars().take(3).collect::<String>());
+            (full, abbr, guess_clef(base).to_string())
+        }
+    };
+    let transposition = transposition_of(&full);
+    Some(crate::editor::InstrumentSpec { name: full, abbr, clef, transposition })
+}
+
+/// A player's instruments, comma separated: the first one, then doublings.
+pub fn parse_instrument_list(text: &str) -> Result<Vec<crate::editor::InstrumentSpec>, String> {
+    let list: Vec<_> = text.split([',', ';']).filter_map(instrument_spec).collect();
+    if list.is_empty() {
+        return Err("Each player needs an instrument".into());
+    }
+    Ok(list)
+}
+
 pub fn new_project(title: &str, instruments: &str, bars: i64) -> Result<Project, String> {
     let list = parse_instruments(instruments)?;
     let refs: Vec<(&str, &str, &str, Interval)> = list.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str(), transposition_of(a))).collect();

@@ -123,6 +123,13 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
     ("F#m7b5/E" is written F♯m7♭5/E);
   * insertion and deletion of bars. Map entries at 0 stay; a barline at the
     cut closes the gap; endings are clipped.
+* **Filters** (`select.rs`): a query of a few words (notes by default, or
+  rests, dynamics, lyrics, chord symbols, text; for notes: top/bottom of
+  chords, chords, voice, pitch, above/below a pitch, articulations, tied)
+  is matched over staves and a time span, giving element ids as the
+  engraving tags them. The editor keeps them as a third kind of selection,
+  `picked`, which Delete, articulations, dynamics, accidentals and
+  transposition apply to element by element.
 * **`Editor`** (in the app, UI-independent and unit-tested) holds:
   * the caret, input state, selection or passage, clipboard and popover
     targets;
@@ -180,7 +187,10 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   in columns.
 * Beams are grouped with LilyPond's defaults: one beam per beat (dotted
   quarters in compound meters). Groups of only eighths span half a bar in
-  4/4 and the whole bar in 3/4.
+  4/4 and the whole bar in 3/4; 5/8, 7/8 and 8/8 group 3+2, 2+2+3 and
+  3+3+2. A meter may carry its own groups (`Meter::beams`, in 1/den). By
+  hand (event span bits): a beam breaks before a note, joins into it (its
+  whole beat group with it), or leaves it flagged.
 * Beams are placed as in LilyPond's quanting:
   * ideal stem ends (LilyPond's beamed stem lengths) are fitted by least
     squares;
@@ -200,6 +210,9 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* A staff's key shift (a transposing instrument in the transposed score)
+  can change at an instrument change: it takes effect at the next bar,
+  where the staff's new key signature is drawn.
 * Parts (`Options::multirest`): runs of bars where nothing sounds or
   changes become one bar with an H-bar and its count, as LilyPond's
   compressed multi-measure rests; a run breaks at key, time, tempo,
@@ -407,8 +420,12 @@ output), automation, VST3 state in the project.
 * Hit testing covers notes, rests, chord symbols and lyrics.
 
 **Players.** The Players card edits a list of players (kept ones by id,
-new ones by name, abbreviation, clef and transposition) and applies it
-with `Editor::set_players` as one undo step: dropped players take their
+new ones), each with its instruments (the first, then doublings), and
+applies it with `Editor::set_players` as one undo step. A kept player's
+instruments are matched by name: a name still listed keeps its instrument,
+a new one takes the place of one no longer listed (changed in place, so
+its music and track stay), and further ones are doublings with tracks of
+their own. Otherwise: dropped players take their
 staves in every movement, their instruments and the tracks only they used
 (with plugin nodes); new ones get an instrument, a track on a free MIDI
 channel and staves of whole-bar rests in every movement; players, staves

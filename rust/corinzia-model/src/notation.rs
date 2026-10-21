@@ -93,6 +93,17 @@ fn bracket_groups(project: &Project, m: &Movement) -> Vec<u32> {
     out
 }
 
+/// The first bar start at or after `at`.
+fn bar_at_or_after(m: &Movement, at: corinzia_score::Frac) -> corinzia_score::Frac {
+    let mut t = corinzia_score::Frac::ZERO;
+    while t < at && t < m.length {
+        let meter = m.meter.iter().rfind(|x| x.at <= t);
+        let len = meter.map(|x| corinzia_score::Frac::new(x.num.max(1), x.den.max(1))).unwrap_or(corinzia_score::Frac::int(1));
+        t = t + len;
+    }
+    t
+}
+
 /// One player's part: their staves alone, as written (transposed), named
 /// in the header.
 pub fn part_score(project: &Project, m: &Movement, player: Id) -> sc::Score {
@@ -208,6 +219,24 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                     .collect(),
                 brace: m.lanes.get(li + 1).is_some_and(|next| next.player == lane.player),
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
+                key_shifts: {
+                    // A change to an instrument transposing otherwise takes
+                    // its key from the next bar on (where it is shown).
+                    let mut out: Vec<(corinzia_score::Frac, i32)> = Vec::new();
+                    let mut last = interval_at(corinzia_score::Frac::ZERO).fifths();
+                    for c in lane.changes.iter().skip(1) {
+                        let shift = interval_at(c.at).fifths();
+                        if shift != last {
+                            let at = bar_at_or_after(m, c.at);
+                            if at < m.length {
+                                out.retain(|(t, _)| *t < at);
+                                out.push((at, shift));
+                            }
+                            last = shift;
+                        }
+                    }
+                    out
+                },
                 group: groups[li],
                 lines: lane.lines.clone(),
                 transposition: first.map(|i| (i.transposition.steps, i.transposition.semitones)).unwrap_or((0, 0)),
@@ -221,7 +250,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         instrument: String::new(),
         length: m.length,
         tempo: m.tempo.iter().enumerate().map(|(i, t)| sc::Tempo { id: sc::ids::tempo(i), at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
-        meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup }).collect(),
+        meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup, beams: t.beams }).collect(),
         keys: m.keys.iter().map(|k| sc::Key { at: k.at, fifths: k.fifths, minor: k.minor }).collect(),
         barlines: m
             .barlines

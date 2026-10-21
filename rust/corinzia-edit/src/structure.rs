@@ -62,6 +62,122 @@ pub fn parse_key(text: &str) -> Option<KeySig> {
     (-7..=7).contains(&fifths).then_some(KeySig { fifths, minor })
 }
 
+/// What the Transpose popover asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransposeSpec {
+    /// By an interval (negative: down).
+    By(Interval),
+    /// To the key whose tonic this is (step 0 = C, alter), from the key in
+    /// force, by the nearer way.
+    To { step: i8, alter: i8 },
+}
+
+/// An interval as musicians write it: quality and number ("M2", "m3",
+/// "P5", "A4", "d5", "P8", "M9"), up unless "down" or "-"; also "octave".
+pub fn parse_interval(text: &str) -> Option<Interval> {
+    let mut t = text.trim();
+    let mut down = false;
+    // "up"/"down" as words, then a sign.
+    let lower = t.to_lowercase();
+    for (word, d) in [("down ", true), ("up ", false)] {
+        if lower.starts_with(word) {
+            t = t[word.len()..].trim();
+            down = d;
+        }
+    }
+    if let Some(r) = t.strip_prefix('-') {
+        t = r.trim();
+        down = !down;
+    } else if let Some(r) = t.strip_prefix('+') {
+        t = r.trim();
+    }
+    let lower = t.to_lowercase();
+    let lower = lower.strip_prefix("an ").or(lower.strip_prefix("a ")).unwrap_or(&lower);
+    let (quality, number) = match lower {
+        "octave" => ('p', 8),
+        "unison" => ('p', 1),
+        "tritone" => ('a', 4),
+        _ => {
+            // The quality letter keeps its case: M major, m minor.
+            let q = t.chars().next()?;
+            let n: i32 = t[q.len_utf8()..].trim().parse().ok()?;
+            let q = match q {
+                'M' => 'M',
+                'm' => 'm',
+                'P' | 'p' => 'p',
+                'A' | 'a' => 'a',
+                'd' | 'D' => 'd',
+                _ => return None,
+            };
+            (q, n)
+        }
+    };
+    if !(1..=22).contains(&number) {
+        return None;
+    }
+    let steps = number - 1;
+    const BASE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let class = steps.rem_euclid(7);
+    let perfect = matches!(class, 0 | 3 | 4);
+    let adjust = match (quality, perfect) {
+        ('p', true) | ('M', false) => 0,
+        ('m', false) => -1,
+        ('a', _) => 1,
+        ('d', true) => -1,
+        ('d', false) => -2,
+        _ => return None,
+    };
+    let semitones = BASE[class as usize] + 12 * (steps / 7) + adjust;
+    let i = Interval::new(steps, semitones);
+    Some(if down { i.inverse() } else { i })
+}
+
+/// "up M2", "down P5", "-m3", "octave"; or "to Eb", "to f#" (the new tonic).
+pub fn parse_transpose(text: &str) -> Option<TransposeSpec> {
+    let t = text.trim();
+    if let Some(key) = t.strip_prefix("to ").or(t.strip_prefix("To ")) {
+        let key = ascii_accidentals(key.trim());
+        let mut chars = key.chars();
+        let letter = chars.next()?.to_ascii_uppercase();
+        let step = "CDEFGAB".find(letter)? as i8;
+        let rest: String = chars.collect();
+        let rest = rest.split_whitespace().next().unwrap_or("");
+        let alter = rest.chars().take_while(|c| *c == '#' || *c == 'b').map(|c| if c == '#' { 1 } else { -1 }).sum::<i8>();
+        let tail = &rest[rest.chars().take_while(|c| *c == '#' || *c == 'b').count()..];
+        if !(tail.is_empty() || tail == "m") || alter.abs() > 1 {
+            return None;
+        }
+        return Some(TransposeSpec::To { step, alter });
+    }
+    parse_interval(t).map(TransposeSpec::By)
+}
+
+/// The tonic of a key (step, alter): fifths on the line of fifths, a minor
+/// key's three fifths further on.
+pub fn key_tonic(fifths: i32, minor: bool) -> (i8, i8) {
+    let f = fifths + if minor { 3 } else { 0 };
+    let i = f + 1; // F is -1
+    let step = "CDEFGAB".find("FCGDAEB".as_bytes()[i.rem_euclid(7) as usize] as char).unwrap() as i8;
+    (step, i.div_euclid(7) as i8)
+}
+
+/// The nearer interval from one tonic to another (up to a tritone up, else
+/// down).
+pub fn interval_between(from: (i8, i8), to: (i8, i8)) -> Interval {
+    const BASE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let mut steps = to.0 as i32 - from.0 as i32;
+    let mut semis = BASE[to.0 as usize] - BASE[from.0 as usize] + (to.1 - from.1) as i32;
+    if steps < 0 {
+        steps += 7;
+        semis += 12;
+    }
+    if semis > 6 {
+        steps -= 7;
+        semis -= 12;
+    }
+    Interval::new(steps, semis)
+}
+
 /// "3/4", "6/8", "c" (= 4/4), "C|" or "cut" (= 2/2).
 pub fn parse_time(text: &str) -> Option<(i64, i64)> {
     let t = text.trim().to_lowercase();
@@ -395,11 +511,41 @@ pub fn set_key(m: &mut Movement, at: Frac, key: KeySig) {
 }
 /// A meter at the start of a pickup bar applies from the bar after it.
 pub fn set_meter(m: &mut Movement, at: Frac, num: i64, den: i64) {
+    set_meter_grouped(m, at, num, den, [0; 8]);
+}
+
+/// As [`set_meter`], with its beam groups (in 1/den; zeros: the default).
+pub fn set_meter_grouped(m: &mut Movement, at: Frac, num: i64, den: i64, beams: [u8; 8]) {
     let at = match m.meter.iter().find(|x| x.at == at && x.pickup) {
         Some(p) => at + Frac::new(p.num, p.den),
         None => at,
     };
-    replace_at(&mut m.meter, at, Meter { at, num, den, pickup: false }, |k| k.at);
+    replace_at(&mut m.meter, at, Meter { at, num, den, pickup: false, beams }, |k| k.at);
+}
+
+/// A time signature with its beam groups: "7/8 2+2+3", "2+2+3/8",
+/// "(3+2)/8", or a plain one ("6/8": default groups). The groups must fill
+/// the bar.
+pub fn parse_time_grouped(text: &str) -> Option<(i64, i64, [u8; 8])> {
+    let t = text.trim().replace(['(', ')'], "");
+    let parse_groups = |g: &str| -> Option<Vec<u8>> { g.split('+').map(|x| x.trim().parse::<u8>().ok().filter(|n| (1..=32).contains(n))).collect() };
+    let (num, den, groups) = if let Some((sig, groups)) = t.split_once(char::is_whitespace) {
+        let (n, d) = parse_time(sig)?;
+        (n, d, parse_groups(groups.trim())?)
+    } else if let Some((groups, d)) = t.split_once('/').filter(|(g, _)| g.contains('+')) {
+        let g = parse_groups(groups)?;
+        let d: i64 = d.trim().parse().ok()?;
+        (g.iter().map(|x| *x as i64).sum(), d, g)
+    } else {
+        let (n, d) = parse_time(&t)?;
+        return Some((n, d, [0; 8]));
+    };
+    if groups.len() > 8 || groups.iter().map(|x| *x as i64).sum::<i64>() != num {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b[..groups.len()].copy_from_slice(&groups);
+    Some((num, den, b))
 }
 
 /// The pickup (upbeat) bar's length, if the movement starts with one.
@@ -436,9 +582,9 @@ pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
         x.at = len;
     }
     if m.meter.iter().all(|x| x.at != len) {
-        m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false });
+        m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
-    m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true });
+    m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true, beams: [0; 8] });
     m.meter.sort_by(|a, b| a.at.cmp(&b.at));
 }
 
