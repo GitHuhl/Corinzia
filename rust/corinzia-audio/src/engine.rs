@@ -7,7 +7,7 @@
 //! snapshots out (dropped on the UI thread, which is where plugins may be
 //! deactivated and destroyed), and atomics for the playhead.
 
-use crate::snapshot::{ScheduledNote, Snapshot};
+use crate::snapshot::{Kind, ScheduledNote, Snapshot};
 use clap_sys::events::*;
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::audio_buffer::clap_audio_buffer;
@@ -140,6 +140,13 @@ struct NodeState {
     send_applied: [Option<f32>; MAX_SENDS],
 }
 
+/// Effect automation for the block: the plan's effects (as pointers, to
+/// match the one running) and (effect, parameter, value, frame) to deliver.
+struct FxAuto {
+    effects: Vec<*const crate::host::Plugin>,
+    queue: Vec<(u32, u32, f64, u32)>,
+}
+
 /// A bus's mix buffer and fader.
 struct BusState {
     left: Vec<f32>,
@@ -173,7 +180,7 @@ fn mix_into(dst: &mut [f32], src: &[f32], from: f32, to: f32) {
 /// # Safety
 /// Audio thread; the buffers hold at least `frames` samples.
 #[allow(clippy::too_many_arguments)]
-unsafe fn run_effect(plugin: &crate::host::Plugin, left: &mut [f32], right: &mut [f32], tmp: &mut [Vec<f32>; 2], frames: usize, steady: i64, transport: &clap_event_transport, fx: &mut InputEvents, out_events: &clap_output_events) {
+unsafe fn run_effect(plugin: &Arc<crate::host::Plugin>, left: &mut [f32], right: &mut [f32], tmp: &mut [Vec<f32>; 2], frames: usize, steady: i64, transport: &clap_event_transport, fx: &mut InputEvents, out_events: &clap_output_events, auto: &FxAuto) {
     if !plugin.rt_start() {
         return;
     }
@@ -183,6 +190,14 @@ unsafe fn run_effect(plugin: &crate::host::Plugin, left: &mut [f32], right: &mut
             fx.events.push(EventSlot { param: crate::host::param_event(id, v, 0) });
         }
     });
+    // Its automation in this block, in time order.
+    if let Some(k) = auto.effects.iter().position(|e| std::ptr::eq(*e, Arc::as_ptr(plugin))) {
+        for &(f, id, v, time) in &auto.queue {
+            if f as usize == k && fx.events.len() < fx.events.capacity() {
+                fx.events.push(EventSlot { param: crate::host::param_event(id, v, time) });
+            }
+        }
+    }
     let events = &fx.list;
     let mut ins = [left.as_mut_ptr(), right.as_mut_ptr()];
     let mut outs = [tmp[0].as_mut_ptr(), tmp[1].as_mut_ptr()];
@@ -233,8 +248,9 @@ pub struct Engine {
     master_applied: Option<f32>,
     /// Scratch for effects (their output before it is copied back).
     tmp: [Vec<f32>; 2],
-    /// The events effects get (none yet).
+    /// The events effects get.
     fx_events: Box<InputEvents>,
+    fx_auto: FxAuto,
 }
 unsafe impl Send for Engine {}
 
@@ -274,6 +290,7 @@ pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
         master_applied: None,
         tmp: [vec![0.0; max_frames as usize], vec![0.0; max_frames as usize]],
         fx_events,
+        fx_auto: FxAuto { effects: Vec::with_capacity(MAX_NODES * 4), queue: Vec::with_capacity(EVENTS_PER_NODE) },
     };
     (EngineHandle { commands: ctx, retired: rrx, shared, sample_rate, max_frames }, engine)
 }
@@ -364,13 +381,19 @@ impl Engine {
                     }
                     self.master_gain = next.master_gain;
                     self.shared.generation.store(next.generation, Ordering::Release);
+                    self.fx_auto.effects.clear();
+                    for e in next.effects.iter().take(self.fx_auto.effects.capacity()) {
+                        self.fx_auto.effects.push(Arc::as_ptr(e));
+                    }
                     self.snap = Some(next);
                     self.reset_cursor();
+                    self.chase();
                 }
                 Command::Play => {
                     self.playing = true;
                     self.reset_cursor();
                     self.send_programs();
+                    self.chase();
                 }
                 Command::Stop => {
                     self.playing = false;
@@ -380,6 +403,7 @@ impl Engine {
                     self.release_all(0);
                     self.pos = s.max(0);
                     self.reset_cursor();
+                    self.chase();
                 }
                 Command::Mix { node, gain, pan, audible } => {
                     if let Some(n) = self.nodes.get_mut(node as usize) {
@@ -402,6 +426,61 @@ impl Engine {
                 Command::Preview { node, key, channel, velocity } => {
                     let a = Active { node, note_id: -1, port: 0, channel, key };
                     self.push_event(node, a, velocity >= 0.0, velocity.max(0.0), 0);
+                }
+            }
+        }
+    }
+
+    /// Automation before the playhead: each target takes its latest value
+    /// (faders and pans here; parameters and controllers with the block).
+    fn chase(&mut self) {
+        let Some(snap) = self.snap.take() else { return };
+        let upto = self.cursor.min(snap.notes.len());
+        // Latest first: a target already set is skipped.
+        let mut done: [u64; 64] = [u64::MAX; 64];
+        let mut n_done = 0;
+        for n in snap.notes[..upto].iter().rev() {
+            let key = match n.kind {
+                Kind::Note => continue,
+                Kind::Cc(cc) => (1u64 << 60) | ((n.node as u64) << 8) | cc as u64,
+                Kind::Gain => (2u64 << 60) | n.node as u64,
+                Kind::Pan => (3u64 << 60) | n.node as u64,
+                Kind::Param { fx, id } => (4u64 << 60) | ((fx as u64) << 32) | id as u64 ^ ((n.node as u64) << 20),
+            };
+            if done[..n_done].contains(&key) {
+                continue;
+            }
+            if n_done == done.len() {
+                break;
+            }
+            done[n_done] = key;
+            n_done += 1;
+            self.apply(n, 0);
+        }
+        self.snap = Some(snap);
+    }
+
+    /// An automation or controller event at a frame of the block.
+    fn apply(&mut self, n: &ScheduledNote, time: u32) {
+        let Some(ns) = self.nodes.get_mut(n.node as usize) else { return };
+        match n.kind {
+            Kind::Note => {}
+            Kind::Gain => ns.gain = n.velocity,
+            Kind::Pan => ns.pan = n.velocity,
+            Kind::Cc(cc) => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    let data = [0xb0 | (n.channel as u8 & 15), cc & 0x7f, (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8];
+                    ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
+                }
+            }
+            Kind::Param { fx: u32::MAX, id } => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    ns.events.events.push(EventSlot { param: crate::host::param_event(id, n.velocity as f64, time) });
+                }
+            }
+            Kind::Param { fx, id } => {
+                if self.fx_auto.queue.len() < self.fx_auto.queue.capacity() {
+                    self.fx_auto.queue.push((fx, id, n.velocity as f64, time));
                 }
             }
         }
@@ -462,6 +541,7 @@ impl Engine {
         for n in self.nodes.iter_mut() {
             n.events.events.clear();
         }
+        self.fx_auto.queue.clear();
         // Parameter changes from the main thread lead the block.
         if let Some(snap) = self.snap.as_ref() {
             for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
@@ -509,6 +589,10 @@ impl Engine {
     }
 
     fn schedule(&mut self, n: &ScheduledNote, time: u32) {
+        if n.kind != Kind::Note {
+            self.apply(n, time);
+            return;
+        }
         let a = Active { node: n.node, note_id: n.note_id, port: n.port, channel: n.channel, key: n.key };
         if n.on {
             if self.active.len() < MAX_ACTIVE {
@@ -583,7 +667,7 @@ impl Engine {
             unsafe { node.plugin.rt_process(&p) };
             // The track's effects, in order.
             for fx in &node.inserts {
-                unsafe { run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events) };
+                unsafe { run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
             }
             // Equal-power pan; silent when muted (or another track soloed).
             let (gl, gr) = pan_gains(ns.gain, ns.pan, ns.audible);
@@ -615,7 +699,7 @@ impl Engine {
         for (b, strip) in snap.buses.iter().enumerate().take(nb) {
             let bs = &mut self.buses[b];
             for fx in &strip.inserts {
-                unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events) };
+                unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
             }
             let (gl, gr) = pan_gains(bs.gain, bs.pan, bs.audible);
             let (l0, r0) = bs.applied.unwrap_or((gl, gr));
@@ -624,7 +708,7 @@ impl Engine {
             mix_into(&mut right[..frames], &bs.right[..frames], r0, gr);
         }
         for fx in &snap.master_inserts {
-            unsafe { run_effect(fx, &mut left[..frames], &mut right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events) };
+            unsafe { run_effect(fx, &mut left[..frames], &mut right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
         }
         let g = self.master_gain;
         let g0 = self.master_applied.unwrap_or(g);

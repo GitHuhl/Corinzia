@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], program: None, bank: None });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -38,7 +38,7 @@ fn project() -> Project {
             chords: vec![],
             lines: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(vec![note(10, Frac::ZERO, 0), rest(20, Frac::new(1, 4)), note(30, Frac::new(3, 4), 5)]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![],
     });
     p
 }
@@ -175,7 +175,7 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], program: None, bank: None });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
 }
@@ -279,4 +279,53 @@ fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
     let mut pool = PluginPool::new(SR, 256);
     let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
     assert_eq!(snap.nodes[0].program, Some((0, 1, None)));
+}
+
+#[test]
+fn automation_and_dynamics_as_a_controller() {
+    let beat = (SR * 0.5) as usize;
+    // A long note: c'' for the whole bar.
+    let long = || {
+        let mut p = project();
+        let v = &mut p.movements[0].lanes[0].voices[0];
+        let mut evs = (*v.events).clone();
+        evs.truncate(1);
+        evs[0].duration = Frac::int(1);
+        v.events = Arc::new(evs);
+        p
+    };
+    let flat = render(&long(), 4 * beat);
+    // The fader from 0 dB to -60 dB (silence) over the bar.
+    let mut p = long();
+    p.movements[0].automation = vec![AutoLane { id: 90, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0 }, AutoPoint { at: Frac::int(1), value: -60.0 }] }];
+    let fade = render(&p, 4 * beat);
+    let early = rms(&fade[2000..beat / 2]) / rms(&flat[2000..beat / 2]);
+    let late = rms(&fade[3 * beat..4 * beat - 1000]) / rms(&flat[3 * beat..4 * beat - 1000]);
+    assert!(early > 0.5 && late < 0.1, "{early} {late}"); // about -3.5 dB early on (linear in dB)
+
+    // An effect's parameter: the gain insert down 20 dB from beat 3.
+    let mut p = long();
+    effect(&mut p, 500, "org.corinzia.gain", &[0.0, 0.0]);
+    p.tracks[0].inserts = vec![500];
+    p.movements[0].automation = vec![AutoLane { id: 91, target: AutoTarget::Param { node: 500, param: 0 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.0 }, AutoPoint { at: Frac::new(1, 2), value: -20.0 }] }];
+    let step = render(&p, 4 * beat);
+    let before = rms(&step[beat..2 * beat - 500]) / rms(&flat[beat..2 * beat - 500]);
+    let after = rms(&step[2 * beat + 2000..3 * beat]) / rms(&flat[2 * beat + 2000..3 * beat]);
+    assert!((before - 1.0).abs() < 0.02 && (after - 0.1).abs() < 0.02, "{before} {after}");
+
+    // Dynamics as CC11: the sine follows expression, so p (CC11 ≈ velocity) is softer twice over.
+    let mut p = long();
+    p.movements[0].lanes[0].voices[0].events = Arc::new({
+        let mut e = (*p.movements[0].lanes[0].voices[0].events).clone();
+        e[0].dynamic = Some(2); // p
+        e
+    });
+    let vel_only = render(&p, beat);
+    p.tracks[0].dynamics_cc = Some(11);
+    let with_cc = render(&p, beat);
+    let r = rms(&with_cc[2000..beat]) / rms(&vel_only[2000..beat]);
+    assert!(r < 0.7, "{r}");
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(11)));
 }

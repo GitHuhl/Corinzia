@@ -44,7 +44,31 @@ pub enum MixMsg {
     DeletePreset(Target, String),
     /// A track's MIDI program by its label ("41 Violin", or "None").
     Program(Id, String),
+    /// The automation a track's arrange lane shows, by its label ("Off": none).
+    AutoShow(Id, String),
+    /// Dynamics as a controller, by label.
+    DynamicsCc(Id, String),
 }
+
+/// What a track's lane can automate: (label, target, min, max); "Off" first.
+pub fn auto_options(p: &Project, play: &Playback, track: Id) -> Vec<(String, Option<corinzia_model::AutoTarget>, f64, f64)> {
+    use corinzia_model::AutoTarget;
+    let mut v = vec![("Off".to_string(), None, 0.0, 1.0), ("Gain".into(), Some(AutoTarget::Gain(track)), MIN_DB, 6.0), ("Pan".into(), Some(AutoTarget::Pan(track)), -1.0, 1.0)];
+    let Some(t) = p.track(track) else { return v };
+    let mut plugins: Vec<(Id, std::sync::Arc<corinzia_audio::host::Plugin>)> = Vec::new();
+    if let (Some(n), Some(pl)) = (t.instrument_node, play.pool.plugin_of_track(track)) {
+        plugins.push((n, pl.clone()));
+    }
+    plugins.extend(t.inserts.iter().filter_map(|&n| Some((n, play.pool.effect(n)?.clone()))));
+    for (node, pl) in plugins {
+        for info in pl.params().into_iter().filter(|i| i.automatable) {
+            v.push((format!("{}: {}", pl.info.name, info.name), Some(AutoTarget::Param { node, param: info.id }), info.min, info.max));
+        }
+    }
+    v
+}
+
+pub const DYNAMICS_CC: [&str; 3] = ["Velocity only", "CC1 (modulation)", "CC11 (expression)"];
 
 /// Whose plugin a preset is for: a track's instrument, or an effect.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,7 +164,7 @@ fn fader_block<'a>(id: Id, db: f64, pan: Option<f64>, mute: Option<bool>, solo: 
     col.into()
 }
 
-fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, selected: bool, fx: Option<Id>, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
     let plugin = play.plugin_name(t.id);
     let players: Vec<String> = p.instruments.iter().filter(|i| i.track == Some(t.id)).map(|i| i.name.clone()).collect();
     let mut outputs: Vec<String> = vec!["Master".into()];
@@ -171,6 +195,23 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         }
         body = body.push(sends);
     }
+    let options = auto_options(p, play, t.id);
+    let shown = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
+    let autos: Vec<String> = options.into_iter().map(|o| o.0).collect();
+    let dynamics = match t.dynamics_cc {
+        Some(1) => DYNAMICS_CC[1],
+        Some(11) => DYNAMICS_CC[2],
+        _ => DYNAMICS_CC[0],
+    };
+    body = body.push(
+        column![
+            text("Dynamics").size(10).style(crate::theme::faint),
+            crate::panels::tip(pick_list(DYNAMICS_CC.map(String::from).to_vec(), Some(dynamics.to_string()), move |l| MixMsg::DynamicsCc(track, l)).text_size(11).padding([2, 5]).width(Length::Fill), "Send the dynamics and hairpins as a controller too (sample libraries)"),
+            text("Automation lane").size(10).style(crate::theme::faint),
+            crate::panels::tip(pick_list(autos, shown, move |l| MixMsg::AutoShow(track, l)).placeholder("Show…").text_size(11).padding([2, 5]).width(Length::Fill), "Show a curve on the track's lane above: gain, pan or a plugin parameter"),
+        ]
+        .spacing(2),
+    );
     body = body.push(fader_block(t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
@@ -246,8 +287,8 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
     col.into()
 }
 
-pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>) -> Element<'a, MixMsg> {
-    let mut strips = row(p.tracks.iter().map(|t| strip(p, play, t, selected == Some(t.id), fx))).spacing(8).padding(12);
+pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
+    let mut strips = row(p.tracks.iter().map(|t| strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()))).spacing(8).padding(12);
     for b in &p.buses {
         strips = strips.push(bus_strip(p, b, selected == Some(b.id), fx));
     }

@@ -117,6 +117,14 @@ PipeWire.
   optional bank) is sent to its instrument when playback starts, and is
   written into exported MIDI files. Corinzia Sine has three programs: soft
   organ, pure sine and bright.
+* **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
+  the track's lane in the arrange view: its gain, its pan, or any parameter
+  of its instrument or effects. Click to add a point, drag to move it,
+  right-click to delete it; values run in straight lines between points.
+  Automation follows repeats and is picked up when playback starts
+  mid-piece. A track's "Dynamics" can also send the performed dynamics and
+  hairpins as CC1 or CC11 for sample libraries, during playback and in
+  exported MIDI files (Corinzia Sine follows CC11 and CC7).
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

@@ -545,7 +545,20 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
                 name: t.name.clone(),
                 channel: t.midi_channel & 15,
                 program: t.program.map(|p| (p, t.bank)),
-                controls: vec![],
+                // Dynamics as a controller: its value at each onset where it changes.
+                controls: match t.dynamics_cc {
+                    Some(cc) => {
+                        let mut last = None;
+                        notes
+                            .iter()
+                            .filter_map(|n| {
+                                let v = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+                                (last.replace(v) != Some(v)).then(|| (perf.tempo.quarter_at((perf.tempo.seconds_at(n.on_q) - 0.002).max(0.0)), cc, v))
+                            })
+                            .collect()
+                    }
+                    None => vec![],
+                },
                 notes: notes
                     .iter()
                     .map(|n| {

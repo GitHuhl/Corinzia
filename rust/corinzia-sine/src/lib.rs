@@ -74,6 +74,9 @@ struct Synth {
     sample_rate: f64,
     gain: f32,
     program: u8,
+    /// MIDI expression (CC11) and volume (CC7), 0..1.
+    expression: f32,
+    volume: f32,
     voices: [Voice; VOICES],
     clock: u64,
 }
@@ -137,6 +140,8 @@ impl Synth {
                     match (status, vel) {
                         (0x90, v) if v > 0 => self.note_on(-1, m.port_index as i16, ch, key, v as f64 / 127.0),
                         (0x80, _) | (0x90, _) => self.note_off(-1, ch, key),
+                        (0xB0, v) if key == 11 => self.expression = v as f32 / 127.0,
+                        (0xB0, v) if key == 7 => self.volume = v as f32 / 127.0,
                         (0xC0, _) => self.program = (key as u8).min(PROGRAMS.len() as u8 - 1),
                         _ => {}
                     }
@@ -163,7 +168,7 @@ impl Synth {
                     v.level = (v.level + attack).min(1.0);
                 }
                 let ph = v.phase * std::f64::consts::TAU;
-                let s = (ph.sin() + octave * (2.0 * ph).sin() + twelfth * (3.0 * ph).sin()) as f32 * v.level * v.velocity * 0.18 * self.gain;
+                let s = (ph.sin() + octave * (2.0 * ph).sin() + twelfth * (3.0 * ph).sin()) as f32 * v.level * v.velocity * 0.18 * self.gain * self.expression * self.volume;
                 v.phase = (v.phase + v.step).fract();
                 *l += s;
                 *r += s;
@@ -410,6 +415,8 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         sample_rate: 48000.0,
         gain: 1.0,
         program: 0,
+        expression: 1.0,
+        volume: 1.0,
         voices: [Voice::default(); VOICES],
         clock: 0,
     }));

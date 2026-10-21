@@ -344,6 +344,53 @@ pub struct Movement {
     /// Notes written on another staff of their player: (event, staves
     /// down; -1 the staff above).
     pub cross: Vec<(Id, i8)>,
+    /// Mixer and plugin automation over the movement.
+    pub automation: Vec<AutoLane>,
+}
+
+/// What an automation lane drives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AutoTarget {
+    /// A track's fader, in dB.
+    Gain(Id),
+    /// A track's pan, -1..1.
+    Pan(Id),
+    /// A plugin parameter (an audio node's), in the plugin's units.
+    Param { node: Id, param: u32 },
+}
+
+/// A curve: values at positions, straight lines between them; before the
+/// first point its value holds, and after the last.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoLane {
+    pub id: Id,
+    pub target: AutoTarget,
+    pub points: Vec<AutoPoint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutoPoint {
+    pub at: Frac,
+    pub value: f64,
+}
+
+impl AutoLane {
+    /// The value at a (written) position.
+    pub fn value_at(&self, at: f64) -> Option<f64> {
+        let q = |f: Frac| f.num as f64 * 4.0 / f.den as f64;
+        let first = self.points.first()?;
+        if at <= q(first.at) {
+            return Some(first.value);
+        }
+        for w in self.points.windows(2) {
+            let (a, b) = (q(w[0].at), q(w[1].at));
+            if at <= b {
+                let k = if b > a { (at - a) / (b - a) } else { 1.0 };
+                return Some(w[0].value + (w[1].value - w[0].value) * k);
+            }
+        }
+        self.points.last().map(|p| p.value)
+    }
 }
 
 /// A system (or page) break before the bar at `at`: in the full score, or
@@ -581,6 +628,9 @@ pub struct Track {
     pub inserts: Vec<Id>,
     /// Post-fader sends to buses.
     pub sends: Vec<SendLevel>,
+    /// Dynamics (with hairpins) also sent as this controller (1 modulation,
+    /// 11 expression), for sample libraries; none: velocity only.
+    pub dynamics_cc: Option<u8>,
     /// The MIDI program (0-127) and bank the instrument is told at the
     /// start, for plugins and General MIDI files; none: left alone.
     pub program: Option<u8>,

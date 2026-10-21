@@ -5,13 +5,28 @@
 //! the node (track) that sounds them.
 
 use crate::host::Plugin;
-use corinzia_model::{Id, Project};
+use corinzia_model::{AutoTarget, Id, Project};
 use corinzia_perform::tempo::{MeterPoint, TempoMap};
 use corinzia_perform::Span;
 use std::sync::Arc;
 
+/// What a scheduled event does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    Note,
+    /// A MIDI controller to the node's instrument; the value is `velocity` (0..1).
+    Cc(u8),
+    /// The node's fader (linear gain in `velocity`) or pan (-1..1).
+    Gain,
+    Pan,
+    /// A plugin parameter, value in `velocity`: the node's instrument
+    /// (`fx` = `u32::MAX`) or an effect (an index into `Snapshot::effects`).
+    Param { fx: u32, id: u32 },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScheduledNote {
+    pub kind: Kind,
     pub at: i64,
     pub node: u32,
     pub note_id: i32,
@@ -98,6 +113,8 @@ pub struct Snapshot {
     pub buses: Vec<BusStrip>,
     pub master_inserts: Vec<Arc<Plugin>>,
     pub master_gain: f32,
+    /// Every effect of the plan (automation names them by index).
+    pub effects: Vec<Arc<Plugin>>,
 }
 
 impl Snapshot {
@@ -179,7 +196,16 @@ pub fn routing(project: &Project) -> String {
     for b in &project.buses {
         s += &format!("b{}[{}];", b.id, fx(&b.inserts));
     }
-    s + &format!("m[{}]", fx(&project.master.inserts))
+    // Automation and dynamics controllers are in the plan too.
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for m in &project.movements {
+        format!("{:?}", m.automation).hash(&mut h);
+    }
+    for t in &project.tracks {
+        t.dynamics_cc.hash(&mut h);
+    }
+    s + &format!("m[{}]a{:x}", fx(&project.master.inserts), h.finish())
 }
 
 /// A plugin the plan needs: a track's instrument, or an effect node.
@@ -216,7 +242,17 @@ pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[
 
 fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>) -> Snapshot {
     const GAP_SECONDS: f64 = 2.0;
-    let effects = |ids: &[Id], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>| -> Vec<Arc<Plugin>> { ids.iter().filter_map(|&n| get(Want::Effect(n))).filter(|p| p.input_channels > 0).collect() };
+    let mut fx_nodes: Vec<(Id, Arc<Plugin>)> = Vec::new();
+    let mut effects = |ids: &[Id], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>| -> Vec<Arc<Plugin>> {
+        ids.iter()
+            .filter_map(|&n| Some((n, get(Want::Effect(n))?)))
+            .filter(|(_, p)| p.input_channels > 0)
+            .map(|(n, p)| {
+                fx_nodes.push((n, p.clone()));
+                p
+            })
+            .collect()
+    };
     let buses: Vec<BusStrip> = bus_mix(project)
         .into_iter()
         .map(|(id, gain, pan, audible)| BusStrip { id, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible })
@@ -255,10 +291,52 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let on = start + (on_sec * sample_rate).round() as i64;
             let off = (start + (off_sec * sample_rate).round() as i64).max(on + 1);
             let key = project.sounding_key(n.instrument, n.key).clamp(0, 127) as i16;
-            let base = ScheduledNote { at: on, node, note_id, port, channel, key, on: true, velocity: n.velocity, element: n.element };
+            let base = ScheduledNote { kind: Kind::Note, at: on, node, note_id, port, channel, key, on: true, velocity: n.velocity, element: n.element };
             notes.push(base);
             notes.push(ScheduledNote { at: off, on: false, ..base });
             note_id = note_id.wrapping_add(1) & 0x7fff_ffff;
+        }
+        // Dynamics as a controller, where a track asks for it: at each onset.
+        let mut last_cc: Vec<Option<u8>> = vec![None; nodes.len()];
+        for n in &perf.notes {
+            let Some(t) = project.instrument(n.instrument).and_then(|i| i.track).and_then(|t| project.track(t)) else { continue };
+            let (Some(cc), Some(node)) = (t.dynamics_cc, node_of(t.id)) else { continue };
+            let value = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+            if last_cc[node as usize] == Some(value) {
+                continue;
+            }
+            last_cc[node as usize] = Some(value);
+            let at = start + ((perf.tempo.seconds_at(n.on_q) * sample_rate).round() as i64 - 1).max(0);
+            let channel = t.midi_channel as i16 & 15;
+            notes.push(ScheduledNote { kind: Kind::Cc(cc), at, node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: value as f32 / 127.0, element: 0 });
+        }
+        // Automation: through the playback order (repeats too), every
+        // sixteenth of a quarter where the value changes.
+        for lane in &m.automation {
+            let (node, kind, scale): (Option<u32>, Kind, fn(f64) -> f32) = match lane.target {
+                AutoTarget::Gain(t) => (node_of(t), Kind::Gain, |db| db_to_gain(db)),
+                AutoTarget::Pan(t) => (node_of(t), Kind::Pan, |p| p.clamp(-1.0, 1.0) as f32),
+                AutoTarget::Param { node: n, param } => match fx_nodes.iter().position(|x| x.0 == n) {
+                    Some(k) => (Some(0), Kind::Param { fx: k as u32, id: param }, |v| v as f32),
+                    None => (project.tracks.iter().find(|t| t.instrument_node == Some(n)).and_then(|t| node_of(t.id)), Kind::Param { fx: u32::MAX, id: param }, |v| v as f32),
+                },
+            };
+            let Some(node) = node else { continue };
+            let mut last: Option<f32> = None;
+            for sp in &perf.spans {
+                let steps = (sp.length_q * 16.0).ceil() as usize;
+                for k in 0..=steps {
+                    let dq = (k as f64 / 16.0).min(sp.length_q);
+                    let Some(v) = lane.value_at(sp.written_q + dq) else { continue };
+                    let v = scale(v);
+                    if last == Some(v) {
+                        continue;
+                    }
+                    last = Some(v);
+                    let at = start + (perf.tempo.seconds_at(sp.performed_q + dq) * sample_rate).round() as i64;
+                    notes.push(ScheduledNote { kind, at, node, note_id: -1, port: 0, channel: 0, key: 0, on: false, velocity: v, element: 0 });
+                }
+            }
         }
         let end = to_sample(perf.length_q);
         sections.push(Section { movement: m.id, start, end, sample_rate, tempo: perf.tempo.clone(), meters: perf.meter_points.clone(), spans: perf.spans.clone() });
@@ -266,5 +344,6 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
     }
     // Offs before ons at the same sample: a repeated key restarts cleanly.
     notes.sort_by_key(|n| (n.at, n.on));
-    Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain }
+    let effects = fx_nodes.into_iter().map(|x| x.1).collect();
+    Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain, effects }
 }

@@ -253,6 +253,10 @@ struct App {
     /// The presets of the plugin shown in the Mix tab, and the name being typed.
     preset_names: Vec<String>,
     preset_name: String,
+    /// The automation each track's arrange lane shows (none: notes only),
+    /// and the curves drawn for them.
+    auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
+    arrange_curves: Vec<Option<arrange::Curve>>,
     arrange: arrange::Content,
     arrange_cache: canvas::Cache,
     arrange_ppq: f32,
@@ -507,6 +511,8 @@ impl App {
             fx: None,
             preset_names: Vec::new(),
             preset_name: String::new(),
+            auto_shown: Default::default(),
+            arrange_curves: Vec::new(),
             arrange: arrange::Content::default(),
             arrange_cache: canvas::Cache::new(),
             arrange_ppq: 40.0,
@@ -665,11 +671,21 @@ impl App {
         self.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
 
+    /// The automation curve shown on a track's arrange lane.
+    fn curve(&self, track: corinzia_model::Id) -> Option<arrange::Curve> {
+        let target = *self.auto_shown.get(&track)?;
+        let (label, min, max) = mix::auto_options(&self.editor.project, &self.playback, track).into_iter().find(|o| o.1 == Some(target)).map(|o| (o.0, o.2, o.3))?;
+        let q = |f: Frac| f.num as f64 * 4.0 / f.den as f64;
+        let points = self.editor.auto_lane(target).map(|l| l.points.iter().map(|p| (q(p.at), p.value)).collect()).unwrap_or_default();
+        Some(arrange::Curve { label, min, max, points })
+    }
+
     /// Brings the engraving and the selection colours up to date.
     fn sync(&mut self) {
         if self.engraved != Some(self.editor.music_revision) {
             self.engrave();
         }
+        self.arrange_curves = self.arrange.lanes.iter().map(|l| self.curve(l.track)).collect();
         // Another movement edited, its pages out of sight: go to its first.
         if self.shown_movement != self.editor.movement {
             self.shown_movement = self.editor.movement;
@@ -1391,6 +1407,25 @@ impl App {
                     self.editor.status = e;
                 }
             }
+            AutoShow(t, label) => {
+                match mix::auto_options(&self.editor.project, &self.playback, t).into_iter().find(|o| o.0 == label).and_then(|o| o.1) {
+                    Some(target) => {
+                        self.auto_shown.insert(t, target);
+                        self.editor.status = "Automation: click to add a point, drag to move, right-click to delete".into();
+                    }
+                    None => {
+                        self.auto_shown.remove(&t);
+                    }
+                }
+            }
+            DynamicsCc(t, label) => {
+                let cc = match label.as_str() {
+                    l if l.starts_with("CC1 ") => Some(1),
+                    l if l.starts_with("CC11") => Some(11),
+                    _ => None,
+                };
+                self.editor.set_track(t, "Dynamics controller", false, |x| x.dynamics_cc = cc);
+            }
             Program(t, label) => {
                 let program = presets::program_of(&label);
                 self.editor.set_track(t, "MIDI program", false, |x| x.program = program);
@@ -1714,6 +1749,24 @@ impl App {
                 }
                 arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
                 arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+                arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        let at = Frac::new((q * 16.0).round() as i64, 64);
+                        self.editor.add_auto_point(t, at, value);
+                    }
+                }
+                arrange::ArrangeEvent::AutoMove { lane, index, q, value } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        let at = Frac::new((q * 16.0).round() as i64, 64);
+                        self.editor.move_auto_point(t, index, at, value);
+                    }
+                }
+                arrange::ArrangeEvent::AutoDelete { lane, index } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        self.editor.delete_auto_point(t, index);
+                    }
+                }
+                arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
             },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
@@ -2207,13 +2260,14 @@ impl App {
                     selected: &self.selected,
                     playhead,
                     cache: &self.arrange_cache,
+                    curves: &self.arrange_curves,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill);
                 column![
                     Element::from(arr).map(Message::Arrange),
                     hline(),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
@@ -3697,6 +3751,43 @@ mod tests {
         a.sync();
         let _ = a.update(mx(mix::MixMsg::Program(flute, "None".into())));
         assert_eq!(a.editor.project.tracks[0].program, None);
+    }
+
+    #[test]
+    fn automation_lanes_in_the_arrange_view() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let flute = a.editor.project.tracks[0].id;
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Gain".into())));
+        a.sync();
+        assert_eq!(a.arrange_curves[0].as_ref().map(|c| (c.min, c.max, c.points.len())), Some((fader::MIN_DB, 6.0, 0)));
+        let ar = |e: arrange::ArrangeEvent| Message::Arrange(e);
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 0.0, value: 0.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 8.0, value: -20.0 }));
+        // A drag: one undo step.
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoMove { lane: 0, index: 1, q: 6.0, value: -24.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoMove { lane: 0, index: 1, q: 7.0, value: -30.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoRelease));
+        a.sync();
+        let lane = a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).unwrap().clone();
+        assert_eq!(lane.points.iter().map(|p| (p.at, p.value)).collect::<Vec<_>>(), [(Frac::ZERO, 0.0), (Frac::new(7, 4), -30.0)]);
+        a.editor.undo();
+        assert_eq!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).unwrap().points[1].value, -20.0);
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoDelete { lane: 0, index: 1 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoDelete { lane: 0, index: 0 }));
+        assert!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).is_none(), "an empty lane goes");
+        // Plugin parameters are offered too; dynamics as CC11.
+        let gain = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.gain").unwrap();
+        let _ = a.update(mx(mix::MixMsg::AddEffect(flute, gain)));
+        a.sync();
+        let labels: Vec<String> = mix::auto_options(&a.editor.project, &a.playback, flute).into_iter().map(|o| o.0).collect();
+        assert!(labels.contains(&"Corinzia Gain: Gain".to_string()), "{labels:?}");
+        let _ = a.update(mx(mix::MixMsg::DynamicsCc(flute, mix::DYNAMICS_CC[2].into())));
+        assert_eq!(a.editor.project.tracks[0].dynamics_cc, Some(11));
+        let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Off".into())));
+        a.sync();
+        assert!(a.arrange_curves[0].is_none());
     }
 
     #[test]

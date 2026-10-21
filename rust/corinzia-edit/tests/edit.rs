@@ -173,7 +173,7 @@ fn header() -> Movement {
         navigation: vec![],
         slurs: vec![],
         endings: vec![],
-        breaks: vec![], cross: vec![],
+        breaks: vec![], cross: vec![], automation: vec![],
         lanes: vec![Lane { player: 1, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![Voice { id: 2, index: 1, events: Arc::new(vec![]), tuplets: vec![] }] }],
     }
 }
@@ -673,7 +673,7 @@ fn filters_pick_notes_by_place_pitch_voice_and_marks() {
         lines: vec![],
         voices: vec![Voice { id: 6, index: 1, events: Arc::new(v1), tuplets: vec![] }, Voice { id: 7, index: 2, events: Arc::new(v2), tuplets: vec![] }],
     };
-    let m = Movement { id: 1, ordinal: 0, title: String::new(), length: Frac::int(1), revision: 0, tempo: vec![], meter: vec![], keys: vec![], barlines: vec![], rehearsal: vec![], endings: vec![], navigation: vec![], lanes: vec![lane], slurs: vec![], breaks: vec![], cross: vec![] };
+    let m = Movement { id: 1, ordinal: 0, title: String::new(), length: Frac::int(1), revision: 0, tempo: vec![], meter: vec![], keys: vec![], barlines: vec![], rehearsal: vec![], endings: vec![], navigation: vec![], lanes: vec![lane], slurs: vec![], breaks: vec![], cross: vec![], automation: vec![] };
     let all = |q: &str| find(&m, 0..=0, Frac::ZERO, Frac::int(1), &parse_query(q).unwrap());
     assert_eq!(all("notes"), [10, 11, 12, 20, 40, 50]);
     assert_eq!(all("top"), [12, 20, 40, 50]);
