@@ -22,10 +22,12 @@ pub struct Options {
     pub names: bool,
     /// Runs of empty bars as one multi-bar rest (parts).
     pub multirest: bool,
+    /// Note spacing, 1.0 as LilyPond's.
+    pub spacing: f32,
 }
 impl Default for Options {
     fn default() -> Self {
-        Options { staff_distance: 9.0, margin: 1.0, names: true, multirest: false }
+        Options { staff_distance: 9.0, margin: 1.0, names: true, multirest: false, spacing: 1.0 }
     }
 }
 
@@ -49,7 +51,8 @@ pub fn clef_middle(clef: &str) -> i32 {
     match clef {
         "bass" => 1 + 7 * 3,
         "bass_8" => 1 + 7 * 2,
-        "alto" | "percussion" => 7 * 4,
+        "alto" => 7 * 4,
+        // Percussion positions read as on the treble clef (as in MusicXML).
         "tenor" => 5 + 7 * 3,
         "treble_8" => 6 + 7 * 3,
         _ => 6 + 7 * 4,
@@ -306,53 +309,13 @@ fn measures(s: &Score) -> Vec<Measure> {
 
 /// A bar's beam groups (in 1/den): the meter's own, else LilyPond's for
 /// 5/8 (3+2), 7/8 (2+2+3) and 8/8 (3+3+2); None: by `beam_beat`.
-fn beam_groups_of(m: &Measure) -> Option<Vec<u8>> {
-    let own: Vec<u8> = m.beams.iter().copied().take_while(|b| *b > 0).collect();
-    if !own.is_empty() {
-        return Some(own);
-    }
-    match (m.num, m.den) {
-        (5, 8) => Some(vec![3, 2]),
-        (7, 8) => Some(vec![2, 2, 3]),
-        (8, 8) => Some(vec![3, 3, 2]),
-        _ => None,
-    }
-}
-
 /// Which beam window of its bar a position (from the bar's written start)
 /// falls in: by the bar's groups, or windows of `uniform`.
 fn beam_window(m: &Measure, rel: Frac, uniform: Frac) -> i64 {
-    match beam_groups_of(m) {
-        Some(groups) => {
-            let mut edge = Frac::ZERO;
-            for (k, g) in groups.iter().enumerate() {
-                edge = edge + Frac::new(*g as i64, m.den);
-                if rel < edge {
-                    return k as i64;
-                }
-            }
-            groups.len() as i64
-        }
-        None => {
-            let r = rel * Frac::new(uniform.den, uniform.num);
-            r.num.div_euclid(r.den)
-        }
-    }
+    corinzia_score::beams::window(m.num, m.den, &m.beams, rel, uniform)
 }
 
-/// The beam grouping unit: dotted quarters in compound meters, halves in
-/// 2/2 and 3/2, pairs of eighths in other x/8 meters, else the beat.
-fn beam_beat(num: i64, den: i64) -> Frac {
-    if den == 8 && num % 3 == 0 {
-        Frac::new(3, 8)
-    } else if den <= 2 {
-        Frac::new(1, 2)
-    } else if den >= 8 {
-        Frac::new(2, den)
-    } else {
-        Frac::new(1, den)
-    }
-}
+use corinzia_score::beams::beam_beat;
 
 /// The beat rests are split on: the dotted quarter in compound meters,
 /// else the signature's unit.
@@ -398,6 +361,8 @@ struct GraceGeom {
 
 /// Grace notes are drawn at LilyPond's grace size (font-size -3).
 const GRACE_SCALE: f32 = 0.707;
+/// Cue notes: smaller than normal, larger than graces.
+const CUE_SCALE: f32 = 0.75;
 /// Between grace notes, and from the last one to its main note.
 const GRACE_GAP: f32 = 0.35;
 const GRACE_TO_MAIN: f32 = 1.0;
@@ -414,11 +379,31 @@ struct Head {
     accidental: Option<Glyph>,
     acc_x: f32, // accidental origin, relative to the column
     shift: f32, // notehead offset from the column (seconds in chords)
+    shape: u8,  // 0 normal; percussion: 1 x, 2 circled x, 3 diamond, 4 triangle
+}
+
+/// A notehead in another shape (percussion), for the value's head.
+fn shaped_head(g: Glyph, shape: u8) -> Glyph {
+    use Glyph::*;
+    let k = match g {
+        NoteheadWhole => 2,
+        NoteheadHalf => 1,
+        _ => 0,
+    };
+    let set = match shape {
+        1 => [NoteheadXBlack, NoteheadXHalf, NoteheadXWhole],
+        2 => [NoteheadCircleX, NoteheadCircleXHalf, NoteheadCircleXWhole],
+        3 => [NoteheadDiamondBlack, NoteheadDiamondHalf, NoteheadDiamondWhole],
+        4 => [NoteheadTriangleBlack, NoteheadTriangleHalf, NoteheadTriangleWhole],
+        _ => return g,
+    };
+    set[k]
 }
 
 #[derive(Clone, Debug)]
 struct Note {
-    part: usize,
+    part: usize, // the staff it is drawn on
+    home: usize, // the staff whose voice it belongs to (differs when cross-staff)
     voice: u8,
     measure: usize,
     start: Frac,
@@ -521,10 +506,12 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     } else {
                         decompose(b - a)
                     };
+                    // Cross-staff: drawn on another staff of the player, in its clef.
+                    let staff = part.cross.iter().find(|c| c.0 == e.id && !rest).map_or(pi, |c| (pi as i64 + c.1 as i64).clamp(0, score.parts.len() as i64 - 1) as usize);
                     let mut t = a;
                     for (k, nv) in values.iter().enumerate() {
                         let last_piece = k + 1 == values.len() && b == end;
-                        let middle = clef_middle(&clefs_at(part, t));
+                        let middle = clef_middle(&clefs_at(&score.parts[staff], t));
                         let mut heads: Vec<Head> = e
                             .pitches
                             .iter()
@@ -539,6 +526,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                                 accidental: None,
                                 acc_x: 0.0,
                                 shift: 0.0,
+                                shape: part.head_shapes.iter().find(|s| s.0 == diatonic(p)).map_or(0, |s| s.1),
                             })
                             .collect();
                         heads.sort_by_key(|h| h.dia);
@@ -560,6 +548,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                                             accidental: None,
                                             acc_x: 0.0,
                                             shift: 0.0,
+                                            shape: part.head_shapes.iter().find(|s| s.0 == diatonic(p)).map_or(0, |s| s.1),
                                         })
                                         .collect();
                                     hs.sort_by_key(|h| h.dia);
@@ -571,7 +560,8 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         };
                         let dur = if whole_bar { m.len } else { nv.length() * Frac::new(ratio.den, ratio.num) };
                         out.push(Note {
-                            part: pi,
+                            part: staff,
+                            home: pi,
                             voice: v.index,
                             measure: mi,
                             start: t,
@@ -604,9 +594,10 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
     // Voice 1 of a part with nothing in a bar gets a whole-bar rest.
     for pi in 0..score.parts.len() {
         for (mi, m) in ms.iter().enumerate() {
-            if !out.iter().any(|n| n.part == pi && n.measure == mi && n.voice == 1) {
+            if !out.iter().any(|n| (n.part == pi || n.home == pi) && n.measure == mi && n.voice == 1) {
                 out.push(Note {
                     part: pi,
+                    home: pi,
                     voice: 1,
                     measure: mi,
                     start: m.start,
@@ -824,6 +815,8 @@ impl<'a> Engraver<'a> {
         let mut tied_into: std::collections::HashSet<(usize, u8, i32, i8)> = Default::default();
         let mut next_tied: Vec<(usize, u8, i32, i8)> = Vec::new();
         let mut last_start: Option<(usize, Frac)> = None;
+        // Percussion staves have neither key nor accidentals.
+        let percussion: Vec<bool> = self.score.parts.iter().map(|p| p.clef == "percussion").collect();
         for &i in &order {
             let (part, measure, start) = (self.notes[i].part, self.notes[i].measure, self.notes[i].start);
             if last_start.is_some_and(|(p, s)| p != part || s != start) {
@@ -856,6 +849,10 @@ impl<'a> Engraver<'a> {
                     next_tied.push((part, voice, h.dia, h.alter));
                 }
             }
+        }
+        for note in self.notes.iter_mut().filter(|n| percussion.get(n.part).copied().unwrap_or(false)) {
+            note.heads.iter_mut().for_each(|h| h.accidental = None);
+            note.graces.iter_mut().flat_map(|g| g.heads.iter_mut()).for_each(|h| h.accidental = None);
         }
         // Seconds and accidental columns.
         for note in self.notes.iter_mut() {
@@ -907,11 +904,7 @@ impl<'a> Engraver<'a> {
     /// beams of eighths only span half a bar in 4/4 and the bar in 3/4.
     fn beam_groups(&mut self) -> Vec<Vec<usize>> {
         let beat_of = |m: &Measure| beam_beat(m.num, m.den);
-        let eighths_span = |m: &Measure| match (m.num, m.den) {
-            (4, 4) => Some(Frac::new(1, 2)),
-            (3, 4) => Some(Frac::new(3, 4)),
-            _ => None,
-        };
+        let eighths_span = |m: &Measure| corinzia_score::beams::eighths_span(m.num, m.den);
         // Notes in the same window of `span` (per voice and bar) share a
         // beam; beams set by hand break, join or leave notes out.
         let group = |this: &Self, idx: &[usize], span: &dyn Fn(&Measure) -> Frac| -> Vec<Vec<usize>> {
@@ -924,9 +917,9 @@ impl<'a> Engraver<'a> {
                 let n = &this.notes[i];
                 let m = &this.ms[n.measure];
                 let window = beam_window(m, n.start - m.start + m.phase, span(m));
-                let mut key = (n.part, n.voice, n.measure, window, n.tuplets.last().copied());
+                let mut key = (n.home, n.voice, n.measure, window, n.tuplets.last().copied());
                 if n.beam & span::BEAM_JOIN != 0 {
-                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.part, n.voice, n.measure)) {
+                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.home, n.voice, n.measure)) {
                         joined = Some((key, k));
                         key = k;
                     }
@@ -952,7 +945,9 @@ impl<'a> Engraver<'a> {
             }
             groups
         };
-        let all: Vec<usize> = (0..self.notes.len()).collect();
+        // In voice order, cross-staff notes with their own voice.
+        let mut all: Vec<usize> = (0..self.notes.len()).collect();
+        all.sort_by_key(|&i| (self.notes[i].home, self.notes[i].voice, self.notes[i].start));
         let wide = group(self, &all, &|m: &Measure| eighths_span(m).unwrap_or_else(|| beat_of(m)));
         // A wide beam holding shorter notes than eighths goes back to beats.
         let mut groups = Vec::new();
@@ -964,6 +959,16 @@ impl<'a> Engraver<'a> {
             }
         }
         for g in &groups {
+            // A beam across two staves goes between them: stems down from
+            // the upper staff, up from the lower.
+            let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+            if g.iter().any(|&i| self.notes[i].part != top) {
+                for &i in g {
+                    self.notes[i].stem_up = self.notes[i].part != top;
+                    self.notes[i].beamed = true;
+                }
+                continue;
+            }
             let poly = {
                 let n = &self.notes[g[0]];
                 self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar)
@@ -1139,7 +1144,7 @@ impl<'a> Engraver<'a> {
                 if gap <= Frac::ZERO || dmin <= Frac::ZERO {
                     return None;
                 }
-                let space = ideal_space(dmin, m.shortest) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
+                let space = ideal_space(dmin, m.shortest) * self.opt.spacing * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
                 let stretch = (space - SPACING_INCREMENT as f32).max(0.0);
                 Some((stretch + self.column_head_width(col), stretch))
             };
@@ -1222,7 +1227,7 @@ impl<'a> Engraver<'a> {
             }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
-                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0);
+                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0) * self.opt.spacing;
             }
             breaks.push((x1, stretch));
             self.ms[mi].stretch = stretch - bar_stretch;
@@ -1337,7 +1342,7 @@ impl<'a> Engraver<'a> {
             for pi in 0..self.score.parts.len() {
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
-                if let Some(k) = m.key {
+                if let Some(k) = m.key.filter(|_| clef != "percussion") {
                     let k = Key { fifths: part_key(self.score, pi, k.fifths, m.start), ..k };
                     // Cancel the previous key's accidentals with naturals when it changes to fewer/other.
                     if mi > 0 {
@@ -1434,6 +1439,7 @@ impl<'a> Engraver<'a> {
         for i in 0..self.notes.len() {
             let n = self.notes[i].clone();
             let top = self.top(n.part);
+            let s = if n.art & art::CUE != 0 { CUE_SCALE } else { 1.0 };
             if n.rest {
                 let g = rest_glyph(n.value.base);
                 let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
@@ -1468,7 +1474,7 @@ impl<'a> Engraver<'a> {
                 } else {
                     n.x
                 };
-                self.push(Item::glyph(g, x, y, n.id));
+                self.push(Item::glyph_scaled(g, x, y, s, n.id));
                 if n.value.base <= 1 && !n.whole_bar || n.value.base > 1 {
                     self.dots(&n, x + self.width(g), &[if n.value.base <= 1 { 1 } else { 1 }]);
                 }
@@ -1476,28 +1482,28 @@ impl<'a> Engraver<'a> {
             }
             let hg = n.head_glyph();
             for h in &n.heads {
-                let x = n.x + h.shift;
+                let x = n.x + h.shift * s;
                 let y = self.y(n.part, h.pos);
                 // Ledger lines out to the head.
-                let ext = d.leger_line_extension;
+                let ext = d.leger_line_extension * s;
                 let mut lp = 6;
                 while lp <= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W * s + ext, ly, d.leger_line_thickness, n.id));
                     lp += 2;
                 }
                 let mut lp = -6;
                 while lp >= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W * s + ext, ly, d.leger_line_thickness, n.id));
                     lp -= 2;
                 }
-                self.push(Item::glyph(hg, x, y, h.id));
+                self.push(Item::glyph_scaled(shaped_head(hg, h.shape), x, y, s, h.id));
                 if let Some(a) = h.accidental {
-                    self.push(Item::glyph(a, n.x + h.acc_x, y, h.id));
+                    self.push(Item::glyph_scaled(a, n.x + h.acc_x + self.width(a) * (1.0 - s), y, s, h.id));
                 }
             }
-            let right = n.x + HEAD_W + n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
+            let right = n.x + HEAD_W * s + n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
             let positions: Vec<i32> = n.heads.iter().map(|h| h.pos).collect();
             self.dots(&n, right, &positions);
             if !n.has_stem() {
@@ -1507,13 +1513,15 @@ impl<'a> Engraver<'a> {
             let mid = top + 2.0;
             let (stem_x, from, mut to) = if n.stem_up {
                 let a = self.font.anchor(Glyph::NoteheadBlack, "stemUpSE").unwrap_or((HEAD_W, 0.168));
-                (n.x + a.0 - st / 2.0, self.y(n.part, lo) - a.1, self.y(n.part, hi) - 3.5)
+                (n.x + a.0 * s - st / 2.0, self.y(n.part, lo) - a.1 * s, self.y(n.part, hi) - 3.5 * s)
             } else {
                 let a = self.font.anchor(Glyph::NoteheadBlack, "stemDownNW").unwrap_or((0.0, -0.168));
-                (n.x + a.0 + st / 2.0, self.y(n.part, hi) - a.1, self.y(n.part, lo) + 3.5)
+                (n.x + a.0 * s + st / 2.0, self.y(n.part, hi) - a.1 * s, self.y(n.part, lo) + 3.5 * s)
             };
-            // Stems of notes far outside the staff reach the middle line.
-            if n.stem_up { to = to.min(mid) } else { to = to.max(mid) }
+            // Stems of notes far outside the staff reach the middle line (not cues).
+            if s == 1.0 {
+                if n.stem_up { to = to.min(mid) } else { to = to.max(mid) }
+            }
             // Room for flags of short values.
             let extra = n.beams().saturating_sub(2) as f32 * 0.75;
             if n.stem_up { to -= extra } else { to += extra }
@@ -1525,7 +1533,7 @@ impl<'a> Engraver<'a> {
             self.push(Item::line(stem_x, from, stem_x, to, st, n.id));
             if n.beams() > 0 {
                 let f = flag_glyph(n.value.base, n.stem_up);
-                self.push(Item::glyph(f, stem_x - st / 2.0, to, n.id));
+                self.push(Item::glyph_scaled(f, stem_x - st / 2.0, to, s, n.id));
             }
         }
     }
@@ -1643,6 +1651,82 @@ impl<'a> Engraver<'a> {
         }
     }
 
+    /// Tablature under the staves of fretted instruments: a line per string
+    /// (1.5 spaces apart, the highest on top), "TAB" at the start, and each
+    /// note's fret on its string, the line broken around the number.
+    fn draw_tabs(&mut self) {
+        const LINE_GAP: f32 = 1.5;
+        const FRET_SIZE: f32 = 1.7;
+        for part in 0..self.score.parts.len() {
+            let tuning = self.score.parts[part].tab.clone();
+            if tuning.is_empty() {
+                continue;
+            }
+            let strings = tuning.len();
+            let top = self.top(part);
+            // Below the staff's lowest note or stem.
+            let deep = self
+                .notes
+                .iter()
+                .filter(|n| n.part == part && !n.rest)
+                .map(|n| {
+                    let low = self.y(part, n.heads[0].pos) + 0.5;
+                    if n.has_stem() && !n.stem_up { low.max(n.stem_end) } else { low }
+                })
+                .fold(top + 4.0, f32::max);
+            let tab_top = (top + 4.0 + 3.0).max(deep + 2.0);
+            let line_y = |k: usize| tab_top + (strings - 1 - k) as f32 * LINE_GAP; // k: string, lowest 0
+            // Frets: each head on the highest free string it can be played on.
+            let mut gaps: Vec<Vec<(f32, f32)>> = vec![Vec::new(); strings];
+            let mut frets = Vec::new();
+            for n in self.notes.iter().filter(|n| n.part == part && !n.rest && n.first) {
+                let mut free: Vec<bool> = vec![true; strings];
+                for h in n.heads.iter().rev() {
+                    if h.tied_in {
+                        continue;
+                    }
+                    const SEMIS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+                    let key = (h.dia.div_euclid(7) + 1) * 12 + SEMIS[h.dia.rem_euclid(7) as usize] + h.alter as i32;
+                    let Some(k) = (0..strings).rev().find(|&k| free[k] && (0..=24).contains(&(key - tuning[k] as i32))) else { continue };
+                    free[k] = false;
+                    let fret = key - tuning[k] as i32;
+                    let x = n.x + HEAD_W / 2.0;
+                    let half = 0.45 * fret.to_string().len() as f32 * FRET_SIZE / 1.7 + 0.15;
+                    gaps[k].push((x - half, x + half));
+                    frets.push((fret, x, line_y(k), h.id));
+                }
+            }
+            let staves: Vec<(f32, f32)> = self.out.staves.iter().filter(|s| s.part == part).map(|s| (s.left, s.right)).collect();
+            let lw = self.font.defaults.staff_line_thickness;
+            for (left, right) in staves {
+                for (k, g) in gaps.iter_mut().enumerate() {
+                    g.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let y = line_y(k);
+                    let mut x = left;
+                    for &(a, b) in g.iter() {
+                        if a > x {
+                            self.push(Item::line(x, y, a.min(right), y, lw, 0));
+                        }
+                        x = x.max(b);
+                    }
+                    if x < right {
+                        self.push(Item::line(x, y, right, y, lw, 0));
+                    }
+                }
+                self.push(Item::line(left, tab_top, left, line_y(0), self.font.defaults.thin_barline_thickness, 0));
+                let bars: Vec<f32> = self.ms.iter().map(|m| m.x1).filter(|&x| x > left + 1.0 && x <= right + 0.01).collect();
+                for x in bars {
+                    self.push(Item::line(x, tab_top, x, line_y(0), self.font.defaults.thin_barline_thickness, 0));
+                }
+                let clef = if strings <= 4 { Glyph::TabClef4 } else { Glyph::TabClef6 };
+                self.push(Item::glyph(clef, left + 1.0, (tab_top + line_y(0)) / 2.0, 0));
+            }
+            for (fret, x, y, id) in frets {
+                self.push(Item::Text { text: fret.to_string(), at: pt(x, y + 0.55), size: FRET_SIZE, italic: false, bold: false, anchor: 1, id });
+            }
+        }
+    }
+
     fn dots(&mut self, n: &Note, right: f32, positions: &[i32]) {
         if n.value.dots == 0 {
             return;
@@ -1750,20 +1834,39 @@ impl<'a> Engraver<'a> {
 
     fn draw_beams(&mut self, groups: &[Vec<usize>]) {
         let d = self.font.defaults;
-        let (bt, gap) = (d.beam_thickness, d.beam_thickness + d.beam_spacing);
         for g in groups {
-            let up = self.notes[g[0]].stem_up;
+            let s = if self.notes[g[0]].art & art::CUE != 0 { CUE_SCALE } else { 1.0 };
+            let (bt, gap) = (d.beam_thickness * s, (d.beam_thickness + d.beam_spacing) * s);
+            let mut up = self.notes[g[0]].stem_up;
             let (fi, li) = (g[0], *g.last().unwrap());
             let (xf, xl) = (self.notes[fi].stem_x, self.notes[li].stem_x);
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
-            let (y0, slope) = self.quant_beam(g, up, bt, gap);
+            let kneed = g.iter().any(|&i| self.notes[i].part != self.notes[g[0]].part);
+            let (y0, slope) = if kneed {
+                // Flat, halfway between the upper staff's lowest head and the
+                // lower staff's highest, the beams stacked from there down.
+                let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+                let low = g.iter().filter(|&&i| self.notes[i].part == top).map(|&i| self.y(top, self.notes[i].heads[0].pos)).fold(f32::MIN, f32::max);
+                let high = g
+                    .iter()
+                    .filter(|&&i| self.notes[i].part != top)
+                    .map(|&i| {
+                        let n = &self.notes[i];
+                        self.y(n.part, n.heads[n.heads.len() - 1].pos)
+                    })
+                    .fold(f32::MAX, f32::min);
+                up = true;
+                ((low + high) / 2.0 - (levels as f32 * gap) / 2.0, 0.0)
+            } else {
+                self.quant_beam(g, up, bt, gap)
+            };
             let beam_y = |x: f32| y0 + slope * (x - xf);
             let beam_id = self.notes[fi].id;
             // Stems to the beam.
             for &i in g {
                 let n = self.notes[i].clone();
                 let (lo, hi) = (n.heads[0].pos, n.heads[n.heads.len() - 1].pos);
-                let from = if n.stem_up { self.y(n.part, lo) - 0.168 } else { self.y(n.part, hi) + 0.168 };
+                let from = if n.stem_up { self.y(n.part, lo) - 0.168 * s } else { self.y(n.part, hi) + 0.168 * s };
                 self.push(Item::line(n.stem_x, from, n.stem_x, beam_y(n.stem_x), d.stem_thickness, n.id));
             }
             let quad = |x0: f32, x1: f32, level: u32| {
@@ -2884,6 +2987,7 @@ impl<'a> Engraver<'a> {
         self.draw_ties();
         self.draw_marks();
         self.draw_slurs();
+        self.draw_tabs();
         self.build_skylines();
         self.draw_tuplets();
         self.draw_fingering();
@@ -2930,6 +3034,7 @@ fn compress_empty(score: &Score, ms: Vec<Measure>) -> Vec<Measure> {
             && !score.tempo.iter().any(|x| x.at == t)
             && !score.navigation.iter().any(|x| x.at == t)
             && !score.endings.iter().any(|e| e.from <= t && e.to >= t)
+            && !score.breaks.iter().any(|b| b.0 == t)
     };
     let mut out: Vec<Measure> = Vec::with_capacity(ms.len());
     for m in ms {
@@ -3037,10 +3142,16 @@ pub struct PageSpec {
     pub system_gap: f32,
     /// The number of the first page (a later movement goes on counting).
     pub first_page: usize,
+    /// Bars on each system (0: the line breaker chooses).
+    pub bars_per_system: usize,
+    /// Page numbers (and a running header) on every page but the first.
+    pub page_numbers: bool,
+    /// Points per staff space when printed (0: as wide as A4).
+    pub space_pt: f32,
 }
 impl Default for PageSpec {
     fn default() -> Self {
-        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1 }
+        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1, bars_per_system: 0, page_numbers: true, space_pt: 0.0 }
     }
 }
 
@@ -3050,14 +3161,42 @@ impl Default for PageSpec {
 /// compressed down to `MAX_COMPRESSION`; a bar wider than the line gets a
 /// system to itself. Like LilyPond (`ragged-last = ##f`), the last line is
 /// justified too.
-fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32) -> Vec<(usize, usize)> {
+///
+/// A system always ends before a bar in `forced`; with `per_system` > 0
+/// systems hold that many bars instead (still ending at forced breaks).
+fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32, forced: &[usize], per_system: usize) -> Vec<(usize, usize)> {
     let n = natural.len();
+    let mut cuts: Vec<usize> = forced.iter().copied().filter(|&f| f > 0 && f < n).collect();
+    cuts.push(0);
+    cuts.push(n);
+    cuts.sort();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for seg in cuts.windows(2) {
+        let (lo, hi) = (seg[0], seg[1]);
+        if per_system > 0 {
+            let mut a = lo;
+            while a < hi {
+                let b = (a + per_system).min(hi);
+                out.push((a, b));
+                a = b;
+            }
+        } else {
+            out.extend(break_range(natural, stretch, &prefix, line, lo, hi));
+        }
+    }
+    out
+}
+
+/// The optimal breaks of bars `lo..hi`.
+fn break_range(natural: &[f32], stretch: &[f32], prefix: &impl Fn(usize) -> f32, line: f32, lo: usize, hi: usize) -> Vec<(usize, usize)> {
+    let n = hi;
     let mut best = vec![f32::INFINITY; n + 1];
-    let mut from = vec![0usize; n + 1];
-    best[0] = 0.0;
-    for b in 1..=n {
+    let mut from = vec![lo; n + 1];
+    best[lo] = 0.0;
+    for b in lo + 1..=n {
         let (mut sum, mut k) = (0.0, 0.0);
-        for a in (0..b).rev() {
+        for a in (lo..b).rev() {
             sum += natural[a];
             k += stretch[a];
             let width = prefix(a) + sum;
@@ -3074,7 +3213,7 @@ fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32
     }
     let mut out = Vec::new();
     let mut b = n;
-    while b > 0 {
+    while b > lo {
         out.push((from[b], b));
         b = from[b];
     }
@@ -3108,11 +3247,15 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         e.left + 0.8 + clef_w + 0.8 + 3.0
     };
     let stretch: Vec<f32> = natural_line.ms.iter().map(|m| m.stretch).collect();
-    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line);
+    // Breaks by hand: before the bars starting there.
+    let bar_of = |t: Frac| ms.iter().position(|m| m.start == t);
+    let forced: Vec<usize> = score.breaks.iter().filter_map(|b| bar_of(b.0)).collect();
+    let page_breaks: Vec<usize> = score.breaks.iter().filter(|b| b.1).filter_map(|b| bar_of(b.0)).collect();
+    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line, &forced, page.bars_per_system);
 
     // Lay out each system, then stack them on pages by their real extents.
     let mut pages: Vec<DisplayList> = Vec::new();
-    let new_page = || DisplayList { width: page.width, height: page.height, ..Default::default() };
+    let new_page = || DisplayList { width: page.width, height: page.height, space_pt: page.space_pt, ..Default::default() };
     let mut cur = new_page();
     let mut y = page.margin_y;
     // The header, as LilyPond sets it: the title centred and bold, the
@@ -3123,17 +3266,25 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     if !title.is_empty() {
         cur.items.push(text(title, page.width / 2.0, y + 3.0, 3.2, true, 1, title_id));
         y += 5.0;
+        // The work's subtitle (first movement only), then the movement's.
+        if !score.subtitle.is_empty() && page.first_page == 1 {
+            cur.items.push(text(&score.subtitle, page.width / 2.0, y + 2.0, 2.4, false, 1, ids::SUBTITLE));
+            y += 3.5;
+        }
         if let Some(sub) = subtitle {
             cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1, ids::MOVEMENT_TITLE));
             y += 3.5;
         }
-        if !score.composer.is_empty() || !score.instrument.is_empty() {
-            // The composer flush right; a part's instrument flush left.
-            if !score.composer.is_empty() {
-                cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2, ids::COMPOSER));
+        // Flush left: a part's instrument, the lyricist; flush right: the
+        // composer, the arranger.
+        let left: Vec<(&str, u64)> = [(score.instrument.as_str(), 0), (score.lyricist.as_str(), ids::LYRICIST)].into_iter().filter(|(t, _)| !t.is_empty()).collect();
+        let right: Vec<(&str, u64)> = [(score.composer.as_str(), ids::COMPOSER), (score.arranger.as_str(), ids::ARRANGER)].into_iter().filter(|(t, _)| !t.is_empty()).collect();
+        for row in 0..left.len().max(right.len()) {
+            if let Some((t, id)) = left.get(row) {
+                cur.items.push(text(t, page.margin_x, y + 1.6, 2.0, false, 0, *id));
             }
-            if !score.instrument.is_empty() {
-                cur.items.push(text(&score.instrument, page.margin_x, y + 1.6, 2.0, false, 0, 0));
+            if let Some((t, id)) = right.get(row) {
+                cur.items.push(text(t, page.width - page.margin_x, y + 1.6, 2.0, false, 2, *id));
             }
             y += 2.5;
         }
@@ -3170,7 +3321,8 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
             y1 = y1.max(r[3]);
         }
         let mut offset = y - y0;
-        if offset + y1 > page.height - page.margin_y && !cur.staves.is_empty() {
+        let page_break = page_breaks.contains(&a);
+        if (page_break || offset + y1 > page.height - page.margin_y) && !cur.staves.is_empty() {
             fill(&mut cur, &starts, used);
             starts.clear();
             pages.push(std::mem::replace(&mut cur, new_page()));
@@ -3198,14 +3350,23 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     }
     // (The last page stays ragged at the bottom, as in LilyPond.)
     pages.push(cur);
-    // Page numbers from page 2, in the outer corner of the top margin.
+    // From page 2: the page number in the outer corner of the top margin,
+    // and in a part its instrument centred (as LilyPond's headers).
+    let running = score.instrument.clone();
     for (k, p) in pages.iter_mut().enumerate() {
         let n = k + page.first_page;
-        if n < 2 {
+        if n < 2 || !page.page_numbers {
             continue;
         }
         let (x, anchor) = if n % 2 == 0 { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
         p.items.push(Item::Text { text: n.to_string(), at: pt(x, page.margin_y * 0.6), size: 2.0, italic: false, bold: false, anchor, id: 0 });
+        if !running.is_empty() {
+            p.items.push(Item::Text { text: running.clone(), at: pt(page.width / 2.0, page.margin_y * 0.6), size: 1.8, italic: true, bold: false, anchor: 1, id: 0 });
+        }
+    }
+    // The copyright at the foot of the first page.
+    if let (Some(p), false, 1) = (pages.first_mut(), score.copyright.is_empty(), page.first_page) {
+        p.items.push(Item::Text { text: score.copyright.clone(), at: pt(page.width / 2.0, page.height - page.margin_y * 0.45), size: 1.6, italic: false, bold: false, anchor: 1, id: ids::COPYRIGHT });
     }
     pages
 }

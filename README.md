@@ -62,6 +62,46 @@ PipeWire.
   Beams buttons break a beam before the selected notes, join them to the
   beam before (across beat groups), leave them flagged, or go back to
   automatic.
+* **Percussion:** Drum set, Snare drum, Bass drum and Cymbals use the
+  percussion clef, a drum map (staff position → sound, MIDI key and
+  notehead: x, circled x, diamond, triangle) and MIDI channel 10. The
+  status bar names the drum under the selection; playback sounds the
+  mapped key. Drum staves have no key signature or accidentals.
+* **Cues and part-only markings:** Ctrl+Shift+V pastes the clipboard's
+  first staff as a cue: small, silent notes in voice 2 under the source
+  instrument's name. The Notes panel's ᶜ button makes notes cue-size (or
+  back). A text typed as "parts: solo" or "score: tutti" shows only in the
+  parts or only in the score.
+* **Cross-staff notes:** Ctrl+Shift+↓/↑ (or ⤓/⤒ in the Notes panel) writes
+  the selected notes on the player's staff below or above, in that staff's
+  clef; a beam with notes on both staves runs between them.
+* **Condensing** (Layout → Score → Condense): in the score, neighbouring
+  players of one instrument ("Flute 1", "Flute 2") share a staff named
+  "Flute 1.2", the first player stems up and the second down. A bar they play
+  alike is written once under "a 2", and the second player's resting bars
+  disappear. Parts are never condensed; clicks on a shared staff edit the
+  first player.
+* **Guitar tablature:** Electric guitar, "Guitar (tab)" and Bass guitar
+  get a tab staff under their staff, with standard tuning (E A D G B E, or
+  E A D G). Structure → Tablature turns it on or off for any staff. Each note
+  goes on the highest string that can play it, and the string line breaks
+  around the fret number.
+* **MusicXML round trip:** a player's staves export as one part (`<staves>`,
+  cross-staff notes by `<staff>`). Export and import also carry hand-set
+  beams (`<beam>`, compared with Corinzia's own grouping), grouped meters
+  ("2+2+3"), cue notes, system and page breaks, instrument changes (one
+  `<score-instrument>` each), drum sets (unpitched notes, noteheads and
+  their sounds), guitar tunings (a TAB staff from another program becomes
+  the tuning), and the subtitle, lyricist, arranger and copyright.
+* **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
+  Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
+  spacing, staff and system distances, bars per system and page numbers,
+  for the full score and, separately, for the parts; and the page texts:
+  subtitle, lyricist, arranger and copyright. The view and PDF export
+  follow them. Enter puts a system break before the selected bar,
+  Ctrl+Enter a page break (again removes it); shown a part, the break is
+  that part's alone. Later systems name staves by their short names, set
+  in Players as "Violin I / Vln. I".
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is
@@ -177,10 +217,11 @@ Shift+A rehearsal mark; Ctrl+B inserts a bar. The full key map is in
 runs of empty bars as multi-bar rests; it edits like the score. Export →
 Parts (PDF) prints every part. `--part N` opens on player N's part.
 
-**Movements:** the Structure panel lists them (new, rename, delete);
+**Movements:** "All movements in view" (Structure panel) shows them one
+after another on the pages, as printed; a click on one edits it. The
+Structure panel lists them (new, rename, delete);
 Ctrl+PageUp/PageDown or the arrows in the status bar switch. PDF export
 prints the whole work, each movement from a new page.
 
 Not yet: bus routing and plugin delay compensation (tracks mix straight to
-the output), automation playback, saving plugin settings, and the movements shown
-one after another in the view.
+the output), automation playback and saving plugin settings.

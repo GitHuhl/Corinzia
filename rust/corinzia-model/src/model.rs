@@ -215,6 +215,16 @@ pub struct TextItem {
     pub at: Frac,
     pub text: String,
     pub kind: TextKind,
+    /// Where it shows: the score and the parts, or only one of them.
+    pub shown: Shown,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shown {
+    #[default]
+    Both,
+    Score,
+    Parts,
 }
 
 /// A chord symbol on a staff ("Cmaj7", "F♯m7♭5/E").
@@ -329,7 +339,76 @@ pub struct Movement {
     pub lanes: Vec<Lane>,
     /// Slurs between notes (event ids), in any voices or staves of a player.
     pub slurs: Vec<Slur>,
+    /// System and page breaks by hand, at bar starts.
+    pub breaks: Vec<Break>,
+    /// Notes written on another staff of their player: (event, staves
+    /// down; -1 the staff above).
+    pub cross: Vec<(Id, i8)>,
 }
+
+/// A system (or page) break before the bar at `at`: in the full score, or
+/// in one player's part.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Break {
+    pub id: Id,
+    pub at: Frac,
+    pub page: bool,
+    /// The player whose part it is in; None: the full score.
+    pub part: Option<Id>,
+}
+
+/// How a score (or the parts) is laid out on the page. Lengths in
+/// millimetres, distances in staff spaces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    /// Portrait page size; `landscape` turns it.
+    pub page_width_mm: f64,
+    pub page_height_mm: f64,
+    pub landscape: bool,
+    /// Staff height, bottom line to top line (four staff spaces).
+    pub staff_mm: f64,
+    /// Margins top and bottom, and at the sides.
+    pub margin_y_mm: f64,
+    pub margin_x_mm: f64,
+    /// Note spacing, 1.0 as LilyPond's.
+    pub spacing: f64,
+    /// Least distance from staff to staff (top line to top line).
+    pub staff_distance: f64,
+    /// Space between systems (between their outermost marks).
+    pub system_gap: f64,
+    /// Bars on each system; 0 to let the line breaker choose.
+    pub bars_per_system: u32,
+    pub page_numbers: bool,
+    /// The score (not the parts) puts pairs of players of one instrument
+    /// on one staff.
+    pub condense: bool,
+}
+
+impl Default for Layout {
+    /// A4 with an 18 pt staff, as LilyPond's default.
+    fn default() -> Self {
+        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 4.0, bars_per_system: 0, page_numbers: true, condense: false }
+    }
+}
+
+impl Layout {
+    /// The parts' default: a larger staff (7 mm), as parts are read from a stand.
+    pub fn parts() -> Layout {
+        Layout { staff_mm: 7.0, ..Layout::default() }
+    }
+    /// One staff space in millimetres.
+    pub fn space_mm(&self) -> f64 {
+        self.staff_mm / 4.0
+    }
+    /// The page in staff spaces (width, height), turned if landscape.
+    pub fn page_spaces(&self) -> (f64, f64) {
+        let (w, h) = if self.landscape { (self.page_height_mm, self.page_width_mm) } else { (self.page_width_mm, self.page_height_mm) };
+        (w / self.space_mm(), h / self.space_mm())
+    }
+}
+
+/// Named page sizes in millimetres (portrait).
+pub const PAGE_SIZES: [(&str, f64, f64); 7] = [("A4", 210.0, 297.0), ("Letter", 215.9, 279.4), ("A3", 297.0, 420.0), ("B4", 250.0, 353.0), ("Legal", 215.9, 355.6), ("Tabloid", 279.4, 431.8), ("A5", 148.0, 210.0)];
 
 impl Movement {
     /// Each note's (lane, voice index into `lane.voices`, start), by event id.
@@ -372,6 +451,111 @@ pub struct Instrument {
     pub transposition: Interval,
     pub clef: String,
     pub track: Option<Id>,
+    /// A percussion instrument's sounds by staff position (a drum set);
+    /// empty: notes sound at their pitch.
+    pub drums: Vec<DrumSound>,
+    /// A fretted instrument's open strings (MIDI keys, lowest first): a
+    /// tablature staff goes under its staff. Empty: no tablature.
+    pub tuning: Vec<u8>,
+}
+
+/// The usual tuning of a fretted instrument shown with tablature: electric
+/// and bass guitars (others start without, see `GUITAR_TUNING`).
+pub fn default_tuning(name: &str) -> Vec<u8> {
+    let n = name.to_ascii_lowercase();
+    if n.contains("bass guitar") || n.contains("electric bass") {
+        BASS_TUNING.to_vec()
+    } else if n.contains("electric guitar") || n.contains("tab") && n.contains("guitar") {
+        GUITAR_TUNING.to_vec()
+    } else {
+        vec![]
+    }
+}
+
+/// E2 A2 D3 G3 B3 E4 and E1 A1 D2 G2.
+pub const GUITAR_TUNING: [u8; 6] = [40, 45, 50, 55, 59, 64];
+pub const BASS_TUNING: [u8; 4] = [28, 33, 38, 43];
+
+/// One sound of a percussion instrument: written at a staff position (a
+/// pitch on the percussion clef, read as on the treble clef) with a
+/// notehead, played as a MIDI key (General MIDI drums on channel 10).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrumSound {
+    pub name: String,
+    pub position: Pitch,
+    pub key: u8,
+    pub head: Notehead,
+}
+
+/// Notehead shapes for percussion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Notehead {
+    #[default]
+    Normal,
+    X,
+    CircleX,
+    Diamond,
+    Triangle,
+}
+
+impl Notehead {
+    pub fn code(self) -> &'static str {
+        match self {
+            Notehead::Normal => "normal",
+            Notehead::X => "x",
+            Notehead::CircleX => "circle-x",
+            Notehead::Diamond => "diamond",
+            Notehead::Triangle => "triangle",
+        }
+    }
+    pub fn from_code(c: &str) -> Notehead {
+        match c {
+            "x" => Notehead::X,
+            "circle-x" => Notehead::CircleX,
+            "diamond" => Notehead::Diamond,
+            "triangle" => Notehead::Triangle,
+            _ => Notehead::Normal,
+        }
+    }
+}
+
+/// The sounds an instrument of this name starts with: a drum set's (the
+/// usual positions, General MIDI keys), a single drum's, or none.
+pub fn default_drums(name: &str) -> Vec<DrumSound> {
+    let n = name.to_lowercase();
+    let p = |step: i8, octave: i8| Pitch { step, alter: 0, octave };
+    let s = |name: &str, position: Pitch, key: u8, head: Notehead| DrumSound { name: name.into(), position, key, head };
+    if n.contains("drum set") || n.contains("drum kit") || n == "drums" || n == "kit" {
+        vec![
+            s("Bass drum", p(3, 4), 36, Notehead::Normal),
+            s("Floor tom", p(5, 4), 41, Notehead::Normal),
+            s("Snare drum", p(0, 5), 38, Notehead::Normal),
+            s("Low tom", p(1, 5), 45, Notehead::Normal),
+            s("High tom", p(2, 5), 48, Notehead::Normal),
+            s("Ride cymbal", p(3, 5), 51, Notehead::X),
+            s("Hi-hat", p(4, 5), 42, Notehead::X),
+            s("Open hi-hat", p(5, 5), 46, Notehead::CircleX),
+            s("Crash cymbal", p(6, 5), 49, Notehead::X),
+            s("Hi-hat pedal", p(1, 4), 44, Notehead::X),
+            s("Side stick", p(4, 4), 37, Notehead::X),
+            s("Cowbell", p(2, 4), 56, Notehead::Triangle),
+        ]
+    } else if n.contains("snare") {
+        vec![s("Snare drum", p(0, 5), 38, Notehead::Normal)]
+    } else if n.contains("bass drum") {
+        vec![s("Bass drum", p(0, 5), 36, Notehead::Normal)]
+    } else if n.contains("cymbal") {
+        vec![s("Crash cymbal", p(0, 5), 49, Notehead::X)]
+    } else {
+        vec![]
+    }
+}
+
+impl Instrument {
+    /// The drum sound written at a pitch's staff position.
+    pub fn drum_at(&self, p: Pitch) -> Option<&DrumSound> {
+        self.drums.iter().find(|d| d.position.step == p.step && d.position.octave == p.octave)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -424,10 +608,19 @@ pub struct AudioEdge {
     pub gain: f64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Project {
     pub title: String,
     pub composer: String,
+    /// Under the title; lyricist top left, arranger under the composer;
+    /// the copyright at the foot of the first page.
+    pub subtitle: String,
+    pub lyricist: String,
+    pub arranger: String,
+    pub copyright: String,
+    /// The full score's layout and the parts'.
+    pub layout: Layout,
+    pub part_layout: Layout,
     pub sample_rate: f64,
     pub next_id: u64,
     pub players: Vec<Player>,
@@ -440,11 +633,40 @@ pub struct Project {
     pub plugin_state: std::collections::BTreeMap<Id, Arc<Vec<u8>>>,
 }
 
+impl Default for Project {
+    fn default() -> Self {
+        Project {
+            title: String::new(),
+            composer: String::new(),
+            subtitle: String::new(),
+            lyricist: String::new(),
+            arranger: String::new(),
+            copyright: String::new(),
+            layout: Layout::default(),
+            part_layout: Layout::parts(),
+            sample_rate: 48000.0,
+            next_id: 1,
+            players: vec![],
+            instruments: vec![],
+            tracks: vec![],
+            movements: vec![],
+            nodes: vec![],
+            edges: vec![],
+            plugin_state: Default::default(),
+        }
+    }
+}
+
 impl Project {
     pub fn allocate_id(&mut self) -> Id {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+    /// The MIDI key a note written at `key` sounds on `instrument`: a drum
+    /// set's sound for that staff position, else the key itself.
+    pub fn sounding_key(&self, instrument: Id, key: i32) -> i32 {
+        self.instrument(instrument).and_then(|i| i.drums.iter().find(|d| d.position.midi_key() == key)).map_or(key, |d| d.key as i32)
     }
     pub fn player(&self, id: Id) -> Option<&Player> {
         self.players.iter().find(|p| p.id == id)

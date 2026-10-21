@@ -31,7 +31,7 @@ fn intervals_spell_and_move_keys() {
 fn transposed_view_writes_pitches_and_keys() {
     let mut proj = Project { next_id: 100, ..Default::default() };
     proj.players.push(Player { id: 1, name: "Clarinet".into(), instruments: vec![2] });
-    proj.instruments.push(Instrument { id: 2, player: 1, name: "Clarinet in B♭".into(), engraver_name: "Cl.".into(), transposition: Interval::new(1, 2), clef: "treble".into(), track: None });
+    proj.instruments.push(Instrument { id: 2, player: 1, name: "Clarinet in B♭".into(), engraver_name: "Cl.".into(), transposition: Interval::new(1, 2), clef: "treble".into(), track: None, drums: vec![], tuning: vec![] });
     let note = Event { id: 10, kind: EventKind::Note, start: Frac::ZERO, duration: Frac::int(1), heads: vec![Head { id: 11, pitch: p(6, -1, 4), tie: false, velocity: 0 }], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
     let m = Movement {
         id: 3,
@@ -55,7 +55,7 @@ fn transposed_view_writes_pitches_and_keys() {
             chords: vec![ChordSymbol { id: 5, at: Frac::ZERO, text: "Bb".into() }],
             lines: vec![],
             voices: vec![Voice { id: 6, index: 1, events: Arc::new(vec![note]), tuplets: vec![] }],
-        }],
+        }], breaks: vec![], cross: vec![],
     };
     let concert = score_as(&proj, &m, false);
     let written = score_as(&proj, &m, true);

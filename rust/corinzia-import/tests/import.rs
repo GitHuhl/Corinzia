@@ -419,3 +419,30 @@ fn nested_overlapping_and_cross_voice_slurs() {
     assert!(out.contains("number=\"2\""), "{out}");
     assert_eq!(spans(&musicxml(out.as_bytes()).unwrap()), want);
 }
+
+#[test]
+fn a_tab_staff_gives_the_tuning_and_voice_one_on_both_staves_stays_put() {
+    let xml = r#"<?xml version="1.0"?>
+<score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Guitar</part-name></score-part><score-part id="P2"><part-name>Piano</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time><staves>2</staves>
+<clef number="1"><sign>G</sign><line>2</line><clef-octave-change>-1</clef-octave-change></clef><clef number="2"><sign>TAB</sign><line>5</line></clef>
+<staff-details number="2"><staff-lines>6</staff-lines><staff-tuning line="1"><tuning-step>D</tuning-step><tuning-octave>2</tuning-octave></staff-tuning><staff-tuning line="2"><tuning-step>A</tuning-step><tuning-octave>2</tuning-octave></staff-tuning></staff-details></attributes>
+<note><pitch><step>E</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type><staff>1</staff></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>E</step><octave>3</octave></pitch><duration>4</duration><voice>5</voice><type>whole</type><staff>2</staff><notations><technical><string>4</string><fret>2</fret></technical></notations></note>
+</measure></part>
+<part id="P2"><measure number="1"><attributes><divisions>1</divisions><staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef><clef number="2"><sign>F</sign><line>4</line></clef></attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type><staff>1</staff></note>
+<backup><duration>4</duration></backup>
+<note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type><staff>2</staff></note>
+</measure></part></score-partwise>"#;
+    let p = musicxml(xml.as_bytes()).unwrap();
+    let m = &p.movements[0];
+    assert_eq!(m.lanes.len(), 3, "the tab staff is not a staff of its own");
+    let gtr = p.instrument(m.lanes[0].changes[0].instrument).unwrap();
+    assert_eq!((gtr.tuning.as_slice(), gtr.clef.as_str()), (&[38u8, 45][..], "treble_8"));
+    assert_eq!(names(&m.lanes[0].voices[0].events), ["E3"]);
+    // The piano's voice 1 on each staff: no cross-staff notes.
+    assert!(m.cross.is_empty());
+    assert_eq!(names(&m.lanes[2].voices[0].events), ["C3"]);
+}

@@ -731,9 +731,32 @@ pub fn set_chord(m: &mut Movement, player: Id, at: Frac, text: &str, ids: &mut I
     }
 }
 
+/// "parts: …" or "score: …" before a text keeps it to the parts or the
+/// score; the rest is the text.
+pub fn parse_shown(text: &str) -> (Shown, &str) {
+    let t = text.trim();
+    let lower = t.to_ascii_lowercase();
+    for (prefix, shown) in [("parts:", Shown::Parts), ("part:", Shown::Parts), ("score:", Shown::Score)] {
+        if lower.starts_with(prefix) {
+            return (shown, t[prefix.len()..].trim());
+        }
+    }
+    (Shown::Both, t)
+}
+
+/// The popover form of a text: its words, after "parts: " or "score: ".
+pub fn shown_text(t: &TextItem) -> String {
+    match t.shown {
+        Shown::Both => t.text.clone(),
+        Shown::Score => format!("score: {}", t.text),
+        Shown::Parts => format!("parts: {}", t.text),
+    }
+}
+
 pub fn add_text(m: &mut Movement, player: Id, at: Frac, text: &str, kind: TextKind, ids: &mut Ids) {
+    let (shown, text) = parse_shown(text);
     for l in m.lanes.iter_mut().filter(|l| l.player == player) {
-        l.texts.push(TextItem { id: ids.next(), at, text: text.to_string(), kind });
+        l.texts.push(TextItem { id: ids.next(), at, text: text.to_string(), kind, shown });
         l.texts.sort_by(|a, b| a.at.cmp(&b.at));
     }
 }

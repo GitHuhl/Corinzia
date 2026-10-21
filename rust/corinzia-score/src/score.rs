@@ -11,6 +11,10 @@ pub mod ids {
     pub const PROJECT_TITLE: u64 = u64::MAX - 1;
     pub const MOVEMENT_TITLE: u64 = u64::MAX - 2;
     pub const COMPOSER: u64 = u64::MAX - 3;
+    pub const SUBTITLE: u64 = u64::MAX - 4;
+    pub const LYRICIST: u64 = u64::MAX - 5;
+    pub const ARRANGER: u64 = u64::MAX - 6;
+    pub const COPYRIGHT: u64 = u64::MAX - 7;
     const TEMPO: u64 = 1 << 62;
     const DYNAMIC: u64 = 1 << 61;
     const LYRIC: u64 = 1 << 60; // verse in bits 52..60
@@ -47,6 +51,14 @@ pub struct Score {
     pub composer: String,
     /// A part's instrument, printed top left of the first page.
     pub instrument: String,
+    /// The work's subtitle; lyricist (left) and arranger (under the
+    /// composer); the copyright line at the foot of the first page.
+    pub subtitle: String,
+    pub lyricist: String,
+    pub arranger: String,
+    pub copyright: String,
+    /// Breaks by hand before the bars starting here: (at, page break).
+    pub breaks: Vec<(Frac, bool)>,
     pub length: Frac,
     pub tempo: Vec<Tempo>,
     pub meter: Vec<Meter>,
@@ -199,7 +211,7 @@ impl Part {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Part {
     pub name: String,
     pub abbr: String,
@@ -223,6 +235,18 @@ pub struct Part {
     pub group: u32,
     /// Octave lines and pedal marks on this staff.
     pub lines: Vec<LineSpan>,
+    /// Notehead shapes by staff position (a percussion map): (diatonic
+    /// position, step + 7 × octave; 1 x, 2 circled x, 3 diamond, 4 triangle).
+    pub head_shapes: Vec<(i32, u8)>,
+    /// Events written on another staff: (event id, staves down; -1 up).
+    pub cross: Vec<(u64, i8)>,
+    /// A tablature staff under this one: open strings (MIDI keys, lowest
+    /// first); empty for none.
+    pub tab: Vec<u8>,
+    /// A percussion staff's sounds: (diatonic position, name, MIDI key).
+    pub drums: Vec<(i32, String, u8)>,
+    /// The instruments the staff's player holds from when on (the first at 0).
+    pub instruments: Vec<(Frac, String)>,
     /// The instrument's transposition as (diatonic steps, semitones),
     /// written minus sounding: (1, 2) for a B♭ clarinet.
     pub transposition: (i32, i32),
@@ -302,7 +326,7 @@ pub struct Text {
     pub technique: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Voice {
     pub index: u8,
     pub events: Vec<Event>,
@@ -380,6 +404,8 @@ pub mod art {
     pub const CAESURA: u16 = 1 << 12;
     pub const UP_BOW: u16 = 1 << 13;
     pub const DOWN_BOW: u16 = 1 << 14;
+    /// A cue: written small, not played.
+    pub const CUE: u16 = 1 << 15;
 }
 pub mod span {
     pub const CRESC_START: u8 = 1 << 2;

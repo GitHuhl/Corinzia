@@ -9,7 +9,7 @@
 
 use corinzia_edit::{self as edit, DurationSpec, EditResult, Ids};
 use corinzia_model::*;
-use corinzia_score::score::{ids, span};
+use corinzia_score::score::{art, ids, span};
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -31,6 +31,8 @@ struct Clip {
     length: Frac,
     /// Slurs within the passage, and their sides.
     slurs: Vec<([ClipNote; 2], i8)>,
+    /// The first staff's instrument (named over a cue).
+    source: String,
 }
 
 const UNDO_LIMIT: usize = 500;
@@ -195,10 +197,12 @@ fn span_from_note(evs: &[Event], note: Id) -> Option<(Frac, Frac)> {
 fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     let (track, inst) = (p.allocate_id(), p.allocate_id());
     let used: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
-    let midi_channel = (0..16).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8);
+    // A drum set starts with its map, and plays on the drum channel (10).
+    let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
+    let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
     p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
-    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track) });
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
 }
 
@@ -209,12 +213,18 @@ fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) 
     let mut free = held.clone();
     let mut result: Vec<Option<Id>> = vec![None; specs.len()];
     let name_of = |p: &Project, i: Id| p.instrument(i).map(|x| x.name.clone()).unwrap_or_default();
+    let mut changed = 0;
     for (k, s) in specs.iter().enumerate() {
         if let Some(pos) = free.iter().position(|i| name_of(p, *i).eq_ignore_ascii_case(&s.name)) {
-            result[k] = Some(free.remove(pos));
+            let id = free.remove(pos);
+            // The same instrument; its short name may be new.
+            if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id && i.engraver_name != s.abbr) {
+                i.engraver_name = s.abbr.clone();
+                changed += 1;
+            }
+            result[k] = Some(id);
         }
     }
-    let mut changed = 0;
     for (k, s) in specs.iter().enumerate() {
         if result[k].is_some() {
             continue;
@@ -425,6 +435,7 @@ impl Editor {
             endings: vec![],
             navigation: vec![],
             slurs: vec![],
+            breaks: vec![], cross: vec![],
             lanes,
         };
         let at = self.movement + 1;
@@ -434,6 +445,47 @@ impl Editor {
         }
         self.commit(before, "New movement");
         self.switch_movement_force(at);
+    }
+
+    /// A percussion staff (its instrument's clef): no key; letters and
+    /// clicks are staff positions.
+    pub fn lane_is_percussion(&self, lane: usize) -> bool {
+        self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.changes.first()).and_then(|c| self.project.instrument(c.instrument)).is_some_and(|i| i.clef == "percussion")
+    }
+
+    /// Tablature on or off for the selected staff's instrument (standard
+    /// guitar tuning, or the bass guitar's on a bass staff).
+    pub fn toggle_tab(&mut self) {
+        let Some(m) = self.movement() else { return };
+        let lane = self.selection.and_then(|s| self.event_of(s)).map(|(loc, _)| loc.lane).or(self.range.map(|r| r.lane_from)).unwrap_or(self.caret_lane);
+        let Some(inst) = m.lanes.get(lane).and_then(|l| l.changes.first()).map(|c| c.instrument) else { return };
+        let before = self.snapshot();
+        let Some(i) = self.project.instruments.iter_mut().find(|i| i.id == inst) else { return };
+        let on = i.tuning.is_empty();
+        i.tuning = if !on { vec![] } else if i.clef.starts_with("bass") { BASS_TUNING.to_vec() } else { GUITAR_TUNING.to_vec() };
+        self.status = format!("Tablature {} for {}", if on { "on" } else { "off" }, i.name);
+        self.commit(before, "Tablature");
+    }
+
+    /// The drum sound of a note on a drum set's staff.
+    pub fn drum_name(&self, lane: usize, at: Frac, p: Pitch) -> Option<String> {
+        let m = self.movement()?;
+        let inst = self.project.instrument(m.lanes.get(lane)?.instrument_at(at)?)?;
+        inst.drum_at(p).map(|d| d.name.clone())
+    }
+
+    /// The movement holding element `id` (a note, rest, mark or text).
+    pub fn movement_of(&self, id: Id) -> Option<usize> {
+        let id = ids::as_dynamic(id).or(ids::as_lyric(id).map(|l| l.0)).unwrap_or(id);
+        self.project.movements.iter().position(|m| {
+            m.lanes.iter().any(|l| {
+                l.voices.iter().any(|v| v.events.iter().any(|e| e.id == id || e.heads.iter().any(|h| h.id == id) || e.graces.iter().any(|g| g.id == id || g.heads.iter().any(|h| h.id == id))))
+                    || l.texts.iter().any(|t| t.id == id)
+                    || l.chords.iter().any(|c| c.id == id)
+                    || l.clefs.iter().any(|c| c.id == id)
+            }) || edit::describe_item(m, id).is_some()
+                || m.slurs.iter().any(|s| s.id == id)
+        })
     }
 
     fn switch_movement_force(&mut self, i: usize) {
@@ -919,6 +971,7 @@ impl Editor {
         }
         let step = step.rem_euclid(7);
         let (lane, voice, caret, spec, alter, chord) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from), add_to_chord || self.chord_mode);
+        let perc = self.lane_is_percussion(lane); // no key: letters are staff positions
         let tuplet = self.tuplet_input;
         let transposed = self.transposed;
         let instruments: std::collections::HashMap<Id, Interval> = self.project.instruments.iter().map(|i| (i.id, i.transposition)).collect();
@@ -935,7 +988,7 @@ impl Editor {
             // the written key next to the written previous note, then store it
             // at concert pitch.
             let by = if transposed { m.lanes[lane].instrument_at(caret).and_then(|i| instruments.get(&i).copied()).unwrap_or_default() } else { Interval::default() };
-            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths()) };
             let concert = |p: Pitch| p.transposed(by.inverse());
             // Chord: add above the event just entered (the one ending at the caret).
             let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
@@ -980,6 +1033,7 @@ impl Editor {
     fn enter_grace(&mut self, step: i32, slash: bool) {
         let (lane, voice, caret, spec, alter) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from));
         let by = self.written_interval(lane, caret);
+        let perc = self.lane_is_percussion(lane);
         let mut focus = None;
         self.transact("Grace note", |m, ids| {
             if m.lanes.is_empty() {
@@ -993,7 +1047,7 @@ impl Editor {
                 extend_to(m, r.to);
                 evs = r.events;
             }
-            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths()) };
             // Next to the last grace typed here, else the previous note.
             let reference = evs
                 .iter()
@@ -1056,6 +1110,7 @@ impl Editor {
     /// Mouse input: a click on staff `lane` at written position `quarter`
     /// and staff step `diatonic` (C4 = 28).
     pub fn place_note_at(&mut self, lane: usize, quarter: f64, diatonic: i32, add_to_chord: bool) {
+        let perc = self.lane_is_percussion(lane);
         // Snap to the grid of the current (undotted) duration, biased left so
         // a click just after a beat still lands on it.
         let grid = DurationSpec { dots: 0, ..self.spec }.value();
@@ -1076,7 +1131,7 @@ impl Editor {
         self.transact("Note input", |m, ids| {
             let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
             let evs = m.lanes[lane].voices[vi].events.clone();
-            let alter = accidental.map(i32::from).unwrap_or_else(|| edit::key_alter(key_fifths_at(m, caret), step));
+            let alter = accidental.map(i32::from).unwrap_or_else(|| edit::key_alter(if perc { 0 } else { key_fifths_at(m, caret) }, step));
             let p = edit::from_diatonic(diatonic, alter);
             let onset = edit::event_at(&evs, caret).filter(|e| e.start == caret && !e.heads.is_empty());
             let r = if chord && onset.is_some() {
@@ -1513,6 +1568,44 @@ impl Editor {
         self.status = label.into();
     }
 
+    /// Ctrl+Shift+↑/↓: the selected notes onto the player's staff above or
+    /// below (beams follow them), or back home.
+    pub fn cross_staff(&mut self, dir: i8) {
+        let Some(m) = self.movement() else { return };
+        let targets: Vec<(usize, Id)> = if !self.picked.is_empty() {
+            self.picked_events(m).iter().filter(|(_, e, _)| !e.is_rest()).map(|(li, e, _)| (*li, e.id)).collect()
+        } else if let Some(r) = self.range {
+            (r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1)))
+                .flat_map(|li| m.lanes[li].voices.iter().flat_map(move |v| v.events.iter().map(move |e| (li, e))))
+                .filter(|(_, e)| !e.is_rest() && e.start >= r.from && e.start < r.to)
+                .map(|(li, e)| (li, e.id))
+                .collect()
+        } else {
+            self.selection.and_then(|s| self.event_of(s)).filter(|(_, e)| !e.is_rest()).map(|(loc, e)| vec![(loc.lane, e.id)]).unwrap_or_default()
+        };
+        if targets.is_empty() {
+            self.status = "Select some notes to move across staves".into();
+            return;
+        }
+        let mut moved = 0;
+        self.transact("Cross staff", |m, _| {
+            for &(li, id) in &targets {
+                let d = m.cross.iter().find(|c| c.0 == id).map_or(0, |c| c.1) as i64 + dir as i64;
+                let to = li as i64 + d;
+                if to < 0 || to as usize >= m.lanes.len() || m.lanes[to as usize].player != m.lanes[li].player {
+                    continue;
+                }
+                m.cross.retain(|c| c.0 != id);
+                if d != 0 {
+                    m.cross.push((id, d as i8));
+                }
+                moved += 1;
+            }
+            moved > 0
+        });
+        self.status = if moved == 0 { "No staff of this player there".into() } else { format!("Cross staff: {moved} {}", if moved == 1 { "note" } else { "notes" }) };
+    }
+
     pub fn toggle_tie(&mut self) {
         if let Some(r) = self.range {
             self.edit_range_voices("Tie", |evs, _, _| {
@@ -1710,8 +1803,9 @@ impl Editor {
         let Some((loc, e)) = self.event_of(id) else { return };
         let (start, lane, voice) = (e.start, loc.lane, loc.voice);
         let by = self.written_interval(lane, start);
+        let perc = self.lane_is_percussion(lane);
         let Some(m) = self.movement() else { return };
-        let fifths = corinzia_model::shift_key(key_fifths_at(m, start), by.fifths());
+        let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, start), by.fifths()) };
         let evs = m.lanes[lane].voices[voice].events.clone();
         let reference = match edit::find_event(&evs, id) {
             Some((e, Some(h))) => e.heads[h].pitch,
@@ -1803,6 +1897,66 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    // ------------------------------------------------------------- layout --
+    /// The score's and the parts' layouts and the page texts (subtitle,
+    /// lyricist, arranger, copyright), as one undo step.
+    pub fn set_layout(&mut self, layout: Layout, parts: Layout, texts: [String; 4]) {
+        let p = &self.project;
+        let unchanged = p.layout == layout && p.part_layout == parts && [&p.subtitle, &p.lyricist, &p.arranger, &p.copyright].iter().zip(&texts).all(|(a, b)| *a == b);
+        if unchanged {
+            self.status = "No changes to the layout".into();
+            return;
+        }
+        let before = self.snapshot();
+        let p = &mut self.project;
+        p.layout = layout;
+        p.part_layout = parts;
+        let [subtitle, lyricist, arranger, copyright] = texts;
+        (p.subtitle, p.lyricist, p.arranger, p.copyright) = (subtitle, lyricist, arranger, copyright);
+        self.commit(before, "Layout");
+        self.status = "Layout changed".into();
+    }
+
+    /// A system break (or page break) before the selected bar, or the
+    /// caret's; in `part`'s part, or in the full score. Again removes it;
+    /// the other kind there turns it into this one.
+    pub fn toggle_break(&mut self, page: bool, part: Option<Id>) -> Result<(), String> {
+        let m = self.movement().ok_or("No movement")?;
+        let t = match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+            (Some(r), _) => r.from,
+            (None, Some((_, e))) => e.start,
+            _ => self.caret,
+        };
+        let bar = edit::bar_start_at_or_before(m, t.min(m.length));
+        if bar == Frac::ZERO {
+            return Err("A break goes before a bar after the first: select a later bar".into());
+        }
+        let n = edit::bar_number(m, bar).0;
+        let what = if page { "Page break" } else { "System break" };
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let m = &mut self.project.movements[self.movement];
+        let label = match m.breaks.iter().position(|b| b.at == bar && b.part == part) {
+            Some(i) if m.breaks[i].page == page => {
+                m.breaks.remove(i);
+                format!("{what} removed")
+            }
+            Some(i) => {
+                m.breaks[i].page = page;
+                what.to_string()
+            }
+            None => {
+                m.breaks.push(Break { id, at: bar, page, part });
+                m.breaks.sort_by_key(|b| b.at);
+                what.to_string()
+            }
+        };
+        self.commit(before, &label);
+        let scope = if part.is_some() { " in the part" } else { "" };
+        self.status = format!("{label} before bar {n}{scope}");
+        Ok(())
+    }
+
     // ------------------------------------------------------ explode/reduce --
     /// The passage's staves, its voice-1 index on each, checked for
     /// explode/reduce: two staves or more, no tuplets.
@@ -2157,8 +2311,9 @@ impl Editor {
             (li >= r.lane_from && li <= r.lane_to && at >= r.from && at < r.to).then(|| (li - r.lane_from, m.lanes[li].voices[vi].index, at - r.from))
         };
         let slurs = m.slurs.iter().filter_map(|s| Some(([inside(&s.from)?, inside(&s.to)?], s.dir))).collect();
+        let source = m.lanes.get(r.lane_from).and_then(|l| l.instrument_at(r.from)).and_then(|i| self.project.instrument(i)).map(|i| i.name.clone()).unwrap_or_default();
         self.status = format!("Copied {} {}, {} beats", lanes.len(), if lanes.len() == 1 { "staff" } else { "staves" }, quarters(length));
-        self.clip = Some(Clip { lanes, length, slurs });
+        self.clip = Some(Clip { lanes, length, slurs, source });
     }
 
     pub fn cut(&mut self) {
@@ -2216,6 +2371,48 @@ impl Editor {
             true
         });
         self.set_range(Range { lane_from: lane0, lane_to: last_lane, from: at, to: end });
+    }
+
+    /// Ctrl+Shift+V: the clipboard's first staff as a cue: small notes in
+    /// voice 2 of the target staff, silent, under the source instrument's name.
+    pub fn paste_cue(&mut self) {
+        let Some(clip) = self.clip.clone() else { return };
+        let Some(m) = self.movement() else { return };
+        if m.lanes.is_empty() {
+            return;
+        }
+        let (lane, at) = match (self.range, self.selection.and_then(|s| self.event_of(s))) {
+            (Some(r), _) => (r.lane_from, r.from),
+            (None, Some((loc, e))) => (loc.lane, e.start),
+            _ => (self.caret_lane.min(m.lanes.len() - 1), self.caret),
+        };
+        let Some(voice) = clip.lanes.first().and_then(|l| l.iter().find(|(_, evs, _)| evs.iter().any(|e| !e.is_rest()))).cloned() else {
+            self.status = "Nothing to cue: copy some notes first".into();
+            return;
+        };
+        let end = at + clip.length;
+        let player = m.lanes[lane].player;
+        let source = clip.source.clone();
+        self.transact("Cue", |m, ids| {
+            extend_to(m, end);
+            let cue: Vec<Event> = voice
+                .1
+                .iter()
+                .map(|e| Event { articulations: e.articulations | art::CUE, dynamic: None, lyrics: vec![], graces: vec![], ..e.clone() })
+                .collect();
+            let Some(vi) = voice_slot(m, lane, 2, true, ids) else { return false };
+            let evs = m.lanes[lane].voices[vi].events.clone();
+            let r = edit::paste_events(&evs, &cue, at, clip.length, false, ids);
+            let v = &mut m.lanes[lane].voices[vi];
+            v.tuplets = edit::tuplets::paste(&v.tuplets, &voice.2, at, clip.length);
+            set_events(m, lane, vi, &r);
+            if !source.is_empty() {
+                edit::add_text(m, player, at, &source, TextKind::Technique, ids);
+            }
+            true
+        });
+        self.set_range(Range { lane_from: lane, lane_to: lane, from: at, to: end });
+        self.status = format!("Cue from {}", if source.is_empty() { "the clipboard" } else { &source });
     }
 
     /// R: the selection again, right after itself; the clipboard is kept.
@@ -2691,7 +2888,7 @@ impl Editor {
         }
         for l in &m.lanes {
             if let Some(t) = l.texts.iter().find(|t| t.id == id) {
-                return Some((if t.kind == TextKind::Expression { PopoverKind::Expression } else { PopoverKind::Technique }, t.text.clone()));
+                return Some((if t.kind == TextKind::Expression { PopoverKind::Expression } else { PopoverKind::Technique }, edit::shown_text(t)));
             }
             if let Some(c) = l.chords.iter().find(|c| c.id == id) {
                 return Some((PopoverKind::Chord, c.text.clone()));
@@ -2890,7 +3087,7 @@ impl Editor {
         let inst = lane.instrument_at(e.start).and_then(|i| self.project.instrument(i)).map(|i| i.name.clone()).unwrap_or_default();
         let bar = edit::bar_number(m, e.start).0;
         match e.heads.iter().find(|h| h.id == id).or(e.heads.first()) {
-            Some(h) if !e.is_rest() => format!("{} · {inst} · bar {bar}", pitch_name(h.pitch)),
+            Some(h) if !e.is_rest() => format!("{} · {inst} · bar {bar}", self.drum_name(loc.lane, e.start, h.pitch).unwrap_or_else(|| pitch_name(h.pitch))),
             _ => format!("Rest · {inst} · bar {bar}"),
         }
     }
@@ -3649,5 +3846,173 @@ mod tests {
         e.caret = f(1, 1);
         e.add_first_second_endings();
         assert_eq!(e.movement().unwrap().endings.len(), 2);
+    }
+
+    #[test]
+    fn drum_sets_get_a_map_and_channel_ten() {
+        let e = Editor::new(crate::files::new_project("D", "Flute, Drum set", 2).unwrap());
+        let drums = e.project.instruments.iter().find(|i| i.name == "Drum set").unwrap().clone();
+        assert!(!drums.drums.is_empty());
+        let track = e.project.tracks.iter().find(|t| Some(t.id) == drums.track).unwrap();
+        assert_eq!(track.midi_channel, 9);
+        assert!(e.project.tracks.iter().filter(|t| Some(t.id) != drums.track).all(|t| t.midi_channel != 9));
+        assert!(e.lane_is_percussion(1) && !e.lane_is_percussion(0));
+        // The snare sits on C5 and sounds key 38.
+        let snare = Pitch { step: 0, alter: 0, octave: 5 };
+        assert_eq!(e.drum_name(1, Frac::ZERO, snare).as_deref(), Some("Snare drum"));
+        assert_eq!(e.project.sounding_key(drums.id, snare.midi_key()), 38);
+    }
+
+    #[test]
+    fn cues_and_part_only_texts() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: f(1, 1) });
+        e.copy();
+        e.select(None);
+        e.set_range(Range { lane_from: 1, lane_to: 1, from: f(1, 1), to: f(2, 1) });
+        e.paste_cue();
+        let l = &e.movement().unwrap().lanes[1];
+        let cue = l.voices.iter().find(|v| v.index == 2).unwrap();
+        let notes: Vec<&Event> = cue.events.iter().filter(|x| !x.is_rest()).collect();
+        assert_eq!(notes.len(), 4);
+        assert!(notes.iter().all(|x| x.articulations & art::CUE != 0 && x.start >= f(1, 1)));
+        assert_eq!((l.texts[0].text.as_str(), l.texts[0].at), ("Flute", f(1, 1)));
+        assert_eq!(e.status, "Cue from Flute");
+        // Cues are silent.
+        assert_eq!(corinzia_perform::perform(e.movement().unwrap()).notes.len(), 4, "the flute's four notes only");
+        // A text for the parts only: not in the score, in the part.
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: f(1, 4) });
+        e.apply_popover(PopoverKind::Expression, "parts: solo").unwrap();
+        let t = e.movement().unwrap().lanes[0].texts.iter().find(|t| t.text == "solo").unwrap().clone();
+        assert_eq!(t.shown, corinzia_model::Shown::Parts);
+        assert_eq!(edit::shown_text(&t), "parts: solo");
+        let m = e.movement().unwrap();
+        let has = |s: &corinzia_score::score::Score| s.parts.iter().any(|p| p.texts.iter().any(|x| x.text == "solo"));
+        assert!(!has(&corinzia_model::notation::score(&e.project, m)));
+        assert!(has(&corinzia_model::notation::part_score(&e.project, m, m.lanes[0].player)));
+    }
+
+    #[test]
+    fn cross_staff_notes() {
+        let mut e = Editor::new(crate::files::new_project("P", "Piano", 2).unwrap());
+        assert_eq!(e.movement().unwrap().lanes.len(), 2, "a grand staff");
+        quarters_cdef(&mut e);
+        select_nth(&mut e, 1);
+        e.cross_staff(1);
+        let id = events(&e, 0, 0)[1].id;
+        assert_eq!(e.movement().unwrap().cross, [(id, 1)]);
+        assert_eq!(e.status, "Cross staff: 1 note");
+        let s = corinzia_model::notation::score(&e.project, e.movement().unwrap());
+        assert_eq!(s.parts[0].cross, [(id, 1)]);
+        // No staff below the bass staff; back up goes home.
+        e.cross_staff(1);
+        assert_eq!(e.movement().unwrap().cross, [(id, 1)]);
+        assert_eq!(e.status, "No staff of this player there");
+        e.cross_staff(-1);
+        assert!(e.movement().unwrap().cross.is_empty());
+    }
+
+    #[test]
+    fn guitar_tablature() {
+        let mut e = Editor::new(crate::files::new_project("G", "Electric guitar, Guitar, Bass guitar", 1).unwrap());
+        let tunings: Vec<usize> = e.project.instruments.iter().map(|i| i.tuning.len()).collect();
+        assert_eq!(tunings, [6, 0, 4]);
+        e.caret_lane = 1;
+        e.toggle_tab();
+        assert_eq!(e.project.instruments[1].tuning, GUITAR_TUNING);
+        assert_eq!(e.status, "Tablature on for Guitar");
+        let s = corinzia_model::notation::score(&e.project, e.movement().unwrap());
+        assert_eq!(s.parts[1].tab, GUITAR_TUNING);
+        e.undo();
+        assert!(e.project.instruments[1].tuning.is_empty());
+    }
+
+    #[test]
+    fn musicxml_round_trip_keeps_the_newer_notation() {
+        let mut p = crate::files::new_project("RT", "Flute, Piano, Drum set, Electric guitar", 4).unwrap();
+        p.subtitle = "for four".into();
+        p.lyricist = "Words: A".into();
+        p.arranger = "arr. B".into();
+        p.copyright = "© C".into();
+        let mut e = Editor::new(p);
+        let fill = |e: &mut Editor, lane: usize, from: Frac, steps: &[i32], eighths: bool| {
+            e.select(None);
+            e.set_input_mode(true);
+            e.caret_lane = lane;
+            e.caret = from;
+            e.spec.base = if eighths { edit::BaseDuration::Eighth } else { edit::BaseDuration::Quarter };
+            for &s in steps {
+                e.enter_note(s, false);
+            }
+            e.set_input_mode(false);
+        };
+        // Flute: eighths in bar 1 (a beam broken by hand, one flagged), quarters in bar 3.
+        fill(&mut e, 0, Frac::ZERO, &[0, 1, 2, 3, 4, 3, 2, 1], true);
+        fill(&mut e, 0, f(2, 1), &[4, 4, 4, 4], false);
+        // Piano: quarters in bar 1, the second written on the left hand's staff.
+        fill(&mut e, 1, Frac::ZERO, &[0, 1, 2, 3], false);
+        // Drums: snare (C5) and kick (F4); guitar: a cue of the flute in bar 2.
+        fill(&mut e, 3, Frac::ZERO, &[0, 3], false);
+        fill(&mut e, 4, f(1, 1), &[4, 5, 6, 0], false);
+        let piccolo_at = f(2, 1);
+        {
+            let p = &mut e.project;
+            let flute_player = p.players[0].id;
+            let picc = p.allocate_id();
+            let track = p.instruments[0].track;
+            p.instruments.push(Instrument { id: picc, player: flute_player, name: "Piccolo".into(), engraver_name: "Picc.".into(), transposition: Default::default(), clef: "treble".into(), track, drums: vec![], tuning: vec![] });
+            p.players[0].instruments.push(picc);
+            let m = &mut p.movements[0];
+            m.lanes[0].changes.push(InstrumentChange { id: 9001, at: piccolo_at, instrument: picc });
+            let mut flute = (*m.lanes[0].voices[0].events).clone();
+            flute[2].spans |= span::BEAM_BREAK;
+            flute[7].spans |= span::NO_BEAM;
+            m.lanes[0].voices[0].events = Arc::new(flute);
+            let second = m.lanes[1].voices[0].events[1].id;
+            m.cross.push((second, 1));
+            let mut gtr = (*m.lanes[4].voices[0].events).clone();
+            for ev in gtr.iter_mut().filter(|x| !x.is_rest()) {
+                ev.articulations |= art::CUE;
+            }
+            m.lanes[4].voices[0].events = Arc::new(gtr);
+            m.breaks = vec![Break { id: 9002, at: f(1, 1), page: false, part: None }, Break { id: 9003, at: f(2, 1), page: true, part: None }];
+            m.meter.push(Meter { at: f(3, 1), num: 7, den: 8, pickup: false, beams: [2, 2, 3, 0, 0, 0, 0, 0] });
+        }
+        let p = &e.project;
+        let xml = corinzia_perform::musicxml(p, &p.movements[0]).unwrap();
+        assert!(xml.contains("<staves>2</staves>"), "the piano is one part");
+        let q = corinzia_import::musicxml(xml.as_bytes()).unwrap();
+        let (a, b) = (&p.movements[0], &q.movements[0]);
+        assert_eq!((q.subtitle.as_str(), q.lyricist.as_str(), q.arranger.as_str(), q.copyright.as_str()), ("for four", "Words: A", "arr. B", "© C"));
+        assert_eq!(q.players.len(), 4, "{:?}", q.players.iter().map(|p| &p.name).collect::<Vec<_>>());
+        assert_eq!(b.lanes.len(), 5);
+        let clef_of = |m: &Movement, li: usize| m.lanes[li].clefs.iter().find(|c| c.at.is_zero()).map(|c| c.clef.clone()).unwrap_or_default();
+        assert_eq!(clef_of(b, 2), "bass", "the left hand");
+        // Beams by hand.
+        let spans = |m: &Movement| m.lanes[0].voices[0].events.iter().map(|x| x.spans & span::BEAMS).collect::<Vec<_>>();
+        assert_eq!((spans(a)[2], spans(a)[7]), (span::BEAM_BREAK, span::NO_BEAM));
+        assert_eq!(spans(b)[..8], spans(a)[..8]);
+        if let Ok(path) = std::env::var("RT_XML") {
+            std::fs::write(path, &xml).unwrap();
+        }
+        // The doubling.
+        let change = b.lanes[0].changes.iter().find(|c| c.at == piccolo_at).expect("a change to the piccolo");
+        assert_eq!(q.instrument(change.instrument).unwrap().name, "Piccolo");
+        assert!(!b.lanes[0].texts.iter().any(|t| t.text == "Piccolo"), "the change is not also a text");
+        // Cross-staff.
+        let second = b.lanes[1].voices[0].events[1].id;
+        assert_eq!(b.cross, [(second, 1)]);
+        // Drums: their map and noteheads.
+        let kit = q.instrument(b.lanes[3].changes[0].instrument).unwrap();
+        let snare = kit.drums.iter().find(|d| d.position == Pitch { step: 0, alter: 0, octave: 5 }).unwrap();
+        assert_eq!((snare.name.as_str(), snare.key), ("Snare drum", 38));
+        assert_eq!(kit.clef, "percussion");
+        // Cue notes, the guitar's tuning, breaks and the grouped meter.
+        assert!(b.lanes[4].voices[0].events.iter().filter(|x| !x.is_rest()).all(|x| x.articulations & art::CUE != 0));
+        assert_eq!(b.lanes[4].voices[0].events.iter().filter(|x| !x.is_rest()).count(), 4);
+        assert_eq!(q.instrument(b.lanes[4].changes[0].instrument).unwrap().tuning, GUITAR_TUNING);
+        assert_eq!(b.breaks.iter().map(|x| (x.at, x.page)).collect::<Vec<_>>(), [(f(1, 1), false), (f(2, 1), true)]);
+        assert_eq!(b.meter.iter().find(|m| m.at == f(3, 1)).map(|m| m.beams), Some([2, 2, 3, 0, 0, 0, 0, 0]));
     }
 }

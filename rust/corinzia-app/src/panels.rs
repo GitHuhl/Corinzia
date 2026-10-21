@@ -138,9 +138,13 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     let editing = vec![
         tool("▲", false, false, "Transpose up (↑, Ctrl+↑ octave)", Action::Transpose(1)),
         tool("▼", false, false, "Transpose down (↓, Ctrl+↓ octave)", Action::Transpose(-1)),
+        tool("⤒", false, false, "Onto the staff above (Ctrl+Shift+↑)", Action::CrossStaff(-1)),
+        tool("⤓", false, false, "Onto the staff below (Ctrl+Shift+↓)", Action::CrossStaff(1)),
         tool("❐", false, false, "Copy (Ctrl+C)", Action::Copy),
         tool("✂", false, false, "Cut (Ctrl+X)", Action::Cut),
         tool("❏", false, ed.has_clip(), "Paste (Ctrl+V)", Action::Paste),
+        tool("❏ᶜ", false, ed.has_clip(), "Paste as a cue: small, silent, in voice 2 (Ctrl+Shift+V)", Action::PasteCue),
+        tool("ᶜ", false, false, "Cue size: small and silent (or back)", Action::Articulation(corinzia_score::score::art::CUE)),
         tool("↻", false, false, "Repeat selection (R)", Action::Repeat),
         tool("⌫", false, false, "Delete (Del)", Action::Delete),
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),
@@ -172,7 +176,7 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     .into()
 }
 
-pub fn structure(ed: &Editor) -> Element<'_, Action> {
+pub fn structure(ed: &Editor, all_movements: bool) -> Element<'_, Action> {
     let pop = |label, kind: PopoverKind, key| wide(label, false, key, Action::Popover(kind));
     let movements: Vec<Element<'_, Action>> = ed
         .project
@@ -187,6 +191,7 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         wide("New movement", false, "After this one, with the same instruments", Action::AddMovement),
         pop("Rename movement…", PopoverKind::MovementTitle, "The movement's title"),
         wide("Delete movement", false, "This movement (undo brings it back)", Action::DeleteMovement),
+        wide("All movements in view", all_movements, "Every movement on the pages, one after another (Page view); a click edits the one clicked", Action::AllMovements),
         heading("At the selection or caret"),
         pop("Key signature…", PopoverKind::Key, "Shift+K"),
         pop("Time signature…", PopoverKind::Time, "Shift+M"),
@@ -195,6 +200,7 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         pop("Transpose…", PopoverKind::Transpose, "Ctrl+Shift+T: the passage, or the whole score"),
         wide("Explode chords", false, "Select the chords' staff and the staves to fill: top note to the top staff", Action::Explode),
         wide("Reduce to chords", false, "Select staves: combined on an empty one among them, else the top one", Action::Reduce),
+        wide("Tablature", false, "On or off for the staff's instrument: frets under the staff", Action::Tab),
         pop("Tempo…", PopoverKind::Tempo, "Shift+T"),
         pop("Barline…", PopoverKind::Barline, "Shift+B"),
         pop("Expression text…", PopoverKind::Expression, "Shift+X"),
@@ -213,15 +219,19 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         heading("Bars"),
         wide("Insert bar", false, "Ctrl+B: before the selected bar", Action::InsertBar),
         wide("Delete bars", false, "Ctrl+Shift+Backspace", Action::DeleteBars),
+        heading("Page"),
+        wide("Layout…", false, "Page size, staff size, margins, spacing, page texts; score and parts", Action::Layout),
+        wide("System break", false, "Enter: before the selected bar, in the score or the part shown (again removes it)", Action::Break { page: false }),
+        wide("Page break", false, "Ctrl+Enter: before the selected bar", Action::Break { page: true }),
     ]
     .spacing(6)
     .into()
 }
 
-pub fn panel(ed: &Editor, which: Panel) -> Element<'_, Action> {
+pub fn panel(ed: &Editor, which: Panel, all_movements: bool) -> Element<'_, Action> {
     let body = match which {
         Panel::Notes => notes(ed),
-        Panel::Structure => structure(ed),
+        Panel::Structure => structure(ed, all_movements),
     };
     container(scrollable(container(body).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 16.0, left: 12.0 })).height(Length::Fill)).width(WIDTH).height(Length::Fill).into()
 }

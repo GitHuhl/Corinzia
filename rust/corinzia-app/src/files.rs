@@ -31,11 +31,18 @@ const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["tuba"], "Tuba", "Tba.", "bass"),
     (&["timpani", "timp"], "Timpani", "Timp.", "bass"),
     (&["percussion", "perc"], "Percussion", "Perc.", "percussion"),
+    (&["drum set", "drums", "drum kit", "kit"], "Drum set", "Dr.", "percussion"),
+    (&["snare drum", "snare"], "Snare drum", "S.D.", "percussion"),
+    (&["bass drum"], "Bass drum", "B.D.", "percussion"),
+    (&["cymbals", "cymbal"], "Cymbals", "Cym.", "percussion"),
     (&["harp"], "Harp", "Hp.", "treble+bass"),
     (&["piano", "pno"], "Piano", "Pno.", "treble+bass"),
     (&["organ", "org"], "Organ", "Org.", "treble+bass"),
     (&["celesta"], "Celesta", "Cel.", "treble+bass"),
     (&["guitar", "gtr"], "Guitar", "Gtr.", "treble_8"),
+    (&["electric guitar", "e. gtr", "e-guitar"], "Electric guitar", "E. Gtr.", "treble_8"),
+    (&["guitar tab", "guitar with tab", "guitar (tab)"], "Guitar (tab)", "Gtr.", "treble_8"),
+    (&["bass guitar", "electric bass", "e. bass"], "Bass guitar", "B. Gtr.", "bass_8"),
     (&["soprano", "s"], "Soprano", "S.", "treble"),
     (&["alto", "a", "mezzo"], "Alto", "A.", "treble"),
     (&["tenor", "t"], "Tenor", "T.", "treble_8"),
@@ -134,8 +141,16 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
 }
 
 /// One instrument by name: from the known list (a trailing number is kept,
-/// "Violin 2"), or as typed with a clef guessed from it.
+/// "Violin 2"), or as typed with a clef guessed from it. "Name / Abbr."
+/// sets the short name later systems show.
 pub fn instrument_spec(name: &str) -> Option<crate::editor::InstrumentSpec> {
+    if let Some((name, abbr)) = name.split_once('/') {
+        let mut spec = instrument_spec(name)?;
+        if !abbr.trim().is_empty() {
+            spec.abbr = abbr.trim().to_string();
+        }
+        return Some(spec);
+    }
     let name = name.trim();
     if name.is_empty() {
         return None;
@@ -227,6 +242,26 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
     }
 }
 
+/// The engraver's options and page for a layout (a part's: multi-bar
+/// rests, no staff names).
+pub fn page_setup(l: &corinzia_model::Layout, part: bool) -> (Options, PageSpec) {
+    let (w, h) = l.page_spaces();
+    let space = l.space_mm();
+    let opt = Options { staff_distance: l.staff_distance as f32, spacing: l.spacing as f32, multirest: part, names: !part, ..Options::default() };
+    let spec = PageSpec {
+        width: w as f32,
+        height: h as f32,
+        margin_x: (l.margin_x_mm / space) as f32,
+        margin_y: (l.margin_y_mm / space) as f32,
+        system_gap: l.system_gap as f32,
+        first_page: 1,
+        bars_per_system: l.bars_per_system as usize,
+        page_numbers: l.page_numbers,
+        space_pt: (space * 72.0 / 25.4) as f32,
+    };
+    (opt, spec)
+}
+
 /// Every movement's pages, as printed: the first under the work's title
 /// and composer, each later one from a new page under its own title, page
 /// numbers running on.
@@ -234,12 +269,20 @@ pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::D
     let mut pages = Vec::new();
     for (i, m) in project.movements.iter().enumerate() {
         let mut score = corinzia_model::notation::score_as(project, m, transposed);
+        if project.layout.condense {
+            corinzia_model::notation::condense(&mut score);
+        }
         if i > 0 {
             score.work_title.clear();
             score.composer.clear();
+            score.subtitle.clear();
+            score.lyricist.clear();
+            score.arranger.clear();
+            score.copyright.clear();
         }
-        let spec = PageSpec { first_page: pages.len() + 1, ..PageSpec::default() };
-        pages.extend(layout_pages(&score, &Options::default(), &spec));
+        let (opt, spec) = page_setup(&project.layout, false);
+        let spec = PageSpec { first_page: pages.len() + 1, ..spec };
+        pages.extend(layout_pages(&score, &opt, &spec));
     }
     pages
 }
@@ -247,7 +290,7 @@ pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::D
 /// Every player's part (all movements, as written, with multi-bar rests),
 /// each from a new page, its page numbers from 1.
 pub fn parts_pages(project: &Project) -> Vec<corinzia_layout::DisplayList> {
-    let opt = Options { multirest: true, names: false, ..Options::default() };
+    let (opt, base) = page_setup(&project.part_layout, true);
     let mut pages = Vec::new();
     for player in &project.players {
         let mut part: Vec<corinzia_layout::DisplayList> = Vec::new();
@@ -259,8 +302,12 @@ pub fn parts_pages(project: &Project) -> Vec<corinzia_layout::DisplayList> {
             if i > 0 {
                 score.work_title.clear();
                 score.composer.clear();
+                score.subtitle.clear();
+                score.lyricist.clear();
+                score.arranger.clear();
+                score.copyright.clear();
             }
-            let spec = PageSpec { first_page: part.len() + 1, ..PageSpec::default() };
+            let spec = PageSpec { first_page: part.len() + 1, ..base.clone() };
             part.extend(layout_pages(&score, &opt, &spec));
         }
         pages.extend(part);
@@ -289,15 +336,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pdf_pages_follow_the_layout() {
+        let mut p = new_project("T", "Flute, Viola", 8).unwrap();
+        let media = |bytes: &[u8]| -> Vec<String> {
+            let text = String::from_utf8_lossy(bytes);
+            text.match_indices("/MediaBox [").map(|(i, _)| text[i + 11..].split(']').next().unwrap().to_string()).collect()
+        };
+        let a4 = media(&export(&p, 0, Format::Pdf, false).unwrap());
+        assert!(a4[0].starts_with("0 0 595.2"), "{a4:?}");
+        p.layout = corinzia_model::Layout { page_width_mm: 215.9, page_height_mm: 279.4, landscape: true, staff_mm: 7.0, ..Default::default() };
+        let letter = media(&export(&p, 0, Format::Pdf, false).unwrap());
+        let dims: Vec<f32> = letter[0].split_whitespace().map(|v| v.parse().unwrap()).collect();
+        assert!((dims[2] - 792.0).abs() < 0.5 && (dims[3] - 612.0).abs() < 0.5, "{letter:?}");
+        // Parts follow their own layout (A4 by default).
+        let parts = media(&export(&p, 0, Format::Parts, false).unwrap());
+        assert!(parts[0].starts_with("0 0 595.2"), "{parts:?}");
+    }
+
+    #[test]
     fn instrument_lists() {
         let l = parse_instruments("Flute, 2 violin; Cello").unwrap();
         let names: Vec<_> = l.iter().map(|x| x.0.as_str()).collect();
         assert_eq!(names, ["Flute", "Violin 1", "Violin 2", "Cello"]);
         assert_eq!(l[3].2, "bass");
         // Any other name is taken as typed, with a clef from the name.
-        let k = parse_instruments("Flute, kazoo, bass guitar").unwrap();
+        let k = parse_instruments("Flute, kazoo, bass ocarina").unwrap();
         assert_eq!((k[1].0.as_str(), k[1].2.as_str()), ("Kazoo", "treble"));
         assert_eq!(k[2].2, "bass");
+        assert_eq!(parse_instruments("bass guitar").unwrap()[0], ("Bass guitar".into(), "B. Gtr.".into(), "bass_8".into()));
         assert!(parse_instruments(" , ").is_err());
         let p = new_project("Quartet", "violin, violin, viola, cello", 4).unwrap();
         assert_eq!(p.movements[0].lanes.len(), 4);

@@ -159,7 +159,7 @@ pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[
             let off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
             let on = start + (on_sec * sample_rate).round() as i64;
             let off = (start + (off_sec * sample_rate).round() as i64).max(on + 1);
-            let key = n.key.clamp(0, 127) as i16;
+            let key = project.sounding_key(n.instrument, n.key).clamp(0, 127) as i16;
             let base = ScheduledNote { at: on, node, note_id, port, channel, key, on: true, velocity: n.velocity, element: n.element };
             notes.push(base);
             notes.push(ScheduledNote { at: off, on: false, ..base });

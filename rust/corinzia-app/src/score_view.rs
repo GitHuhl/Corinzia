@@ -158,6 +158,8 @@ pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<
 /// movement start) and which line or space (half spaces below the top line).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StaffPoint {
+    /// The page it is on (movements shown one after another: which one).
+    pub page: usize,
     pub part: usize,
     pub quarter: f64,
     pub step_below_top: i32,
@@ -166,7 +168,7 @@ pub struct StaffPoint {
 /// The staff point under a desk position: the nearest staff of the system
 /// it falls in, with time interpolated between that system's columns.
 pub fn locate(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<StaffPoint> {
-    for (p, o) in pages.iter().zip(origins) {
+    for (page, (p, o)) in pages.iter().zip(origins).enumerate() {
         let local = Point::new(at.x - o.x, at.y - o.y);
         if local.x < 0.0 || local.y < 0.0 || local.x > p.width || local.y > p.height {
             continue;
@@ -189,7 +191,7 @@ pub fn locate(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<St
                 a.quarter + (b.quarter - a.quarter) * ((local.x - a.x) / (b.x - a.x).max(1e-6)) as f64
             }
         };
-        return Some(StaffPoint { part: st.part, quarter, step_below_top: ((local.y - st.top) * 2.0).round() as i32 });
+        return Some(StaffPoint { page, part: st.part, quarter, step_below_top: ((local.y - st.top) * 2.0).round() as i32 });
     }
     None
 }
@@ -275,8 +277,12 @@ pub struct ScoreView<'a> {
     pub selected: &'a std::collections::HashSet<u64>,
     pub caret: Option<Caret>,
     pub highlight: Option<Highlight>,
-    /// The playback position (written quarters) while playing.
-    pub playhead: Option<f64>,
+    /// The playback position (written quarters) while playing, and the
+    /// pages of the movement playing.
+    pub playhead: Option<(f64, std::ops::Range<usize>)>,
+    /// The pages of the movement being edited (several movements may be
+    /// shown): the caret and the passage are drawn there.
+    pub active: std::ops::Range<usize>,
     /// The slur selected: drawn with drag handles.
     pub slur: Option<u64>,
     pub cache: &'a Cache,
@@ -419,9 +425,9 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
             frame.fill_rectangle(Point::ORIGIN, bounds.size(), DESK);
             frame.translate(self.pan);
             frame.scale(px);
-            for (page, origin) in self.pages.iter().zip(&origins) {
+            for (k, (page, origin)) in self.pages.iter().zip(&origins).enumerate() {
                 draw_page(frame, page, *origin, self.selected, px);
-                if let Some(h) = self.highlight {
+                if let (Some(h), true) = (self.highlight, self.active.contains(&k)) {
                     draw_highlight(frame, page, *origin, h);
                 }
             }
@@ -432,13 +438,13 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
             f.translate(self.pan);
             f.scale(px);
             if let Some(c) = self.caret {
-                for (page, origin) in self.pages.iter().zip(&origins) {
+                for (page, origin) in self.pages.iter().zip(&origins).skip(self.active.start).take(self.active.len()) {
                     draw_caret(f, page, *origin, c, px);
                 }
             }
-            if let Some(q) = self.playhead {
-                for (page, origin) in self.pages.iter().zip(&origins) {
-                    draw_playhead(f, page, *origin, q, px);
+            if let Some((q, pages)) = &self.playhead {
+                for (page, origin) in self.pages.iter().zip(&origins).skip(pages.start).take(pages.len()) {
+                    draw_playhead(f, page, *origin, *q, px);
                 }
             }
             if let Some(id) = self.slur {

@@ -501,7 +501,7 @@ fn grace_notes_are_small_and_take_room_before_their_note() {
 
 #[test]
 fn families_are_bracketed_and_their_barlines_joined() {
-    let mut s = score(&[("treble", &["c''1"]), ("treble", &["e'1"]), ("treble", &["g'1"]), ("bass", &["c1"])], (4, 4), 0);
+    let mut s = score(&[("treble", &["c''1"]), ("treble", &["e'1"]), ("treble", &["g'1"]), ("bass", &["r1"])], (4, 4), 0);
     // Two woodwinds (bracketed together), then a lone piano-like pair without.
     s.parts[0].group = 1;
     s.parts[1].group = 1;
@@ -760,3 +760,148 @@ fn beams_follow_the_meter_groups_and_hand_overrides() {
     preview("beams-by-hand", &l);
 }
 
+
+/// The first written quarter of every system, page by page.
+fn system_starts(pages: &[corinzia_layout::DisplayList]) -> Vec<Vec<f64>> {
+    pages
+        .iter()
+        .map(|p| {
+            let mut firsts: Vec<(u32, f64)> = Vec::new();
+            for c in &p.columns {
+                match firsts.iter_mut().find(|f| f.0 == c.system) {
+                    Some(f) => f.1 = f.1.min(c.quarter),
+                    None => firsts.push((c.system, c.quarter)),
+                }
+            }
+            firsts.sort_by_key(|f| f.0);
+            firsts.into_iter().map(|f| f.1).collect()
+        })
+        .collect()
+}
+
+#[test]
+fn breaks_by_hand_bars_per_system_and_page_text() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    use corinzia_score::Frac;
+    let bars = "c'4 d' e' f' | ".repeat(16);
+    let mut s = score(&[("treble", &[bars.as_str()])], (4, 4), 0);
+    s.work_title = "Suite".into();
+    let auto = layout_pages(&s, &Options::default(), &PageSpec::default());
+    assert_eq!(auto.len(), 1);
+    // A system break before bar 3 and bar 10: systems start there.
+    s.breaks = vec![(Frac::int(2), false), (Frac::int(9), false)];
+    let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
+    let starts: Vec<f64> = system_starts(&pages).concat();
+    assert!(starts.contains(&8.0) && starts.contains(&36.0), "{starts:?}");
+    // Four bars a system: 0, 16, 32, 48 quarters (still breaking at bar 3 and 10).
+    s.breaks.clear();
+    let four = PageSpec { bars_per_system: 4, ..PageSpec::default() };
+    assert_eq!(system_starts(&layout_pages(&s, &Options::default(), &four)).concat(), [0.0, 16.0, 32.0, 48.0]);
+    // A page break before bar 9: two pages, the second numbered; a part's
+    // pages carry its instrument as their running header.
+    s.breaks = vec![(Frac::int(8), true)];
+    s.instrument = "Viola".into();
+    let pages = layout_pages(&s, &Options::default(), &four);
+    assert_eq!(system_starts(&pages), [vec![0.0, 16.0], vec![32.0, 48.0]]);
+    let texts = |p: &corinzia_layout::DisplayList| p.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+    assert!(texts(&pages[1]).contains(&"2".to_string()) && texts(&pages[1]).contains(&"Viola".to_string()));
+    s.instrument.clear();
+    let quiet = PageSpec { page_numbers: false, ..four.clone() };
+    assert!(!texts(&layout_pages(&s, &Options::default(), &quiet)[1]).contains(&"2".to_string()));
+    // Header and footer texts.
+    s.subtitle = "for strings".into();
+    s.lyricist = "Words by N.N.".into();
+    s.composer = "A. Composer".into();
+    s.arranger = "arr. B".into();
+    s.copyright = "© 2026 Corinzia".into();
+    let p1 = texts(&layout_pages(&s, &Options::default(), &four)[0]);
+    for t in ["Suite", "for strings", "Words by N.N.", "A. Composer", "arr. B", "© 2026 Corinzia"] {
+        assert!(p1.contains(&t.to_string()), "{t} in {p1:?}");
+    }
+    // Wider note spacing: a wider natural line.
+    let line = |sp: f32| layout_line(&score(&[("treble", &["c'8 d' e' f' g' a' b' c''"])], (4, 4), 0), &Options { spacing: sp, ..Options::default() }).width;
+    assert!(line(1.5) > line(1.0) * 1.2);
+}
+
+#[test]
+fn percussion_staves_have_shaped_heads_and_no_key() {
+    // A drum set in D major: hi-hat (x) on G5, snare on C5, kick on F4;
+    // and a treble staff that keeps the key.
+    let mut s = score(&[("percussion", &["g''8 g'' <c'' g''>8 g'' <f' g''>2"]), ("treble", &["fis'1"])], (4, 4), 2);
+    s.parts[0].head_shapes = vec![(4 + 7 * 5, 1)];
+    let l = layout_line(&s, &Options::default());
+    let xs = glyphs(&l, Glyph::NoteheadXBlack);
+    assert_eq!(xs.len(), 4, "the hi-hat's eighths are x heads");
+    assert_eq!(glyphs(&l, Glyph::NoteheadXHalf).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::NoteheadBlack).len(), 1, "the snare");
+    assert_eq!(glyphs(&l, Glyph::NoteheadHalf).len(), 1, "the kick");
+    // The key: only on the treble staff (two sharps); no accidentals on the drums.
+    let sharps = glyphs(&l, Glyph::Sharp);
+    assert_eq!(sharps.len(), 2);
+    assert!(sharps.iter().all(|s| s.1 > 8.0), "{sharps:?}");
+    assert!(glyphs(&l, Glyph::PercussionClef).len() == 1);
+    preview("drums", &l);
+}
+
+#[test]
+fn cue_notes_are_small() {
+    // Bar 2's eighths are a cue: smaller heads, shorter stems, thinner beams.
+    let mut s = score(&[("treble", &["c''4 d'' e'' f'' g''8 a'' b'' c''' d'''4 r"])], (4, 4), 2);
+    for e in s.parts[0].voices[0].events.iter_mut().filter(|e| e.start >= corinzia_score::Frac::int(1) && !e.pitches.is_empty()) {
+        if e.dur < corinzia_score::Frac::new(1, 4) {
+            e.art |= corinzia_score::score::art::CUE;
+        }
+    }
+    let l = layout_line(&s, &Options::default());
+    preview("cue", &l);
+    let scales: Vec<f32> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Glyph { glyph, scale, .. } if *glyph == Glyph::NoteheadBlack.codepoint() => Some(*scale),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scales.iter().filter(|&&s| s < 1.0).count(), 4, "{scales:?}");
+    assert_eq!(scales.iter().filter(|&&s| s == 1.0).count(), 5);
+}
+
+#[test]
+fn cross_staff_notes_and_a_kneed_beam() {
+    // Upper staff's eighths c e g' c'': the first two written on the bass staff.
+    let mut s = score(&[("treble", &["c8 e g' c'' r2"]), ("bass", &["r1"])], (4, 4), 0);
+    s.parts[0].brace = true;
+    let ids: Vec<u64> = s.parts[0].voices[0].events.iter().take(2).map(|e| e.id).collect();
+    s.parts[0].cross = ids.iter().map(|&i| (i, 1)).collect();
+    let l = layout_line(&s, &Options::default());
+    preview("cross_staff", &l);
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    assert_eq!(heads.len(), 4);
+    let bass_top = l.staves[1].top;
+    let below: Vec<_> = heads.iter().filter(|h| h.1 > bass_top - 1.0).collect();
+    assert_eq!(below.len(), 2, "two heads on the bass staff: {heads:?} {bass_top}");
+    // One beam (a quad) for the four eighths, between the staves.
+    let quads: Vec<f32> = l.items.iter().filter_map(|i| match i { Item::Quad { p, .. } => Some(p[0].y), _ => None }).collect();
+    assert_eq!(quads.len(), 1, "{quads:?}");
+    assert!(quads[0] > l.staves[0].top + 4.0 && quads[0] < bass_top, "{quads:?}");
+}
+
+#[test]
+fn guitar_tablature_under_the_staff() {
+    // Sounding pitches on a treble_8 staff: open low E, A on the low E's
+    // fifth fret... as the highest free string: E2 → 0 on string 6;
+    // C4 → 1 on B (string 2); an E minor chord on the top three strings.
+    let mut s = score(&[("treble_8", &["e,4 c' <g b e'>2"]), ("bass", &["c1"])], (4, 4), 0);
+    s.parts[0].tab = vec![40, 45, 50, 55, 59, 64];
+    let l = layout_line(&s, &Options::default());
+    preview("tab", &l);
+    let frets: Vec<(String, f32)> = l.items.iter().filter_map(|i| match i { Item::Text { text, at, anchor: 1, .. } => Some((text.clone(), at.y)), _ => None }).collect();
+    let names: Vec<&str> = frets.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["0", "1", "0", "0", "0"], "{frets:?}");
+    // The low E on the bottom line, five lines (7.5 spaces) under the chord's E.
+    assert!((frets[0].1 - frets[2].1 - 7.5).abs() < 0.01, "{frets:?}");
+    // The tab sits under the guitar staff, and the bass staff moved down below it.
+    assert!(frets[0].1 > l.staves[0].top + 6.0);
+    assert!(l.staves[1].top > frets[0].1 + 1.0, "{} {:?}", l.staves[1].top, frets);
+    assert_eq!(glyphs(&l, Glyph::TabClef6).len(), 1);
+}

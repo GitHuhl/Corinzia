@@ -6,7 +6,7 @@ use std::sync::Arc;
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false });
-    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1) });
+    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
         id,
@@ -41,7 +41,7 @@ fn sample() -> Project {
             player: 2,
             changes: vec![InstrumentChange { id: 23, at: Frac::ZERO, instrument: 3 }],
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
-            texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
+            texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression, shown: Shown::Parts }],
             chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
             lines: vec![LineSpan { id: 40, from: Frac::ZERO, to: Frac::int(1), kind: LineKind::Octave(1) }],
             voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![Tuplet { start: Frac::int(5), length: Frac::new(1, 4), actual: 3, normal: 2 }] }],
@@ -55,8 +55,18 @@ fn sample() -> Project {
             chords: vec![],
             lines: vec![LineSpan { id: 43, from: Frac::ZERO, to: Frac::int(2), kind: LineKind::Pedal }],
             voices: vec![Voice { id: 44, index: 1, events: Arc::new(vec![]), tuplets: vec![] }],
-        }],
+        }], breaks: vec![], cross: vec![],
     });
+    p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
+    p.instruments[0].tuning = GUITAR_TUNING.to_vec();
+    p.subtitle = "for flute".into();
+    p.lyricist = "Words: N.N.".into();
+    p.arranger = "arr. X".into();
+    p.copyright = "© 2026".into();
+    p.layout = Layout { page_width_mm: 215.9, page_height_mm: 279.4, landscape: true, staff_mm: 5.5, bars_per_system: 4, page_numbers: false, ..Layout::default() };
+    p.part_layout.spacing = 1.2;
+    p.movements[0].cross = vec![(12, 1)];
+    p.movements[0].breaks = vec![Break { id: 90, at: Frac::int(2), page: false, part: None }, Break { id: 91, at: Frac::int(4), page: true, part: Some(2) }];
     p
 }
 
@@ -72,6 +82,15 @@ fn save_and_load_round_trip() {
     assert_eq!((b.title.as_str(), b.composer.as_str(), b.next_id), ("Serenade", "Anon.", 100));
     assert_eq!(b.tracks[0].gain_db, -3.0);
     assert_eq!(b.instruments[0].track, Some(1));
+    assert_eq!((b.subtitle.as_str(), b.lyricist.as_str(), b.arranger.as_str(), b.copyright.as_str()), ("for flute", "Words: N.N.", "arr. X", "© 2026"));
+    assert_eq!(b.layout, a.layout);
+    assert_eq!(b.part_layout, a.part_layout);
+    assert_eq!(b.part_layout.staff_mm, 7.0);
+    assert_eq!(b.movements[0].breaks, a.movements[0].breaks);
+    assert_eq!(b.movements[0].cross, [(12, 1)]);
+    assert_eq!(b.movements[0].lanes[0].texts[0].shown, Shown::Parts);
+    assert_eq!(b.instruments[0].drums, a.instruments[0].drums);
+    assert_eq!(b.instruments[0].tuning, GUITAR_TUNING);
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);
     assert_eq!(mb.lanes[0].voices[0].events[0].lyrics, ma.lanes[0].voices[0].events[0].lyrics);

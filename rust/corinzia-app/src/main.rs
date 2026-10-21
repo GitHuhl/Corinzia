@@ -22,7 +22,7 @@ mod panels;
 mod score_view;
 mod theme;
 
-use corinzia_layout::{layout_line, layout_pages, DisplayList, Options, PageSpec};
+use corinzia_layout::{layout_line, layout_pages, DisplayList};
 use corinzia_model::{Movement, Project};
 use corinzia_score::Frac;
 use editor::{Editor, PopoverKind};
@@ -104,6 +104,105 @@ enum PlayersMsg {
     Cancel,
 }
 
+/// The Layout card: the score's and the parts' page layouts as typed,
+/// and the page texts.
+struct LayoutDialog {
+    parts: bool,
+    fields: [LayoutFields; 2], // score, parts
+    texts: [String; 4],        // subtitle, lyricist, arranger, copyright
+    error: Option<String>,
+}
+
+#[derive(Clone)]
+struct LayoutFields {
+    size: String, // a name from PAGE_SIZES, or "Custom"
+    width: String,
+    height: String,
+    landscape: bool,
+    staff: String,
+    margin_y: String,
+    margin_x: String,
+    spacing: String, // percent
+    staff_distance: String,
+    system_gap: String,
+    bars: String,
+    page_numbers: bool,
+    condense: bool,
+}
+
+impl LayoutFields {
+    fn of(l: &corinzia_model::Layout) -> LayoutFields {
+        let n = |v: f64| {
+            let s = format!("{v:.2}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        };
+        let size = corinzia_model::PAGE_SIZES.iter().find(|(_, w, h)| (w - l.page_width_mm).abs() < 0.05 && (h - l.page_height_mm).abs() < 0.05).map(|p| p.0).unwrap_or("Custom");
+        LayoutFields {
+            size: size.to_string(),
+            width: n(l.page_width_mm),
+            height: n(l.page_height_mm),
+            landscape: l.landscape,
+            staff: n(l.staff_mm),
+            margin_y: n(l.margin_y_mm),
+            margin_x: n(l.margin_x_mm),
+            spacing: n(l.spacing * 100.0),
+            staff_distance: n(l.staff_distance),
+            system_gap: n(l.system_gap),
+            bars: if l.bars_per_system == 0 { String::new() } else { l.bars_per_system.to_string() },
+            page_numbers: l.page_numbers,
+            condense: l.condense,
+        }
+    }
+
+    /// The layout typed, or what is wrong with it.
+    fn layout(&self) -> Result<corinzia_model::Layout, String> {
+        let num = |s: &str, what: &str, lo: f64, hi: f64| -> Result<f64, String> {
+            s.trim().replace(',', ".").parse::<f64>().ok().filter(|v| (lo..=hi).contains(v)).ok_or(format!("{what}: a number from {lo} to {hi}"))
+        };
+        Ok(corinzia_model::Layout {
+            page_width_mm: num(&self.width, "Page width (mm)", 50.0, 1000.0)?,
+            page_height_mm: num(&self.height, "Page height (mm)", 50.0, 1000.0)?,
+            landscape: self.landscape,
+            staff_mm: num(&self.staff, "Staff size (mm)", 3.0, 12.0)?,
+            margin_y_mm: num(&self.margin_y, "Top and bottom margins (mm)", 0.0, 60.0)?,
+            margin_x_mm: num(&self.margin_x, "Side margins (mm)", 0.0, 60.0)?,
+            spacing: num(&self.spacing, "Note spacing (%)", 50.0, 250.0)? / 100.0,
+            staff_distance: num(&self.staff_distance, "Staff distance (spaces)", 5.0, 30.0)?,
+            system_gap: num(&self.system_gap, "System gap (spaces)", 0.0, 40.0)?,
+            bars_per_system: if self.bars.trim().is_empty() { 0 } else { num(&self.bars, "Bars per system", 1.0, 64.0)? as u32 },
+            page_numbers: self.page_numbers,
+            condense: self.condense,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum LayoutMsg {
+    Tab(bool),
+    Size(String),
+    Field(LayoutField, String),
+    Landscape(bool),
+    PageNumbers(bool),
+    Condense(bool),
+    Text(usize, String),
+    Defaults,
+    Apply,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LayoutField {
+    Width,
+    Height,
+    Staff,
+    MarginY,
+    MarginX,
+    Spacing,
+    StaffDistance,
+    SystemGap,
+    Bars,
+}
+
 /// The quick-add buttons of the Players card.
 const QUICK_ADD: [&str; 16] = ["Flute", "Oboe", "Clarinet", "Bassoon", "Horn", "Trumpet", "Trombone", "Piano", "Soprano", "Alto", "Tenor", "Bass", "Violin", "Viola", "Cello", "Double bass"];
 
@@ -138,6 +237,7 @@ struct App {
     undo_tip: String,
     new_score: Option<NewScore>,
     players: Option<PlayersDialog>,
+    layout: Option<LayoutDialog>,
     /// Corinzia's own file browser, when the system's dialog cannot open.
     browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
@@ -167,6 +267,12 @@ struct App {
     part: Option<corinzia_model::Id>,
     /// The lane each engraved staff shows.
     staff_lanes: Vec<usize>,
+    /// Every movement on the pages, one after another (Page view).
+    all_movements: bool,
+    /// The movement each page shows.
+    page_movements: Vec<usize>,
+    /// The movement edited when the view was last brought up to date.
+    shown_movement: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +292,7 @@ enum Message {
     NewCreate,
     NewCancel,
     Players(PlayersMsg),
+    Layout(LayoutMsg),
     /// The answer to "discard unsaved changes?".
     ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
@@ -370,6 +477,10 @@ impl App {
             undo_tip: String::new(),
             new_score: None,
             players: None,
+            layout: None,
+            all_movements: false,
+            page_movements: Vec::new(),
+            shown_movement: 0,
             browser: None,
             confirm: None,
             path,
@@ -424,6 +535,13 @@ impl App {
         .into()
     }
 
+    /// The pages showing movement `mi`.
+    fn pages_of(&self, mi: usize) -> std::ops::Range<usize> {
+        let first = self.page_movements.iter().position(|&m| m == mi).unwrap_or(0);
+        let n = self.page_movements.iter().filter(|&&m| m == mi).count();
+        first..first + n
+    }
+
     /// Native engraving of the current movement (milliseconds).
     fn engrave(&mut self) {
         self.engraved = Some(self.editor.music_revision);
@@ -434,18 +552,54 @@ impl App {
         let t = Instant::now();
         // A part: the player's staves, as written, with multi-bar rests.
         let part = self.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
-        self.staff_lanes = (0..m.lanes.len()).filter(|&li| part.is_none_or(|p| m.lanes[li].player == p)).collect();
-        let (score, opt) = match part {
-            Some(p) => (corinzia_model::notation::part_score(&self.editor.project, m, p), Options { multirest: true, names: false, ..Options::default() }),
-            None => (corinzia_model::notation::score_as(&self.editor.project, m, self.editor.transposed), Options::default()),
+        let project = &self.editor.project;
+        let score_of = |mi: usize| {
+            let m = &project.movements[mi];
+            match part {
+                Some(p) => {
+                    let s = corinzia_model::notation::part_score(project, m, p);
+                    let lanes = (0..m.lanes.len()).filter(|&li| m.lanes[li].player == p).collect();
+                    ((s, lanes), files::page_setup(&project.part_layout, true))
+                }
+                None => {
+                    let mut s = corinzia_model::notation::score_as(project, m, self.editor.transposed);
+                    let lanes = if project.layout.condense { corinzia_model::notation::condense(&mut s) } else { (0..s.parts.len()).collect() };
+                    ((s, lanes), files::page_setup(&project.layout, false))
+                }
+            }
         };
+        let ((score, lanes), (opt, spec)) = score_of(self.editor.movement);
+        self.staff_lanes = lanes;
+        self.page_movements.clear();
         self.pages = match self.view {
-            View::Page => layout_pages(&score, &opt, &PageSpec::default()),
+            // Every movement, as printed: each from a new page, the work's
+            // header on the first, page numbers running on.
+            View::Page if self.all_movements => {
+                let mut pages = Vec::new();
+                for mi in 0..project.movements.len() {
+                    if part.is_some_and(|p| !project.movements[mi].lanes.iter().any(|l| l.player == p)) {
+                        continue;
+                    }
+                    let ((mut score, _), (opt, spec)) = score_of(mi);
+                    if mi > 0 {
+                        for t in [&mut score.work_title, &mut score.composer, &mut score.subtitle, &mut score.lyricist, &mut score.arranger, &mut score.copyright] {
+                            t.clear();
+                        }
+                    }
+                    let spec = corinzia_layout::PageSpec { first_page: pages.len() + 1, ..spec };
+                    let these = layout_pages(&score, &opt, &spec);
+                    self.page_movements.extend(std::iter::repeat_n(mi, these.len()));
+                    pages.extend(these);
+                }
+                pages
+            }
+            View::Page => layout_pages(&score, &opt, &spec),
             View::Panorama => {
                 let mut l = layout_line(&score, &opt);
                 // A panorama strip: the system plus room for marks above and below.
                 let pad = 8.0;
                 l = DisplayList {
+                    space_pt: l.space_pt,
                     width: l.width,
                     height: l.height + 2.0 * pad,
                     items: l.items.into_iter().map(|i| i.translated(0.0, pad)).collect(),
@@ -462,6 +616,9 @@ impl App {
                 vec![l]
             }
         };
+        if self.page_movements.len() != self.pages.len() {
+            self.page_movements = vec![self.editor.movement; self.pages.len()];
+        }
         self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
         self.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
@@ -470,6 +627,11 @@ impl App {
     fn sync(&mut self) {
         if self.engraved != Some(self.editor.music_revision) {
             self.engrave();
+        }
+        // Another movement edited, its pages out of sight: go to its first.
+        if self.shown_movement != self.editor.movement {
+            self.shown_movement = self.editor.movement;
+            self.show_movement_pages();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
         if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
@@ -568,6 +730,11 @@ impl App {
     /// A double-click on the page: a title, tempo mark, text, chord symbol,
     /// dynamic or lyric opens its popover with its text to retype.
     fn edit_on_page(&mut self, id: u64) -> Task<Message> {
+        use corinzia_score::score::ids;
+        // The page texts are edited in the Layout card.
+        if [ids::SUBTITLE, ids::LYRICIST, ids::ARRANGER, ids::COPYRIGHT].contains(&id) {
+            return self.act(Action::Layout);
+        }
         let Some((kind, text)) = self.editor.item_text(id) else { return Task::none() };
         // Lyrics carry on from the note as when typed (space: the next note).
         let target = if let Some((ev, verse)) = corinzia_score::score::ids::as_lyric(id) {
@@ -596,11 +763,16 @@ impl App {
         let Some(loc) = ed.locate(id) else { return };
         let lane = &m.lanes[loc.lane];
         let Some((e, head)) = corinzia_edit::find_event(&lane.voices[loc.voice].events, id) else { return };
+        let Some(inst) = lane.instrument_at(e.start) else { return };
+        // A drum set plays the sound mapped to the staff position.
         let keys: Vec<i32> = match head {
             Some(h) => vec![e.heads[h].pitch.midi_key()],
             None => e.heads.iter().map(|h| h.pitch.midi_key()).collect(),
-        };
-        let Some(track) = lane.instrument_at(e.start).and_then(|i| ed.project.instrument(i)).and_then(|i| i.track) else { return };
+        }
+        .into_iter()
+        .map(|k| ed.project.sounding_key(inst, k))
+        .collect();
+        let Some(track) = ed.project.instrument(inst).and_then(|i| i.track) else { return };
         let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
         self.sync(); // the plan knows a new track before we preview on it
         self.playback.preview(track, channel, &keys);
@@ -675,6 +847,25 @@ impl App {
         self.pan = self.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
     }
 
+    /// Scrolls to the current movement's first page if none of its pages
+    /// is in view (several movements shown).
+    fn show_movement_pages(&mut self) {
+        let pages = self.pages_of(self.editor.movement);
+        if !self.all_movements || pages.is_empty() {
+            return;
+        }
+        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
+        let px = self.zoom * score_view::BASE_PX;
+        let vp = self.viewport();
+        let visible = pages.clone().any(|k| {
+            let (y0, y1) = (origins[k].y * px + self.pan.y, (origins[k].y + self.pages[k].height) * px + self.pan.y);
+            y1 > 0.0 && y0 < vp.height
+        });
+        if !visible {
+            self.pan.y = 24.0 - origins[pages.start].y * px;
+        }
+    }
+
     /// Ctrl+0: the page fills the canvas's width.
     fn fit_width(&mut self) {
         let Some(page) = self.pages.first() else { return };
@@ -691,7 +882,7 @@ impl App {
         let audition = matches!(a, Action::Note { .. } | Action::Pitch(_) | Action::Nudge(_) | Action::Accidental(_) | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
         let reveal = matches!(
             a,
-            Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste
+            Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste | Action::PasteCue
         );
         let task = self.act_inner(a);
         if reveal {
@@ -818,8 +1009,34 @@ impl App {
             Action::Copy => ed.copy(),
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
+            Action::PasteCue => ed.paste_cue(),
+            Action::Tab => ed.toggle_tab(),
+            Action::CrossStaff(d) => ed.cross_staff(d),
             Action::SelectAll => ed.select_all(),
             Action::Beam(mode) => ed.set_beam(mode),
+            Action::Break { page } => {
+                // In the part shown, or the full score.
+                if let Err(e) = ed.toggle_break(page, self.part) {
+                    ed.status = e;
+                }
+            }
+            Action::AllMovements => {
+                self.all_movements = !self.all_movements;
+                if self.all_movements && self.view != View::Page {
+                    self.view = View::Page;
+                }
+                self.engraved = None;
+                ed.status = if self.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
+            }
+            Action::Layout => {
+                let p = &ed.project;
+                self.layout = Some(LayoutDialog {
+                    parts: self.part.is_some(),
+                    fields: [LayoutFields::of(&p.layout), LayoutFields::of(&p.part_layout)],
+                    texts: [p.subtitle.clone(), p.lyricist.clone(), p.arranger.clone(), p.copyright.clone()],
+                    error: None,
+                });
+            }
             Action::Explode | Action::Reduce => {
                 let r = if a == Action::Explode { ed.explode() } else { ed.reduce() };
                 if let Err(e) = r {
@@ -1010,6 +1227,60 @@ impl App {
         }
     }
 
+    fn layout_msg(&mut self, m: LayoutMsg) {
+        let Some(d) = self.layout.as_mut() else { return };
+        d.error = None;
+        let k = usize::from(d.parts);
+        let f = &mut d.fields[k];
+        match m {
+            LayoutMsg::Tab(parts) => d.parts = parts,
+            LayoutMsg::Size(name) => {
+                if let Some((_, w, h)) = corinzia_model::PAGE_SIZES.iter().find(|p| p.0 == name) {
+                    (f.width, f.height) = (w.to_string(), h.to_string());
+                }
+                f.size = name;
+            }
+            LayoutMsg::Field(which, v) => {
+                let slot = match which {
+                    LayoutField::Width | LayoutField::Height => {
+                        f.size = "Custom".into();
+                        if matches!(which, LayoutField::Width) { &mut f.width } else { &mut f.height }
+                    }
+                    LayoutField::Staff => &mut f.staff,
+                    LayoutField::MarginY => &mut f.margin_y,
+                    LayoutField::MarginX => &mut f.margin_x,
+                    LayoutField::Spacing => &mut f.spacing,
+                    LayoutField::StaffDistance => &mut f.staff_distance,
+                    LayoutField::SystemGap => &mut f.system_gap,
+                    LayoutField::Bars => &mut f.bars,
+                };
+                *slot = v;
+            }
+            LayoutMsg::Landscape(on) => f.landscape = on,
+            LayoutMsg::PageNumbers(on) => f.page_numbers = on,
+            LayoutMsg::Condense(on) => f.condense = on,
+            LayoutMsg::Text(i, v) => d.texts[i] = v,
+            LayoutMsg::Defaults => *f = LayoutFields::of(&if d.parts { corinzia_model::Layout::parts() } else { corinzia_model::Layout::default() }),
+            LayoutMsg::Cancel => self.layout = None,
+            LayoutMsg::Apply => {
+                let (score, parts) = match (d.fields[0].layout(), d.fields[1].layout()) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(e), _) => {
+                        d.error = Some(format!("Score: {e}"));
+                        return;
+                    }
+                    (_, Err(e)) => {
+                        d.error = Some(format!("Parts: {e}"));
+                        return;
+                    }
+                };
+                let texts = d.texts.clone();
+                self.layout = None;
+                self.editor.set_layout(score, parts, texts);
+            }
+        }
+    }
+
     /// The Players card: open it on the score's players, edit the list,
     /// apply it as one undo step.
     fn players_msg(&mut self, m: PlayersMsg) {
@@ -1020,7 +1291,13 @@ impl App {
                 .players
                 .iter()
                 .map(|pl| {
-                    let instruments: Vec<String> = pl.instruments.iter().filter_map(|i| p.instrument(*i)).map(|i| i.name.clone()).collect();
+                    // "Name / Abbr." (the abbreviation names later systems).
+                    let instruments: Vec<String> = pl
+                        .instruments
+                        .iter()
+                        .filter_map(|i| p.instrument(*i))
+                        .map(|i| if i.engraver_name.is_empty() { i.name.clone() } else { format!("{} / {}", i.name, i.engraver_name) })
+                        .collect();
                     let staves = lanes.iter().filter(|l| l.player == pl.id).count();
                     let detail = if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") };
                     PlayerRow { player: Some(pl.id), instruments: instruments.join(", "), detail }
@@ -1211,6 +1488,12 @@ impl App {
             Message::Canvas(ViewEvent::Click { hit, at, shift }) => {
                 self.export_menu = false;
                 self.editor.status.clear();
+                // Another movement's page: it becomes the one edited.
+                let clicked = at.map(|p| self.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
+                if let Some(mi) = clicked.filter(|mi| *mi != self.editor.movement) {
+                    self.editor.switch_movement(mi);
+                    self.sync();
+                }
                 self.click(hit, at, shift)
             }
             Message::Canvas(ViewEvent::Marquee { ids, shift }) => self.editor.select_elements(&ids, shift),
@@ -1224,12 +1507,13 @@ impl App {
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
                             self.new_score = None;
                             self.players = None;
+                            self.layout = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -1308,6 +1592,7 @@ impl App {
             }
             Message::NewCancel => self.new_score = None,
             Message::Players(m) => self.players_msg(m),
+            Message::Layout(m) => self.layout_msg(m),
             Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
@@ -1417,13 +1702,6 @@ impl App {
         let ed = &self.editor;
         let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
         // A segmented control: options side by side in a trough.
-        let segmented = |opts: Vec<(&'static str, bool, Message)>| -> Element<'_, Message> {
-            let mut r = row![].spacing(2);
-            for (label, on, m) in opts {
-                r = r.push(button(text(label).size(13)).padding([3, 12]).style(theme::segment(on)).on_press(m));
-            }
-            container(r).padding(2).style(theme::trough).into()
-        };
         let flat = |label: &'static str, enabled: bool, m: Message| button(text(label).size(13)).padding([5, 7]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m));
         let rule = || container(Space::new()).width(1).height(22).style(theme::rule);
         let mut toolbar = row![
@@ -1487,7 +1765,11 @@ impl App {
             selected: &self.selected,
             caret,
             highlight,
-            playhead: self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q),
+            playhead: self.playback.playhead().and_then(|(id, q)| {
+                let mi = ed.project.movements.iter().position(|m| m.id == id)?;
+                (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
+            }),
+            active: self.pages_of(ed.movement),
             slur: ed.selected_slur(),
             cache: &self.cache,
         })
@@ -1561,6 +1843,9 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if let Some(d) = &self.layout {
+            desk = desk.push(container(iced::widget::opaque(container(layout_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
         if let Some(d) = &self.players {
             // Anchored at the top, so its controls stay put as the list grows.
             desk = desk.push(container(iced::widget::opaque(container(players_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
@@ -1612,7 +1897,7 @@ impl App {
             ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
         ]))
         .padding([10, 12]);
-        let side = container(column![tabs, panels::panel(ed, self.panel).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
+        let side = container(column![tabs, panels::panel(ed, self.panel, self.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
         let vline = || container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
         let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
 
@@ -1712,6 +1997,59 @@ fn plugin_clock() -> impl iced::futures::Stream<Item = Message> {
     rx
 }
 
+/// A segmented control: one button per choice, the chosen one lit.
+fn segmented(opts: Vec<(&'static str, bool, Message)>) -> Element<'static, Message> {
+    let mut r = row![].spacing(2);
+    for (label, on, m) in opts {
+        r = r.push(button(text(label).size(13)).padding([3, 12]).style(theme::segment(on)).on_press(m));
+    }
+    container(r).padding(2).style(theme::trough).into()
+}
+
+/// The Layout card: the page of the score or of the parts, and the texts.
+fn layout_card(d: &LayoutDialog) -> Element<'_, Message> {
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let f = &d.fields[usize::from(d.parts)];
+    let lm = |m: LayoutMsg| Message::Layout(m);
+    let field = |label: &'static str, value: &str, which: LayoutField| {
+        column![text(label).size(12).style(theme::dim), text_input("", value).on_input(move |v| lm(LayoutMsg::Field(which, v))).on_submit(lm(LayoutMsg::Apply)).padding(5).size(14)].spacing(3).width(Length::Fill)
+    };
+    let toggle = |label: &'static str, on: bool, m: LayoutMsg| button(text(label).size(13)).padding([5, 10]).style(theme::tool(on)).on_press(lm(m));
+    let mut sizes: Vec<String> = corinzia_model::PAGE_SIZES.iter().map(|p| p.0.to_string()).collect();
+    sizes.push("Custom".into());
+    let size = iced::widget::pick_list(sizes, Some(f.size.clone()), |s| Message::Layout(LayoutMsg::Size(s))).text_size(13).padding([5, 9]).width(Length::Fill);
+    let texts = ["Subtitle", "Lyricist", "Arranger", "Copyright"];
+    let text_fields = column(texts.iter().enumerate().map(|(i, label)| {
+        row![text(*label).size(12).style(theme::dim).width(80), text_input("", &d.texts[i]).on_input(move |v| lm(LayoutMsg::Text(i, v))).on_submit(lm(LayoutMsg::Apply)).padding(5).size(14)].spacing(8).align_y(iced::Alignment::Center).into()
+    }))
+    .spacing(6);
+    let mut card = column![
+        row![text("Layout").size(18).font(bold), panels::spacer(), segmented(vec![("Score", !d.parts, lm(LayoutMsg::Tab(false))), ("Parts", d.parts, lm(LayoutMsg::Tab(true)))])].align_y(iced::Alignment::Center),
+        row![column![text("Page").size(12).style(theme::dim), size].spacing(3).width(Length::Fill), field("Width (mm)", &f.width, LayoutField::Width), field("Height (mm)", &f.height, LayoutField::Height)].spacing(10),
+        row![toggle("Portrait", !f.landscape, LayoutMsg::Landscape(false)), toggle("Landscape", f.landscape, LayoutMsg::Landscape(true)), panels::spacer(), toggle("Page numbers", f.page_numbers, LayoutMsg::PageNumbers(!f.page_numbers)), { let e: iced::Element<'_, Message> = if d.parts { panels::spacer().into() } else { toggle("Condense", f.condense, LayoutMsg::Condense(!f.condense)).into() }; e }].spacing(6),
+        row![field("Staff size (mm)", &f.staff, LayoutField::Staff), field("Margins top/bottom (mm)", &f.margin_y, LayoutField::MarginY), field("Margins sides (mm)", &f.margin_x, LayoutField::MarginX)].spacing(10),
+        row![field("Note spacing (%)", &f.spacing, LayoutField::Spacing), field("Staff distance (spaces)", &f.staff_distance, LayoutField::StaffDistance), field("System gap (spaces)", &f.system_gap, LayoutField::SystemGap), field("Bars per system", &f.bars, LayoutField::Bars)].spacing(10),
+        text("Breaks: Enter puts a system break before the selected bar, Ctrl+Enter a page break (in the part shown, or the full score).").size(11).style(theme::dim),
+        text("Page texts").size(12).style(theme::dim),
+        text_fields,
+    ]
+    .spacing(10)
+    .width(600);
+    if let Some(e) = &d.error {
+        card = card.push(text(e).size(12).style(theme::danger));
+    }
+    card.push(
+        row![
+            button(text(if d.parts { "Parts defaults" } else { "Score defaults" }).size(13)).padding([6, 14]).style(theme::tool(false)).on_press(lm(LayoutMsg::Defaults)),
+            panels::spacer(),
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(lm(LayoutMsg::Cancel)),
+            button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(lm(LayoutMsg::Apply)),
+        ]
+        .spacing(8),
+    )
+    .into()
+}
+
 /// The Players card: the list (reorder, remove), and instruments to add.
 fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
     let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
@@ -1758,7 +2096,7 @@ fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
     if let Some(e) = &d.error {
         card = card.push(text(e).size(12).style(theme::danger));
     }
-    card.push(text("In the score, top to bottom. Retype an instrument to change it; add doublings after a comma (Flute, Piccolo). Removing a player removes its music.").size(12).style(theme::dim))
+    card.push(text("In the score, top to bottom. Retype an instrument to change it, or its short name after \"/\"; add doublings after a comma (Flute, Piccolo). Removing a player removes its music.").size(12).style(theme::dim))
         .push(iced::widget::scrollable(rows).height(Length::Fixed((n.max(1) as f32 * 52.0).min(400.0))))
         .push(
         row![
@@ -1824,6 +2162,7 @@ fn help_card() -> Element<'static, Message> {
                 ("Shift+I", "Instrument change (a doubling)"),
                 ("Ctrl+Shift+T", "Transpose: up M2, to Eb…"),
                 ("Ctrl+F", "Select only: top, voice 2, above C5, F#…"),
+                ("Enter  Ctrl+Enter", "System break, page break before the bar"),
                 ("Ctrl+Shift+A", "Select similar"),
                 ("Shift+B  R", "Barline; ending, segno, D.C.…"),
                 ("Shift+X  P  O", "Expression, technique (ped), ornament"),
@@ -2108,7 +2447,7 @@ mod tests {
         // A note, then a click on the paper just above the staff.
         let head = a.editor.project.movements[0].lanes[0].voices[0].events[0].heads[0].id;
         a.editor.select(Some(head));
-        let above = score_view::StaffPoint { part: 0, quarter: 0.5, step_below_top: -6 };
+        let above = score_view::StaffPoint { page: 0, part: 0, quarter: 0.5, step_below_top: -6 };
         let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(above), shift: false }));
         assert!(a.editor.selection.is_none() && a.editor.range.is_none());
         // A dynamic, then Escape.
@@ -2149,7 +2488,7 @@ mod tests {
         assert!(a.selected.contains(&slur), "drawn selected");
         // Dragging the end handle over to the fourth note: the end snaps from
         // note to note, and the whole drag is one undo step.
-        let q = |e: &corinzia_model::Event| score_view::StaffPoint { part: 0, quarter: quarters(e.start), step_below_top: 4 };
+        let q = |e: &corinzia_model::Event| score_view::StaffPoint { page: 0, part: 0, quarter: quarters(e.start), step_below_top: 4 };
         for k in [2, 3] {
             let _ = a.update(Message::Canvas(ViewEvent::SlurDrag { handle: SlurHandle::End, at: q(&n[k]) }));
         }
@@ -2259,6 +2598,41 @@ mod tests {
     }
 
     #[test]
+    fn condensing_puts_two_flutes_on_one_staff() {
+        let p = files::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
+        let mut a = App::new(p, None, View::Page, String::new());
+        // Bar 1 in unison, bar 2 apart; the cello rests.
+        for (lane, notes) in [(0, [0, 1, 2, 3, 4, 4, 4, 4]), (1, [0, 1, 2, 3, 2, 2, 2, 2])] {
+            a.editor.select(None);
+            a.editor.set_input_mode(true);
+            a.editor.caret_lane = lane;
+            a.editor.caret = corinzia_score::Frac::ZERO;
+            for s in notes {
+                a.editor.enter_note(s, false);
+            }
+            a.editor.set_input_mode(false);
+        }
+        let mut l = a.editor.project.layout.clone();
+        l.condense = true;
+        let parts = a.editor.project.part_layout.clone();
+        a.editor.set_layout(l, parts, Default::default());
+        a.sync();
+        assert_eq!(a.staff_lanes, [0, 2], "the flutes on staff 0, the cello on 1");
+        let m = a.editor.movement().unwrap();
+        let mut s = corinzia_model::notation::score(&a.editor.project, m);
+        corinzia_model::notation::condense(&mut s);
+        assert_eq!(s.parts[0].name, "Flute 1.2");
+        assert!(s.parts[0].texts.iter().any(|t| t.text == "a 2" && t.at.is_zero()));
+        let second = s.parts[0].voices.iter().find(|v| v.index == 2).unwrap();
+        assert!(second.events.iter().all(|e| e.start >= corinzia_score::Frac::int(1)), "bar 1 written once");
+        assert_eq!(second.events.iter().filter(|e| !e.pitches.is_empty()).count(), 4);
+        // Parts are never condensed.
+        let _ = a.update(Message::SetPart(Some(a.editor.project.players[1].id)));
+        a.sync();
+        assert_eq!(a.staff_lanes, [1]);
+    }
+
+    #[test]
     fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
         let p = files::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
         let mut a = App::new(p, None, View::Page, String::new());
@@ -2276,7 +2650,7 @@ mod tests {
         assert!(a.pages[0].items.iter().any(|i| matches!(i, corinzia_layout::display::Item::Glyph { glyph, .. } if *glyph == eight)));
         // A click on the part's first staff enters into the piano's right hand.
         a.editor.set_input_mode(true);
-        a.click(None, Some(StaffPoint { part: 0, quarter: 0.0, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 0.0, step_below_top: 4 }), false);
         assert_eq!(a.editor.caret_lane, 2);
         assert!(!a.editor.project.movements[0].lanes[2].voices[0].events.iter().all(|e| e.is_rest()));
         // The clarinet's part is written a tone up: concert C is written D.
@@ -2389,20 +2763,20 @@ mod tests {
         let mut a = app(View::Page);
         a.sync();
         // Between notes of bar 2 on the cello's staff, on its middle line.
-        a.click(None, Some(StaffPoint { part: 1, quarter: 5.5, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 1, quarter: 5.5, step_below_top: 4 }), false);
         let r = a.editor.range.expect("a bar selected");
         assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (1, 1, Frac::int(1), Frac::int(2)));
         // Shift-click in bar 4 of the flute: bars 2-4 on both staves.
-        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 2 }), true);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 13.0, step_below_top: 2 }), true);
         let r = a.editor.range.unwrap();
         assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (0, 1, Frac::int(1), Frac::int(4)));
         // Far from any staff: the selection clears.
-        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 30 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 13.0, step_below_top: 30 }), false);
         assert!(a.editor.range.is_none());
         // In note input a click still enters a note.
         a.editor.set_input_mode(true);
         let rev = a.editor.music_revision;
-        a.click(None, Some(StaffPoint { part: 0, quarter: 1.0, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 1.0, step_below_top: 4 }), false);
         assert!(a.editor.range.is_none() && a.editor.selection.is_some() && a.editor.music_revision > rev);
     }
 
@@ -2482,7 +2856,7 @@ mod tests {
         let _ = a.update(pl(PlayersMsg::Add));
         let d = a.players.as_ref().unwrap();
         assert!(d.error.is_none() && d.add.is_empty());
-        assert_eq!(d.rows.iter().map(|r| r.instruments.as_str()).collect::<Vec<_>>(), ["Flute", "Cello", "Piano", "Violin 1", "Violin 2"]);
+        assert_eq!(d.rows.iter().map(|r| r.instruments.as_str()).collect::<Vec<_>>(), ["Flute / Fl.", "Cello / Vc.", "Piano", "Violin 1", "Violin 2"]);
         // Remove the flute, put the piano first.
         let _ = a.update(pl(PlayersMsg::Remove(0)));
         let _ = a.update(pl(PlayersMsg::Move(1, -1)));
@@ -2553,11 +2927,17 @@ mod tests {
         assert_eq!(a.editor.project.tracks.len(), 3);
         // Dropping the doubling takes its track.
         let _ = a.update(pl(PlayersMsg::Open));
-        assert_eq!(a.players.as_ref().unwrap().rows[0].instruments, "Oboe, Cor anglais");
+        assert_eq!(a.players.as_ref().unwrap().rows[0].instruments, "Oboe / Ob., Cor anglais / C. a.");
         let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe".into())));
         let _ = a.update(pl(PlayersMsg::Apply));
         assert_eq!(a.editor.project.player(flute).unwrap().instruments.len(), 1);
         assert_eq!(a.editor.project.tracks.len(), 2);
+        // A new short name for the staff's later systems.
+        let _ = a.update(pl(PlayersMsg::Open));
+        let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe / Hb.".into())));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert_eq!(a.editor.project.instrument(flute_inst).unwrap().engraver_name, "Hb.");
+        assert_eq!(a.editor.status, "1 instrument changed");
         // A row without an instrument is refused.
         let _ = a.update(pl(PlayersMsg::Open));
         let _ = a.update(pl(PlayersMsg::Edit(1, " ".into())));
@@ -2789,6 +3169,106 @@ mod tests {
         assert!(a.editor.apply_popover(PopoverKind::Time, "7/8 3+3").is_err());
         a.engrave();
         assert!(!a.pages.is_empty());
+    }
+
+    #[test]
+    fn layout_card_page_texts_and_breaks() {
+        let mut a = app(View::Page);
+        let lm = |m: LayoutMsg| Message::Layout(m);
+        let _ = a.update(Message::Act(Action::Layout));
+        assert_eq!(a.layout.as_ref().unwrap().fields[0].size, "A4");
+        // Letter, landscape, a 7 mm staff, four bars a system, page texts.
+        let _ = a.update(lm(LayoutMsg::Size("Letter".into())));
+        let _ = a.update(lm(LayoutMsg::Landscape(true)));
+        let _ = a.update(lm(LayoutMsg::Field(LayoutField::Staff, "7".into())));
+        let _ = a.update(lm(LayoutMsg::Field(LayoutField::Bars, "4".into())));
+        let _ = a.update(lm(LayoutMsg::Text(0, "for flute and cello".into())));
+        let _ = a.update(lm(LayoutMsg::Text(3, "© 2026".into())));
+        // The parts keep their own.
+        let _ = a.update(lm(LayoutMsg::Tab(true)));
+        assert_eq!(a.layout.as_ref().unwrap().fields[1].staff, "7");
+        let _ = a.update(lm(LayoutMsg::Field(LayoutField::Spacing, "300".into())));
+        let _ = a.update(lm(LayoutMsg::Apply));
+        assert_eq!(a.layout.as_ref().unwrap().error.as_deref(), Some("Parts: Note spacing (%): a number from 50 to 250"));
+        let _ = a.update(lm(LayoutMsg::Field(LayoutField::Spacing, "120".into())));
+        let _ = a.update(lm(LayoutMsg::Apply));
+        assert!(a.layout.is_none());
+        let l = &a.editor.project.layout;
+        assert_eq!((l.page_width_mm, l.landscape, l.staff_mm, l.bars_per_system), (215.9, true, 7.0, 4));
+        assert_eq!(a.editor.project.part_layout.spacing, 1.2);
+        assert_eq!(a.editor.project.subtitle, "for flute and cello");
+        // The page: 279.4 mm wide in 1.75 mm spaces, printed at 4.96 pt.
+        a.engrave();
+        assert!((a.pages[0].width - 279.4 / 1.75).abs() < 0.01);
+        assert!((a.pages[0].space_pt - 1.75 * 72.0 / 25.4).abs() < 0.01);
+        let texts: Vec<String> = a.pages[0].items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect();
+        assert!(texts.contains(&"for flute and cello".into()) && texts.contains(&"© 2026".into()));
+        // Four bars, then the next four: two systems.
+        let systems = |a: &App| a.pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map_or(0, |m| m + 1)).sum::<u32>();
+        assert_eq!(systems(&a), 2);
+        a.editor.undo();
+        assert_eq!(a.editor.project.layout, corinzia_model::Layout::default(), "one undo step");
+        // A system break before bar 3 (Enter on a note there).
+        let bar3 = corinzia_edit::bar_starts(a.editor.movement().unwrap())[2];
+        let note = a.editor.movement().unwrap().lanes[0].voices[0].events.iter().find(|e| e.start >= bar3 && !e.is_rest()).unwrap().heads[0].id;
+        a.editor.select(Some(note));
+        let _ = a.update(Message::Act(Action::Break { page: false }));
+        assert_eq!(a.editor.status, "System break before bar 3");
+        a.engrave();
+        let starts: Vec<f64> = a.pages[0].columns.iter().filter(|c| c.system == 1).map(|c| c.quarter).collect();
+        assert_eq!(starts.iter().cloned().fold(f64::MAX, f64::min), 8.0, "the second system starts at bar 3");
+        // Ctrl+Enter there turns it into a page break; Enter again removes it.
+        let _ = a.update(Message::Act(Action::Break { page: true }));
+        a.engrave();
+        assert_eq!(a.pages.len(), 2);
+        let _ = a.update(Message::Act(Action::Break { page: true }));
+        assert_eq!(a.editor.status, "Page break removed before bar 3");
+        assert!(a.editor.movement().unwrap().breaks.is_empty());
+        // In a part, the break is the part's alone.
+        let cello = a.editor.project.players[1].id;
+        let _ = a.update(Message::SetPart(Some(cello)));
+        a.editor.select(Some(note));
+        let _ = a.update(Message::Act(Action::Break { page: false }));
+        let b = a.editor.movement().unwrap().breaks[0];
+        assert_eq!(b.part, Some(cello));
+        assert!(corinzia_model::notation::score(&a.editor.project, a.editor.movement().unwrap()).breaks.is_empty());
+        // Not before the first bar.
+        a.editor.select(None);
+        a.editor.caret = corinzia_score::Frac::ZERO;
+        assert!(a.editor.toggle_break(false, None).is_err());
+    }
+
+    #[test]
+    fn all_movements_one_after_another_in_the_view() {
+        let mut a = app(View::Page);
+        a.editor.add_movement();
+        a.editor.rename_movement("II. Allegro");
+        a.editor.switch_movement(0);
+        a.sync();
+        let one = a.pages.len();
+        let _ = a.update(Message::Act(Action::AllMovements));
+        a.sync();
+        assert!(a.pages.len() > one, "both movements' pages");
+        assert_eq!(a.page_movements.first(), Some(&0));
+        assert_eq!(a.page_movements.last(), Some(&1));
+        let second = a.page_movements.iter().position(|&m| m == 1).unwrap();
+        assert_eq!(a.pages_of(1), second..a.pages.len());
+        // The second movement's page is headed by its own title, not the work's.
+        let texts = |p: &DisplayList| p.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+        assert!(texts(&a.pages[second]).contains(&"II. Allegro".to_string()));
+        assert!(!texts(&a.pages[second]).contains(&"Serenade (demo)".to_string()));
+        // A click on it (empty paper, its first staff) edits that movement.
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(StaffPoint { page: second, part: 0, quarter: 0.0, step_below_top: 4 }), shift: false }));
+        assert_eq!(a.editor.movement, 1);
+        // A click on a note of the first movement takes the editing back.
+        let first_note = a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| !e.is_rest()).unwrap().heads[0].id;
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(first_note), at: None, shift: false }));
+        assert_eq!(a.editor.movement, 0);
+        assert_eq!(a.editor.selection, Some(first_note));
+        // Off again: one movement.
+        let _ = a.update(Message::Act(Action::AllMovements));
+        a.sync();
+        assert_eq!(a.pages.len(), one);
     }
 
     #[test]

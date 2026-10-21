@@ -71,6 +71,25 @@ pub fn load(path: &Path) -> Result<Project> {
         p.sample_rate = sr;
         p.next_id = next as u64;
     }
+    // Layouts and page texts.
+    let setting = |key: &str| -> Result<Option<Value>> {
+        let v: Option<String> = db.query_row("SELECT json(value) FROM setting WHERE key = ?", [key], |r| r.get(0)).optional()?;
+        Ok(match v {
+            Some(v) => Some(serde_json::from_str(&v)?),
+            None => None,
+        })
+    };
+    if let Some(v) = setting("layout")? {
+        p.layout = layout_from(&v, Layout::default());
+    }
+    p.part_layout = match setting("part_layout")? {
+        Some(v) => layout_from(&v, Layout::parts()),
+        None => Layout::parts(),
+    };
+    if let Some(t) = setting("texts")? {
+        let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
+        (p.subtitle, p.lyricist, p.arranger, p.copyright) = (s("subtitle"), s("lyricist"), s("arranger"), s("copyright"));
+    }
     {
         let mut s = db.prepare("SELECT id, kind, name, clap_bundle, clap_plugin_id, bypassed FROM audio_node ORDER BY id")?;
         let rows = s.query_map([], |r| {
@@ -144,7 +163,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 engraver_name: r.get(3)?,
                 transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
                 clef: r.get(6)?,
-                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![], tuning: vec![],
             })
         })?;
         for i in rows {
@@ -153,6 +172,26 @@ pub fn load(path: &Path) -> Result<Project> {
                 pl.instruments.push(i.id);
             }
             p.instruments.push(i);
+        }
+    }
+    // Percussion maps, by instrument.
+    if let Some(d) = setting("drums")? {
+        for i in p.instruments.iter_mut() {
+            for s in d[i.id.to_string()].as_array().into_iter().flatten() {
+                i.drums.push(DrumSound {
+                    name: s["name"].as_str().unwrap_or("").to_string(),
+                    position: Pitch { step: s["step"].as_i64().unwrap_or(0) as i8, alter: 0, octave: s["octave"].as_i64().unwrap_or(5) as i8 },
+                    key: s["key"].as_u64().unwrap_or(38).min(127) as u8,
+                    head: Notehead::from_code(s["head"].as_str().unwrap_or("normal")),
+                });
+            }
+        }
+    }
+
+    // Fretted instruments' tunings, by instrument.
+    if let Some(t) = setting("tunings")? {
+        for i in p.instruments.iter_mut() {
+            i.tuning = t[i.id.to_string()].as_array().into_iter().flatten().filter_map(|k| k.as_u64()).map(|k| k.min(127) as u8).collect();
         }
     }
 
@@ -180,7 +219,7 @@ pub fn load(path: &Path) -> Result<Project> {
             navigation: vec![],
             slurs: vec![],
             endings: vec![],
-            lanes: vec![],
+            lanes: vec![], breaks: vec![], cross: vec![],
         };
         for t in serde_json::from_str::<Vec<Value>>(&tempo)? {
             m.tempo.push(Tempo {
@@ -257,6 +296,12 @@ pub fn load(path: &Path) -> Result<Project> {
                 let id = |k: &str| s[k].as_u64().unwrap_or(0);
                 m.slurs.push(Slur { id: id("id"), from: id("from"), to: id("to"), dir: s["dir"].as_i64().unwrap_or(0) as i8 });
             }
+            for b in n["breaks"].as_array().into_iter().flatten() {
+                m.breaks.push(Break { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), page: b["page"].as_bool().unwrap_or(false), part: b["part"].as_u64() });
+            }
+            for c in n["cross"].as_array().into_iter().flatten() {
+                m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
+            }
             for e in n["endings"].as_array().into_iter().flatten() {
                 m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
             }
@@ -283,6 +328,11 @@ pub fn load(path: &Path) -> Result<Project> {
                         at: frac(&t["at"]),
                         text: t["t"].as_str().unwrap_or("").into(),
                         kind: if t["k"].as_str() == Some("t") { TextKind::Technique } else { TextKind::Expression },
+                        shown: match t["s"].as_str() {
+                            Some("s") => Shown::Score,
+                            Some("p") => Shown::Parts,
+                            _ => Shown::Both,
+                        },
                     });
                 }
             }
@@ -423,6 +473,33 @@ fn event_json(e: &Event) -> Value {
     o
 }
 
+fn layout_from(v: &Value, d: Layout) -> Layout {
+    let f = |k: &str, d: f64| v[k].as_f64().unwrap_or(d);
+    Layout {
+        page_width_mm: f("page_width_mm", d.page_width_mm),
+        page_height_mm: f("page_height_mm", d.page_height_mm),
+        landscape: v["landscape"].as_bool().unwrap_or(d.landscape),
+        staff_mm: f("staff_mm", d.staff_mm),
+        margin_y_mm: f("margin_y_mm", d.margin_y_mm),
+        margin_x_mm: f("margin_x_mm", d.margin_x_mm),
+        spacing: f("spacing", d.spacing),
+        staff_distance: f("staff_distance", d.staff_distance),
+        system_gap: f("system_gap", d.system_gap),
+        bars_per_system: v["bars_per_system"].as_u64().unwrap_or(d.bars_per_system as u64) as u32,
+        page_numbers: v["page_numbers"].as_bool().unwrap_or(d.page_numbers),
+        condense: v["condense"].as_bool().unwrap_or(d.condense),
+    }
+}
+
+fn layout_json(l: &Layout) -> Value {
+    json!({
+        "page_width_mm": l.page_width_mm, "page_height_mm": l.page_height_mm, "landscape": l.landscape,
+        "staff_mm": l.staff_mm, "margin_y_mm": l.margin_y_mm, "margin_x_mm": l.margin_x_mm,
+        "spacing": l.spacing, "staff_distance": l.staff_distance, "system_gap": l.system_gap,
+        "bars_per_system": l.bars_per_system, "page_numbers": l.page_numbers, "condense": l.condense,
+    })
+}
+
 /// Writes the whole project. Rows that no longer exist are removed.
 pub fn save(project: &Project, path: &Path) -> Result<()> {
     let mut db = open_db(path)?;
@@ -433,6 +510,17 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
          sample_rate=excluded.sample_rate, next_id=excluded.next_id",
         params![project.title, project.composer, project.sample_rate, project.next_id as i64],
     )?;
+    let texts = json!({"subtitle": project.subtitle, "lyricist": project.lyricist, "arranger": project.arranger, "copyright": project.copyright});
+    let drums: serde_json::Map<String, Value> = project
+        .instruments
+        .iter()
+        .filter(|i| !i.drums.is_empty())
+        .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
+        .collect();
+    let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings))] {
+        tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
+    }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();
     // The audio graph. Upserts, not REPLACE: replacing a node row would
     // delete it first and cascade to its state and edges.
@@ -543,7 +631,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.clef})));
             texts.extend(l.texts.iter().map(|t| json!({
                 "id": t.id, "li": li, "at": jfrac(t.at), "t": t.text,
-                "k": if t.kind == TextKind::Technique { "t" } else { "x" }
+                "k": if t.kind == TextKind::Technique { "t" } else { "x" },
+                "s": match t.shown { Shown::Both => "", Shown::Score => "s", Shown::Parts => "p" }
             })));
             lines.extend(l.lines.iter().map(|x| json!({"id": x.id, "li": li, "from": jfrac(x.from), "to": jfrac(x.to), "k": x.kind.code()})));
         }
@@ -553,6 +642,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
+            "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
+            "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,
             "chords": chords,

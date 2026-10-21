@@ -49,11 +49,23 @@ pub enum Action {
     Copy,
     Cut,
     Paste,
+    /// The clipboard as a cue (small, silent notes in voice 2).
+    PasteCue,
+    /// Tablature on or off for the staff's instrument.
+    Tab,
+    /// Selected notes onto the staff above (-1) or below (1).
+    CrossStaff(i8),
     SelectAll,
     /// Pick what is like the selected element.
     SelectSimilar,
     /// Beams by hand: a `span::BEAMS` bit, or 0 for automatic.
     Beam(u8),
+    /// A system (or page) break before the selected bar, or none.
+    Break { page: bool },
+    /// The Layout card.
+    Layout,
+    /// Show every movement on the pages, one after another, or one.
+    AllMovements,
     /// Chords of one staff spread over the selected staves.
     Explode,
     /// The selected staves combined into chords on one.
@@ -101,6 +113,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if let Key::Named(n) = key {
         return Some(match (n, ctrl, alt) {
             (Named::Escape, ..) => Escape,
+            (Named::Enter, false, false) if !input_mode => Break { page: false },
+            (Named::Enter, true, false) => Break { page: true },
             (Named::F1, ..) => Help,
             (Named::Space, false, false) => PlayStop,
             // Input mode moves the caret; otherwise the arrows walk notes.
@@ -123,6 +137,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             (Named::End, ..) if !input_mode => Edge { last: true },
             (Named::ArrowUp, _, true) => if input_mode { CaretStaff(-1) } else { Staff(-1) },
             (Named::ArrowDown, _, true) => if input_mode { CaretStaff(1) } else { Staff(1) },
+            (Named::ArrowUp, true, _) if shift => CrossStaff(-1),
+            (Named::ArrowDown, true, _) if shift => CrossStaff(1),
             (Named::ArrowUp, true, _) => Transpose(7),
             (Named::ArrowDown, true, _) => Transpose(-7),
             (Named::ArrowUp, ..) => Transpose(1),
@@ -149,7 +165,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('z', true) | ('y', _) => Redo,
             ('c', _) => Copy,
             ('x', _) => Cut,
-            ('v', _) => Paste,
+            ('v', false) => Paste,
+            ('v', true) => PasteCue,
             ('a', false) => SelectAll,
             ('a', true) => SelectSimilar,
             ('f', _) => Popover(PopoverKind::Filter),
