@@ -283,6 +283,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
             chords: vec![],
             brace: false,
             key_shift: 0,
+            head_shapes: vec![],
             key_shifts: vec![],
             group: 0,
             lines: vec![],

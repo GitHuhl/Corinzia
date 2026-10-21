@@ -457,7 +457,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         let clef0 = staves[0].clef.clone().unwrap_or_else(|| "treble".into());
         p.tracks.push(Track { id: track, name: name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (pi % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track) });
+        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track), drums: vec![] });
         p.players.push(Player { id: player, name, instruments: vec![inst] });
         for mut staff in staves {
             // A staff starting in another clef than the instrument's (a

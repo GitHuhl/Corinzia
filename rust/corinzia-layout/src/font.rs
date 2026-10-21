@@ -29,6 +29,8 @@ pub enum Glyph {
     BracketTop, BracketBottom, Segno, Coda,
     Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp,
     UpBow, DownBow, Fingering(u8),
+    NoteheadXBlack, NoteheadXHalf, NoteheadXWhole, NoteheadCircleX, NoteheadCircleXHalf, NoteheadCircleXWhole,
+    NoteheadDiamondBlack, NoteheadDiamondHalf, NoteheadDiamondWhole, NoteheadTriangleBlack, NoteheadTriangleHalf, NoteheadTriangleWhole,
 }
 
 impl Glyph {
@@ -123,6 +125,18 @@ impl Glyph {
             PedalUp => ("keyboardPedalUp", 0xE655),
             UpBow => ("stringsUpBow", 0xE612),
             DownBow => ("stringsDownBow", 0xE610),
+            NoteheadXBlack => ("noteheadXBlack", 0xE0A9),
+            NoteheadXHalf => ("noteheadXHalf", 0xE0A8),
+            NoteheadXWhole => ("noteheadXWhole", 0xE0A7),
+            NoteheadCircleX => ("noteheadCircleX", 0xE0B3),
+            NoteheadCircleXHalf => ("noteheadCircleXHalf", 0xE0B2),
+            NoteheadCircleXWhole => ("noteheadCircleXWhole", 0xE0B1),
+            NoteheadDiamondBlack => ("noteheadDiamondBlack", 0xE0DB),
+            NoteheadDiamondHalf => ("noteheadDiamondHalf", 0xE0D9),
+            NoteheadDiamondWhole => ("noteheadDiamondWhole", 0xE0D8),
+            NoteheadTriangleBlack => ("noteheadTriangleUpBlack", 0xE0BE),
+            NoteheadTriangleHalf => ("noteheadTriangleUpHalf", 0xE0BD),
+            NoteheadTriangleWhole => ("noteheadTriangleUpWhole", 0xE0BC),
             // Fingers 0-5 (thumb 0 or 1 to little finger 5).
             Fingering(d) => (["fingering0", "fingering1", "fingering2", "fingering3", "fingering4", "fingering5"][d.min(5) as usize], 0xED10 + d.min(5) as u32),
         }
@@ -143,6 +157,8 @@ impl Glyph {
             Mordent, Turn, BreathMark, Caesura, Tremolo3, Arpeggiato, RepeatDot, MetNoteQuarterUp, CsymSharp, CsymFlat,
             CsymNatural, CsymDiminished, CsymHalfDiminished, CsymMajorSeventh, BracketTop, BracketBottom, Segno, Coda,
             Ottava, OttavaBassa, Quindicesima, QuindicesimaBassa, PedalPed, PedalUp, UpBow, DownBow,
+            NoteheadXBlack, NoteheadXHalf, NoteheadXWhole, NoteheadCircleX, NoteheadCircleXHalf, NoteheadCircleXWhole,
+            NoteheadDiamondBlack, NoteheadDiamondHalf, NoteheadDiamondWhole, NoteheadTriangleBlack, NoteheadTriangleHalf, NoteheadTriangleWhole,
         ];
         v.extend((0..6).map(Fingering));
         v.extend((0..10).map(TimeSigDigit));

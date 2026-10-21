@@ -51,7 +51,8 @@ pub fn clef_middle(clef: &str) -> i32 {
     match clef {
         "bass" => 1 + 7 * 3,
         "bass_8" => 1 + 7 * 2,
-        "alto" | "percussion" => 7 * 4,
+        "alto" => 7 * 4,
+        // Percussion positions read as on the treble clef (as in MusicXML).
         "tenor" => 5 + 7 * 3,
         "treble_8" => 6 + 7 * 3,
         _ => 6 + 7 * 4,
@@ -416,6 +417,25 @@ struct Head {
     accidental: Option<Glyph>,
     acc_x: f32, // accidental origin, relative to the column
     shift: f32, // notehead offset from the column (seconds in chords)
+    shape: u8,  // 0 normal; percussion: 1 x, 2 circled x, 3 diamond, 4 triangle
+}
+
+/// A notehead in another shape (percussion), for the value's head.
+fn shaped_head(g: Glyph, shape: u8) -> Glyph {
+    use Glyph::*;
+    let k = match g {
+        NoteheadWhole => 2,
+        NoteheadHalf => 1,
+        _ => 0,
+    };
+    let set = match shape {
+        1 => [NoteheadXBlack, NoteheadXHalf, NoteheadXWhole],
+        2 => [NoteheadCircleX, NoteheadCircleXHalf, NoteheadCircleXWhole],
+        3 => [NoteheadDiamondBlack, NoteheadDiamondHalf, NoteheadDiamondWhole],
+        4 => [NoteheadTriangleBlack, NoteheadTriangleHalf, NoteheadTriangleWhole],
+        _ => return g,
+    };
+    set[k]
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +561,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                                 accidental: None,
                                 acc_x: 0.0,
                                 shift: 0.0,
+                                shape: part.head_shapes.iter().find(|s| s.0 == diatonic(p)).map_or(0, |s| s.1),
                             })
                             .collect();
                         heads.sort_by_key(|h| h.dia);
@@ -562,6 +583,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                                             accidental: None,
                                             acc_x: 0.0,
                                             shift: 0.0,
+                                            shape: part.head_shapes.iter().find(|s| s.0 == diatonic(p)).map_or(0, |s| s.1),
                                         })
                                         .collect();
                                     hs.sort_by_key(|h| h.dia);
@@ -826,6 +848,8 @@ impl<'a> Engraver<'a> {
         let mut tied_into: std::collections::HashSet<(usize, u8, i32, i8)> = Default::default();
         let mut next_tied: Vec<(usize, u8, i32, i8)> = Vec::new();
         let mut last_start: Option<(usize, Frac)> = None;
+        // Percussion staves have neither key nor accidentals.
+        let percussion: Vec<bool> = self.score.parts.iter().map(|p| p.clef == "percussion").collect();
         for &i in &order {
             let (part, measure, start) = (self.notes[i].part, self.notes[i].measure, self.notes[i].start);
             if last_start.is_some_and(|(p, s)| p != part || s != start) {
@@ -858,6 +882,10 @@ impl<'a> Engraver<'a> {
                     next_tied.push((part, voice, h.dia, h.alter));
                 }
             }
+        }
+        for note in self.notes.iter_mut().filter(|n| percussion.get(n.part).copied().unwrap_or(false)) {
+            note.heads.iter_mut().for_each(|h| h.accidental = None);
+            note.graces.iter_mut().flat_map(|g| g.heads.iter_mut()).for_each(|h| h.accidental = None);
         }
         // Seconds and accidental columns.
         for note in self.notes.iter_mut() {
@@ -1339,7 +1367,7 @@ impl<'a> Engraver<'a> {
             for pi in 0..self.score.parts.len() {
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
-                if let Some(k) = m.key {
+                if let Some(k) = m.key.filter(|_| clef != "percussion") {
                     let k = Key { fifths: part_key(self.score, pi, k.fifths, m.start), ..k };
                     // Cancel the previous key's accidentals with naturals when it changes to fewer/other.
                     if mi > 0 {
@@ -1494,7 +1522,7 @@ impl<'a> Engraver<'a> {
                     self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
                     lp -= 2;
                 }
-                self.push(Item::glyph(hg, x, y, h.id));
+                self.push(Item::glyph(shaped_head(hg, h.shape), x, y, h.id));
                 if let Some(a) = h.accidental {
                     self.push(Item::glyph(a, n.x + h.acc_x, y, h.id));
                 }

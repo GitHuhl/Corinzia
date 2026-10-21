@@ -62,6 +62,11 @@ PipeWire.
   Beams buttons break a beam before the selected notes, join them to the
   beam before (across beat groups), leave them flagged, or go back to
   automatic.
+* **Percussion:** Drum set, Snare drum, Bass drum and Cymbals use the
+  percussion clef, a drum map (staff position → sound, MIDI key and
+  notehead: x, circled x, diamond, triangle) and MIDI channel 10. The
+  status bar names the drum under the selection; playback sounds the
+  mapped key. Drum staves have no key signature or accidentals.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

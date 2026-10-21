@@ -751,11 +751,16 @@ impl App {
         let Some(loc) = ed.locate(id) else { return };
         let lane = &m.lanes[loc.lane];
         let Some((e, head)) = corinzia_edit::find_event(&lane.voices[loc.voice].events, id) else { return };
+        let Some(inst) = lane.instrument_at(e.start) else { return };
+        // A drum set plays the sound mapped to the staff position.
         let keys: Vec<i32> = match head {
             Some(h) => vec![e.heads[h].pitch.midi_key()],
             None => e.heads.iter().map(|h| h.pitch.midi_key()).collect(),
-        };
-        let Some(track) = lane.instrument_at(e.start).and_then(|i| ed.project.instrument(i)).and_then(|i| i.track) else { return };
+        }
+        .into_iter()
+        .map(|k| ed.project.sounding_key(inst, k))
+        .collect();
+        let Some(track) = ed.project.instrument(inst).and_then(|i| i.track) else { return };
         let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
         self.sync(); // the plan knows a new track before we preview on it
         self.playback.preview(track, channel, &keys);

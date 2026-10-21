@@ -220,6 +220,23 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
                     })
                     .collect(),
                 brace: m.lanes.get(li + 1).is_some_and(|next| next.player == lane.player),
+                head_shapes: lane
+                    .changes
+                    .iter()
+                    .filter_map(|c| project.instrument(c.instrument))
+                    .flat_map(|i| i.drums.iter())
+                    .filter(|d| d.head != Notehead::Normal)
+                    .map(|d| {
+                        let shape = match d.head {
+                            Notehead::X => 1,
+                            Notehead::CircleX => 2,
+                            Notehead::Diamond => 3,
+                            Notehead::Triangle => 4,
+                            Notehead::Normal => 0,
+                        };
+                        (d.position.step as i32 + 7 * d.position.octave as i32, shape)
+                    })
+                    .collect(),
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
                 key_shifts: {
                     // A change to an instrument transposing otherwise takes

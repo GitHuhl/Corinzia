@@ -435,6 +435,91 @@ pub struct Instrument {
     pub transposition: Interval,
     pub clef: String,
     pub track: Option<Id>,
+    /// A percussion instrument's sounds by staff position (a drum set);
+    /// empty: notes sound at their pitch.
+    pub drums: Vec<DrumSound>,
+}
+
+/// One sound of a percussion instrument: written at a staff position (a
+/// pitch on the percussion clef, read as on the treble clef) with a
+/// notehead, played as a MIDI key (General MIDI drums on channel 10).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrumSound {
+    pub name: String,
+    pub position: Pitch,
+    pub key: u8,
+    pub head: Notehead,
+}
+
+/// Notehead shapes for percussion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Notehead {
+    #[default]
+    Normal,
+    X,
+    CircleX,
+    Diamond,
+    Triangle,
+}
+
+impl Notehead {
+    pub fn code(self) -> &'static str {
+        match self {
+            Notehead::Normal => "normal",
+            Notehead::X => "x",
+            Notehead::CircleX => "circle-x",
+            Notehead::Diamond => "diamond",
+            Notehead::Triangle => "triangle",
+        }
+    }
+    pub fn from_code(c: &str) -> Notehead {
+        match c {
+            "x" => Notehead::X,
+            "circle-x" => Notehead::CircleX,
+            "diamond" => Notehead::Diamond,
+            "triangle" => Notehead::Triangle,
+            _ => Notehead::Normal,
+        }
+    }
+}
+
+/// The sounds an instrument of this name starts with: a drum set's (the
+/// usual positions, General MIDI keys), a single drum's, or none.
+pub fn default_drums(name: &str) -> Vec<DrumSound> {
+    let n = name.to_lowercase();
+    let p = |step: i8, octave: i8| Pitch { step, alter: 0, octave };
+    let s = |name: &str, position: Pitch, key: u8, head: Notehead| DrumSound { name: name.into(), position, key, head };
+    if n.contains("drum set") || n.contains("drum kit") || n == "drums" || n == "kit" {
+        vec![
+            s("Bass drum", p(3, 4), 36, Notehead::Normal),
+            s("Floor tom", p(5, 4), 41, Notehead::Normal),
+            s("Snare drum", p(0, 5), 38, Notehead::Normal),
+            s("Low tom", p(1, 5), 45, Notehead::Normal),
+            s("High tom", p(2, 5), 48, Notehead::Normal),
+            s("Ride cymbal", p(3, 5), 51, Notehead::X),
+            s("Hi-hat", p(4, 5), 42, Notehead::X),
+            s("Open hi-hat", p(5, 5), 46, Notehead::CircleX),
+            s("Crash cymbal", p(6, 5), 49, Notehead::X),
+            s("Hi-hat pedal", p(1, 4), 44, Notehead::X),
+            s("Side stick", p(4, 4), 37, Notehead::X),
+            s("Cowbell", p(2, 4), 56, Notehead::Triangle),
+        ]
+    } else if n.contains("snare") {
+        vec![s("Snare drum", p(0, 5), 38, Notehead::Normal)]
+    } else if n.contains("bass drum") {
+        vec![s("Bass drum", p(0, 5), 36, Notehead::Normal)]
+    } else if n.contains("cymbal") {
+        vec![s("Crash cymbal", p(0, 5), 49, Notehead::X)]
+    } else {
+        vec![]
+    }
+}
+
+impl Instrument {
+    /// The drum sound written at a pitch's staff position.
+    pub fn drum_at(&self, p: Pitch) -> Option<&DrumSound> {
+        self.drums.iter().find(|d| d.position.step == p.step && d.position.octave == p.octave)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +626,11 @@ impl Project {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+    /// The MIDI key a note written at `key` sounds on `instrument`: a drum
+    /// set's sound for that staff position, else the key itself.
+    pub fn sounding_key(&self, instrument: Id, key: i32) -> i32 {
+        self.instrument(instrument).and_then(|i| i.drums.iter().find(|d| d.position.midi_key() == key)).map_or(key, |d| d.key as i32)
     }
     pub fn player(&self, id: Id) -> Option<&Player> {
         self.players.iter().find(|p| p.id == id)

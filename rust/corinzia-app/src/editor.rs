@@ -195,10 +195,12 @@ fn span_from_note(evs: &[Event], note: Id) -> Option<(Frac, Frac)> {
 fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     let (track, inst) = (p.allocate_id(), p.allocate_id());
     let used: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
-    let midi_channel = (0..16).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8);
+    // A drum set starts with its map, and plays on the drum channel (10).
+    let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
+    let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
     p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
-    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track) });
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums });
     inst
 }
 
@@ -441,6 +443,19 @@ impl Editor {
         }
         self.commit(before, "New movement");
         self.switch_movement_force(at);
+    }
+
+    /// A percussion staff (its instrument's clef): no key; letters and
+    /// clicks are staff positions.
+    pub fn lane_is_percussion(&self, lane: usize) -> bool {
+        self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.changes.first()).and_then(|c| self.project.instrument(c.instrument)).is_some_and(|i| i.clef == "percussion")
+    }
+
+    /// The drum sound of a note on a drum set's staff.
+    pub fn drum_name(&self, lane: usize, at: Frac, p: Pitch) -> Option<String> {
+        let m = self.movement()?;
+        let inst = self.project.instrument(m.lanes.get(lane)?.instrument_at(at)?)?;
+        inst.drum_at(p).map(|d| d.name.clone())
     }
 
     /// The movement holding element `id` (a note, rest, mark or text).
@@ -940,6 +955,7 @@ impl Editor {
         }
         let step = step.rem_euclid(7);
         let (lane, voice, caret, spec, alter, chord) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from), add_to_chord || self.chord_mode);
+        let perc = self.lane_is_percussion(lane); // no key: letters are staff positions
         let tuplet = self.tuplet_input;
         let transposed = self.transposed;
         let instruments: std::collections::HashMap<Id, Interval> = self.project.instruments.iter().map(|i| (i.id, i.transposition)).collect();
@@ -956,7 +972,7 @@ impl Editor {
             // the written key next to the written previous note, then store it
             // at concert pitch.
             let by = if transposed { m.lanes[lane].instrument_at(caret).and_then(|i| instruments.get(&i).copied()).unwrap_or_default() } else { Interval::default() };
-            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths()) };
             let concert = |p: Pitch| p.transposed(by.inverse());
             // Chord: add above the event just entered (the one ending at the caret).
             let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
@@ -1001,6 +1017,7 @@ impl Editor {
     fn enter_grace(&mut self, step: i32, slash: bool) {
         let (lane, voice, caret, spec, alter) = (self.caret_lane, self.voice, self.caret, self.spec, self.accidental.map(i32::from));
         let by = self.written_interval(lane, caret);
+        let perc = self.lane_is_percussion(lane);
         let mut focus = None;
         self.transact("Grace note", |m, ids| {
             if m.lanes.is_empty() {
@@ -1014,7 +1031,7 @@ impl Editor {
                 extend_to(m, r.to);
                 evs = r.events;
             }
-            let fifths = corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths());
+            let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths()) };
             // Next to the last grace typed here, else the previous note.
             let reference = evs
                 .iter()
@@ -1077,6 +1094,7 @@ impl Editor {
     /// Mouse input: a click on staff `lane` at written position `quarter`
     /// and staff step `diatonic` (C4 = 28).
     pub fn place_note_at(&mut self, lane: usize, quarter: f64, diatonic: i32, add_to_chord: bool) {
+        let perc = self.lane_is_percussion(lane);
         // Snap to the grid of the current (undotted) duration, biased left so
         // a click just after a beat still lands on it.
         let grid = DurationSpec { dots: 0, ..self.spec }.value();
@@ -1097,7 +1115,7 @@ impl Editor {
         self.transact("Note input", |m, ids| {
             let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
             let evs = m.lanes[lane].voices[vi].events.clone();
-            let alter = accidental.map(i32::from).unwrap_or_else(|| edit::key_alter(key_fifths_at(m, caret), step));
+            let alter = accidental.map(i32::from).unwrap_or_else(|| edit::key_alter(if perc { 0 } else { key_fifths_at(m, caret) }, step));
             let p = edit::from_diatonic(diatonic, alter);
             let onset = edit::event_at(&evs, caret).filter(|e| e.start == caret && !e.heads.is_empty());
             let r = if chord && onset.is_some() {
@@ -1731,8 +1749,9 @@ impl Editor {
         let Some((loc, e)) = self.event_of(id) else { return };
         let (start, lane, voice) = (e.start, loc.lane, loc.voice);
         let by = self.written_interval(lane, start);
+        let perc = self.lane_is_percussion(lane);
         let Some(m) = self.movement() else { return };
-        let fifths = corinzia_model::shift_key(key_fifths_at(m, start), by.fifths());
+        let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, start), by.fifths()) };
         let evs = m.lanes[lane].voices[voice].events.clone();
         let reference = match edit::find_event(&evs, id) {
             Some((e, Some(h))) => e.heads[h].pitch,
@@ -2971,7 +2990,7 @@ impl Editor {
         let inst = lane.instrument_at(e.start).and_then(|i| self.project.instrument(i)).map(|i| i.name.clone()).unwrap_or_default();
         let bar = edit::bar_number(m, e.start).0;
         match e.heads.iter().find(|h| h.id == id).or(e.heads.first()) {
-            Some(h) if !e.is_rest() => format!("{} · {inst} · bar {bar}", pitch_name(h.pitch)),
+            Some(h) if !e.is_rest() => format!("{} · {inst} · bar {bar}", self.drum_name(loc.lane, e.start, h.pitch).unwrap_or_else(|| pitch_name(h.pitch))),
             _ => format!("Rest · {inst} · bar {bar}"),
         }
     }
@@ -3730,5 +3749,20 @@ mod tests {
         e.caret = f(1, 1);
         e.add_first_second_endings();
         assert_eq!(e.movement().unwrap().endings.len(), 2);
+    }
+
+    #[test]
+    fn drum_sets_get_a_map_and_channel_ten() {
+        let e = Editor::new(crate::files::new_project("D", "Flute, Drum set", 2).unwrap());
+        let drums = e.project.instruments.iter().find(|i| i.name == "Drum set").unwrap().clone();
+        assert!(!drums.drums.is_empty());
+        let track = e.project.tracks.iter().find(|t| Some(t.id) == drums.track).unwrap();
+        assert_eq!(track.midi_channel, 9);
+        assert!(e.project.tracks.iter().filter(|t| Some(t.id) != drums.track).all(|t| t.midi_channel != 9));
+        assert!(e.lane_is_percussion(1) && !e.lane_is_percussion(0));
+        // The snare sits on C5 and sounds key 38.
+        let snare = Pitch { step: 0, alter: 0, octave: 5 };
+        assert_eq!(e.drum_name(1, Frac::ZERO, snare).as_deref(), Some("Snare drum"));
+        assert_eq!(e.project.sounding_key(drums.id, snare.midi_key()), 38);
     }
 }

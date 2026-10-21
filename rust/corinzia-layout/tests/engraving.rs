@@ -822,3 +822,23 @@ fn breaks_by_hand_bars_per_system_and_page_text() {
     let line = |sp: f32| layout_line(&score(&[("treble", &["c'8 d' e' f' g' a' b' c''"])], (4, 4), 0), &Options { spacing: sp, ..Options::default() }).width;
     assert!(line(1.5) > line(1.0) * 1.2);
 }
+
+#[test]
+fn percussion_staves_have_shaped_heads_and_no_key() {
+    // A drum set in D major: hi-hat (x) on G5, snare on C5, kick on F4;
+    // and a treble staff that keeps the key.
+    let mut s = score(&[("percussion", &["g''8 g'' <c'' g''>8 g'' <f' g''>2"]), ("treble", &["fis'1"])], (4, 4), 2);
+    s.parts[0].head_shapes = vec![(4 + 7 * 5, 1)];
+    let l = layout_line(&s, &Options::default());
+    let xs = glyphs(&l, Glyph::NoteheadXBlack);
+    assert_eq!(xs.len(), 4, "the hi-hat's eighths are x heads");
+    assert_eq!(glyphs(&l, Glyph::NoteheadXHalf).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::NoteheadBlack).len(), 1, "the snare");
+    assert_eq!(glyphs(&l, Glyph::NoteheadHalf).len(), 1, "the kick");
+    // The key: only on the treble staff (two sharps); no accidentals on the drums.
+    let sharps = glyphs(&l, Glyph::Sharp);
+    assert_eq!(sharps.len(), 2);
+    assert!(sharps.iter().all(|s| s.1 > 8.0), "{sharps:?}");
+    assert!(glyphs(&l, Glyph::PercussionClef).len() == 1);
+    preview("drums", &l);
+}

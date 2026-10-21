@@ -163,7 +163,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 engraver_name: r.get(3)?,
                 transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
                 clef: r.get(6)?,
-                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![],
             })
         })?;
         for i in rows {
@@ -172,6 +172,19 @@ pub fn load(path: &Path) -> Result<Project> {
                 pl.instruments.push(i.id);
             }
             p.instruments.push(i);
+        }
+    }
+    // Percussion maps, by instrument.
+    if let Some(d) = setting("drums")? {
+        for i in p.instruments.iter_mut() {
+            for s in d[i.id.to_string()].as_array().into_iter().flatten() {
+                i.drums.push(DrumSound {
+                    name: s["name"].as_str().unwrap_or("").to_string(),
+                    position: Pitch { step: s["step"].as_i64().unwrap_or(0) as i8, alter: 0, octave: s["octave"].as_i64().unwrap_or(5) as i8 },
+                    key: s["key"].as_u64().unwrap_or(38).min(127) as u8,
+                    head: Notehead::from_code(s["head"].as_str().unwrap_or("normal")),
+                });
+            }
         }
     }
 
@@ -482,7 +495,13 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         params![project.title, project.composer, project.sample_rate, project.next_id as i64],
     )?;
     let texts = json!({"subtitle": project.subtitle, "lyricist": project.lyricist, "arranger": project.arranger, "copyright": project.copyright});
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts)] {
+    let drums: serde_json::Map<String, Value> = project
+        .instruments
+        .iter()
+        .filter(|i| !i.drums.is_empty())
+        .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
+        .collect();
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums))] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

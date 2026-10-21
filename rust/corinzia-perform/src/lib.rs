@@ -549,7 +549,7 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
                     .map(|n| {
                         let on = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
                         let off = on + (perf.tempo.seconds_at(n.full_off_q) - on) * n.gate;
-                        doc::Note { on: perf.tempo.quarter_at(on), off: perf.tempo.quarter_at(off), key: n.key.clamp(0, 127) as u8, vel: n.velocity }
+                        doc::Note { on: perf.tempo.quarter_at(on), off: perf.tempo.quarter_at(off), key: project.sounding_key(n.instrument, n.key).clamp(0, 127) as u8, vel: n.velocity }
                     })
                     .collect(),
             })
