@@ -189,6 +189,13 @@ pub struct Ending {
     pub numbers: Vec<u8>,
 }
 
+impl Part {
+    /// The key shift in force at `at`.
+    pub fn key_shift_at(&self, at: Frac) -> i32 {
+        self.key_shifts.iter().rev().find(|(t, _)| *t <= at).map(|(_, s)| *s).unwrap_or(self.key_shift)
+    }
+}
+
 #[derive(Debug)]
 pub struct Part {
     pub name: String,
@@ -205,6 +212,9 @@ pub struct Part {
     /// The staff's key differs from the score's by this many fifths (a
     /// transposing instrument in a transposed score).
     pub key_shift: i32,
+    /// Later changes of `key_shift` (an instrument change to one that
+    /// transposes differently), at bar starts, sorted.
+    pub key_shifts: Vec<(Frac, i32)>,
     /// Staves next to each other with the same non-zero group share a
     /// bracket (an instrument family) and barlines.
     pub group: u32,

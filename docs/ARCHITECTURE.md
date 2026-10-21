@@ -200,6 +200,9 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
+* A staff's key shift (a transposing instrument in the transposed score)
+  can change at an instrument change: it takes effect at the next bar,
+  where the staff's new key signature is drawn.
 * Parts (`Options::multirest`): runs of bars where nothing sounds or
   changes become one bar with an H-bar and its count, as LilyPond's
   compressed multi-measure rests; a run breaks at key, time, tempo,
@@ -407,8 +410,12 @@ output), automation, VST3 state in the project.
 * Hit testing covers notes, rests, chord symbols and lyrics.
 
 **Players.** The Players card edits a list of players (kept ones by id,
-new ones by name, abbreviation, clef and transposition) and applies it
-with `Editor::set_players` as one undo step: dropped players take their
+new ones), each with its instruments (the first, then doublings), and
+applies it with `Editor::set_players` as one undo step. A kept player's
+instruments are matched by name: a name still listed keeps its instrument,
+a new one takes the place of one no longer listed (changed in place, so
+its music and track stay), and further ones are doublings with tracks of
+their own. Otherwise: dropped players take their
 staves in every movement, their instruments and the tracks only they used
 (with plugin nodes); new ones get an instrument, a track on a free MIDI
 channel and staves of whole-bar rests in every movement; players, staves

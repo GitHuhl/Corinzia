@@ -279,9 +279,13 @@ fn measures(s: &Score) -> Vec<Measure> {
         let prev = out.last();
         let show_time = prev.is_none_or(|p| (p.num, p.den) != (num, den));
         let key = keys.iter().rev().find(|k| k.at <= at).copied();
+        // A staff whose key shift changes here (an instrument change) shows
+        // the key again.
+        let shift_changes = prev.is_some() && s.parts.iter().any(|p| p.key_shifts.iter().any(|(t, _)| *t == at));
         let key_changed = match (prev, key) {
             (None, k) => k.or(Some(Key { at: Frac::ZERO, fifths: 0, minor: false })),
             (Some(p), Some(k)) if k.at > p.start => Some(k),
+            _ if shift_changes => Some(key.unwrap_or(Key { at: Frac::ZERO, fifths: 0, minor: false })),
             _ => None,
         };
         out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0, multi: 1 });
@@ -322,8 +326,9 @@ fn beat_of(num: i64, den: i64) -> Frac {
 }
 
 /// A staff's key: the score's, moved for a transposing instrument.
-fn part_key(s: &Score, part: usize, fifths: i32) -> i32 {
-    match s.parts.get(part).map(|p| p.key_shift).unwrap_or(0) {
+/// A staff's key at `at`: the score's, moved by the staff's key shift then.
+fn part_key(s: &Score, part: usize, fifths: i32, at: Frac) -> i32 {
+    match s.parts.get(part).map(|p| p.key_shift_at(at)).unwrap_or(0) {
         0 => fifths,
         by => {
             let mut f = fifths + by;
@@ -783,7 +788,7 @@ impl<'a> Engraver<'a> {
                 tied_into.extend(next_tied.drain(..));
             }
             last_start = Some((part, start));
-            let fifths = part_key(self.score, part, key_at(self.score, start));
+            let fifths = part_key(self.score, part, key_at(self.score, start), start);
             let voice = self.notes[i].voice;
             // Grace notes come first and count for the bar.
             for g in self.notes[i].graces.iter_mut() {
@@ -1040,10 +1045,11 @@ impl<'a> Engraver<'a> {
             // Key and time shown at this barline.
             if let Some(k) = m.key {
                 // The widest staff's signature (transposing staves differ).
-                let prev_global = if mi == 0 { 0 } else { key_at(self.score, self.ms[mi - 1].start) };
+                let prev_at = if mi == 0 { Frac::ZERO } else { self.ms[mi - 1].start };
+                let prev_global = if mi == 0 { 0 } else { key_at(self.score, prev_at) };
                 let count = (0..self.score.parts.len().max(1))
                     .map(|pi| {
-                        let (now, prev) = (part_key(self.score, pi, k.fifths), part_key(self.score, pi, prev_global));
+                        let (now, prev) = (part_key(self.score, pi, k.fifths, m.start), part_key(self.score, pi, prev_global, prev_at));
                         now.unsigned_abs().max(if mi > 0 { prev.unsigned_abs() } else { 0 })
                     })
                     .max()
@@ -1280,10 +1286,11 @@ impl<'a> Engraver<'a> {
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
                 if let Some(k) = m.key {
-                    let k = Key { fifths: part_key(self.score, pi, k.fifths), ..k };
+                    let k = Key { fifths: part_key(self.score, pi, k.fifths, m.start), ..k };
                     // Cancel the previous key's accidentals with naturals when it changes to fewer/other.
                     if mi > 0 {
-                        let prev = part_key(self.score, pi, key_at(self.score, self.ms[mi - 1].start));
+                        let prev_at = self.ms[mi - 1].start;
+                        let prev = part_key(self.score, pi, key_at(self.score, prev_at), prev_at);
                         if prev != 0 && (k.fifths == 0 || k.fifths.signum() != prev.signum()) {
                             for (pos, _) in key_positions(prev, &clef) {
                                 let y = self.y(pi, pos);

@@ -31,7 +31,14 @@ PipeWire.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
   such as "Flute, 2 Violin" with any name), remove players with their
   music, and reorder them; Apply makes it one undo step. New players get
-  staves of rests in every movement and a mixer track of their own.
+  staves of rests in every movement and a mixer track of their own. Retype
+  a player's instrument to change it (the music stays); add doublings after
+  a comma ("Flute, Piccolo"), each with its own mixer track.
+* **Instrument changes:** Shift+I (or Structure → Instrument change) at a
+  note or bar switches the player to a doubling from there on, adding it if
+  needed. The name is written above the staff, the clef follows, playback
+  moves to that instrument's track, and the transposed score changes key
+  at the next barline.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

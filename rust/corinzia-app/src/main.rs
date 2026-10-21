@@ -82,8 +82,10 @@ struct PlayersDialog {
 }
 
 struct PlayerRow {
-    slot: editor::PlayerSlot,
-    name: String,
+    /// The player in the score, or None for one to add.
+    player: Option<corinzia_model::Id>,
+    /// Its instruments as typed: the first, then doublings.
+    instruments: String,
     detail: String,
 }
 
@@ -92,6 +94,8 @@ enum PlayersMsg {
     Open,
     Move(usize, isize),
     Remove(usize),
+    /// A row's instruments retyped.
+    Edit(usize, String),
     AddInput(String),
     Add,
     /// One of the quick-add buttons.
@@ -1005,12 +1009,8 @@ impl App {
                 .map(|pl| {
                     let instruments: Vec<String> = pl.instruments.iter().filter_map(|i| p.instrument(*i)).map(|i| i.name.clone()).collect();
                     let staves = lanes.iter().filter(|l| l.player == pl.id).count();
-                    let name = instruments.first().cloned().unwrap_or_else(|| pl.name.clone());
-                    let mut detail = if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") };
-                    if instruments.len() > 1 {
-                        detail = format!("{} · {detail}", instruments.join(", "));
-                    }
-                    PlayerRow { slot: editor::PlayerSlot::Keep(pl.id), name, detail }
+                    let detail = if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") };
+                    PlayerRow { player: Some(pl.id), instruments: instruments.join(", "), detail }
                 })
                 .collect();
             self.players = Some(PlayersDialog { rows, add: String::new(), error: None });
@@ -1022,11 +1022,10 @@ impl App {
         d.error = None;
         let add = |d: &mut PlayersDialog, text: &str| match files::parse_instruments(text) {
             Ok(list) => {
-                for (name, abbr, clef) in list {
+                for (name, _, clef) in list {
                     let staves = clef.split('+').count();
                     let detail = format!("new · {}", if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") });
-                    let transposition = files::transposition_of(&name);
-                    d.rows.push(PlayerRow { slot: editor::PlayerSlot::New { name: name.clone(), abbr, clef, transposition }, name, detail });
+                    d.rows.push(PlayerRow { player: None, instruments: name, detail });
                 }
                 true
             }
@@ -1048,6 +1047,11 @@ impl App {
                     d.rows.remove(i);
                 }
             }
+            PlayersMsg::Edit(i, v) => {
+                if let Some(r) = d.rows.get_mut(i) {
+                    r.instruments = v;
+                }
+            }
             PlayersMsg::AddInput(v) => d.add = v,
             PlayersMsg::Add => {
                 let text = d.add.clone();
@@ -1060,7 +1064,19 @@ impl App {
             }
             PlayersMsg::Cancel => self.players = None,
             PlayersMsg::Apply => {
-                let slots: Vec<editor::PlayerSlot> = d.rows.iter().map(|r| r.slot.clone()).collect();
+                let mut slots = Vec::new();
+                for (k, r) in d.rows.iter().enumerate() {
+                    match files::parse_instrument_list(&r.instruments) {
+                        Ok(instruments) => slots.push(match r.player {
+                            Some(id) => editor::PlayerSlot::Keep { id, instruments },
+                            None => editor::PlayerSlot::New { instruments },
+                        }),
+                        Err(e) => {
+                            d.error = Some(format!("Player {}: {e}", k + 1));
+                            return;
+                        }
+                    }
+                }
                 match self.editor.set_players(&slots) {
                     Ok(()) => {
                         self.players = None;
@@ -1697,7 +1713,12 @@ fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
     let rows = column(d.rows.iter().enumerate().map(|(i, r)| {
         row![
             text(format!("{}", i + 1)).size(12).style(theme::dim).width(22),
-            column![text(&r.name).size(14), text(&r.detail).size(11).style(theme::dim)].spacing(1).width(Length::Fill),
+            column![
+                text_input("Instrument, then doublings: Flute, Piccolo", &r.instruments).on_input(move |v| Message::Players(PlayersMsg::Edit(i, v))).on_submit(Message::Players(PlayersMsg::Apply)).padding([3, 6]).size(14),
+                text(&r.detail).size(11).style(theme::dim)
+            ]
+            .spacing(2)
+            .width(Length::Fill),
             small("↑", "Move up", (i > 0).then_some(PlayersMsg::Move(i, -1))),
             small("↓", "Move down", (i + 1 < n).then_some(PlayersMsg::Move(i, 1))),
             small("✕", "Remove the player and its music", (n > 1).then_some(PlayersMsg::Remove(i))),
@@ -1724,8 +1745,8 @@ fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
     if let Some(e) = &d.error {
         card = card.push(text(e).size(12).style(theme::danger));
     }
-    card.push(text("In the score, top to bottom. Each player has its own staves and mixer track; removing one removes its music.").size(12).style(theme::dim))
-        .push(iced::widget::scrollable(rows).height(Length::Fixed((n.max(1) as f32 * 38.0).min(380.0))))
+    card.push(text("In the score, top to bottom. Retype an instrument to change it; add doublings after a comma (Flute, Piccolo). Removing a player removes its music.").size(12).style(theme::dim))
+        .push(iced::widget::scrollable(rows).height(Length::Fixed((n.max(1) as f32 * 52.0).min(400.0))))
         .push(
         row![
             panels::spacer(),
@@ -1787,6 +1808,7 @@ fn help_card() -> Element<'static, Message> {
                 ("H  Shift+H", "Crescendo, diminuendo"),
                 ("Shift+K  M  T", "Key, time, tempo"),
                 ("Shift+C", "Clef; 8va, 8vb, loco"),
+                ("Shift+I", "Instrument change (a doubling)"),
                 ("Shift+B  R", "Barline; ending, segno, D.C.…"),
                 ("Shift+X  P  O", "Expression, technique (ped), ornament"),
                 ("Shift+D", "Dynamic: pp, mf, sfz, fp…"),
@@ -2444,7 +2466,7 @@ mod tests {
         let _ = a.update(pl(PlayersMsg::Add));
         let d = a.players.as_ref().unwrap();
         assert!(d.error.is_none() && d.add.is_empty());
-        assert_eq!(d.rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["Flute", "Cello", "Piano", "Violin 1", "Violin 2"]);
+        assert_eq!(d.rows.iter().map(|r| r.instruments.as_str()).collect::<Vec<_>>(), ["Flute", "Cello", "Piano", "Violin 1", "Violin 2"]);
         // Remove the flute, put the piano first.
         let _ = a.update(pl(PlayersMsg::Remove(0)));
         let _ = a.update(pl(PlayersMsg::Move(1, -1)));
@@ -2464,7 +2486,7 @@ mod tests {
         for l in &m.lanes {
             assert_eq!(corinzia_edit::voice_end(&l.voices[0].events), m.length);
         }
-        assert_eq!(a.editor.status, "3 players added, 1 removed");
+        assert_eq!(a.editor.status, "3 players added, 1 player removed");
         // The new instruments play: on their own MIDI channels.
         let mut channels: Vec<u8> = a.editor.project.tracks.iter().map(|t| t.midi_channel).collect();
         channels.sort();
@@ -2480,6 +2502,104 @@ mod tests {
         let _ = a.update(pl(PlayersMsg::Apply));
         assert_eq!(a.players.as_ref().unwrap().error.as_deref(), Some("A score needs at least one player"));
         assert_eq!(players(&a), ["Flute", "Cello"]);
+    }
+
+    #[test]
+    fn players_change_instrument_and_take_up_doublings() {
+        let mut a = app(View::Page);
+        let pl = |m: PlayersMsg| Message::Players(m);
+        let flute = a.editor.project.players[0].id;
+        let flute_inst = a.editor.project.players[0].instruments[0];
+        let notes_before = a.editor.project.movements[0].lanes[0].voices[0].events.clone();
+        let track = a.editor.project.instrument(flute_inst).unwrap().track;
+        // Applying the list as it is changes nothing, not even the undo list.
+        let _ = a.update(pl(PlayersMsg::Open));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert_eq!(a.editor.status, "No changes to the players");
+        assert!(!a.editor.can_undo());
+        // The flute player becomes an oboist who doubles cor anglais.
+        let _ = a.update(pl(PlayersMsg::Open));
+        let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe, Cor anglais".into())));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert!(a.players.is_none(), "{:?}", a.players.as_ref().and_then(|d| d.error.clone()));
+        let p = &a.editor.project;
+        let player = p.player(flute).unwrap();
+        assert_eq!(player.instruments.len(), 2);
+        let oboe = p.instrument(player.instruments[0]).unwrap();
+        assert_eq!((oboe.id, oboe.name.as_str(), oboe.engraver_name.as_str()), (flute_inst, "Oboe", "Ob."), "the instrument changes in place");
+        assert_eq!(oboe.track, track, "keeping its track");
+        assert_eq!(p.track(track.unwrap()).unwrap().name, "Oboe");
+        let ca = p.instrument(player.instruments[1]).unwrap();
+        assert_eq!((ca.name.as_str(), ca.transposition), ("Cor anglais", corinzia_model::Interval::new(4, 7)));
+        assert!(ca.track.is_some() && ca.track != track, "a doubling sounds on its own track");
+        assert!(std::sync::Arc::ptr_eq(&a.editor.project.movements[0].lanes[0].voices[0].events, &notes_before), "the music stays");
+        assert_eq!(a.editor.status, "2 instruments changed");
+        assert_eq!(a.editor.project.tracks.len(), 3);
+        // Dropping the doubling takes its track.
+        let _ = a.update(pl(PlayersMsg::Open));
+        assert_eq!(a.players.as_ref().unwrap().rows[0].instruments, "Oboe, Cor anglais");
+        let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe".into())));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert_eq!(a.editor.project.player(flute).unwrap().instruments.len(), 1);
+        assert_eq!(a.editor.project.tracks.len(), 2);
+        // A row without an instrument is refused.
+        let _ = a.update(pl(PlayersMsg::Open));
+        let _ = a.update(pl(PlayersMsg::Edit(1, " ".into())));
+        let _ = a.update(pl(PlayersMsg::Apply));
+        assert_eq!(a.players.as_ref().unwrap().error.as_deref(), Some("Player 2: Each player needs an instrument"));
+    }
+
+    #[test]
+    fn an_instrument_change_switches_sound_clef_and_written_key() {
+        let mut a = app(View::Page);
+        let flute = a.editor.project.players[0].id;
+        // Bar 3 of the flute: change to clarinet (added as a doubling).
+        let m = a.editor.movement().unwrap();
+        let bar3 = corinzia_edit::bar_starts(m)[2];
+        let first_in_bar3 = m.lanes[0].voices[0].events.iter().find(|e| e.start >= bar3 && !e.is_rest()).unwrap().heads[0].id;
+        a.editor.select(Some(first_in_bar3));
+        a.editor.apply_popover(PopoverKind::Instrument, "clarinet").unwrap();
+        let p = &a.editor.project;
+        let insts = &p.player(flute).unwrap().instruments;
+        assert_eq!(insts.len(), 2);
+        let clarinet = p.instrument(insts[1]).unwrap();
+        assert_eq!(clarinet.name, "Clarinet in B♭");
+        let lane = &p.movements[0].lanes[0];
+        assert_eq!(lane.changes.len(), 2);
+        assert_eq!((lane.changes[1].at, lane.changes[1].instrument), (bar3, clarinet.id));
+        assert_eq!(a.editor.status, "Clarinet in B♭ · bar 3");
+        assert!(lane.clefs.is_empty(), "both treble: no clef change");
+        // Playback: notes from bar 3 sound on the clarinet's track.
+        let perf = corinzia_perform::perform(&p.movements[0]);
+        let flute_notes: Vec<_> = perf.notes.iter().filter(|n| insts.contains(&n.instrument)).collect();
+        assert!(flute_notes.iter().filter(|n| n.on_q < 8.0).all(|n| n.instrument == insts[0]));
+        assert!(flute_notes.iter().filter(|n| n.on_q >= 8.0).all(|n| n.instrument == clarinet.id));
+        assert!(flute_notes.iter().any(|n| n.on_q >= 8.0));
+        // Written pitch: the clarinet's bars show its key (D major in C).
+        let s = corinzia_model::notation::score_as(p, &p.movements[0], true);
+        assert_eq!(s.parts[0].key_shift, 0);
+        assert_eq!(s.parts[0].key_shifts, vec![(bar3, 2)]);
+        a.editor.transposed = true;
+        a.engrave();
+        assert!(!a.pages.is_empty());
+        // Back to the flute later, then to a bass-clef instrument: the clef follows.
+        a.editor.select(None);
+        a.editor.range = None;
+        a.editor.caret_lane = 0;
+        a.editor.caret = corinzia_edit::bar_starts(a.editor.movement().unwrap())[5];
+        a.editor.apply_popover(PopoverKind::Instrument, "Bass clarinet").unwrap();
+        let lane = &a.editor.project.movements[0].lanes[0];
+        assert_eq!(lane.clefs.len(), 1);
+        assert_eq!(lane.clefs[0].clef, "bass");
+        // Empty text removes the change at the caret.
+        a.editor.apply_popover(PopoverKind::Instrument, "").unwrap();
+        assert_eq!(a.editor.project.movements[0].lanes[0].changes.len(), 2);
+        assert!(a.editor.apply_popover(PopoverKind::Instrument, "").is_err());
+        // One undo step each.
+        a.editor.undo();
+        a.editor.undo();
+        a.editor.undo();
+        assert_eq!(a.editor.project.player(flute).unwrap().instruments.len(), 1);
     }
 
     #[test]

@@ -174,6 +174,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             'c' if !input_mode => Some(PopoverKind::Clef),
             'b' if !input_mode => Some(PopoverKind::Barline),
             'r' if !input_mode => Some(PopoverKind::Ending),
+            'i' => Some(PopoverKind::Instrument),
             _ => None,
         };
         if let Some(p) = pop {

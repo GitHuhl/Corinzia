@@ -691,3 +691,21 @@ fn nested_and_cross_staff_slurs() {
     let (top0, top1) = (l.staves.iter().find(|x| x.part == 0).unwrap().top, l.staves.iter().find(|x| x.part == 1).unwrap().top);
     assert!(c.0.y > top1 - 3.0 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
 }
+
+#[test]
+fn a_staff_whose_key_shift_changes_shows_its_new_key() {
+    // Two staves in C; from bar 3 the first is a B-flat clarinet (D major
+    // written): two sharps there, on that staff only.
+    let mut s = score(&[("treble", &["c''1 d'' e'' f''"]), ("bass", &["c1 d e f"])], (4, 4), 0);
+    s.parts[0].key_shifts = vec![(corinzia_score::Frac::int(2), 2)];
+    let l = layout_line(&s, &Options::default());
+    let sharps = glyphs(&l, Glyph::Sharp);
+    assert_eq!(sharps.len(), 2, "{sharps:?}");
+    assert!(sharps.iter().all(|s| s.1 < 4.5), "on the top staff");
+    let heads = glyphs(&l, Glyph::NoteheadWhole);
+    assert!(sharps.iter().all(|s| s.0 > heads[1].0 && s.0 < heads[2].0), "before bar 3");
+    // E is then written without an accidental (F sharp would need none
+    // either, F natural gets one).
+    assert_eq!(glyphs(&l, Glyph::Natural).len(), 1);
+    preview("key-shift-change", &l);
+}
