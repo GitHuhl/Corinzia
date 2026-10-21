@@ -86,6 +86,13 @@ PipeWire.
   E A D G). Structure → Tablature turns it on or off for any staff. Each note
   goes on the highest string that can play it, and the string line breaks
   around the fret number.
+* **MusicXML round trip:** a player's staves export as one part (`<staves>`,
+  cross-staff notes by `<staff>`). Export and import also carry hand-set
+  beams (`<beam>`, compared with Corinzia's own grouping), grouped meters
+  ("2+2+3"), cue notes, system and page breaks, instrument changes (one
+  `<score-instrument>` each), drum sets (unpitched notes, noteheads and
+  their sounds), guitar tunings (a TAB staff from another program becomes
+  the tuning), and the subtitle, lyricist, arranger and copyright.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

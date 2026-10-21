@@ -309,53 +309,13 @@ fn measures(s: &Score) -> Vec<Measure> {
 
 /// A bar's beam groups (in 1/den): the meter's own, else LilyPond's for
 /// 5/8 (3+2), 7/8 (2+2+3) and 8/8 (3+3+2); None: by `beam_beat`.
-fn beam_groups_of(m: &Measure) -> Option<Vec<u8>> {
-    let own: Vec<u8> = m.beams.iter().copied().take_while(|b| *b > 0).collect();
-    if !own.is_empty() {
-        return Some(own);
-    }
-    match (m.num, m.den) {
-        (5, 8) => Some(vec![3, 2]),
-        (7, 8) => Some(vec![2, 2, 3]),
-        (8, 8) => Some(vec![3, 3, 2]),
-        _ => None,
-    }
-}
-
 /// Which beam window of its bar a position (from the bar's written start)
 /// falls in: by the bar's groups, or windows of `uniform`.
 fn beam_window(m: &Measure, rel: Frac, uniform: Frac) -> i64 {
-    match beam_groups_of(m) {
-        Some(groups) => {
-            let mut edge = Frac::ZERO;
-            for (k, g) in groups.iter().enumerate() {
-                edge = edge + Frac::new(*g as i64, m.den);
-                if rel < edge {
-                    return k as i64;
-                }
-            }
-            groups.len() as i64
-        }
-        None => {
-            let r = rel * Frac::new(uniform.den, uniform.num);
-            r.num.div_euclid(r.den)
-        }
-    }
+    corinzia_score::beams::window(m.num, m.den, &m.beams, rel, uniform)
 }
 
-/// The beam grouping unit: dotted quarters in compound meters, halves in
-/// 2/2 and 3/2, pairs of eighths in other x/8 meters, else the beat.
-fn beam_beat(num: i64, den: i64) -> Frac {
-    if den == 8 && num % 3 == 0 {
-        Frac::new(3, 8)
-    } else if den <= 2 {
-        Frac::new(1, 2)
-    } else if den >= 8 {
-        Frac::new(2, den)
-    } else {
-        Frac::new(1, den)
-    }
-}
+use corinzia_score::beams::beam_beat;
 
 /// The beat rests are split on: the dotted quarter in compound meters,
 /// else the signature's unit.
@@ -944,11 +904,7 @@ impl<'a> Engraver<'a> {
     /// beams of eighths only span half a bar in 4/4 and the bar in 3/4.
     fn beam_groups(&mut self) -> Vec<Vec<usize>> {
         let beat_of = |m: &Measure| beam_beat(m.num, m.den);
-        let eighths_span = |m: &Measure| match (m.num, m.den) {
-            (4, 4) => Some(Frac::new(1, 2)),
-            (3, 4) => Some(Frac::new(3, 4)),
-            _ => None,
-        };
+        let eighths_span = |m: &Measure| corinzia_score::beams::eighths_span(m.num, m.den);
         // Notes in the same window of `span` (per voice and bar) share a
         // beam; beams set by hand break, join or leave notes out.
         let group = |this: &Self, idx: &[usize], span: &dyn Fn(&Measure) -> Frac| -> Vec<Vec<usize>> {

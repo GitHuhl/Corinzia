@@ -16,7 +16,8 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Shown, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo,
+    RehearsalMark, Shown, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo, Break, DrumSound, Notehead,
+    default_drums,
 };
 use corinzia_score::score::{art, span, Lyric, Slur};
 use corinzia_score::Frac;
@@ -104,6 +105,7 @@ fn clef_name(c: Node) -> String {
         ("C", 4, _) => "tenor",
         ("C", _, _) => "alto",
         ("percussion", _, _) => "percussion",
+        ("TAB", _, _) => "tab",
         _ => "treble",
     }
     .to_string()
@@ -156,6 +158,10 @@ fn harmony_text(h: Node) -> Option<String> {
     Some(s)
 }
 
+/// A note's beam as written: (voice, bar, position in the bar, beams of
+/// its value, its first `<beam>`, event).
+type BeamMark = (String, usize, Frac, u32, Option<String>, Id);
+
 /// One staff's music while reading: events per MusicXML voice.
 #[derive(Default)]
 struct StaffMusic {
@@ -178,6 +184,11 @@ struct StaffMusic {
     /// Dynamics and hairpins waiting for the next event at or after a time.
     dynamics: Vec<(Frac, u8)>,
     wedges: Vec<(Frac, u8)>,
+    /// Beams as written: (voice, bar, position in the bar, beams of the
+    /// note's value, its first `<beam>`, event).
+    beam_marks: Vec<BeamMark>,
+    /// Strings of a tablature staff (line from the bottom, MIDI key).
+    tuning: Vec<(i64, u8)>,
 }
 
 /// A <slur> mark: (time, staff and voice, note, start?, number, side).
@@ -218,6 +229,8 @@ impl PartSlurs {
 struct PartInfo {
     name: String,
     abbr: String,
+    /// `<score-instrument>`s: (id, name, MIDI key of an unpitched sound).
+    instruments: Vec<(String, String, Option<u8>)>,
 }
 
 /// Parses a `score-partwise` document.
@@ -239,6 +252,13 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         .and_then(|c| c.text())
         .map(|t| t.trim().to_string())
         .unwrap_or_default();
+    if let Some(ident) = child(root, "identification") {
+        let creator = |kind: &str| children(ident, "creator").find(|c| c.attribute("type") == Some(kind)).and_then(|c| c.text()).map(|t| t.trim().to_string());
+        p.lyricist = creator("lyricist").unwrap_or_default();
+        p.arranger = creator("arranger").unwrap_or_default();
+        p.copyright = text_of(ident, "rights").unwrap_or_default();
+    }
+    p.subtitle = children(root, "credit").find(|c| text_of(*c, "credit-type").as_deref() == Some("subtitle")).and_then(|c| text_of(c, "credit-words")).unwrap_or_default();
     let movement_title = text_of(root, "movement-title").filter(|t| Some(t) != Some(&p.title)).unwrap_or_default();
 
     // Part names.
@@ -248,7 +268,14 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
             let id = sp.attribute("id").unwrap_or_default().to_string();
             let name = text_of(sp, "part-name").filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone());
             let abbr = text_of(sp, "part-abbreviation").unwrap_or_default();
-            info.insert(id, PartInfo { name, abbr });
+            let instruments = children(sp, "score-instrument")
+                .map(|si| {
+                    let iid = si.attribute("id").unwrap_or_default().to_string();
+                    let key = children(sp, "midi-instrument").find(|mi| mi.attribute("id") == Some(iid.as_str())).and_then(|mi| int(mi, "midi-unpitched")).map(|k| (k - 1).clamp(0, 127) as u8);
+                    (iid, text_of(si, "instrument-name").unwrap_or_default(), key)
+                })
+                .collect();
+            info.insert(id, PartInfo { name, abbr, instruments });
         }
     }
     let parts: Vec<Node> = children(root, "part").collect();
@@ -282,7 +309,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                         }
                     }
                     "note" => {
-                        if child(e, "grace").is_some() || child(e, "cue").is_some() {
+                        if child(e, "grace").is_some() {
                             continue;
                         }
                         let d = Frac::new(int(e, "duration").unwrap_or(0), divisions * 4);
@@ -335,6 +362,28 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         // A transposing part is written: <transpose> says what turns its
         // written pitches into sounding ones.
         let mut to_concert = corinzia_model::Interval::default();
+        // Each voice's own staff: where most of its notes are. A voice's few
+        // notes on another staff are written there (cross-staff).
+        let mut counts: BTreeMap<(String, usize), usize> = BTreeMap::new();
+        for n in children(*part, "measure").flat_map(|m| children(m, "note")) {
+            let voice = text_of(n, "voice").unwrap_or_else(|| "1".into());
+            *counts.entry((voice, num::<usize>(n, "staff").unwrap_or(1).max(1) - 1)).or_default() += 1;
+        }
+        let home = |voice: &str, staff: usize| -> usize {
+            let mine: Vec<(usize, usize)> = counts.iter().filter(|((v, _), _)| v == voice).map(|((_, s), c)| (*s, *c)).collect();
+            let total: usize = mine.iter().map(|x| x.1).sum();
+            let here = mine.iter().find(|x| x.0 == staff).map_or(0, |x| x.1);
+            match mine.iter().max_by_key(|x| (x.1, std::cmp::Reverse(x.0))) {
+                Some(&(main, _)) if main != staff && here * 3 < total => main,
+                _ => staff,
+            }
+        };
+        let mut part_cross: Vec<(Id, i8)> = Vec::new();
+        let mut any_beams = false;
+        // Notes' instruments: (start, `<score-instrument>` id), and a
+        // percussion part's sounds: (position, instrument id, notehead).
+        let mut note_insts: Vec<(Frac, String)> = Vec::new();
+        let mut sounds: Vec<(Pitch, String, String)> = Vec::new();
         for (mi, m) in children(*part, "measure").enumerate() {
             let Some(&bar) = bar_starts.get(mi) else { break };
             let bar_end = bar_starts.get(mi + 1).copied().unwrap_or(end);
@@ -372,8 +421,23 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                                 if let (Some(b), Some(bt)) = (beats(t), int(t, "beat-type")) {
                                     let at = if mi == 0 { Frac::ZERO } else { bar };
                                     movement.meter.retain(|x| x.at != at);
-                                    movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false, beams: [0; 8] });
+                                    movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false, beams: beat_groups(t) });
                                 }
+                            }
+                        }
+                        for sd in children(e, "staff-details") {
+                            let staff = sd.attribute("number").and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
+                            while staves.len() <= staff {
+                                staves.push(StaffMusic::default());
+                            }
+                            for st in children(sd, "staff-tuning") {
+                                let step = text_of(st, "tuning-step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(0) as i8;
+                                let alter = int(st, "tuning-alter").unwrap_or(0) as i8;
+                                let octave = int(st, "tuning-octave").unwrap_or(2) as i8;
+                                let line = st.attribute("line").and_then(|l| l.parse::<i64>().ok()).unwrap_or(1);
+                                let key = Pitch { step, alter, octave }.midi_key().clamp(0, 127) as u8;
+                                staves[staff].tuning.retain(|x| x.0 != line);
+                                staves[staff].tuning.push((line, key));
                             }
                         }
                         for c in children(e, "clef") {
@@ -411,11 +475,14 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                             staves[staff].chords.push((at, t));
                         }
                     }
+                    "print" if first && mi > 0 => {
+                        let page = e.attribute("new-page") == Some("yes");
+                        if page || e.attribute("new-system") == Some("yes") {
+                            movement.breaks.push(Break { id: p.allocate_id(), at: bar, page, part: None });
+                        }
+                    }
                     "barline" if first => barline(e, bar, bar_end, &mut open_endings, &mut movement, &mut p),
                     "note" => {
-                        if child(e, "cue").is_some() {
-                            continue;
-                        }
                         if child(e, "grace").is_some() {
                             let staff = num::<usize>(e, "staff").unwrap_or(1).max(1) - 1;
                             while staves.len() <= staff {
@@ -435,20 +502,70 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                         if dur <= Frac::ZERO {
                             continue;
                         }
-                        let staff = num::<usize>(e, "staff").unwrap_or(1).max(1) - 1;
-                        while staves.len() <= staff {
+                        let written = num::<usize>(e, "staff").unwrap_or(1).max(1) - 1;
+                        let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
+                        let staff = home(&voice, written);
+                        while staves.len() <= staff.max(written) {
                             staves.push(StaffMusic::default());
                         }
-                        let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
                         if !chord {
                             tuplet_marks(e, start, dur, &voice, &mut staves[staff]);
                         }
-                        note(e, start, dur, chord, &mut staves[staff], staff, voice, to_concert, &mut slurs, &mut p);
+                        note(e, start, dur, chord, &mut staves[staff], staff, voice.clone(), to_concert, &mut slurs, &mut p);
+                        let rest = child(e, "rest").is_some();
+                        let id = staves[staff].voices.get(&voice).and_then(|v| v.last()).map(|ev| ev.id);
+                        if let (Some(id), false) = (id, rest) {
+                            if written != staff && !part_cross.iter().any(|c| c.0 == id) {
+                                part_cross.push((id, written as i8 - staff as i8));
+                            }
+                            if let Some(i) = child(e, "instrument").and_then(|i| i.attribute("id")) {
+                                if !chord {
+                                    note_insts.push((start, i.to_string()));
+                                }
+                                if let Some(pitch) = note_pitch(e, corinzia_model::Interval::default()).filter(|_| child(e, "unpitched").is_some()) {
+                                    sounds.push((pitch, i.to_string(), text_of(e, "notehead").unwrap_or_default()));
+                                }
+                            } else if let Some(pitch) = note_pitch(e, corinzia_model::Interval::default()).filter(|_| child(e, "unpitched").is_some()) {
+                                sounds.push((pitch, String::new(), text_of(e, "notehead").unwrap_or_default()));
+                            }
+                        }
+                        if let (Some(id), false) = (id, chord) {
+                            let beam = children(e, "beam").find(|b| b.attribute("number").unwrap_or("1") == "1").and_then(|b| b.text()).map(|t| t.trim().to_string());
+                            any_beams |= beam.is_some();
+                            let value = if rest { 0 } else { match text_of(e, "type").as_deref() {
+                                Some("eighth") => 1,
+                                Some("16th") => 2,
+                                Some("32nd") => 3,
+                                Some("64th" | "128th") => 4,
+                                _ => 0,
+                            } };
+                            staves[staff].beam_marks.push((voice, mi, start - bar, value, beam, id));
+                        }
                     }
                     _ => {}
                 }
             }
         }
+
+        // Beams as written, against the engraver's: where they differ, by hand.
+        if any_beams {
+            for st in staves.iter_mut() {
+                hand_beams(st, &bar_starts, &movement.meter, pickup.is_some());
+            }
+        }
+        // A tablature staff only repeats its notes: its strings go to the instrument.
+        let mut tuning: Vec<(i64, u8)> = staves.iter().flat_map(|st| st.tuning.iter().copied()).collect();
+        if staves.len() > 1 {
+            staves.retain(|st| st.clef.as_deref() != Some("tab"));
+            if staves.is_empty() {
+                staves.push(StaffMusic::default());
+            }
+        }
+        for st in staves.iter_mut().filter(|st| st.clef.as_deref() == Some("tab")) {
+            st.clef = Some("treble_8".into());
+        }
+        tuning.sort();
+        tuning.dedup_by_key(|t| t.0);
 
         // The part becomes a player, an instrument and a track; each staff a lane.
         let pinfo = info.get(pid);
@@ -457,8 +574,71 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         let clef0 = staves[0].clef.clone().unwrap_or_else(|| "treble".into());
         p.tracks.push(Track { id: track, name: name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: (pi % 16) as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track), drums: vec![], tuning: vec![] });
-        p.players.push(Player { id: player, name, instruments: vec![inst] });
+        let percussion = clef0 == "percussion";
+        let scored = pinfo.map(|i| i.instruments.clone()).unwrap_or_default();
+        // A drum set's sounds: each staff position used, named by its instrument.
+        let mut drums: Vec<DrumSound> = Vec::new();
+        if percussion {
+            for (pitch, iid, head) in &sounds {
+                if drums.iter().any(|d| d.position.diatonic() == pitch.diatonic()) {
+                    continue;
+                }
+                let si = scored.iter().find(|x| x.0 == *iid);
+                drums.push(DrumSound {
+                    name: si.map(|x| x.1.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Drum".into()),
+                    position: Pitch { alter: 0, ..*pitch },
+                    key: si.and_then(|x| x.2).unwrap_or(38),
+                    head: match head.as_str() {
+                        "x" | "cross" => Notehead::X,
+                        "circle-x" => Notehead::CircleX,
+                        "diamond" => Notehead::Diamond,
+                        "triangle" => Notehead::Triangle,
+                        _ => Notehead::Normal,
+                    },
+                });
+            }
+            if drums.is_empty() {
+                drums = default_drums(&name);
+            }
+        }
+        let tuning: Vec<u8> = tuning.iter().map(|t| t.1).collect();
+        let clef1 = clef0.clone();
+        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track), drums, tuning });
+        // Instrument changes: notes for another of the part's instruments.
+        let mut held = vec![inst];
+        let mut changes: Vec<(Frac, Id)> = Vec::new();
+        if !percussion && scored.len() > 1 {
+            note_insts.sort_by_key(|a| a.0);
+            let first_id = note_insts.first().map(|x| x.1.clone()).unwrap_or_default();
+            let mut ids: BTreeMap<String, Id> = BTreeMap::new();
+            ids.insert(first_id, inst);
+            let mut current = inst;
+            for (at, iid) in &note_insts {
+                let id = match ids.get(iid) {
+                    Some(&id) => id,
+                    None => {
+                        let iname = scored.iter().find(|x| x.0 == *iid).map(|x| x.1.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| iid.clone());
+                        let id = p.allocate_id();
+                        p.instruments.push(Instrument { id, player, name: iname, engraver_name: String::new(), transposition: to_concert.inverse(), clef: clef1.clone(), track: Some(track), drums: vec![], tuning: vec![] });
+                        held.push(id);
+                        ids.insert(iid.clone(), id);
+                        id
+                    }
+                };
+                if id != current {
+                    changes.push((*at, id));
+                    current = id;
+                }
+            }
+            // The words naming the new instrument become the change itself.
+            for &(at, id) in &changes {
+                let iname = p.instrument(id).map(|i| i.name.to_lowercase()).unwrap_or_default();
+                for st in staves.iter_mut() {
+                    st.texts.retain(|t| !(t.0 == at && t.1.to_lowercase() == iname));
+                }
+            }
+        }
+        p.players.push(Player { id: player, name, instruments: held });
         for mut staff in staves {
             // A staff starting in another clef than the instrument's (a
             // piano's left hand) gets it as a change at the start.
@@ -467,9 +647,13 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
             if own != inst_clef {
                 staff.clefs.insert(0, (Frac::ZERO, own));
             }
-            let lane = finish_staff(staff, player, inst, movement.length, &mut p);
+            let mut lane = finish_staff(staff, player, inst, movement.length, &mut p);
+            for &(at, instrument) in &changes {
+                lane.changes.push(InstrumentChange { id: p.allocate_id(), at, instrument });
+            }
             movement.lanes.push(lane);
         }
+        movement.cross.extend(part_cross.iter().copied());
         movement.slurs.extend(slurs.pair(&mut p));
     }
 
@@ -499,6 +683,86 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
     movement.id = p.allocate_id();
     p.movements.push(movement);
     Ok(p)
+}
+
+/// "2+2+3" beats: the groups (a single number: none).
+fn beat_groups(t: Node) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    let s = text_of(t, "beats").unwrap_or_default();
+    let parts: Vec<u8> = s.split('+').filter_map(|x| x.trim().parse::<u8>().ok()).collect();
+    if parts.len() > 1 {
+        for (o, g) in out.iter_mut().zip(parts) {
+            *o = g;
+        }
+    }
+    out
+}
+
+/// Beams written in the file, set by hand where they differ from the
+/// engraver's groups: a beam broken, joined across groups, or left out.
+fn hand_beams(st: &mut StaffMusic, bars: &[Frac], meters: &[Meter], pickup: bool) {
+    use corinzia_score::beams::{groups, BeamNote};
+    let mut keys: Vec<(String, usize)> = st.beam_marks.iter().map(|m| (m.0.clone(), m.1)).collect();
+    keys.sort();
+    keys.dedup();
+    let mut set: Vec<(Id, u8)> = Vec::new();
+    for (voice, bar) in keys {
+        if bar == 0 && pickup {
+            continue;
+        }
+        let Some(&start) = bars.get(bar) else { continue };
+        let Some(meter) = meters.iter().rfind(|m| m.at <= start) else { continue };
+        let mut marks: Vec<&BeamMark> = st.beam_marks.iter().filter(|m| m.0 == voice && m.1 == bar).collect();
+        marks.sort_by_key(|a| a.2);
+        let notes: Vec<BeamNote> = marks.iter().map(|m| BeamNote { rel: m.2, beams: m.3, rest: m.3 == 0, hand: 0, tuplet: None }).collect();
+        let auto = groups(meter.num, meter.den, &meter.beams, &notes);
+        let auto_of = |i: usize| auto.iter().position(|g| g.contains(&i));
+        // The file's groups: a "begin" starts one, "end" closes it.
+        let mut file_of: Vec<Option<usize>> = vec![None; marks.len()];
+        let mut g = 0;
+        let mut open = false;
+        for (i, m) in marks.iter().enumerate() {
+            match m.4.as_deref() {
+                Some("begin") => {
+                    g += 1;
+                    open = true;
+                    file_of[i] = Some(g);
+                }
+                Some("continue") if open => file_of[i] = Some(g),
+                Some("end") if open => {
+                    file_of[i] = Some(g);
+                    open = false;
+                }
+                _ => {}
+            }
+        }
+        for i in 0..marks.len() {
+            if notes[i].beams == 0 {
+                continue;
+            }
+            let prev_same_file = i > 0 && file_of[i].is_some() && file_of[i] == file_of[i - 1];
+            let prev_same_auto = i > 0 && auto_of(i).is_some() && auto_of(i) == auto_of(i - 1);
+            let bits = if file_of[i].is_none() && auto_of(i).is_some() {
+                span::NO_BEAM
+            } else if prev_same_file && !prev_same_auto {
+                span::BEAM_JOIN
+            } else if file_of[i].is_some() && !prev_same_file && prev_same_auto {
+                span::BEAM_BREAK
+            } else {
+                0
+            };
+            if bits != 0 {
+                set.push((marks[i].5, bits));
+            }
+        }
+    }
+    for v in st.voices.values_mut() {
+        for e in v.iter_mut() {
+            if let Some(&(_, bits)) = set.iter().find(|s| s.0 == e.id) {
+                e.spans = (e.spans & !span::BEAMS) | bits;
+            }
+        }
+    }
 }
 
 /// `<beats>` may be "3+2": the sum.
@@ -735,7 +999,7 @@ fn note(e: Node, start: Frac, dur: Frac, chord: bool, staff: &mut StaffMusic, st
     let pitch = note_pitch(e, to_concert);
     let tie = children(e, "tie").any(|t| t.attribute("type") == Some("start"))
         || child(e, "notations").is_some_and(|n| children(n, "tied").any(|t| t.attribute("type") == Some("start")));
-    let mut arts = 0u16;
+    let mut arts = if child(e, "cue").is_some() { art::CUE } else { 0u16 };
     let mut finger: Option<u8> = None;
     let mut slur_marks: Vec<(bool, u8, i8)> = Vec::new();
     // Every <notations> of the note (some files split them).

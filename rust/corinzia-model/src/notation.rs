@@ -244,6 +244,8 @@ fn score_for(project: &Project, m: &Movement, transposed: bool, part: bool) -> s
                     })
                     .collect(),
                 tab: first.map(|i| i.tuning.clone()).unwrap_or_default(),
+                drums: first.map(|i| i.drums.iter().map(|d| (d.position.diatonic(), d.name.clone(), d.key)).collect()).unwrap_or_default(),
+                instruments: lane.changes.iter().filter_map(|c| Some((c.at, project.instrument(c.instrument)?.name.clone()))).collect(),
                 cross: m.cross.iter().filter(|c| lane.voices.iter().any(|v| v.events.iter().any(|e| e.id == c.0))).copied().collect(),
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
                 key_shifts: {
@@ -317,6 +319,9 @@ fn numbered(name: &str) -> (&str, &str) {
     if stem.len() == t.len() { (t, "") } else { (stem.trim_end(), &t[stem.len()..]) }
 }
 
+/// A note of a bar, to compare players: (start, length, pitches).
+type BarNote = (corinzia_score::Frac, corinzia_score::Frac, Vec<(u8, i8, i8)>);
+
 /// Bar starts of a score, and its end.
 fn bar_starts(s: &sc::Score) -> Vec<corinzia_score::Frac> {
     let mut out = vec![corinzia_score::Frac::ZERO];
@@ -362,7 +367,7 @@ pub fn condense(s: &mut sc::Score) -> Vec<usize> {
         p.abbr = if aa.0.is_empty() { String::new() } else { format!("{} {}", aa.0, nums(aa.1, ab.1)) };
         let va: Vec<&sc::Event> = a.voices.iter().flat_map(|v| v.events.iter()).collect();
         let vb: Vec<&sc::Event> = b.voices.iter().flat_map(|v| v.events.iter()).collect();
-        let in_bar = |evs: &[&sc::Event], from: corinzia_score::Frac, to: corinzia_score::Frac| -> Option<Vec<(corinzia_score::Frac, corinzia_score::Frac, Vec<(u8, i8, i8)>)>> {
+        let in_bar = |evs: &[&sc::Event], from: corinzia_score::Frac, to: corinzia_score::Frac| -> Option<Vec<BarNote>> {
             let mut out = Vec::new();
             for e in evs.iter().filter(|e| e.start < to && e.start + e.dur > from) {
                 if e.start < from || e.start + e.dur > to {

@@ -243,6 +243,10 @@ pub struct Part {
     /// A tablature staff under this one: open strings (MIDI keys, lowest
     /// first); empty for none.
     pub tab: Vec<u8>,
+    /// A percussion staff's sounds: (diatonic position, name, MIDI key).
+    pub drums: Vec<(i32, String, u8)>,
+    /// The instruments the staff's player holds from when on (the first at 0).
+    pub instruments: Vec<(Frac, String)>,
     /// The instrument's transposition as (diatonic steps, semitones),
     /// written minus sounding: (1, 2) for a B♭ clarinet.
     pub transposition: (i32, i32),

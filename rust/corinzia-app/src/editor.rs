@@ -3927,4 +3927,92 @@ mod tests {
         e.undo();
         assert!(e.project.instruments[1].tuning.is_empty());
     }
+
+    #[test]
+    fn musicxml_round_trip_keeps_the_newer_notation() {
+        let mut p = crate::files::new_project("RT", "Flute, Piano, Drum set, Electric guitar", 4).unwrap();
+        p.subtitle = "for four".into();
+        p.lyricist = "Words: A".into();
+        p.arranger = "arr. B".into();
+        p.copyright = "© C".into();
+        let mut e = Editor::new(p);
+        let fill = |e: &mut Editor, lane: usize, from: Frac, steps: &[i32], eighths: bool| {
+            e.select(None);
+            e.set_input_mode(true);
+            e.caret_lane = lane;
+            e.caret = from;
+            e.spec.base = if eighths { edit::BaseDuration::Eighth } else { edit::BaseDuration::Quarter };
+            for &s in steps {
+                e.enter_note(s, false);
+            }
+            e.set_input_mode(false);
+        };
+        // Flute: eighths in bar 1 (a beam broken by hand, one flagged), quarters in bar 3.
+        fill(&mut e, 0, Frac::ZERO, &[0, 1, 2, 3, 4, 3, 2, 1], true);
+        fill(&mut e, 0, f(2, 1), &[4, 4, 4, 4], false);
+        // Piano: quarters in bar 1, the second written on the left hand's staff.
+        fill(&mut e, 1, Frac::ZERO, &[0, 1, 2, 3], false);
+        // Drums: snare (C5) and kick (F4); guitar: a cue of the flute in bar 2.
+        fill(&mut e, 3, Frac::ZERO, &[0, 3], false);
+        fill(&mut e, 4, f(1, 1), &[4, 5, 6, 0], false);
+        let piccolo_at = f(2, 1);
+        {
+            let p = &mut e.project;
+            let flute_player = p.players[0].id;
+            let picc = p.allocate_id();
+            let track = p.instruments[0].track;
+            p.instruments.push(Instrument { id: picc, player: flute_player, name: "Piccolo".into(), engraver_name: "Picc.".into(), transposition: Default::default(), clef: "treble".into(), track, drums: vec![], tuning: vec![] });
+            p.players[0].instruments.push(picc);
+            let m = &mut p.movements[0];
+            m.lanes[0].changes.push(InstrumentChange { id: 9001, at: piccolo_at, instrument: picc });
+            let mut flute = (*m.lanes[0].voices[0].events).clone();
+            flute[2].spans |= span::BEAM_BREAK;
+            flute[7].spans |= span::NO_BEAM;
+            m.lanes[0].voices[0].events = Arc::new(flute);
+            let second = m.lanes[1].voices[0].events[1].id;
+            m.cross.push((second, 1));
+            let mut gtr = (*m.lanes[4].voices[0].events).clone();
+            for ev in gtr.iter_mut().filter(|x| !x.is_rest()) {
+                ev.articulations |= art::CUE;
+            }
+            m.lanes[4].voices[0].events = Arc::new(gtr);
+            m.breaks = vec![Break { id: 9002, at: f(1, 1), page: false, part: None }, Break { id: 9003, at: f(2, 1), page: true, part: None }];
+            m.meter.push(Meter { at: f(3, 1), num: 7, den: 8, pickup: false, beams: [2, 2, 3, 0, 0, 0, 0, 0] });
+        }
+        let p = &e.project;
+        let xml = corinzia_perform::musicxml(p, &p.movements[0]).unwrap();
+        assert!(xml.contains("<staves>2</staves>"), "the piano is one part");
+        let q = corinzia_import::musicxml(xml.as_bytes()).unwrap();
+        let (a, b) = (&p.movements[0], &q.movements[0]);
+        assert_eq!((q.subtitle.as_str(), q.lyricist.as_str(), q.arranger.as_str(), q.copyright.as_str()), ("for four", "Words: A", "arr. B", "© C"));
+        assert_eq!(q.players.len(), 4, "{:?}", q.players.iter().map(|p| &p.name).collect::<Vec<_>>());
+        assert_eq!(b.lanes.len(), 5);
+        let clef_of = |m: &Movement, li: usize| m.lanes[li].clefs.iter().find(|c| c.at.is_zero()).map(|c| c.clef.clone()).unwrap_or_default();
+        assert_eq!(clef_of(b, 2), "bass", "the left hand");
+        // Beams by hand.
+        let spans = |m: &Movement| m.lanes[0].voices[0].events.iter().map(|x| x.spans & span::BEAMS).collect::<Vec<_>>();
+        assert_eq!((spans(a)[2], spans(a)[7]), (span::BEAM_BREAK, span::NO_BEAM));
+        assert_eq!(spans(b)[..8], spans(a)[..8]);
+        if let Ok(path) = std::env::var("RT_XML") {
+            std::fs::write(path, &xml).unwrap();
+        }
+        // The doubling.
+        let change = b.lanes[0].changes.iter().find(|c| c.at == piccolo_at).expect("a change to the piccolo");
+        assert_eq!(q.instrument(change.instrument).unwrap().name, "Piccolo");
+        assert!(!b.lanes[0].texts.iter().any(|t| t.text == "Piccolo"), "the change is not also a text");
+        // Cross-staff.
+        let second = b.lanes[1].voices[0].events[1].id;
+        assert_eq!(b.cross, [(second, 1)]);
+        // Drums: their map and noteheads.
+        let kit = q.instrument(b.lanes[3].changes[0].instrument).unwrap();
+        let snare = kit.drums.iter().find(|d| d.position == Pitch { step: 0, alter: 0, octave: 5 }).unwrap();
+        assert_eq!((snare.name.as_str(), snare.key), ("Snare drum", 38));
+        assert_eq!(kit.clef, "percussion");
+        // Cue notes, the guitar's tuning, breaks and the grouped meter.
+        assert!(b.lanes[4].voices[0].events.iter().filter(|x| !x.is_rest()).all(|x| x.articulations & art::CUE != 0));
+        assert_eq!(b.lanes[4].voices[0].events.iter().filter(|x| !x.is_rest()).count(), 4);
+        assert_eq!(q.instrument(b.lanes[4].changes[0].instrument).unwrap().tuning, GUITAR_TUNING);
+        assert_eq!(b.breaks.iter().map(|x| (x.at, x.page)).collect::<Vec<_>>(), [(f(1, 1), false), (f(2, 1), true)]);
+        assert_eq!(b.meter.iter().find(|m| m.at == f(3, 1)).map(|m| m.beams), Some([2, 2, 3, 0, 0, 0, 0, 0]));
+    }
 }
