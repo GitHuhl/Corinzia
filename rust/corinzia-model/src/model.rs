@@ -577,6 +577,36 @@ pub struct Track {
     pub pan: f64,
     pub mute: bool,
     pub solo: bool,
+    /// Effect plugins after the instrument, in order (audio node ids).
+    pub inserts: Vec<Id>,
+    /// Post-fader sends to buses.
+    pub sends: Vec<SendLevel>,
+}
+
+/// A track's send: how much of it goes to a bus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SendLevel {
+    pub bus: Id,
+    pub gain_db: f64,
+}
+
+/// An effects bus (a reverb return): fed by tracks' sends or outputs, its
+/// own effects and fader, into the master.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bus {
+    pub id: Id,
+    pub name: String,
+    pub inserts: Vec<Id>,
+    pub gain_db: f64,
+    pub pan: f64,
+    pub mute: bool,
+}
+
+/// The master channel: every track and bus ends here.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Master {
+    pub inserts: Vec<Id>,
+    pub gain_db: f64,
 }
 
 /// An audio-graph node: a plugin, a bus, or the master output.
@@ -626,6 +656,8 @@ pub struct Project {
     pub players: Vec<Player>,
     pub instruments: Vec<Instrument>,
     pub tracks: Vec<Track>,
+    pub buses: Vec<Bus>,
+    pub master: Master,
     pub movements: Vec<Movement>,
     /// The audio graph and the state chunks of its plugin nodes.
     pub nodes: Vec<AudioNode>,
@@ -649,6 +681,8 @@ impl Default for Project {
             players: vec![],
             instruments: vec![],
             tracks: vec![],
+            buses: vec![],
+            master: Master::default(),
             movements: vec![],
             nodes: vec![],
             edges: vec![],
@@ -673,6 +707,9 @@ impl Project {
     }
     pub fn instrument(&self, id: Id) -> Option<&Instrument> {
         self.instruments.iter().find(|i| i.id == id)
+    }
+    pub fn bus(&self, id: Id) -> Option<&Bus> {
+        self.buses.iter().find(|b| b.id == id)
     }
     pub fn track(&self, id: Id) -> Option<&Track> {
         self.tracks.iter().find(|t| t.id == id)

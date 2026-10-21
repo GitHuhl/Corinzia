@@ -139,6 +139,8 @@ pub fn load(path: &Path) -> Result<Project> {
                 pan: r.get(7)?,
                 mute: r.get::<_, i64>(8)? != 0,
                 solo: r.get::<_, i64>(9)? != 0,
+                inserts: vec![],
+                sends: vec![],
             })
         })?;
         for t in rows {
@@ -188,6 +190,31 @@ pub fn load(path: &Path) -> Result<Project> {
         }
     }
 
+    // The mixer: effects, sends, buses and the master.
+    if let Some(m) = setting("mixer")? {
+        let ids = |v: &Value| -> Vec<Id> { v.as_array().into_iter().flatten().filter_map(|x| x.as_u64()).collect() };
+        for t in p.tracks.iter_mut() {
+            let tv = &m["tracks"][t.id.to_string()];
+            t.inserts = ids(&tv["inserts"]);
+            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
+        }
+        p.buses = m["buses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| {
+                Some(Bus {
+                    id: b["id"].as_u64()?,
+                    name: b["name"].as_str().unwrap_or("Bus").to_string(),
+                    inserts: ids(&b["inserts"]),
+                    gain_db: b["db"].as_f64().unwrap_or(0.0),
+                    pan: b["pan"].as_f64().unwrap_or(0.0),
+                    mute: b["mute"].as_bool().unwrap_or(false),
+                })
+            })
+            .collect();
+        p.master = Master { inserts: ids(&m["master"]["inserts"]), gain_db: m["master"]["db"].as_f64().unwrap_or(0.0) };
+    }
     // Fretted instruments' tunings, by instrument.
     if let Some(t) = setting("tunings")? {
         for i in p.instruments.iter_mut() {
@@ -517,8 +544,13 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .filter(|i| !i.drums.is_empty())
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
+    let mixer = json!({
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty()).map(|t| (t.id.to_string(), json!({"inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
+        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
+        "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
+    });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings))] {
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer)] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

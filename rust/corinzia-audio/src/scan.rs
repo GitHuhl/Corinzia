@@ -162,11 +162,12 @@ mod tests {
         };
         let paths = vec![dir.join("plugins")];
         let (infos, errors) = scan_with(&paths, Some(&cache), |p| fake(p, &mut probed));
-        assert_eq!((infos.len(), errors.len(), probed.len()), (2, 1, 2));
-        assert_eq!(infos[1].name, "Good");
+        let builtin = Library::builtin().plugins().len();
+        assert_eq!((infos.len(), errors.len(), probed.len()), (builtin + 1, 1, 2));
+        assert_eq!(infos[builtin].name, "Good");
         probed.clear();
         let (infos, errors) = scan_with(&paths, Some(&cache), |p| fake(p, &mut probed));
-        assert_eq!((infos.len(), errors.len(), probed.len()), (2, 1, 0), "all from the cache, the crash remembered");
+        assert_eq!((infos.len(), errors.len(), probed.len()), (builtin + 1, 1, 0), "all from the cache, the crash remembered");
         std::fs::write(&bad, b"changed").unwrap();
         let _ = scan_with(&paths, Some(&cache), |p| fake(p, &mut probed));
         assert_eq!(probed, [bad.clone()], "only the changed bundle");

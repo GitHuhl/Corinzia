@@ -70,6 +70,21 @@ pub struct Node {
     pub gain: f32, // linear
     pub pan: f32,  // -1..1
     pub audible: bool,
+    /// Effects after the instrument, in order.
+    pub inserts: Vec<Arc<Plugin>>,
+    /// The bus it goes to (an index into `Snapshot::buses`), else the master.
+    pub out: Option<u32>,
+    /// Post-fader sends: (bus index, linear gain).
+    pub sends: Vec<(u32, f32)>,
+}
+
+/// An effects bus: what tracks send it, through its effects and fader, to the master.
+pub struct BusStrip {
+    pub id: Id,
+    pub inserts: Vec<Arc<Plugin>>,
+    pub gain: f32,
+    pub pan: f32,
+    pub audible: bool,
 }
 
 pub struct Snapshot {
@@ -78,11 +93,22 @@ pub struct Snapshot {
     pub sections: Vec<Section>,
     pub notes: Vec<ScheduledNote>, // sorted by (at, offs first)
     pub nodes: Vec<Node>,
+    pub buses: Vec<BusStrip>,
+    pub master_inserts: Vec<Arc<Plugin>>,
+    pub master_gain: f32,
 }
 
 impl Snapshot {
     pub fn end(&self) -> i64 {
         self.sections.last().map(|s| s.end).unwrap_or(0)
+    }
+    /// Every plugin the plan runs: instruments, then effects.
+    pub fn plugins(&self) -> impl Iterator<Item = &Arc<Plugin>> {
+        self.nodes
+            .iter()
+            .flat_map(|n| std::iter::once(&n.plugin).chain(n.inserts.iter()))
+            .chain(self.buses.iter().flat_map(|b| b.inserts.iter()))
+            .chain(self.master_inserts.iter())
     }
     pub fn first_note_at_or_after(&self, s: i64) -> usize {
         self.notes.partition_point(|n| n.at < s)
@@ -122,6 +148,52 @@ impl Timeline {
 /// The fader's lowest value: at or below it a track is silent.
 pub const MIN_DB: f64 = -60.0;
 
+pub fn db_to_gain(db: f64) -> f32 {
+    if db <= MIN_DB {
+        0.0
+    } else {
+        10f32.powf(db as f32 / 20.0)
+    }
+}
+
+/// Buses' levels: (bus, linear gain, pan, audible).
+pub fn bus_mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
+    project.buses.iter().map(|b| (b.id, db_to_gain(b.gain_db), b.pan.clamp(-1.0, 1.0) as f32, !b.mute)).collect()
+}
+
+/// Sends' levels by track: (track, send index, linear gain).
+pub fn send_mix(project: &Project) -> Vec<(Id, usize, f32)> {
+    project.tracks.iter().flat_map(|t| t.sends.iter().enumerate().map(move |(i, s)| (t.id, i, db_to_gain(s.gain_db)))).collect()
+}
+
+/// What the plan's shape depends on (inserts, routing, bypass): a change
+/// needs a new plan, level changes do not.
+pub fn routing(project: &Project) -> String {
+    let fx = |ids: &[Id]| ids.iter().map(|n| format!("{n}{}", if project.node(*n).is_some_and(|x| x.bypassed) { "b" } else { "" })).collect::<Vec<_>>().join(",");
+    let mut s = String::new();
+    for t in &project.tracks {
+        s += &format!("t{}[{}]>{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| x.bus).collect::<Vec<_>>());
+    }
+    for b in &project.buses {
+        s += &format!("b{}[{}];", b.id, fx(&b.inserts));
+    }
+    s + &format!("m[{}]", fx(&project.master.inserts))
+}
+
+/// A plugin the plan needs: a track's instrument, or an effect node.
+pub enum Want {
+    Instrument(Id),
+    Effect(Id),
+}
+
+/// Builds the plan with instruments and effects from the pool.
+pub fn build_from_pool(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], pool: &mut crate::pool::PluginPool) -> Snapshot {
+    build_with(project, sample_rate, generation, movements, &mut |w| match w {
+        Want::Instrument(t) => pool.plugin_for(project, t),
+        Want::Effect(n) => pool.effect_for(project, n),
+    })
+}
+
 pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
     let any_solo = project.tracks.iter().any(|t| t.solo);
     project
@@ -134,13 +206,33 @@ pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
 
 /// Builds the plan. `plugins(track)` gives the activated plugin of a track.
 pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], mut plugins: impl FnMut(Id) -> Option<Arc<Plugin>>) -> Snapshot {
+    build_with(project, sample_rate, generation, movements, &mut |w| match w {
+        Want::Instrument(t) => plugins(t),
+        Want::Effect(_) => None,
+    })
+}
+
+fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>) -> Snapshot {
     const GAP_SECONDS: f64 = 2.0;
+    let effects = |ids: &[Id], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>| -> Vec<Arc<Plugin>> { ids.iter().filter_map(|&n| get(Want::Effect(n))).filter(|p| p.input_channels > 0).collect() };
+    let buses: Vec<BusStrip> = bus_mix(project)
+        .into_iter()
+        .map(|(id, gain, pan, audible)| BusStrip { id, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible })
+        .collect();
+    let bus_index = |id: Id| buses.iter().position(|b| b.id == id).map(|i| i as u32);
     let mut nodes: Vec<Node> = Vec::new();
     for (track, gain, pan, audible) in mix(project) {
-        if let Some(plugin) = plugins(track) {
-            nodes.push(Node { track, plugin, gain, pan, audible });
+        if let Some(plugin) = get(Want::Instrument(track)) {
+            let t = project.track(track);
+            let inserts = effects(&t.map(|t| t.inserts.clone()).unwrap_or_default(), get);
+            let out = t.and_then(|t| t.output_bus).and_then(bus_index);
+            // Indices follow the track's sends (a send to a missing bus goes nowhere).
+            let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db))).collect()).unwrap_or_default();
+            nodes.push(Node { track, plugin, gain, pan, audible, inserts, out, sends });
         }
     }
+    let master_inserts = effects(&project.master.inserts, get);
+    let master_gain = db_to_gain(project.master.gain_db);
     let node_of = |track: Id| nodes.iter().position(|n| n.track == track).map(|i| i as u32);
     let mut sections = Vec::new();
     let mut notes = Vec::new();
@@ -171,5 +263,5 @@ pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[
     }
     // Offs before ons at the same sample: a repeated key restarts cleanly.
     notes.sort_by_key(|n| (n.at, n.on));
-    Snapshot { generation, sample_rate, sections, notes, nodes }
+    Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain }
 }

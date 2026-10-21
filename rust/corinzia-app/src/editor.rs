@@ -37,6 +37,9 @@ struct Clip {
 
 const UNDO_LIMIT: usize = 500;
 
+/// The master strip's id in mixer messages and effect chains.
+pub const MASTER: Id = Id::MAX;
+
 /// Rhythmic grid choices (whole-note fractions) and their labels.
 pub const GRIDS: [(i64, i64, &str); 5] = [(1, 4, "1/4"), (1, 8, "1/8"), (1, 16, "1/16"), (1, 32, "1/32"), (1, 12, "1/8T")];
 
@@ -200,7 +203,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     // A drum set starts with its map, and plays on the drum channel (10).
     let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
-    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
     p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
@@ -704,6 +707,138 @@ impl Editor {
         };
         self.status = format!("{} plays {name}", self.project.tracks[ti].name);
         self.commit_with(before, "Instrument plugin", true, None);
+    }
+
+    // -------------------------------------------------------------- mixer --
+    /// The effect chain of a strip: a track, a bus, or the master ([`MASTER`]).
+    fn inserts_mut(p: &mut Project, owner: Id) -> Option<&mut Vec<Id>> {
+        if owner == MASTER {
+            return Some(&mut p.master.inserts);
+        }
+        if let Some(t) = p.tracks.iter_mut().find(|t| t.id == owner) {
+            return Some(&mut t.inserts);
+        }
+        p.buses.iter_mut().find(|b| b.id == owner).map(|b| &mut b.inserts)
+    }
+
+    /// A strip's name: the track's, the bus's, or "Master".
+    pub fn strip_name(&self, owner: Id) -> String {
+        if owner == MASTER {
+            return "Master".into();
+        }
+        self.project.track(owner).map(|t| t.name.clone()).or_else(|| self.project.bus(owner).map(|b| b.name.clone())).unwrap_or_default()
+    }
+
+    /// Adds an effect (name, bundle, plugin id) at the end of a strip's chain.
+    pub fn add_insert(&mut self, owner: Id, name: &str, bundle: &str, plugin_id: &str) -> Option<Id> {
+        let before = self.snapshot();
+        let node = self.project.allocate_id();
+        Self::inserts_mut(&mut self.project, owner)?.push(node);
+        self.project.nodes.push(AudioNode { id: node, kind: NodeKind::Plugin, name: name.into(), bundle: bundle.into(), plugin_id: plugin_id.into(), bypassed: false });
+        self.status = format!("{name} on {}", self.strip_name(owner));
+        self.commit_with(before, "Add effect", false, None);
+        Some(node)
+    }
+
+    /// Takes an effect out of its strip (its node and state go).
+    pub fn remove_insert(&mut self, owner: Id, node: Id) {
+        let before = self.snapshot();
+        let Some(list) = Self::inserts_mut(&mut self.project, owner) else { return };
+        list.retain(|n| *n != node);
+        let name = self.project.node(node).map(|n| n.name.clone()).unwrap_or_default();
+        self.project.nodes.retain(|n| n.id != node);
+        self.project.plugin_state.remove(&node);
+        self.status = format!("{name} removed");
+        self.commit_with(before, "Remove effect", false, None);
+    }
+
+    /// Moves an effect earlier (-1) or later (+1) in its chain.
+    pub fn move_insert(&mut self, owner: Id, node: Id, by: i32) {
+        let before = self.snapshot();
+        let Some(list) = Self::inserts_mut(&mut self.project, owner) else { return };
+        let Some(i) = list.iter().position(|n| *n == node) else { return };
+        let j = (i as i32 + by).clamp(0, list.len() as i32 - 1) as usize;
+        if i == j {
+            return;
+        }
+        list.swap(i, j);
+        self.commit_with(before, "Move effect", false, None);
+    }
+
+    /// Bypasses an effect, or brings it back.
+    pub fn toggle_bypass(&mut self, node: Id) {
+        let before = self.snapshot();
+        let Some(n) = self.project.nodes.iter_mut().find(|n| n.id == node) else { return };
+        n.bypassed = !n.bypassed;
+        self.status = format!("{} {}", n.name, if n.bypassed { "bypassed" } else { "back on" });
+        self.commit_with(before, "Bypass", false, None);
+    }
+
+    /// A new bus ("Bus 1", "Reverb"…), into the master.
+    pub fn add_bus(&mut self, name: &str) -> Id {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let name = if name.is_empty() { format!("Bus {}", self.project.buses.len() + 1) } else { name.to_string() };
+        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false });
+        self.status = format!("{name} added");
+        self.commit_with(before, "Add bus", false, None);
+        id
+    }
+
+    /// Removes a bus: tracks routed to it go to the master, sends to it go.
+    pub fn remove_bus(&mut self, bus: Id) {
+        let before = self.snapshot();
+        let Some(i) = self.project.buses.iter().position(|b| b.id == bus) else { return };
+        let b = self.project.buses.remove(i);
+        for n in &b.inserts {
+            self.project.nodes.retain(|x| x.id != *n);
+            self.project.plugin_state.remove(n);
+        }
+        for t in self.project.tracks.iter_mut() {
+            if t.output_bus == Some(bus) {
+                t.output_bus = None;
+            }
+            t.sends.retain(|s| s.bus != bus);
+        }
+        self.status = format!("{} removed", b.name);
+        self.commit_with(before, "Remove bus", false, None);
+    }
+
+    /// Where a track goes: a bus, or the master (`None`).
+    pub fn set_output(&mut self, track: Id, bus: Option<Id>) {
+        self.set_track(track, "Output", false, |t| t.output_bus = bus);
+    }
+
+    /// A send from a track to a bus (at -6 dB), or none when there is one.
+    pub fn toggle_send(&mut self, track: Id, bus: Id) {
+        self.set_track(track, "Send", false, |t| {
+            if t.sends.iter().any(|s| s.bus == bus) {
+                t.sends.retain(|s| s.bus != bus);
+            } else {
+                t.sends.push(SendLevel { bus, gain_db: -6.0 });
+            }
+        });
+    }
+
+    pub fn set_send(&mut self, track: Id, index: usize, db: f64) {
+        self.set_track(track, "Send level", true, |t| {
+            if let Some(s) = t.sends.get_mut(index) {
+                s.gain_db = db;
+            }
+        });
+    }
+
+    pub fn set_bus(&mut self, bus: Id, label: &str, merge: bool, f: impl FnOnce(&mut Bus)) {
+        let before = self.snapshot();
+        let Some(b) = self.project.buses.iter_mut().find(|b| b.id == bus) else { return };
+        f(b);
+        self.commit_with(before, label, false, merge.then_some(bus));
+    }
+
+    pub fn set_master_gain(&mut self, db: f64) {
+        let before = self.snapshot();
+        self.project.master.gain_db = db;
+        self.commit_with(before, "Master", false, Some(MASTER));
     }
 
     // ------------------------------------------------------------ players --

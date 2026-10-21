@@ -11,6 +11,7 @@
 //! plugin: a VST3 plugin translates the CLAP process call to its own.
 
 use clap_sys::entry::clap_plugin_entry;
+use clap_sys::events::*;
 use crate::gui;
 use clap_sys::ext::audio_ports::*;
 use clap_sys::ext::gui::*;
@@ -95,6 +96,32 @@ impl Format {
             Format::Clap => "CLAP",
             Format::Vst3 => "VST3",
         }
+    }
+}
+
+/// A plugin parameter (CLAP).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    pub stepped: bool,
+    pub automatable: bool,
+}
+
+/// A CLAP parameter-value event at a frame of the block.
+pub fn param_event(id: u32, value: f64, time: u32) -> clap_event_param_value {
+    clap_event_param_value {
+        header: clap_event_header { size: std::mem::size_of::<clap_event_param_value>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_PARAM_VALUE, flags: 0 },
+        param_id: id,
+        cookie: std::ptr::null_mut(),
+        note_id: -1,
+        port_index: -1,
+        channel: -1,
+        key: -1,
+        value,
     }
 }
 
@@ -403,10 +430,15 @@ pub struct Plugin {
     /// The note dialect the host sends: CLAP notes, or MIDI.
     pub midi_dialect: bool,
     pub output_channels: u32,
+    /// Channels of its main audio input: 0 for an instrument, else an effect.
+    pub input_channels: u32,
     /// Its timers and descriptors in the run loop.
     owner: gui::Owner,
     /// Main thread only (a Mutex because the plugin is shared with the audio thread).
     editor: Mutex<Option<Editor>>,
+    /// Parameter values set from the main thread, waiting for the next
+    /// block (the audio thread only ever try-locks it).
+    pending: Mutex<Vec<(u32, f64)>>,
     _lib: Arc<Library>, // last: the code stays mapped until the instance is gone
 }
 unsafe impl Send for Plugin {}
@@ -439,7 +471,8 @@ impl Plugin {
         if let LibraryKind::Vst3(m) = &lib.kind {
             let inst = m.create(id, &info.name, owner)?;
             let output_channels = inst.output_channels();
-            return Ok(Plugin { info, backend: Backend::Vst3(Box::new(inst)), active: AtomicBool::new(false), processing: AtomicBool::new(false), midi_dialect: false, output_channels, owner, editor: Mutex::new(None), _lib: lib.clone() });
+            let input_channels = inst.input_channels();
+            return Ok(Plugin { info, backend: Backend::Vst3(Box::new(inst)), active: AtomicBool::new(false), processing: AtomicBool::new(false), midi_dialect: false, output_channels, input_channels, owner, editor: Mutex::new(None), pending: Mutex::new(Vec::with_capacity(64)), _lib: lib.clone() });
         }
         let f = lib.factory().ok_or("no plugin factory")?;
         let mut host = Box::new(HostData {
@@ -489,8 +522,10 @@ impl Plugin {
                 processing: AtomicBool::new(false),
                 midi_dialect: false,
                 output_channels: 2,
+                input_channels: 0,
                 owner,
                 editor: Mutex::new(None),
+                pending: Mutex::new(Vec::with_capacity(64)),
                 _lib: lib.clone(),
             };
             plugin.query_ports();
@@ -522,10 +557,14 @@ impl Plugin {
                     }
                 }
             }
-            if let Some(ap) = self.extension::<clap_plugin_audio_ports>(CLAP_EXT_AUDIO_PORTS) {
+            if let Some(ap) = self.extension::<clap_plugin_audio_ports>(CLAP_EXT_AUDIO_PORTS).copied() {
                 let mut info: clap_audio_port_info = std::mem::zeroed();
                 if ap.count.is_some_and(|c| c(plugin, false) > 0) && ap.get.is_some_and(|g| g(plugin, 0, false, &mut info)) {
                     self.output_channels = info.channel_count.max(1);
+                }
+                let mut info: clap_audio_port_info = std::mem::zeroed();
+                if ap.count.is_some_and(|c| c(plugin, true) > 0) && ap.get.is_some_and(|g| g(plugin, 0, true, &mut info)) {
+                    self.input_channels = info.channel_count;
                 }
             }
         }
@@ -613,6 +652,101 @@ impl Plugin {
             let mut r = Reader(bytes, 0);
             let stream = clap_istream { ctx: &mut r as *mut Reader as *mut c_void, read: Some(read) };
             st.load.is_some_and(|l| l(c.plugin, &stream))
+        }
+    }
+
+    /// Main thread: the plugin's parameters (CLAP), hidden ones left out.
+    pub fn params(&self) -> Vec<ParamInfo> {
+        let Some(c) = self.clap() else { return vec![] };
+        unsafe {
+            let Some(pa) = self.extension::<clap_plugin_params>(CLAP_EXT_PARAMS) else { return vec![] };
+            let n = pa.count.map(|f| f(c.plugin)).unwrap_or(0);
+            (0..n)
+                .filter_map(|i| {
+                    let mut info: clap_param_info = std::mem::zeroed();
+                    if !pa.get_info?(c.plugin, i, &mut info) || info.flags & CLAP_PARAM_IS_HIDDEN != 0 {
+                        return None;
+                    }
+                    Some(ParamInfo {
+                        id: info.id,
+                        name: cstr(info.name.as_ptr()),
+                        min: info.min_value,
+                        max: info.max_value,
+                        default: info.default_value,
+                        stepped: info.flags & CLAP_PARAM_IS_STEPPED != 0,
+                        automatable: info.flags & CLAP_PARAM_IS_AUTOMATABLE != 0,
+                    })
+                })
+                .collect()
+        }
+    }
+
+    /// Main thread: a parameter's value (a pending change, else the plugin's).
+    pub fn param_value(&self, id: u32) -> Option<f64> {
+        if let Some(v) = self.pending.lock().ok().and_then(|q| q.iter().rev().find(|x| x.0 == id).map(|x| x.1)) {
+            return Some(v);
+        }
+        let c = self.clap()?;
+        unsafe {
+            let pa = self.extension::<clap_plugin_params>(CLAP_EXT_PARAMS)?;
+            let mut v = 0.0;
+            pa.get_value?(c.plugin, id, &mut v).then_some(v)
+        }
+    }
+
+    /// Main thread: a value as the plugin writes it ("-6.0 dB").
+    pub fn param_text(&self, id: u32, value: f64) -> String {
+        let fallback = || format!("{value:.2}");
+        let Some(c) = self.clap() else { return fallback() };
+        unsafe {
+            let Some(pa) = self.extension::<clap_plugin_params>(CLAP_EXT_PARAMS) else { return fallback() };
+            let mut buf = [0 as c_char; 64];
+            match pa.value_to_text {
+                Some(f) if f(c.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) => cstr(buf.as_ptr()),
+                _ => fallback(),
+            }
+        }
+    }
+
+    /// Main thread: sets a parameter. While the plugin processes, the
+    /// change goes with its next block; otherwise it is flushed now.
+    pub fn set_param(&self, id: u32, value: f64) {
+        if self.is_processing() {
+            if let Ok(mut q) = self.pending.lock() {
+                q.retain(|x| x.0 != id);
+                q.push((id, value));
+            }
+            return;
+        }
+        let Some(c) = self.clap() else { return };
+        unsafe {
+            let Some(pa) = self.extension::<clap_plugin_params>(CLAP_EXT_PARAMS) else { return };
+            let Some(flush) = pa.flush else { return };
+            let ev = param_event(id, value, 0);
+            struct One(clap_event_param_value);
+            unsafe extern "C" fn size(_l: *const clap_input_events) -> u32 {
+                1
+            }
+            unsafe extern "C" fn get(l: *const clap_input_events, _i: u32) -> *const clap_event_header {
+                &(*((*l).ctx as *const One)).0.header
+            }
+            unsafe extern "C" fn push(_l: *const clap_output_events, _e: *const clap_event_header) -> bool {
+                true
+            }
+            let one = One(ev);
+            let input = clap_input_events { ctx: &one as *const One as *mut c_void, size: Some(size), get: Some(get) };
+            let output = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(push) };
+            flush(c.plugin, &input, &output);
+        }
+    }
+
+    /// Audio thread: hands the waiting parameter changes to `f` (never
+    /// blocks: if the main thread holds the queue, they wait a block).
+    pub fn rt_take_params(&self, mut f: impl FnMut(u32, f64)) {
+        if let Ok(mut q) = self.pending.try_lock() {
+            for (id, v) in q.drain(..) {
+                f(id, v);
+            }
         }
     }
 

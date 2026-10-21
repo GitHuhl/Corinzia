@@ -384,6 +384,11 @@ impl Instance {
         }
     }
 
+    /// Channels of the main audio input (0: an instrument).
+    pub fn input_channels(&self) -> u32 {
+        self.in_channels.first().copied().unwrap_or(0).max(0) as u32
+    }
+
     pub fn output_channels(&self) -> u32 {
         self.out_channels.first().copied().unwrap_or(2).max(1) as u32
     }
@@ -539,9 +544,15 @@ impl Instance {
         if let Some(c) = main.get_mut(1) {
             *c = right;
         }
-        for bus in &rt.in_ptrs {
-            for &c in bus {
-                std::slice::from_raw_parts_mut(c, frames as usize).fill(0.0);
+        // The main input takes the engine's audio (an effect's signal); the rest is silent.
+        let given = if p.audio_inputs.is_null() || p.audio_inputs_count == 0 { None } else { Some(&*p.audio_inputs) };
+        for (bi, bus) in rt.in_ptrs.iter().enumerate() {
+            for (ci, &c) in bus.iter().enumerate() {
+                let dst = std::slice::from_raw_parts_mut(c, frames as usize);
+                match given.filter(|g| bi == 0 && g.channel_count > 0) {
+                    Some(g) => dst.copy_from_slice(std::slice::from_raw_parts(*g.data32.add(ci.min(g.channel_count as usize - 1)), frames as usize)),
+                    None => dst.fill(0.0),
+                }
             }
         }
         for b in rt.inputs.iter_mut().chain(rt.outputs.iter_mut()) {

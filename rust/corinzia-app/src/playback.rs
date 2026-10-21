@@ -22,6 +22,9 @@ pub struct Playback {
     /// Track of each node of the current plan.
     node_tracks: Vec<Id>,
     built: Option<u64>,  // music revision of the plan
+    routing: String,     // the routing the plan was built for (see `snapshot::routing`)
+    /// Bus of each bus strip of the plan.
+    plan_buses: Vec<Id>,
     mixed: Option<u64>,  // revision whose mixer settings were sent
     generation: u64,
     previews: Vec<(Instant, u32, i16)>,
@@ -67,6 +70,8 @@ impl Playback {
             timeline: Timeline::default(),
             node_tracks: Vec::new(),
             built: None,
+            routing: String::new(),
+            plan_buses: Vec::new(),
             mixed: None,
             generation: 0,
             previews: Vec::new(),
@@ -80,15 +85,17 @@ impl Playback {
 
     /// Keeps the plan in step: rebuild on music changes, else send the mixer.
     pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64) {
-        if self.built != Some(music_revision) {
+        let routing = snapshot::routing(project);
+        if self.built != Some(music_revision) || routing != self.routing {
             self.built = Some(music_revision);
+            self.routing = routing;
             self.mixed = Some(revision);
             self.generation += 1;
             self.pool.retain_tracks(project);
             let movements: Vec<usize> = (0..project.movements.len()).collect();
-            let pool = &mut self.pool;
-            let snap = snapshot::build(project, self.sample_rate, self.generation, &movements, |t| pool.plugin_for(project, t));
+            let snap = snapshot::build_from_pool(project, self.sample_rate, self.generation, &movements, &mut self.pool);
             self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
+            self.plan_buses = snap.buses.iter().map(|b| b.id).collect();
             self.timeline = snap.timeline();
             self.handle.swap(snap);
         } else if self.mixed != Some(revision) {
@@ -98,7 +105,28 @@ impl Playback {
                     let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
                 }
             }
+            self.send_levels(project);
         }
+    }
+
+    /// Buses, sends and the master: their levels, live.
+    fn send_levels(&mut self, project: &Project) {
+        for (bus, gain, pan, audible) in snapshot::bus_mix(project) {
+            if let Some(i) = self.plan_buses.iter().position(|b| *b == bus) {
+                let _ = self.handle.send(Command::MixBus { bus: i as u32, gain, pan, audible });
+            }
+        }
+        for (track, index, gain) in snapshot::send_mix(project) {
+            if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
+                let _ = self.handle.send(Command::Send { node: node as u32, index: index as u32, gain });
+            }
+        }
+        let _ = self.handle.send(Command::Master { gain: snapshot::db_to_gain(project.master.gain_db) });
+    }
+
+    /// A bus's, a send's or the master's level while a control moves.
+    pub fn live_levels(&mut self, project: &Project) {
+        self.send_levels(project);
     }
 
     /// A live mixer value while a slider moves (committed separately).
