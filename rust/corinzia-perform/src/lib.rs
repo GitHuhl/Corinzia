@@ -544,6 +544,8 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
             Some(doc::Track {
                 name: t.name.clone(),
                 channel: t.midi_channel & 15,
+                program: t.program.map(|p| (p, t.bank)),
+                controls: vec![],
                 notes: notes
                     .iter()
                     .map(|n| {

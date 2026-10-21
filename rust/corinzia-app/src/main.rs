@@ -19,6 +19,7 @@ mod keys;
 mod mix;
 mod playback;
 mod prefs;
+mod presets;
 mod panels;
 mod score_view;
 mod theme;
@@ -249,6 +250,9 @@ struct App {
     tab: Tab,
     strip: Option<corinzia_model::Id>, // the Mix tab's selected strip
     fx: Option<corinzia_model::Id>,    // and its selected effect (audio node)
+    /// The presets of the plugin shown in the Mix tab, and the name being typed.
+    preset_names: Vec<String>,
+    preset_name: String,
     arrange: arrange::Content,
     arrange_cache: canvas::Cache,
     arrange_ppq: f32,
@@ -501,6 +505,8 @@ impl App {
             tab: Tab::Score,
             strip: None,
             fx: None,
+            preset_names: Vec::new(),
+            preset_name: String::new(),
             arrange: arrange::Content::default(),
             arrange_cache: canvas::Cache::new(),
             arrange_ppq: 40.0,
@@ -1227,7 +1233,41 @@ impl App {
         };
     }
 
+    /// The plugin a preset target names, and its project node (where its state is kept).
+    fn preset_plugin(&self, t: mix::Target) -> Option<(std::sync::Arc<corinzia_audio::host::Plugin>, Option<corinzia_model::Id>)> {
+        match t {
+            mix::Target::Effect(n) => self.playback.pool.effect(n).cloned().map(|p| (p, Some(n))),
+            mix::Target::Track(id) => self.playback.pool.plugin_of_track(id).cloned().map(|p| (p, self.editor.project.track(id).and_then(|x| x.instrument_node))),
+        }
+    }
+
+    /// The presets of the plugin the Mix tab shows.
+    fn refresh_presets(&mut self) {
+        let target = match (self.fx, self.strip) {
+            (Some(n), _) => Some(mix::Target::Effect(n)),
+            (None, Some(t)) if self.editor.project.track(t).is_some() => Some(mix::Target::Track(t)),
+            _ => None,
+        };
+        self.preset_names = match (target.and_then(|t| self.preset_plugin(t)), Self::preset_base()) {
+            (Some((p, _)), Some(base)) => presets::list(&base, &p.info.id),
+            _ => vec![],
+        };
+    }
+
+    fn preset_base() -> Option<PathBuf> {
+        if cfg!(test) {
+            Some(std::env::temp_dir().join(format!("corinzia-test-presets-{}", std::process::id())))
+        } else {
+            presets::base()
+        }
+    }
+
     fn mix(&mut self, m: mix::MixMsg) {
+        self.mix_msg(m);
+        self.refresh_presets();
+    }
+
+    fn mix_msg(&mut self, m: mix::MixMsg) {
         use mix::MixMsg::*;
         match m {
             Select(t) => self.strip = Some(t),
@@ -1316,6 +1356,45 @@ impl App {
                 self.editor.set_output(t, bus);
             }
             ToggleSend(t, b) => self.editor.toggle_send(t, b),
+            PresetName(n) => self.preset_name = n,
+            SavePreset(target) => {
+                let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                let Some(state) = pl.save_state() else {
+                    self.editor.status = format!("{} cannot save its state", pl.info.name);
+                    return;
+                };
+                match presets::save(&base, &pl.info.id, &self.preset_name, &state) {
+                    Ok(name) => {
+                        self.editor.status = format!("Preset {name} saved for {}", pl.info.name);
+                        self.preset_name.clear();
+                    }
+                    Err(e) => self.editor.status = e,
+                }
+            }
+            LoadPreset(target, name) => {
+                let (Some((pl, node)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                match presets::load(&base, &pl.info.id, &name) {
+                    Ok(state) if pl.load_state(&state) => {
+                        if let Some(n) = node {
+                            self.editor.project.plugin_state.insert(n, std::sync::Arc::new(state));
+                            self.editor.modified = true;
+                        }
+                        self.editor.status = format!("{}: {name}", pl.info.name);
+                    }
+                    Ok(_) => self.editor.status = format!("{} did not accept the preset {name}", pl.info.name),
+                    Err(e) => self.editor.status = e,
+                }
+            }
+            DeletePreset(target, name) => {
+                let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                if let Err(e) = presets::delete(&base, &pl.info.id, &name) {
+                    self.editor.status = e;
+                }
+            }
+            Program(t, label) => {
+                let program = presets::program_of(&label);
+                self.editor.set_track(t, "MIDI program", false, |x| x.program = program);
+            }
             SendLevel(t, i, db) => {
                 if self.editor.project.track(t).and_then(|x| x.sends.get(i)).is_some_and(|s| s.gain_db != db) {
                     self.editor.set_send(t, i, db);
@@ -2134,7 +2213,7 @@ impl App {
                 column![
                     Element::from(arr).map(Message::Arrange),
                     hline(),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
@@ -3590,6 +3669,34 @@ mod tests {
         a.editor.undo();
         assert_eq!(a.editor.project.buses.len(), 1);
         a.sync();
+    }
+
+    #[test]
+    fn presets_and_programs_from_the_mix_tab() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let flute = a.editor.project.tracks[0].id;
+        let reverb = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.reverb").unwrap();
+        let _ = a.update(mx(mix::MixMsg::AddEffect(flute, reverb)));
+        a.sync();
+        let node = a.fx.unwrap();
+        let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.9)));
+        let _ = a.update(mx(mix::MixMsg::PresetName("Wet".into())));
+        let _ = a.update(mx(mix::MixMsg::SavePreset(mix::Target::Effect(node))));
+        assert_eq!(a.preset_names, ["Wet"], "{}", a.editor.status);
+        let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.1)));
+        let _ = a.update(mx(mix::MixMsg::LoadPreset(mix::Target::Effect(node), "Wet".into())));
+        assert_eq!(a.playback.pool.effect(node).unwrap().param_value(0), Some(0.9));
+        assert!(a.editor.project.plugin_state.contains_key(&node), "kept with the project");
+        let _ = a.update(mx(mix::MixMsg::DeletePreset(mix::Target::Effect(node), "Wet".into())));
+        assert!(a.preset_names.is_empty());
+        // A program for the flute: in the plan.
+        let _ = a.update(mx(mix::MixMsg::Program(flute, "74 Flute".into())));
+        assert_eq!(a.editor.project.tracks[0].program, Some(73));
+        a.sync();
+        let _ = a.update(mx(mix::MixMsg::Program(flute, "None".into())));
+        assert_eq!(a.editor.project.tracks[0].program, None);
     }
 
     #[test]

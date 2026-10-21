@@ -581,6 +581,10 @@ pub struct Track {
     pub inserts: Vec<Id>,
     /// Post-fader sends to buses.
     pub sends: Vec<SendLevel>,
+    /// The MIDI program (0-127) and bank the instrument is told at the
+    /// start, for plugins and General MIDI files; none: left alone.
+    pub program: Option<u8>,
+    pub bank: Option<u16>,
 }
 
 /// A track's send: how much of it goes to a bus.

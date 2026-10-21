@@ -38,6 +38,46 @@ pub enum MixMsg {
     Output(Id, String),
     ToggleSend(Id, Id),
     SendLevel(Id, usize, f64),
+    PresetName(String),
+    SavePreset(Target),
+    LoadPreset(Target, String),
+    DeletePreset(Target, String),
+    /// A track's MIDI program by its label ("41 Violin", or "None").
+    Program(Id, String),
+}
+
+/// Whose plugin a preset is for: a track's instrument, or an effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Target {
+    Track(Id),
+    Effect(Id),
+}
+
+/// The selected plugin's presets (its id and their names), and the name typed.
+pub struct Presets<'a> {
+    pub names: &'a [String],
+    pub name: &'a str,
+}
+
+fn presets_block<'a>(target: Target, ps: &Presets<'a>) -> Element<'a, MixMsg> {
+    let mut col = column![text("Presets").size(13)].spacing(4);
+    for n in ps.names {
+        col = col.push(
+            row![
+                button(text(n.clone()).size(12)).width(Length::Fill).padding([3, 8]).style(crate::theme::tool(false)).on_press(MixMsg::LoadPreset(target, n.clone())),
+                crate::panels::tip(button(text("×").size(12)).padding([3, 6]).style(crate::theme::flat(false)).on_press(MixMsg::DeletePreset(target, n.clone())), "Delete the preset"),
+            ]
+            .spacing(2),
+        );
+    }
+    col.push(
+        row![
+            iced::widget::text_input("Preset name", ps.name).on_input(MixMsg::PresetName).on_submit(MixMsg::SavePreset(target)).padding(4).size(12),
+            button(text("Save").size(12)).padding([4, 8]).style(crate::theme::tool(false)).on_press(MixMsg::SavePreset(target)),
+        ]
+        .spacing(4),
+    )
+    .into()
 }
 
 fn db_label(db: f64) -> String {
@@ -165,7 +205,7 @@ fn master_strip<'a>(p: &'a Project, selected: bool, fx: Option<Id>) -> Element<'
 }
 
 /// The selected effect: its editor, place in the chain, and parameters.
-fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id) -> Element<'a, MixMsg> {
+fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'a>) -> Element<'a, MixMsg> {
     let owner = if p.master.inserts.contains(&node) { Some(MASTER) } else { p.tracks.iter().find(|t| t.inserts.contains(&node)).map(|t| t.id).or_else(|| p.buses.iter().find(|b| b.inserts.contains(&node)).map(|b| b.id)) };
     let name = p.node(node).map(|n| n.name.clone()).unwrap_or_default();
     let mut col = column![text(name).size(16)].spacing(6);
@@ -200,12 +240,13 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id) -> Element<'a,
                     .spacing(2),
                 );
             }
+            col = col.push(presets_block(Target::Effect(node), ps));
         }
     }
     col.into()
 }
 
-pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>) -> Element<'a, MixMsg> {
+pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>) -> Element<'a, MixMsg> {
     let mut strips = row(p.tracks.iter().map(|t| strip(p, play, t, selected == Some(t.id), fx))).spacing(8).padding(12);
     for b in &p.buses {
         strips = strips.push(bus_strip(p, b, selected == Some(b.id), fx));
@@ -214,7 +255,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     strips = strips.push(master_strip(p, selected == Some(MASTER), fx));
     let mut browser = column![].spacing(6).padding(12).width(300);
     if let Some(node) = fx.filter(|n| p.node(*n).is_some()) {
-        browser = browser.push(effect_panel(p, play, node)).push(Space::new().height(12));
+        browser = browser.push(effect_panel(p, play, node, &ps)).push(Space::new().height(12));
     }
     let effect_list = |mut b: iced::widget::Column<'a, MixMsg>, owner: Id| {
         b = b.push(text(format!("Add an effect to {}", if owner == MASTER { "the master".to_string() } else { p.track(owner).map(|t| t.name.clone()).or_else(|| p.bus(owner).map(|x| x.name.clone())).unwrap_or_default() })).size(13));
@@ -243,6 +284,20 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
             browser = browser.push(row![text(format!("{}: {current}", t.name)).size(13).width(Length::Fill), show].spacing(8).align_y(Alignment::Center));
             if !editor && play.pool.plugin_of_track(t.id).is_some() {
                 browser = browser.push(text(format!("{current} has no editor of its own.")).size(11).style(crate::theme::dim));
+            }
+            let mut programs: Vec<String> = vec!["None".into()];
+            programs.extend((0..128u8).map(crate::presets::program_label));
+            let track = t.id;
+            browser = browser.push(
+                row![
+                    text("MIDI program").size(12).style(crate::theme::dim),
+                    pick_list(programs, Some(t.program.map(crate::presets::program_label).unwrap_or_else(|| "None".into())), move |l| MixMsg::Program(track, l)).text_size(12).padding([3, 6]).width(Length::Fill),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            );
+            if fx.is_none() && play.pool.plugin_of_track(t.id).is_some() {
+                browser = browser.push(presets_block(Target::Track(t.id), &ps));
             }
             browser = browser.push(Space::new().height(4));
             let current_bundle = play.pool.plugin_of_track(t.id).map(|p| (p.info.bundle.clone(), p.info.id.clone()));

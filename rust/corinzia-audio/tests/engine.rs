@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], program: None, bank: None });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -175,7 +175,7 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![] });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], program: None, bank: None });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
 }
@@ -265,4 +265,18 @@ fn effect_parameters_set_while_idle_and_while_playing() {
     let after = eng.render_offline(4096).0;
     assert!(rms(&after) < 1e-6, "{}", rms(&after));
     assert_eq!(pool.effect(500).unwrap().param_value(0), Some(-60.0));
+}
+
+#[test]
+fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
+    let beat = (SR * 0.5) as usize;
+    let organ = render(&project(), beat);
+    let mut p = project();
+    p.tracks[0].program = Some(1); // Corinzia Sine: pure sine
+    let pure = render(&p, beat);
+    // The same note, without the octave partial: a different waveform, less energy.
+    assert!(rms(&pure[1000..beat / 2]) < rms(&organ[1000..beat / 2]) * 0.995, "{} {}", rms(&pure[1000..beat / 2]), rms(&organ[1000..beat / 2]));
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert_eq!(snap.nodes[0].program, Some((0, 1, None)));
 }

@@ -39,6 +39,10 @@ pub struct PerfMeter {
 pub struct Track {
     pub name: String,
     pub channel: u8,
+    /// The MIDI program (and bank) to select first.
+    pub program: Option<(u8, Option<u16>)>,
+    /// Controller changes: (performed quarter, controller, value).
+    pub controls: Vec<(f64, u8, u8)>,
     pub notes: Vec<Note>,
 }
 

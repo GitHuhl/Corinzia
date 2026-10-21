@@ -141,6 +141,8 @@ pub fn load(path: &Path) -> Result<Project> {
                 solo: r.get::<_, i64>(9)? != 0,
                 inserts: vec![],
                 sends: vec![],
+                program: None,
+                bank: None,
             })
         })?;
         for t in rows {
@@ -196,6 +198,8 @@ pub fn load(path: &Path) -> Result<Project> {
         for t in p.tracks.iter_mut() {
             let tv = &m["tracks"][t.id.to_string()];
             t.inserts = ids(&tv["inserts"]);
+            t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
+            t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
             t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
         }
         p.buses = m["buses"]
@@ -545,7 +549,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty()).map(|t| (t.id.to_string(), json!({"inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some()).map(|t| (t.id.to_string(), json!({"inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
         "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });

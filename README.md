@@ -110,6 +110,13 @@ PipeWire.
   their own effects, fader, pan and mute; the master strip has effects and
   a fader. A selected effect shows its editor button and a slider per
   parameter.
+* **Presets and programs:** any plugin's sound (an instrument's or an
+  effect's) can be saved as a named preset and loaded into any project.
+  Presets live in `presets/<plugin>/` beside the preferences. VST3 plugins
+  now keep their state too. A track's MIDI program (General MIDI names,
+  optional bank) is sent to its instrument when playback starts, and is
+  written into exported MIDI files. Corinzia Sine has three programs: soft
+  organ, pure sine and bright.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

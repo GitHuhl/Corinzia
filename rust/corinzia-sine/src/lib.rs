@@ -64,11 +64,16 @@ struct Voice {
     age: u64,
 }
 
+/// The sounds a MIDI program change selects: (name, octave, twelfth) levels
+/// over the fundamental.
+pub const PROGRAMS: [(&str, f64, f64); 3] = [("Soft organ", 0.18, 0.0), ("Pure sine", 0.0, 0.0), ("Bright", 0.45, 0.25)];
+
 struct Synth {
     plugin: clap_plugin,
     host: *const clap_host,
     sample_rate: f64,
     gain: f32,
+    program: u8,
     voices: [Voice; VOICES],
     clock: u64,
 }
@@ -132,6 +137,7 @@ impl Synth {
                     match (status, vel) {
                         (0x90, v) if v > 0 => self.note_on(-1, m.port_index as i16, ch, key, v as f64 / 127.0),
                         (0x80, _) | (0x90, _) => self.note_off(-1, ch, key),
+                        (0xC0, _) => self.program = (key as u8).min(PROGRAMS.len() as u8 - 1),
                         _ => {}
                     }
                 }
@@ -144,6 +150,7 @@ impl Synth {
     fn render(&mut self, left: &mut [f32], right: &mut [f32], out: *const clap_output_events, time: u32) {
         let attack = (1.0 / (0.006 * self.sample_rate)) as f32;
         let release = (1.0 / (0.15 * self.sample_rate)) as f32;
+        let (_, octave, twelfth) = PROGRAMS[self.program as usize];
         for v in self.voices.iter_mut().filter(|v| v.active) {
             for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                 if v.releasing {
@@ -156,7 +163,7 @@ impl Synth {
                     v.level = (v.level + attack).min(1.0);
                 }
                 let ph = v.phase * std::f64::consts::TAU;
-                let s = (ph.sin() + 0.18 * (2.0 * ph).sin()) as f32 * v.level * v.velocity * 0.18 * self.gain;
+                let s = (ph.sin() + octave * (2.0 * ph).sin() + twelfth * (3.0 * ph).sin()) as f32 * v.level * v.velocity * 0.18 * self.gain;
                 v.phase = (v.phase + v.step).fract();
                 *l += s;
                 *r += s;
@@ -288,6 +295,7 @@ unsafe extern "C" fn state_save(p: *const clap_plugin, stream: *const clap_ostre
     let s = Synth::from(p);
     let mut bytes = STATE_MAGIC.to_vec();
     bytes.extend_from_slice(&s.gain.to_le_bytes());
+    bytes.push(s.program);
     write_all(stream, &bytes)
 }
 
@@ -328,6 +336,9 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, stream: *const clap_istre
         return false;
     }
     Synth::from(p).gain = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if let Some(&program) = bytes.get(8) {
+        Synth::from(p).program = program.min(PROGRAMS.len() as u8 - 1);
+    }
     true
 }
 static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
@@ -398,6 +409,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         host,
         sample_rate: 48000.0,
         gain: 1.0,
+        program: 0,
         voices: [Voice::default(); VOICES],
         clock: 0,
     }));

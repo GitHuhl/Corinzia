@@ -370,6 +370,7 @@ impl Engine {
                 Command::Play => {
                     self.playing = true;
                     self.reset_cursor();
+                    self.send_programs();
                 }
                 Command::Stop => {
                     self.playing = false;
@@ -403,6 +404,25 @@ impl Engine {
                     self.push_event(node, a, velocity >= 0.0, velocity.max(0.0), 0);
                 }
             }
+        }
+    }
+
+    /// Each instrument's program (bank select first), at the block's start.
+    fn send_programs(&mut self) {
+        let Some(snap) = self.snap.as_ref() else { return };
+        for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
+            let Some((ch, program, bank)) = node.program else { continue };
+            let events = &mut self.nodes[i].events.events;
+            let mut midi = |data: [u8; 3]| {
+                if events.len() < EVENTS_PER_NODE {
+                    events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time: 0, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: 0, data } });
+                }
+            };
+            if let Some(b) = bank {
+                midi([0xb0 | ch, 0, (b >> 7) as u8 & 0x7f]);
+                midi([0xb0 | ch, 32, b as u8 & 0x7f]);
+            }
+            midi([0xc0 | ch, program & 0x7f, 0]);
         }
     }
 

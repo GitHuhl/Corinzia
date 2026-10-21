@@ -342,6 +342,60 @@ impl Instance {
         ctrl.setComponentHandler(self.handler.as_com_ref::<IComponentHandler>().unwrap().as_ptr());
     }
 
+    /// The plugin's state: "CZV3", the component's chunk (its length first,
+    /// little-endian u32), then the controller's.
+    pub fn save_state(&self) -> Option<Vec<u8>> {
+        unsafe {
+            let comp = ComWrapper::new(Stream::default());
+            if !ok(self.component.getState(comp.as_com_ref::<IBStream>().unwrap().as_ptr())) {
+                return None;
+            }
+            let comp = comp.bytes();
+            let ctrl = match &self.controller {
+                Some(c) if self.separate => {
+                    let st = ComWrapper::new(Stream::default());
+                    if ok(c.getState(st.as_com_ref::<IBStream>().unwrap().as_ptr())) {
+                        st.bytes()
+                    } else {
+                        vec![]
+                    }
+                }
+                _ => vec![],
+            };
+            let mut out = b"CZV3".to_vec();
+            out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+            out.extend_from_slice(&comp);
+            out.extend_from_slice(&ctrl);
+            Some(out)
+        }
+    }
+
+    /// Restores a chunk from [`Instance::save_state`].
+    pub fn load_state(&self, bytes: &[u8]) -> bool {
+        if bytes.len() < 8 || &bytes[..4] != b"CZV3" {
+            return false;
+        }
+        let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let Some(comp) = bytes.get(8..8 + n) else { return false };
+        let ctrl = &bytes[8 + n..];
+        unsafe {
+            let st = ComWrapper::new(Stream::with(comp.to_vec()));
+            let sp = st.as_com_ref::<IBStream>().unwrap().as_ptr();
+            if !ok(self.component.setState(sp)) {
+                return false;
+            }
+            if let Some(c) = &self.controller {
+                st.rewind();
+                c.setComponentState(sp);
+                if self.separate && !ctrl.is_empty() {
+                    let cs = ComWrapper::new(Stream::with(ctrl.to_vec()));
+                    c.setState(cs.as_com_ref::<IBStream>().unwrap().as_ptr());
+                }
+            }
+        }
+        true
+    }
+
     /// Stereo on the main output where the plugin agrees; the main output
     /// and the first event input active.
     unsafe fn configure_buses(&mut self) {
@@ -1049,6 +1103,12 @@ struct Stream {
 }
 
 impl Stream {
+    fn with(bytes: Vec<u8>) -> Stream {
+        Stream { data: Mutex::new((bytes, 0)) }
+    }
+    fn bytes(&self) -> Vec<u8> {
+        self.data.lock().map(|d| d.0.clone()).unwrap_or_default()
+    }
     fn rewind(&self) {
         if let Ok(mut d) = self.data.lock() {
             d.1 = 0;

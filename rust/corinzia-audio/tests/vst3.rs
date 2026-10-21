@@ -522,3 +522,17 @@ fn hosts_a_vst3_instrument() {
     drop(p);
     seen.lock().unwrap().handler = None;
 }
+
+/// A real VST3 plugin's state survives a save and load (when Dexed is installed).
+#[test]
+fn a_real_vst3_state_round_trips() {
+    let Some(path) = std::env::var_os("CORINZIA_TEST_VST3").map(std::path::PathBuf::from).filter(|p| p.exists()) else { return };
+    let lib = corinzia_audio::host::Library::load(&path).unwrap();
+    let info = lib.plugins().into_iter().next().unwrap();
+    let p = corinzia_audio::host::Plugin::create(&lib, &info.id).unwrap();
+    p.activate(48000.0, 256).unwrap();
+    let state = p.save_state().expect("a state");
+    assert!(state.starts_with(b"CZV3") && state.len() > 8, "{} bytes", state.len());
+    assert!(p.load_state(&state));
+    assert_eq!(p.save_state().unwrap(), state, "the same after loading");
+}

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], program: None, bank: None });
     p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
@@ -60,6 +60,8 @@ fn sample() -> Project {
     p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
     p.instruments[0].tuning = GUITAR_TUNING.to_vec();
     p.tracks[0].inserts = vec![500, 501];
+    p.tracks[0].program = Some(40);
+    p.tracks[0].bank = Some(129);
     p.tracks[0].sends = vec![SendLevel { bus: 60, gain_db: -6.0 }];
     p.buses = vec![Bus { id: 60, name: "Reverb".into(), inserts: vec![502], gain_db: -3.0, pan: 0.2, mute: false }];
     p.master = Master { inserts: vec![503], gain_db: -1.5 };
@@ -96,6 +98,7 @@ fn save_and_load_round_trip() {
     assert_eq!(b.instruments[0].drums, a.instruments[0].drums);
     assert_eq!(b.instruments[0].tuning, GUITAR_TUNING);
     assert_eq!((&b.tracks[0].inserts, &b.tracks[0].sends), (&a.tracks[0].inserts, &a.tracks[0].sends));
+    assert_eq!((b.tracks[0].program, b.tracks[0].bank), (Some(40), Some(129)));
     assert_eq!((&b.buses, &b.master), (&a.buses, &a.master));
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);

@@ -76,6 +76,8 @@ pub struct Node {
     pub out: Option<u32>,
     /// Post-fader sends: (bus index, linear gain).
     pub sends: Vec<(u32, f32)>,
+    /// The MIDI program change (channel, program, bank) sent when playback starts.
+    pub program: Option<(u8, u8, Option<u16>)>,
 }
 
 /// An effects bus: what tracks send it, through its effects and fader, to the master.
@@ -172,7 +174,7 @@ pub fn routing(project: &Project) -> String {
     let fx = |ids: &[Id]| ids.iter().map(|n| format!("{n}{}", if project.node(*n).is_some_and(|x| x.bypassed) { "b" } else { "" })).collect::<Vec<_>>().join(",");
     let mut s = String::new();
     for t in &project.tracks {
-        s += &format!("t{}[{}]>{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| x.bus).collect::<Vec<_>>());
+        s += &format!("t{}[{}]>{:?}{:?}p{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| x.bus).collect::<Vec<_>>(), t.program, t.bank);
     }
     for b in &project.buses {
         s += &format!("b{}[{}];", b.id, fx(&b.inserts));
@@ -228,7 +230,8 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let out = t.and_then(|t| t.output_bus).and_then(bus_index);
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
             let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db))).collect()).unwrap_or_default();
-            nodes.push(Node { track, plugin, gain, pan, audible, inserts, out, sends });
+            let program = t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank)));
+            nodes.push(Node { track, plugin, gain, pan, audible, inserts, out, sends, program });
         }
     }
     let master_inserts = effects(&project.master.inserts, get);

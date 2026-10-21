@@ -620,8 +620,11 @@ impl Plugin {
         self.clap().is_some_and(|c| c.host.restart.swap(false, Ordering::AcqRel))
     }
 
-    /// Main thread: the plugin's state chunk (CLAP only, for now).
+    /// Main thread: the plugin's state chunk (CLAP or VST3).
     pub fn save_state(&self) -> Option<Vec<u8>> {
+        if let Backend::Vst3(v) = &self.backend {
+            return v.save_state();
+        }
         unsafe extern "C" fn write(s: *const clap_ostream, buf: *const c_void, size: u64) -> i64 {
             let v = &mut *((*s).ctx as *mut Vec<u8>);
             v.extend_from_slice(std::slice::from_raw_parts(buf as *const u8, size as usize));
@@ -638,6 +641,9 @@ impl Plugin {
 
     /// Main thread.
     pub fn load_state(&self, bytes: &[u8]) -> bool {
+        if let Backend::Vst3(v) = &self.backend {
+            return v.load_state(bytes);
+        }
         struct Reader<'a>(&'a [u8], usize);
         unsafe extern "C" fn read(s: *const clap_istream, buf: *mut c_void, size: u64) -> i64 {
             let r = &mut *((*s).ctx as *mut Reader);
