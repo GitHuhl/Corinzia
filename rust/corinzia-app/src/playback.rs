@@ -9,8 +9,6 @@ use corinzia_audio::snapshot::{self, Timeline};
 use corinzia_model::{Id, Project};
 use std::time::{Duration, Instant};
 
-pub const SAMPLE_RATE: f64 = 48000.0;
-pub const MAX_FRAMES: u32 = 2048;
 
 pub struct Playback {
     handle: EngineHandle,
@@ -31,19 +29,24 @@ pub struct Playback {
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
     pub scan_errors: Vec<String>,
+    pub sample_rate: f64,
+    /// Where plugins are looked for (from the preferences).
+    pub search_paths: Vec<std::path::PathBuf>,
 }
 
 impl Playback {
-    /// Starts audio output (PipeWire, or WASAPI on Windows) unless `live` is false.
-    pub fn new(live: bool) -> Playback {
-        let (handle, eng) = engine::new(SAMPLE_RATE, MAX_FRAMES);
+    /// Starts audio output (PipeWire, or WASAPI on Windows) unless `live`
+    /// is false, at the preferences' rate and buffer, on their device.
+    pub fn new(live: bool, prefs: &crate::prefs::Prefs) -> Playback {
+        let (rate, frames) = (prefs.sample_rate as f64, prefs.buffer);
+        let (handle, eng) = engine::new(rate, frames);
         let mut offline = Some(eng);
         let mut problem = None;
         #[cfg(feature = "audio-out")]
         let mut output = None;
         if live {
             #[cfg(feature = "audio-out")]
-            match corinzia_audio::backend::start(offline.take().unwrap(), SAMPLE_RATE as u32, MAX_FRAMES) {
+            match corinzia_audio::backend::start(offline.take().unwrap(), prefs.sample_rate, frames, &prefs.output_device) {
                 Ok(o) => output = Some(o),
                 Err(e) => {
                     eprintln!("corinzia: no audio output: {e}");
@@ -60,7 +63,7 @@ impl Playback {
             #[cfg(feature = "audio-out")]
             _output: output,
             offline,
-            pool: PluginPool::new(SAMPLE_RATE, MAX_FRAMES),
+            pool: PluginPool::new(rate, frames),
             timeline: Timeline::default(),
             node_tracks: Vec::new(),
             built: None,
@@ -70,6 +73,8 @@ impl Playback {
             problem,
             plugins: Vec::new(),
             scan_errors: Vec::new(),
+            sample_rate: rate,
+            search_paths: prefs.plugin_search_paths(),
         }
     }
 
@@ -82,7 +87,7 @@ impl Playback {
             self.pool.retain_tracks(project);
             let movements: Vec<usize> = (0..project.movements.len()).collect();
             let pool = &mut self.pool;
-            let snap = snapshot::build(project, SAMPLE_RATE, self.generation, &movements, |t| pool.plugin_for(project, t));
+            let snap = snapshot::build(project, self.sample_rate, self.generation, &movements, |t| pool.plugin_for(project, t));
             self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
             self.timeline = snap.timeline();
             self.handle.swap(snap);
@@ -163,9 +168,17 @@ impl Playback {
     }
 
     pub fn scan(&mut self) {
-        let (infos, errors) = host::scan(&host::search_paths());
+        let (infos, errors) = host::scan(&self.search_paths);
         self.plugins = infos;
         self.scan_errors = errors;
+    }
+
+    /// Output devices to choose from: (id, label).
+    pub fn devices() -> Vec<(String, String)> {
+        #[cfg(feature = "audio-out")]
+        return corinzia_audio::backend::devices();
+        #[cfg(not(feature = "audio-out"))]
+        Vec::new()
     }
 
     /// The plugin name a track plays through.

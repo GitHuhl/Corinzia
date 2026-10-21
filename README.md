@@ -93,6 +93,11 @@ PipeWire.
   `<score-instrument>` each), drum sets (unpitched notes, noteheads and
   their sounds), guitar tunings (a TAB staff from another program becomes
   the tuning), and the subtitle, lyricist, arranger and copyright.
+* **Preferences** (⚙ in the toolbar, Ctrl+,): theme (dark, light, high
+  contrast), audio output device, sample rate, buffer size, and extra plugin
+  folders. They're saved in `~/.config/corinzia/preferences.json`
+  (`%APPDATA%\Corinzia` on Windows). Changing the device, rate or buffer
+  restarts the audio, and plugins keep their settings.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

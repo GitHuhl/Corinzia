@@ -146,15 +146,15 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
     fn draw(&self, _state: &Self::State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
         let c = self.content;
         let geometry = self.cache.draw(renderer, bounds.size(), |f: &mut Frame| {
-            f.fill_rectangle(Point::ORIGIN, bounds.size(), crate::theme::DESK);
-            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::BASE);
+            f.fill_rectangle(Point::ORIGIN, bounds.size(), crate::theme::palette().desk);
+            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
             // Lanes.
             for (i, _) in c.lanes.iter().enumerate() {
                 let y = RULER + i as f32 * self.lane_height;
                 if i % 2 == 1 {
-                    f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::SURFACE);
+                    f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::palette().surface);
                 }
-                f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::LINE));
+                f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
             }
             // Bar grid and numbers.
             for (n, &bq) in c.bars.iter().enumerate() {
@@ -162,9 +162,9 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if x < HEADER || x > bounds.width {
                     continue;
                 }
-                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER + c.lanes.len() as f32 * self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::LINE));
+                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER + c.lanes.len() as f32 * self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
                 if n + 1 < c.bars.len() {
-                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::DIM, ..Text::default() });
+                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
                 }
             }
             // Note blocks.
@@ -173,23 +173,23 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if r.x + r.width < HEADER || r.x > bounds.width {
                     continue;
                 }
-                let color = if self.selected.contains(&b.element) { crate::theme::ACCENT } else { PALETTE[b.lane % PALETTE.len()] };
+                let color = if self.selected.contains(&b.element) { crate::theme::palette().accent } else { PALETTE[b.lane % PALETTE.len()] };
                 f.fill_rectangle(Point::new(r.x.max(HEADER), r.y), Size::new(r.width - (HEADER - r.x).max(0.0), r.height), color);
             }
             // Track headers over everything that scrolled under them.
-            f.fill_rectangle(Point::ORIGIN, Size::new(HEADER, bounds.height), crate::theme::SURFACE);
+            f.fill_rectangle(Point::ORIGIN, Size::new(HEADER, bounds.height), crate::theme::palette().surface);
             for (i, l) in c.lanes.iter().enumerate() {
                 let y = RULER + i as f32 * self.lane_height;
                 f.fill_rectangle(Point::new(0.0, y), Size::new(5.0, self.lane_height), PALETTE[i % PALETTE.len()]);
                 f.fill_text(Text { content: l.name.clone(), position: Point::new(12.0, y + 8.0), size: iced::Pixels(13.0), ..Text::default() });
             }
-            f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(12.0), color: crate::theme::DIM, ..Text::default() });
+            f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(12.0), color: crate::theme::palette().dim, ..Text::default() });
         });
         let mut overlay = Frame::new(renderer, bounds.size());
         if let Some(q) = self.playhead {
             let x = self.x(q);
             if x >= HEADER {
-                overlay.stroke(&Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)), Stroke::default().with_width(2.0).with_color(crate::theme::SUCCESS));
+                overlay.stroke(&Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)), Stroke::default().with_width(2.0).with_color(crate::theme::palette().success));
             }
         }
         vec![geometry, overlay.into_geometry()]

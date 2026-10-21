@@ -18,6 +18,7 @@ mod files;
 mod keys;
 mod mix;
 mod playback;
+mod prefs;
 mod panels;
 mod score_view;
 mod theme;
@@ -176,6 +177,28 @@ impl LayoutFields {
     }
 }
 
+/// The Preferences card: a copy being edited, the plugin folders as typed,
+/// the output devices found.
+struct PrefsDialog {
+    draft: prefs::Prefs,
+    paths: String,
+    devices: Vec<(String, String)>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PrefsMsg {
+    Open,
+    Theme(String),
+    Device(String),
+    Rate(u32),
+    Buffer(u32),
+    Paths(String),
+    DefaultPaths(bool),
+    Cancel,
+    Apply,
+}
+
 #[derive(Debug, Clone)]
 enum LayoutMsg {
     Tab(bool),
@@ -238,6 +261,9 @@ struct App {
     new_score: Option<NewScore>,
     players: Option<PlayersDialog>,
     layout: Option<LayoutDialog>,
+    /// The preferences in use, and the card that edits them.
+    prefs: prefs::Prefs,
+    prefs_dialog: Option<PrefsDialog>,
     /// Corinzia's own file browser, when the system's dialog cannot open.
     browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
@@ -293,6 +319,7 @@ enum Message {
     NewCancel,
     Players(PlayersMsg),
     Layout(LayoutMsg),
+    Prefs(PrefsMsg),
     /// The answer to "discard unsaved changes?".
     ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
@@ -454,7 +481,12 @@ impl App {
 
     fn new(project: Project, path: Option<PathBuf>, view: View, status: String) -> App {
         let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
-        Self::with_playback(project, path, view, status, playback::Playback::new(live))
+        let prefs = if cfg!(test) { prefs::Prefs::default() } else { prefs::Prefs::load() };
+        theme::set(&prefs.theme);
+        let pb = playback::Playback::new(live, &prefs);
+        let mut app = Self::with_playback(project, path, view, status, pb);
+        app.prefs = prefs;
+        app
     }
 
     /// A project in the window, keeping the audio output and plugins.
@@ -478,6 +510,8 @@ impl App {
             new_score: None,
             players: None,
             layout: None,
+            prefs: prefs::Prefs::default(),
+            prefs_dialog: None,
             all_movements: false,
             page_movements: Vec::new(),
             shown_movement: 0,
@@ -1028,6 +1062,7 @@ impl App {
                 self.engraved = None;
                 ed.status = if self.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
             }
+            Action::Preferences => self.prefs_msg(PrefsMsg::Open),
             Action::Layout => {
                 let p = &ed.project;
                 self.layout = Some(LayoutDialog {
@@ -1096,7 +1131,7 @@ impl App {
     fn open(&mut self, path: PathBuf) {
         match files::load(&path) {
             Ok((p, kept, status)) => {
-                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
                 *self = App::with_playback(p, kept, view, status, pb);
             }
             Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
@@ -1156,7 +1191,7 @@ impl App {
             p
         }) {
             Ok(p) => {
-                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
                 *self = App::with_playback(p, None, view, "New score · N starts note input".into(), pb);
                 self.editor.set_input_mode(true);
             }
@@ -1277,6 +1312,66 @@ impl App {
                 let texts = d.texts.clone();
                 self.layout = None;
                 self.editor.set_layout(score, parts, texts);
+            }
+        }
+    }
+
+    /// The Preferences card: edit a copy, apply it (saved; the audio output
+    /// restarts when the device, rate or buffer change).
+    fn prefs_msg(&mut self, m: PrefsMsg) {
+        if let PrefsMsg::Open = m {
+            self.prefs_dialog = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), error: None });
+            return;
+        }
+        let Some(d) = self.prefs_dialog.as_mut() else { return };
+        d.error = None;
+        match m {
+            PrefsMsg::Open => {}
+            PrefsMsg::Theme(t) => {
+                d.draft.theme = t;
+                theme::set(&d.draft.theme); // seen at once
+            }
+            PrefsMsg::Device(label) => d.draft.output_device = d.devices.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
+            PrefsMsg::Rate(r) => d.draft.sample_rate = r,
+            PrefsMsg::Buffer(b) => d.draft.buffer = b,
+            PrefsMsg::Paths(t) => d.paths = t,
+            PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
+            PrefsMsg::Cancel => {
+                theme::set(&self.prefs.theme);
+                self.prefs_dialog = None;
+            }
+            PrefsMsg::Apply => {
+                let mut next = d.draft.clone();
+                next.plugin_paths = d.paths.split(';').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                let next = next.sane();
+                if !cfg!(test) {
+                    if let Err(e) = next.save() {
+                        d.error = Some(format!("Could not save the preferences: {e}"));
+                        return;
+                    }
+                }
+                self.prefs_dialog = None;
+                theme::set(&next.theme);
+                if self.prefs.audio_differs(&next) {
+                    // A new engine at the new rate: plugins come back with their state.
+                    self.playback.stop();
+                    self.playback.pool.store_states(&mut self.editor.project);
+                    let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
+                    let plugins = std::mem::take(&mut self.playback.plugins);
+                    self.playback = playback::Playback::new(live, &next);
+                    self.playback.plugins = plugins;
+                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+                }
+                let paths = next.plugin_search_paths();
+                if paths != self.playback.search_paths {
+                    self.playback.search_paths = paths;
+                    self.playback.scan();
+                }
+                self.editor.status = match &self.playback.problem {
+                    Some(p) => format!("Preferences saved · {p}"),
+                    None => format!("Preferences saved · {} Hz, {} frames", next.sample_rate, next.buffer),
+                };
+                self.prefs = next;
             }
         }
     }
@@ -1507,13 +1602,14 @@ impl App {
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
                             self.new_score = None;
                             self.players = None;
                             self.layout = None;
+                            self.prefs_dialog = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -1593,6 +1689,7 @@ impl App {
             Message::NewCancel => self.new_score = None,
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
+            Message::Prefs(m) => self.prefs_msg(m),
             Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
@@ -1739,6 +1836,7 @@ impl App {
         let toolbar = toolbar
             .push(panels::spacer())
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
+            .push(panels::tip(flat("⚙", true, Message::Prefs(PrefsMsg::Open)), "Preferences: theme, audio output, plugin folders (Ctrl+,)"))
             .push(panels::tip(flat("Players", true, Message::Players(PlayersMsg::Open)), "Add, remove or reorder players (the instrumentation)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
@@ -1843,6 +1941,9 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if let Some(d) = &self.prefs_dialog {
+            desk = desk.push(container(iced::widget::opaque(container(prefs_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
         if let Some(d) = &self.layout {
             desk = desk.push(container(iced::widget::opaque(container(layout_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
@@ -1908,7 +2009,7 @@ impl App {
                 // The messages give way (clipped) to the controls on the right.
                 container(
                     row![
-                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::TEXT) }),
+                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::palette().text) }),
                         Space::new().width(24),
                         text(middle).size(12).wrapping(text::Wrapping::None),
                     ]
@@ -2044,6 +2145,51 @@ fn layout_card(d: &LayoutDialog) -> Element<'_, Message> {
             panels::spacer(),
             button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(lm(LayoutMsg::Cancel)),
             button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(lm(LayoutMsg::Apply)),
+        ]
+        .spacing(8),
+    )
+    .into()
+}
+
+/// The Preferences card.
+fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let pm = |m: PrefsMsg| Message::Prefs(m);
+    let label = |t: &'static str| text(t).size(12).style(theme::dim);
+    let themes: Vec<String> = theme::THEMES.iter().map(|t| t.0.to_string()).collect();
+    let mut devices: Vec<String> = vec!["System default".into()];
+    devices.extend(d.devices.iter().map(|x| x.1.clone()));
+    let device = d.devices.iter().find(|x| x.0 == d.draft.output_device).map(|x| x.1.clone()).unwrap_or_else(|| if d.draft.output_device.is_empty() { "System default".into() } else { d.draft.output_device.clone() });
+    let pick = |opts: Vec<String>, cur: String, f: fn(String) -> PrefsMsg| iced::widget::pick_list(opts, Some(cur), move |v| pm(f(v))).text_size(13).padding([5, 9]).width(Length::Fill);
+    let rates: Vec<String> = prefs::SAMPLE_RATES.iter().map(|r| r.to_string()).collect();
+    let buffers: Vec<String> = prefs::BUFFERS.iter().map(|r| r.to_string()).collect();
+    let mut card = column![
+        text("Preferences").size(18).font(bold),
+        column![label("Theme"), pick(themes, d.draft.theme.clone(), PrefsMsg::Theme)].spacing(3),
+        column![label("Audio output"), pick(devices, device, PrefsMsg::Device)].spacing(3),
+        row![
+            column![label("Sample rate (Hz)"), pick(rates, d.draft.sample_rate.to_string(), |v| PrefsMsg::Rate(v.parse().unwrap_or(48000)))].spacing(3).width(Length::Fill),
+            column![label("Buffer (frames)"), pick(buffers, d.draft.buffer.to_string(), |v| PrefsMsg::Buffer(v.parse().unwrap_or(2048)))].spacing(3).width(Length::Fill),
+        ]
+        .spacing(10),
+        column![
+            label("More plugin folders (separated by ;)"),
+            text_input("/path/to/plugins", &d.paths).on_input(move |v| pm(PrefsMsg::Paths(v))).padding(5).size(14),
+            button(text("Also search the usual folders (and CLAP_PATH, VST3_PATH)").size(13)).padding([5, 10]).style(theme::tool(d.draft.default_plugin_paths)).on_press(pm(PrefsMsg::DefaultPaths(!d.draft.default_plugin_paths))),
+        ]
+        .spacing(5),
+        text("Changing the output, rate or buffer restarts the audio; plugins keep their settings.").size(11).style(theme::dim),
+    ]
+    .spacing(10)
+    .width(520);
+    if let Some(e) = &d.error {
+        card = card.push(text(e).size(12).style(theme::danger));
+    }
+    card.push(
+        row![
+            panels::spacer(),
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(pm(PrefsMsg::Cancel)),
+            button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(pm(PrefsMsg::Apply)),
         ]
         .spacing(8),
     )
@@ -2595,6 +2741,30 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn preferences_change_the_theme_and_restart_audio_at_a_new_rate() {
+        let p = files::new_project("P", "Flute", 2).unwrap();
+        let mut a = App::new(p, None, View::Page, String::new());
+        let _ = a.update(Message::Act(Action::Preferences));
+        assert!(a.prefs_dialog.is_some());
+        let _ = a.update(Message::Prefs(PrefsMsg::Theme("Light".into())));
+        assert_eq!(theme::palette().text, theme::LIGHT.text, "seen at once");
+        let _ = a.update(Message::Prefs(PrefsMsg::Cancel));
+        assert_eq!(theme::palette().text, theme::DARK.text, "cancel goes back");
+        let _ = a.update(Message::Prefs(PrefsMsg::Open));
+        let _ = a.update(Message::Prefs(PrefsMsg::Theme("High contrast".into())));
+        let _ = a.update(Message::Prefs(PrefsMsg::Rate(96000)));
+        let _ = a.update(Message::Prefs(PrefsMsg::Buffer(512)));
+        let _ = a.update(Message::Prefs(PrefsMsg::Paths("/opt/a; /opt/b".into())));
+        let _ = a.update(Message::Prefs(PrefsMsg::Apply));
+        assert!(a.prefs_dialog.is_none());
+        assert_eq!((a.prefs.sample_rate, a.prefs.buffer, a.prefs.plugin_paths.len()), (96000, 512, 2));
+        assert_eq!(a.playback.sample_rate, 96000.0, "a new engine");
+        assert!(a.playback.search_paths[0].ends_with("opt/a"));
+        assert_eq!(a.editor.status, "Preferences saved · 96000 Hz, 512 frames");
+        theme::set("Dark");
     }
 
     #[test]

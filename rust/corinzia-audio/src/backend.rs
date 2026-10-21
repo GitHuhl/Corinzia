@@ -23,15 +23,55 @@ impl Drop for Output {
     }
 }
 
+/// Output devices (PipeWire audio sinks): (node name, description).
+pub fn devices() -> Vec<(String, String)> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    pw::init();
+    let Ok(mainloop) = pw::main_loop::MainLoop::new(None) else { return vec![] };
+    let Ok(context) = pw::context::Context::new(&mainloop) else { return vec![] };
+    let Ok(core) = context.connect(None) else { return vec![] };
+    let Ok(registry) = core.get_registry() else { return vec![] };
+    let found: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
+    let f = found.clone();
+    let _reg = registry
+        .add_listener_local()
+        .global(move |g| {
+            let Some(props) = g.props else { return };
+            if g.type_ == pw::types::ObjectType::Node && props.get("media.class") == Some("Audio/Sink") {
+                if let Some(name) = props.get("node.name") {
+                    let label = props.get("node.description").or(props.get("node.nick")).unwrap_or(name);
+                    f.borrow_mut().push((name.to_string(), label.to_string()));
+                }
+            }
+        })
+        .register();
+    let Ok(pending) = core.sync(0) else { return vec![] };
+    let ml = mainloop.clone();
+    let _core = core
+        .add_listener_local()
+        .done(move |id, seq| {
+            if id == pw::core::PW_ID_CORE && seq == pending {
+                ml.quit();
+            }
+        })
+        .register();
+    mainloop.run();
+    let v = found.borrow().clone();
+    v
+}
+
 /// Starts the stream; `engine` moves to PipeWire's realtime thread.
-/// Fails when no PipeWire daemon is reachable (the engine is dropped).
-pub fn start(engine: Engine, sample_rate: u32, max_frames: u32) -> Result<Output, String> {
+/// `device`: a sink's node name, or empty for the default. Fails when no
+/// PipeWire daemon is reachable (the engine is dropped).
+pub fn start(engine: Engine, sample_rate: u32, max_frames: u32, device: &str) -> Result<Output, String> {
+    let device = device.to_string();
     let (quit_tx, quit_rx) = pw::channel::channel::<()>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
         .name("corinzia-pipewire".into())
         .spawn(move || {
-            if let Err(e) = run(engine, sample_rate, max_frames, quit_rx, &ready_tx) {
+            if let Err(e) = run(engine, sample_rate, max_frames, &device, quit_rx, &ready_tx) {
                 let _ = ready_tx.send(Err(e));
             }
         })
@@ -53,7 +93,7 @@ struct State {
     marked: bool,
 }
 
-fn run(engine: Engine, rate: u32, max_frames: u32, quit: pw::channel::Receiver<()>, ready: &std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
+fn run(engine: Engine, rate: u32, max_frames: u32, device: &str, quit: pw::channel::Receiver<()>, ready: &std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
     pw::init();
     let mainloop = match pw::main_loop::MainLoop::new(None) {
         Ok(m) => m,
@@ -68,18 +108,18 @@ fn run(engine: Engine, rate: u32, max_frames: u32, quit: pw::channel::Receiver<(
         Err(e) => return Err(format!("PipeWire is not running ({e})")),
     };
     let latency = format!("{}/{rate}", max_frames.min(256));
-    let stream = match pw::stream::Stream::new(
-        &core,
-        "Corinzia",
-        pw::properties::properties! {
-            *pw::keys::MEDIA_TYPE => "Audio",
-            *pw::keys::MEDIA_ROLE => "Music",
-            *pw::keys::MEDIA_CATEGORY => "Playback",
-            *pw::keys::NODE_NAME => "corinzia",
-            *pw::keys::APP_NAME => "Corinzia",
-            *pw::keys::NODE_LATENCY => latency.as_str(),
-        },
-    ) {
+    let mut props = pw::properties::properties! {
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_ROLE => "Music",
+        *pw::keys::MEDIA_CATEGORY => "Playback",
+        *pw::keys::NODE_NAME => "corinzia",
+        *pw::keys::APP_NAME => "Corinzia",
+        *pw::keys::NODE_LATENCY => latency.as_str(),
+    };
+    if !device.is_empty() {
+        props.insert("target.object", device);
+    }
+    let stream = match pw::stream::Stream::new(&core, "Corinzia", props) {
         Ok(s) => s,
         Err(e) => return Err(format!("PipeWire stream: {e}")),
     };

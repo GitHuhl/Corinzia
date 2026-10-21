@@ -66,7 +66,7 @@ pub struct State {
 }
 
 fn accent() -> Color {
-    crate::theme::ACCENT
+    crate::theme::palette().accent
 }
 
 /// The gain fader of track `track`, at `db`.
@@ -151,19 +151,19 @@ impl canvas::Program<MixMsg> for Fader {
         let (t, b) = Self::travel(bounds);
         let cx = bounds.width / 2.0 + 8.0;
         // The slot.
-        f.fill(&Path::rectangle(Point::new(cx - 2.0, t), Size::new(4.0, b - t)), crate::theme::BASE);
+        f.fill(&Path::rectangle(Point::new(cx - 2.0, t), Size::new(4.0, b - t)), crate::theme::palette().base);
         // The scale, labelled on the left.
         for (db, label) in [(12.0, "+12"), (6.0, "+6"), (0.0, "0"), (-6.0, "-6"), (-12.0, "-12"), (-24.0, "-24"), (-36.0, "-36"), (MIN_DB, "−∞")] {
             let y = self.y_of(bounds, db_to_pos(db));
             let unity = db == 0.0;
             f.stroke(
                 &Path::line(Point::new(cx - 12.0, y), Point::new(cx - 6.0, y)),
-                Stroke::default().with_width(if unity { 1.5 } else { 1.0 }).with_color(if unity { crate::theme::TEXT } else { crate::theme::FAINT }),
+                Stroke::default().with_width(if unity { 1.5 } else { 1.0 }).with_color(if unity { crate::theme::palette().text } else { crate::theme::palette().faint }),
             );
             f.fill_text(Text {
                 content: label.into(),
                 position: Point::new(cx - 15.0, y),
-                color: if unity { crate::theme::TEXT } else { crate::theme::DIM },
+                color: if unity { crate::theme::palette().text } else { crate::theme::palette().dim },
                 size: 10.0.into(),
                 align_x: iced::alignment::Horizontal::Right.into(),
                 align_y: iced::alignment::Vertical::Center,
@@ -177,7 +177,7 @@ impl canvas::Program<MixMsg> for Fader {
         let hot = state.drag.is_some() || cursor.position_in(bounds).is_some_and(|p| (p.y - y).abs() <= CAP_H / 2.0 + 2.0);
         let cap = Path::rounded_rectangle(Point::new(cx - 13.0, y - CAP_H / 2.0), Size::new(26.0, CAP_H), 3.0.into());
         f.fill(&cap, if hot { Color::from_rgb8(0xf2, 0xf2, 0xf0) } else { Color::from_rgb8(0xc9, 0xcb, 0xcf) });
-        f.stroke(&cap, Stroke::default().with_width(1.0).with_color(crate::theme::BASE));
+        f.stroke(&cap, Stroke::default().with_width(1.0).with_color(crate::theme::palette().base));
         f.stroke(&Path::line(Point::new(cx - 10.0, y), Point::new(cx + 10.0, y)), Stroke::default().with_width(2.0).with_color(accent()));
         vec![f.into_geometry()]
     }
@@ -252,13 +252,13 @@ impl canvas::Program<MixMsg> for PanBar {
     fn draw(&self, _state: &State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
         let (l, r, y) = (8.0, bounds.width - 8.0, bounds.height / 2.0);
-        f.fill(&Path::rectangle(Point::new(l, y - 2.0), Size::new(r - l, 4.0)), crate::theme::BASE);
+        f.fill(&Path::rectangle(Point::new(l, y - 2.0), Size::new(r - l, 4.0)), crate::theme::palette().base);
         let mid = (l + r) / 2.0;
         let x = mid + self.pan as f32 * (r - l) / 2.0;
         // From the centre to the position.
         f.fill(&Path::rectangle(Point::new(mid.min(x), y - 2.0), Size::new((x - mid).abs(), 4.0)), accent());
-        f.stroke(&Path::line(Point::new(mid, y - 6.0), Point::new(mid, y + 6.0)), Stroke::default().with_width(1.0).with_color(crate::theme::FAINT));
-        f.fill(&Path::circle(Point::new(x, y), 6.0), crate::theme::TEXT);
+        f.stroke(&Path::line(Point::new(mid, y - 6.0), Point::new(mid, y + 6.0)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().faint));
+        f.fill(&Path::circle(Point::new(x, y), 6.0), crate::theme::palette().text);
         vec![f.into_geometry()]
     }
 

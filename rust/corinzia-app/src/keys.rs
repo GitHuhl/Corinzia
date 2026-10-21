@@ -64,6 +64,8 @@ pub enum Action {
     Break { page: bool },
     /// The Layout card.
     Layout,
+    /// The Preferences card.
+    Preferences,
     /// Show every movement on the pages, one after another, or one.
     AllMovements,
     /// Chords of one staff spread over the selected staves.
@@ -170,6 +172,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('a', false) => SelectAll,
             ('a', true) => SelectSimilar,
             ('f', _) => Popover(PopoverKind::Filter),
+            (',', _) => Preferences,
             ('b', _) => InsertBar,
             ('s', false) => Save,
             ('s', true) => SaveAs,

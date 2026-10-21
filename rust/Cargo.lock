@@ -774,6 +774,8 @@ dependencies = [
  "iced",
  "png",
  "rfd",
+ "serde",
+ "serde_json",
  "ttf-parser",
 ]
 
