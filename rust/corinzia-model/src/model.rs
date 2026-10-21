@@ -341,6 +341,9 @@ pub struct Movement {
     pub slurs: Vec<Slur>,
     /// System and page breaks by hand, at bar starts.
     pub breaks: Vec<Break>,
+    /// Notes written on another staff of their player: (event, staves
+    /// down; -1 the staff above).
+    pub cross: Vec<(Id, i8)>,
 }
 
 /// A system (or page) break before the bar at `at`: in the full score, or

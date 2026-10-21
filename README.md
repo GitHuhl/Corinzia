@@ -72,6 +72,9 @@ PipeWire.
   instrument's name. The Notes panel's ᶜ button makes notes cue-size (or
   back). A text typed as "parts: solo" or "score: tutti" shows only in the
   parts or only in the score.
+* **Cross-staff notes:** Ctrl+Shift+↓/↑ (or ⤓/⤒ in the Notes panel) writes
+  the selected notes on the player's staff below or above, in that staff's
+  clef; a beam with notes on both staves runs between them.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

@@ -238,6 +238,8 @@ pub struct Part {
     /// Notehead shapes by staff position (a percussion map): (diatonic
     /// position, step + 7 × octave; 1 x, 2 circled x, 3 diamond, 4 triangle).
     pub head_shapes: Vec<(i32, u8)>,
+    /// Events written on another staff: (event id, staves down; -1 up).
+    pub cross: Vec<(u64, i8)>,
     /// The instrument's transposition as (diatonic steps, semitones),
     /// written minus sounding: (1, 2) for a B♭ clarinet.
     pub transposition: (i32, i32),

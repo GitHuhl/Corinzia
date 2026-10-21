@@ -138,6 +138,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     let editing = vec![
         tool("▲", false, false, "Transpose up (↑, Ctrl+↑ octave)", Action::Transpose(1)),
         tool("▼", false, false, "Transpose down (↓, Ctrl+↓ octave)", Action::Transpose(-1)),
+        tool("⤒", false, false, "Onto the staff above (Ctrl+Shift+↑)", Action::CrossStaff(-1)),
+        tool("⤓", false, false, "Onto the staff below (Ctrl+Shift+↓)", Action::CrossStaff(1)),
         tool("❐", false, false, "Copy (Ctrl+C)", Action::Copy),
         tool("✂", false, false, "Cut (Ctrl+X)", Action::Cut),
         tool("❏", false, ed.has_clip(), "Paste (Ctrl+V)", Action::Paste),

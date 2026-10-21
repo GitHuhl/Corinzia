@@ -55,7 +55,7 @@ fn sample() -> Project {
             chords: vec![],
             lines: vec![LineSpan { id: 43, from: Frac::ZERO, to: Frac::int(2), kind: LineKind::Pedal }],
             voices: vec![Voice { id: 44, index: 1, events: Arc::new(vec![]), tuplets: vec![] }],
-        }], breaks: vec![],
+        }], breaks: vec![], cross: vec![],
     });
     p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
     p.subtitle = "for flute".into();
@@ -64,6 +64,7 @@ fn sample() -> Project {
     p.copyright = "© 2026".into();
     p.layout = Layout { page_width_mm: 215.9, page_height_mm: 279.4, landscape: true, staff_mm: 5.5, bars_per_system: 4, page_numbers: false, ..Layout::default() };
     p.part_layout.spacing = 1.2;
+    p.movements[0].cross = vec![(12, 1)];
     p.movements[0].breaks = vec![Break { id: 90, at: Frac::int(2), page: false, part: None }, Break { id: 91, at: Frac::int(4), page: true, part: Some(2) }];
     p
 }
@@ -85,6 +86,8 @@ fn save_and_load_round_trip() {
     assert_eq!(b.part_layout, a.part_layout);
     assert_eq!(b.part_layout.staff_mm, 7.0);
     assert_eq!(b.movements[0].breaks, a.movements[0].breaks);
+    assert_eq!(b.movements[0].cross, [(12, 1)]);
+    assert_eq!(b.movements[0].lanes[0].texts[0].shown, Shown::Parts);
     assert_eq!(b.instruments[0].drums, a.instruments[0].drums);
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);

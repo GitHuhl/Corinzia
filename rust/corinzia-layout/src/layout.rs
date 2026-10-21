@@ -442,7 +442,8 @@ fn shaped_head(g: Glyph, shape: u8) -> Glyph {
 
 #[derive(Clone, Debug)]
 struct Note {
-    part: usize,
+    part: usize, // the staff it is drawn on
+    home: usize, // the staff whose voice it belongs to (differs when cross-staff)
     voice: u8,
     measure: usize,
     start: Frac,
@@ -545,10 +546,12 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     } else {
                         decompose(b - a)
                     };
+                    // Cross-staff: drawn on another staff of the player, in its clef.
+                    let staff = part.cross.iter().find(|c| c.0 == e.id && !rest).map_or(pi, |c| (pi as i64 + c.1 as i64).clamp(0, score.parts.len() as i64 - 1) as usize);
                     let mut t = a;
                     for (k, nv) in values.iter().enumerate() {
                         let last_piece = k + 1 == values.len() && b == end;
-                        let middle = clef_middle(&clefs_at(part, t));
+                        let middle = clef_middle(&clefs_at(&score.parts[staff], t));
                         let mut heads: Vec<Head> = e
                             .pitches
                             .iter()
@@ -597,7 +600,8 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                         };
                         let dur = if whole_bar { m.len } else { nv.length() * Frac::new(ratio.den, ratio.num) };
                         out.push(Note {
-                            part: pi,
+                            part: staff,
+                            home: pi,
                             voice: v.index,
                             measure: mi,
                             start: t,
@@ -630,9 +634,10 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
     // Voice 1 of a part with nothing in a bar gets a whole-bar rest.
     for pi in 0..score.parts.len() {
         for (mi, m) in ms.iter().enumerate() {
-            if !out.iter().any(|n| n.part == pi && n.measure == mi && n.voice == 1) {
+            if !out.iter().any(|n| (n.part == pi || n.home == pi) && n.measure == mi && n.voice == 1) {
                 out.push(Note {
                     part: pi,
+                    home: pi,
                     voice: 1,
                     measure: mi,
                     start: m.start,
@@ -956,9 +961,9 @@ impl<'a> Engraver<'a> {
                 let n = &this.notes[i];
                 let m = &this.ms[n.measure];
                 let window = beam_window(m, n.start - m.start + m.phase, span(m));
-                let mut key = (n.part, n.voice, n.measure, window, n.tuplets.last().copied());
+                let mut key = (n.home, n.voice, n.measure, window, n.tuplets.last().copied());
                 if n.beam & span::BEAM_JOIN != 0 {
-                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.part, n.voice, n.measure)) {
+                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.home, n.voice, n.measure)) {
                         joined = Some((key, k));
                         key = k;
                     }
@@ -984,7 +989,9 @@ impl<'a> Engraver<'a> {
             }
             groups
         };
-        let all: Vec<usize> = (0..self.notes.len()).collect();
+        // In voice order, cross-staff notes with their own voice.
+        let mut all: Vec<usize> = (0..self.notes.len()).collect();
+        all.sort_by_key(|&i| (self.notes[i].home, self.notes[i].voice, self.notes[i].start));
         let wide = group(self, &all, &|m: &Measure| eighths_span(m).unwrap_or_else(|| beat_of(m)));
         // A wide beam holding shorter notes than eighths goes back to beats.
         let mut groups = Vec::new();
@@ -996,6 +1003,16 @@ impl<'a> Engraver<'a> {
             }
         }
         for g in &groups {
+            // A beam across two staves goes between them: stems down from
+            // the upper staff, up from the lower.
+            let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+            if g.iter().any(|&i| self.notes[i].part != top) {
+                for &i in g {
+                    self.notes[i].stem_up = self.notes[i].part != top;
+                    self.notes[i].beamed = true;
+                }
+                continue;
+            }
             let poly = {
                 let n = &self.notes[g[0]];
                 self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar)
@@ -1788,11 +1805,29 @@ impl<'a> Engraver<'a> {
         for g in groups {
             let s = if self.notes[g[0]].art & art::CUE != 0 { CUE_SCALE } else { 1.0 };
             let (bt, gap) = (d.beam_thickness * s, (d.beam_thickness + d.beam_spacing) * s);
-            let up = self.notes[g[0]].stem_up;
+            let mut up = self.notes[g[0]].stem_up;
             let (fi, li) = (g[0], *g.last().unwrap());
             let (xf, xl) = (self.notes[fi].stem_x, self.notes[li].stem_x);
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
-            let (y0, slope) = self.quant_beam(g, up, bt, gap);
+            let kneed = g.iter().any(|&i| self.notes[i].part != self.notes[g[0]].part);
+            let (y0, slope) = if kneed {
+                // Flat, halfway between the upper staff's lowest head and the
+                // lower staff's highest, the beams stacked from there down.
+                let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+                let low = g.iter().filter(|&&i| self.notes[i].part == top).map(|&i| self.y(top, self.notes[i].heads[0].pos)).fold(f32::MIN, f32::max);
+                let high = g
+                    .iter()
+                    .filter(|&&i| self.notes[i].part != top)
+                    .map(|&i| {
+                        let n = &self.notes[i];
+                        self.y(n.part, n.heads[n.heads.len() - 1].pos)
+                    })
+                    .fold(f32::MAX, f32::min);
+                up = true;
+                ((low + high) / 2.0 - (levels as f32 * gap) / 2.0, 0.0)
+            } else {
+                self.quant_beam(g, up, bt, gap)
+            };
             let beam_y = |x: f32| y0 + slope * (x - xf);
             let beam_id = self.notes[fi].id;
             // Stems to the beam.

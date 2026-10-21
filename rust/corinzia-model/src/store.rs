@@ -212,7 +212,7 @@ pub fn load(path: &Path) -> Result<Project> {
             navigation: vec![],
             slurs: vec![],
             endings: vec![],
-            lanes: vec![], breaks: vec![],
+            lanes: vec![], breaks: vec![], cross: vec![],
         };
         for t in serde_json::from_str::<Vec<Value>>(&tempo)? {
             m.tempo.push(Tempo {
@@ -291,6 +291,9 @@ pub fn load(path: &Path) -> Result<Project> {
             }
             for b in n["breaks"].as_array().into_iter().flatten() {
                 m.breaks.push(Break { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), page: b["page"].as_bool().unwrap_or(false), part: b["part"].as_u64() });
+            }
+            for c in n["cross"].as_array().into_iter().flatten() {
+                m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
             }
             for e in n["endings"].as_array().into_iter().flatten() {
                 m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
@@ -630,6 +633,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
+            "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
             "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,

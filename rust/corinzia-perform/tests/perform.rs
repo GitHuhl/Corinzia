@@ -31,7 +31,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         navigation: vec![],
         slurs: vec![],
         endings: vec![],
-        breaks: vec![],
+        breaks: vec![], cross: vec![],
         lanes: vec![Lane {
             player: 2,
             changes: vec![InstrumentChange { id: 3, at: F::ZERO, instrument: 4 }],

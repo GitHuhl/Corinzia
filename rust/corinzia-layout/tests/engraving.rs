@@ -501,7 +501,7 @@ fn grace_notes_are_small_and_take_room_before_their_note() {
 
 #[test]
 fn families_are_bracketed_and_their_barlines_joined() {
-    let mut s = score(&[("treble", &["c''1"]), ("treble", &["e'1"]), ("treble", &["g'1"]), ("bass", &["c1"])], (4, 4), 0);
+    let mut s = score(&[("treble", &["c''1"]), ("treble", &["e'1"]), ("treble", &["g'1"]), ("bass", &["r1"])], (4, 4), 0);
     // Two woodwinds (bracketed together), then a lone piano-like pair without.
     s.parts[0].group = 1;
     s.parts[1].group = 1;
@@ -864,4 +864,24 @@ fn cue_notes_are_small() {
         .collect();
     assert_eq!(scales.iter().filter(|&&s| s < 1.0).count(), 4, "{scales:?}");
     assert_eq!(scales.iter().filter(|&&s| s == 1.0).count(), 5);
+}
+
+#[test]
+fn cross_staff_notes_and_a_kneed_beam() {
+    // Upper staff's eighths c e g' c'': the first two written on the bass staff.
+    let mut s = score(&[("treble", &["c8 e g' c'' r2"]), ("bass", &["r1"])], (4, 4), 0);
+    s.parts[0].brace = true;
+    let ids: Vec<u64> = s.parts[0].voices[0].events.iter().take(2).map(|e| e.id).collect();
+    s.parts[0].cross = ids.iter().map(|&i| (i, 1)).collect();
+    let l = layout_line(&s, &Options::default());
+    preview("cross_staff", &l);
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    assert_eq!(heads.len(), 4);
+    let bass_top = l.staves[1].top;
+    let below: Vec<_> = heads.iter().filter(|h| h.1 > bass_top - 1.0).collect();
+    assert_eq!(below.len(), 2, "two heads on the bass staff: {heads:?} {bass_top}");
+    // One beam (a quad) for the four eighths, between the staves.
+    let quads: Vec<f32> = l.items.iter().filter_map(|i| match i { Item::Quad { p, .. } => Some(p[0].y), _ => None }).collect();
+    assert_eq!(quads.len(), 1, "{quads:?}");
+    assert!(quads[0] > l.staves[0].top + 4.0 && quads[0] < bass_top, "{quads:?}");
 }

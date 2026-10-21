@@ -435,7 +435,7 @@ impl Editor {
             endings: vec![],
             navigation: vec![],
             slurs: vec![],
-            breaks: vec![],
+            breaks: vec![], cross: vec![],
             lanes,
         };
         let at = self.movement + 1;
@@ -1552,6 +1552,44 @@ impl Editor {
             self.edit_selected(label, |evs, id, _, _| edit::modify_event(evs, id, |e, _| set(e)));
         }
         self.status = label.into();
+    }
+
+    /// Ctrl+Shift+↑/↓: the selected notes onto the player's staff above or
+    /// below (beams follow them), or back home.
+    pub fn cross_staff(&mut self, dir: i8) {
+        let Some(m) = self.movement() else { return };
+        let targets: Vec<(usize, Id)> = if !self.picked.is_empty() {
+            self.picked_events(m).iter().filter(|(_, e, _)| !e.is_rest()).map(|(li, e, _)| (*li, e.id)).collect()
+        } else if let Some(r) = self.range {
+            (r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1)))
+                .flat_map(|li| m.lanes[li].voices.iter().flat_map(move |v| v.events.iter().map(move |e| (li, e))))
+                .filter(|(_, e)| !e.is_rest() && e.start >= r.from && e.start < r.to)
+                .map(|(li, e)| (li, e.id))
+                .collect()
+        } else {
+            self.selection.and_then(|s| self.event_of(s)).filter(|(_, e)| !e.is_rest()).map(|(loc, e)| vec![(loc.lane, e.id)]).unwrap_or_default()
+        };
+        if targets.is_empty() {
+            self.status = "Select some notes to move across staves".into();
+            return;
+        }
+        let mut moved = 0;
+        self.transact("Cross staff", |m, _| {
+            for &(li, id) in &targets {
+                let d = m.cross.iter().find(|c| c.0 == id).map_or(0, |c| c.1) as i64 + dir as i64;
+                let to = li as i64 + d;
+                if to < 0 || to as usize >= m.lanes.len() || m.lanes[to as usize].player != m.lanes[li].player {
+                    continue;
+                }
+                m.cross.retain(|c| c.0 != id);
+                if d != 0 {
+                    m.cross.push((id, d as i8));
+                }
+                moved += 1;
+            }
+            moved > 0
+        });
+        self.status = if moved == 0 { "No staff of this player there".into() } else { format!("Cross staff: {moved} {}", if moved == 1 { "note" } else { "notes" }) };
     }
 
     pub fn toggle_tie(&mut self) {
@@ -3839,5 +3877,25 @@ mod tests {
         let has = |s: &corinzia_score::score::Score| s.parts.iter().any(|p| p.texts.iter().any(|x| x.text == "solo"));
         assert!(!has(&corinzia_model::notation::score(&e.project, m)));
         assert!(has(&corinzia_model::notation::part_score(&e.project, m, m.lanes[0].player)));
+    }
+
+    #[test]
+    fn cross_staff_notes() {
+        let mut e = Editor::new(crate::files::new_project("P", "Piano", 2).unwrap());
+        assert_eq!(e.movement().unwrap().lanes.len(), 2, "a grand staff");
+        quarters_cdef(&mut e);
+        select_nth(&mut e, 1);
+        e.cross_staff(1);
+        let id = events(&e, 0, 0)[1].id;
+        assert_eq!(e.movement().unwrap().cross, [(id, 1)]);
+        assert_eq!(e.status, "Cross staff: 1 note");
+        let s = corinzia_model::notation::score(&e.project, e.movement().unwrap());
+        assert_eq!(s.parts[0].cross, [(id, 1)]);
+        // No staff below the bass staff; back up goes home.
+        e.cross_staff(1);
+        assert_eq!(e.movement().unwrap().cross, [(id, 1)]);
+        assert_eq!(e.status, "No staff of this player there");
+        e.cross_staff(-1);
+        assert!(e.movement().unwrap().cross.is_empty());
     }
 }

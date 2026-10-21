@@ -51,6 +51,8 @@ pub enum Action {
     Paste,
     /// The clipboard as a cue (small, silent notes in voice 2).
     PasteCue,
+    /// Selected notes onto the staff above (-1) or below (1).
+    CrossStaff(i8),
     SelectAll,
     /// Pick what is like the selected element.
     SelectSimilar,
@@ -133,6 +135,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             (Named::End, ..) if !input_mode => Edge { last: true },
             (Named::ArrowUp, _, true) => if input_mode { CaretStaff(-1) } else { Staff(-1) },
             (Named::ArrowDown, _, true) => if input_mode { CaretStaff(1) } else { Staff(1) },
+            (Named::ArrowUp, true, _) if shift => CrossStaff(-1),
+            (Named::ArrowDown, true, _) if shift => CrossStaff(1),
             (Named::ArrowUp, true, _) => Transpose(7),
             (Named::ArrowDown, true, _) => Transpose(-7),
             (Named::ArrowUp, ..) => Transpose(1),
