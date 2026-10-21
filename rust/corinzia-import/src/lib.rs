@@ -16,7 +16,7 @@
 
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
-    RehearsalMark, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo,
+    RehearsalMark, Shown, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo,
 };
 use corinzia_score::score::{art, span, Lyric, Slur};
 use corinzia_score::Frac;
@@ -940,7 +940,7 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
     s.lines.sort_by(|a, b| a.from.cmp(&b.from));
     let change = p.allocate_id();
     let clefs = s.clefs.into_iter().map(|(at, clef)| ClefChange { id: p.allocate_id(), at, clef }).collect();
-    let texts = s.texts.into_iter().map(|(at, text, above)| TextItem { id: p.allocate_id(), at, text, kind: if above { TextKind::Technique } else { TextKind::Expression } }).collect();
+    let texts = s.texts.into_iter().map(|(at, text, above)| TextItem { id: p.allocate_id(), at, text, kind: if above { TextKind::Technique } else { TextKind::Expression }, shown: Shown::Both }).collect();
     let chords = s.chords.into_iter().map(|(at, text)| ChordSymbol { id: p.allocate_id(), at, text }).collect();
     Lane { player, changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }], clefs, texts, chords, lines: s.lines, voices: lane_voices }
 }

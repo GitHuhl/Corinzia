@@ -49,6 +49,8 @@ pub enum Action {
     Copy,
     Cut,
     Paste,
+    /// The clipboard as a cue (small, silent notes in voice 2).
+    PasteCue,
     SelectAll,
     /// Pick what is like the selected element.
     SelectSimilar,
@@ -157,7 +159,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('z', true) | ('y', _) => Redo,
             ('c', _) => Copy,
             ('x', _) => Cut,
-            ('v', _) => Paste,
+            ('v', false) => Paste,
+            ('v', true) => PasteCue,
             ('a', false) => SelectAll,
             ('a', true) => SelectSimilar,
             ('f', _) => Popover(PopoverKind::Filter),

@@ -395,6 +395,8 @@ pub mod art {
     pub const CAESURA: u16 = 1 << 12;
     pub const UP_BOW: u16 = 1 << 13;
     pub const DOWN_BOW: u16 = 1 << 14;
+    /// A cue: written small, not played.
+    pub const CUE: u16 = 1 << 15;
 }
 pub mod span {
     pub const CRESC_START: u8 = 1 << 2;

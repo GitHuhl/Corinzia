@@ -67,6 +67,11 @@ PipeWire.
   notehead: x, circled x, diamond, triangle) and MIDI channel 10. The
   status bar names the drum under the selection; playback sounds the
   mapped key. Drum staves have no key signature or accidentals.
+* **Cues and part-only markings:** Ctrl+Shift+V pastes the clipboard's
+  first staff as a cue: small, silent notes in voice 2 under the source
+  instrument's name. The Notes panel's ᶜ button makes notes cue-size (or
+  back). A text typed as "parts: solo" or "score: tutti" shows only in the
+  parts or only in the score.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

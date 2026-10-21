@@ -842,3 +842,26 @@ fn percussion_staves_have_shaped_heads_and_no_key() {
     assert!(glyphs(&l, Glyph::PercussionClef).len() == 1);
     preview("drums", &l);
 }
+
+#[test]
+fn cue_notes_are_small() {
+    // Bar 2's eighths are a cue: smaller heads, shorter stems, thinner beams.
+    let mut s = score(&[("treble", &["c''4 d'' e'' f'' g''8 a'' b'' c''' d'''4 r"])], (4, 4), 2);
+    for e in s.parts[0].voices[0].events.iter_mut().filter(|e| e.start >= corinzia_score::Frac::int(1) && !e.pitches.is_empty()) {
+        if e.dur < corinzia_score::Frac::new(1, 4) {
+            e.art |= corinzia_score::score::art::CUE;
+        }
+    }
+    let l = layout_line(&s, &Options::default());
+    preview("cue", &l);
+    let scales: Vec<f32> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Glyph { glyph, scale, .. } if *glyph == Glyph::NoteheadBlack.codepoint() => Some(*scale),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(scales.iter().filter(|&&s| s < 1.0).count(), 4, "{scales:?}");
+    assert_eq!(scales.iter().filter(|&&s| s == 1.0).count(), 5);
+}

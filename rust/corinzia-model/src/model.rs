@@ -215,6 +215,16 @@ pub struct TextItem {
     pub at: Frac,
     pub text: String,
     pub kind: TextKind,
+    /// Where it shows: the score and the parts, or only one of them.
+    pub shown: Shown,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shown {
+    #[default]
+    Both,
+    Score,
+    Parts,
 }
 
 /// A chord symbol on a staff ("Cmaj7", "F♯m7♭5/E").

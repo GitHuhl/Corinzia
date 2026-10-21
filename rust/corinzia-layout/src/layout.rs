@@ -401,6 +401,8 @@ struct GraceGeom {
 
 /// Grace notes are drawn at LilyPond's grace size (font-size -3).
 const GRACE_SCALE: f32 = 0.707;
+/// Cue notes: smaller than normal, larger than graces.
+const CUE_SCALE: f32 = 0.75;
 /// Between grace notes, and from the last one to its main note.
 const GRACE_GAP: f32 = 0.35;
 const GRACE_TO_MAIN: f32 = 1.0;
@@ -1464,6 +1466,7 @@ impl<'a> Engraver<'a> {
         for i in 0..self.notes.len() {
             let n = self.notes[i].clone();
             let top = self.top(n.part);
+            let s = if n.art & art::CUE != 0 { CUE_SCALE } else { 1.0 };
             if n.rest {
                 let g = rest_glyph(n.value.base);
                 let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
@@ -1498,7 +1501,7 @@ impl<'a> Engraver<'a> {
                 } else {
                     n.x
                 };
-                self.push(Item::glyph(g, x, y, n.id));
+                self.push(Item::glyph_scaled(g, x, y, s, n.id));
                 if n.value.base <= 1 && !n.whole_bar || n.value.base > 1 {
                     self.dots(&n, x + self.width(g), &[if n.value.base <= 1 { 1 } else { 1 }]);
                 }
@@ -1506,28 +1509,28 @@ impl<'a> Engraver<'a> {
             }
             let hg = n.head_glyph();
             for h in &n.heads {
-                let x = n.x + h.shift;
+                let x = n.x + h.shift * s;
                 let y = self.y(n.part, h.pos);
                 // Ledger lines out to the head.
-                let ext = d.leger_line_extension;
+                let ext = d.leger_line_extension * s;
                 let mut lp = 6;
                 while lp <= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W * s + ext, ly, d.leger_line_thickness, n.id));
                     lp += 2;
                 }
                 let mut lp = -6;
                 while lp >= h.pos {
                     let ly = self.y(n.part, lp);
-                    self.push(Item::line(x - ext, ly, x + HEAD_W + ext, ly, d.leger_line_thickness, n.id));
+                    self.push(Item::line(x - ext, ly, x + HEAD_W * s + ext, ly, d.leger_line_thickness, n.id));
                     lp -= 2;
                 }
-                self.push(Item::glyph(shaped_head(hg, h.shape), x, y, h.id));
+                self.push(Item::glyph_scaled(shaped_head(hg, h.shape), x, y, s, h.id));
                 if let Some(a) = h.accidental {
-                    self.push(Item::glyph(a, n.x + h.acc_x, y, h.id));
+                    self.push(Item::glyph_scaled(a, n.x + h.acc_x + self.width(a) * (1.0 - s), y, s, h.id));
                 }
             }
-            let right = n.x + HEAD_W + n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
+            let right = n.x + HEAD_W * s + n.heads.iter().map(|h| h.shift.max(0.0)).fold(0.0f32, f32::max);
             let positions: Vec<i32> = n.heads.iter().map(|h| h.pos).collect();
             self.dots(&n, right, &positions);
             if !n.has_stem() {
@@ -1537,13 +1540,15 @@ impl<'a> Engraver<'a> {
             let mid = top + 2.0;
             let (stem_x, from, mut to) = if n.stem_up {
                 let a = self.font.anchor(Glyph::NoteheadBlack, "stemUpSE").unwrap_or((HEAD_W, 0.168));
-                (n.x + a.0 - st / 2.0, self.y(n.part, lo) - a.1, self.y(n.part, hi) - 3.5)
+                (n.x + a.0 * s - st / 2.0, self.y(n.part, lo) - a.1 * s, self.y(n.part, hi) - 3.5 * s)
             } else {
                 let a = self.font.anchor(Glyph::NoteheadBlack, "stemDownNW").unwrap_or((0.0, -0.168));
-                (n.x + a.0 + st / 2.0, self.y(n.part, hi) - a.1, self.y(n.part, lo) + 3.5)
+                (n.x + a.0 * s + st / 2.0, self.y(n.part, hi) - a.1 * s, self.y(n.part, lo) + 3.5 * s)
             };
-            // Stems of notes far outside the staff reach the middle line.
-            if n.stem_up { to = to.min(mid) } else { to = to.max(mid) }
+            // Stems of notes far outside the staff reach the middle line (not cues).
+            if s == 1.0 {
+                if n.stem_up { to = to.min(mid) } else { to = to.max(mid) }
+            }
             // Room for flags of short values.
             let extra = n.beams().saturating_sub(2) as f32 * 0.75;
             if n.stem_up { to -= extra } else { to += extra }
@@ -1555,7 +1560,7 @@ impl<'a> Engraver<'a> {
             self.push(Item::line(stem_x, from, stem_x, to, st, n.id));
             if n.beams() > 0 {
                 let f = flag_glyph(n.value.base, n.stem_up);
-                self.push(Item::glyph(f, stem_x - st / 2.0, to, n.id));
+                self.push(Item::glyph_scaled(f, stem_x - st / 2.0, to, s, n.id));
             }
         }
     }
@@ -1780,8 +1785,9 @@ impl<'a> Engraver<'a> {
 
     fn draw_beams(&mut self, groups: &[Vec<usize>]) {
         let d = self.font.defaults;
-        let (bt, gap) = (d.beam_thickness, d.beam_thickness + d.beam_spacing);
         for g in groups {
+            let s = if self.notes[g[0]].art & art::CUE != 0 { CUE_SCALE } else { 1.0 };
+            let (bt, gap) = (d.beam_thickness * s, (d.beam_thickness + d.beam_spacing) * s);
             let up = self.notes[g[0]].stem_up;
             let (fi, li) = (g[0], *g.last().unwrap());
             let (xf, xl) = (self.notes[fi].stem_x, self.notes[li].stem_x);
@@ -1793,7 +1799,7 @@ impl<'a> Engraver<'a> {
             for &i in g {
                 let n = self.notes[i].clone();
                 let (lo, hi) = (n.heads[0].pos, n.heads[n.heads.len() - 1].pos);
-                let from = if n.stem_up { self.y(n.part, lo) - 0.168 } else { self.y(n.part, hi) + 0.168 };
+                let from = if n.stem_up { self.y(n.part, lo) - 0.168 * s } else { self.y(n.part, hi) + 0.168 * s };
                 self.push(Item::line(n.stem_x, from, n.stem_x, beam_y(n.stem_x), d.stem_thickness, n.id));
             }
             let quad = |x0: f32, x1: f32, level: u32| {

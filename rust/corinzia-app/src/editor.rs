@@ -9,7 +9,7 @@
 
 use corinzia_edit::{self as edit, DurationSpec, EditResult, Ids};
 use corinzia_model::*;
-use corinzia_score::score::{ids, span};
+use corinzia_score::score::{art, ids, span};
 use corinzia_score::Frac;
 use std::sync::Arc;
 
@@ -31,6 +31,8 @@ struct Clip {
     length: Frac,
     /// Slurs within the passage, and their sides.
     slurs: Vec<([ClipNote; 2], i8)>,
+    /// The first staff's instrument (named over a cue).
+    source: String,
 }
 
 const UNDO_LIMIT: usize = 500;
@@ -2257,8 +2259,9 @@ impl Editor {
             (li >= r.lane_from && li <= r.lane_to && at >= r.from && at < r.to).then(|| (li - r.lane_from, m.lanes[li].voices[vi].index, at - r.from))
         };
         let slurs = m.slurs.iter().filter_map(|s| Some(([inside(&s.from)?, inside(&s.to)?], s.dir))).collect();
+        let source = m.lanes.get(r.lane_from).and_then(|l| l.instrument_at(r.from)).and_then(|i| self.project.instrument(i)).map(|i| i.name.clone()).unwrap_or_default();
         self.status = format!("Copied {} {}, {} beats", lanes.len(), if lanes.len() == 1 { "staff" } else { "staves" }, quarters(length));
-        self.clip = Some(Clip { lanes, length, slurs });
+        self.clip = Some(Clip { lanes, length, slurs, source });
     }
 
     pub fn cut(&mut self) {
@@ -2316,6 +2319,48 @@ impl Editor {
             true
         });
         self.set_range(Range { lane_from: lane0, lane_to: last_lane, from: at, to: end });
+    }
+
+    /// Ctrl+Shift+V: the clipboard's first staff as a cue: small notes in
+    /// voice 2 of the target staff, silent, under the source instrument's name.
+    pub fn paste_cue(&mut self) {
+        let Some(clip) = self.clip.clone() else { return };
+        let Some(m) = self.movement() else { return };
+        if m.lanes.is_empty() {
+            return;
+        }
+        let (lane, at) = match (self.range, self.selection.and_then(|s| self.event_of(s))) {
+            (Some(r), _) => (r.lane_from, r.from),
+            (None, Some((loc, e))) => (loc.lane, e.start),
+            _ => (self.caret_lane.min(m.lanes.len() - 1), self.caret),
+        };
+        let Some(voice) = clip.lanes.first().and_then(|l| l.iter().find(|(_, evs, _)| evs.iter().any(|e| !e.is_rest()))).cloned() else {
+            self.status = "Nothing to cue: copy some notes first".into();
+            return;
+        };
+        let end = at + clip.length;
+        let player = m.lanes[lane].player;
+        let source = clip.source.clone();
+        self.transact("Cue", |m, ids| {
+            extend_to(m, end);
+            let cue: Vec<Event> = voice
+                .1
+                .iter()
+                .map(|e| Event { articulations: e.articulations | art::CUE, dynamic: None, lyrics: vec![], graces: vec![], ..e.clone() })
+                .collect();
+            let Some(vi) = voice_slot(m, lane, 2, true, ids) else { return false };
+            let evs = m.lanes[lane].voices[vi].events.clone();
+            let r = edit::paste_events(&evs, &cue, at, clip.length, false, ids);
+            let v = &mut m.lanes[lane].voices[vi];
+            v.tuplets = edit::tuplets::paste(&v.tuplets, &voice.2, at, clip.length);
+            set_events(m, lane, vi, &r);
+            if !source.is_empty() {
+                edit::add_text(m, player, at, &source, TextKind::Technique, ids);
+            }
+            true
+        });
+        self.set_range(Range { lane_from: lane, lane_to: lane, from: at, to: end });
+        self.status = format!("Cue from {}", if source.is_empty() { "the clipboard" } else { &source });
     }
 
     /// R: the selection again, right after itself; the clipboard is kept.
@@ -2791,7 +2836,7 @@ impl Editor {
         }
         for l in &m.lanes {
             if let Some(t) = l.texts.iter().find(|t| t.id == id) {
-                return Some((if t.kind == TextKind::Expression { PopoverKind::Expression } else { PopoverKind::Technique }, t.text.clone()));
+                return Some((if t.kind == TextKind::Expression { PopoverKind::Expression } else { PopoverKind::Technique }, edit::shown_text(t)));
             }
             if let Some(c) = l.chords.iter().find(|c| c.id == id) {
                 return Some((PopoverKind::Chord, c.text.clone()));
@@ -3764,5 +3809,35 @@ mod tests {
         let snare = Pitch { step: 0, alter: 0, octave: 5 };
         assert_eq!(e.drum_name(1, Frac::ZERO, snare).as_deref(), Some("Snare drum"));
         assert_eq!(e.project.sounding_key(drums.id, snare.midi_key()), 38);
+    }
+
+    #[test]
+    fn cues_and_part_only_texts() {
+        let mut e = blank();
+        quarters_cdef(&mut e);
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: f(1, 1) });
+        e.copy();
+        e.select(None);
+        e.set_range(Range { lane_from: 1, lane_to: 1, from: f(1, 1), to: f(2, 1) });
+        e.paste_cue();
+        let l = &e.movement().unwrap().lanes[1];
+        let cue = l.voices.iter().find(|v| v.index == 2).unwrap();
+        let notes: Vec<&Event> = cue.events.iter().filter(|x| !x.is_rest()).collect();
+        assert_eq!(notes.len(), 4);
+        assert!(notes.iter().all(|x| x.articulations & art::CUE != 0 && x.start >= f(1, 1)));
+        assert_eq!((l.texts[0].text.as_str(), l.texts[0].at), ("Flute", f(1, 1)));
+        assert_eq!(e.status, "Cue from Flute");
+        // Cues are silent.
+        assert_eq!(corinzia_perform::perform(e.movement().unwrap()).notes.len(), 4, "the flute's four notes only");
+        // A text for the parts only: not in the score, in the part.
+        e.set_range(Range { lane_from: 0, lane_to: 0, from: Frac::ZERO, to: f(1, 4) });
+        e.apply_popover(PopoverKind::Expression, "parts: solo").unwrap();
+        let t = e.movement().unwrap().lanes[0].texts.iter().find(|t| t.text == "solo").unwrap().clone();
+        assert_eq!(t.shown, corinzia_model::Shown::Parts);
+        assert_eq!(edit::shown_text(&t), "parts: solo");
+        let m = e.movement().unwrap();
+        let has = |s: &corinzia_score::score::Score| s.parts.iter().any(|p| p.texts.iter().any(|x| x.text == "solo"));
+        assert!(!has(&corinzia_model::notation::score(&e.project, m)));
+        assert!(has(&corinzia_model::notation::part_score(&e.project, m, m.lanes[0].player)));
     }
 }

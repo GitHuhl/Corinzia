@@ -59,7 +59,7 @@ pub fn project() -> Project {
             player,
             changes: vec![InstrumentChange { id: 40 + k as u64, at: Frac::ZERO, instrument: inst }],
             clefs: vec![],
-            texts: if k == 0 { vec![TextItem { id: 50, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }] } else { vec![] },
+            texts: if k == 0 { vec![TextItem { id: 50, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression, shown: Shown::Both }] } else { vec![] },
             chords: vec![],
             lines: vec![],
             voices: vec![Voice { id: 60 + k as u64, index: 1, events: Arc::new(events), tuplets: vec![] }],

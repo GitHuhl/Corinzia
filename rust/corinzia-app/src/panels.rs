@@ -141,6 +141,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("❐", false, false, "Copy (Ctrl+C)", Action::Copy),
         tool("✂", false, false, "Cut (Ctrl+X)", Action::Cut),
         tool("❏", false, ed.has_clip(), "Paste (Ctrl+V)", Action::Paste),
+        tool("❏ᶜ", false, ed.has_clip(), "Paste as a cue: small, silent, in voice 2 (Ctrl+Shift+V)", Action::PasteCue),
+        tool("ᶜ", false, false, "Cue size: small and silent (or back)", Action::Articulation(corinzia_score::score::art::CUE)),
         tool("↻", false, false, "Repeat selection (R)", Action::Repeat),
         tool("⌫", false, false, "Delete (Del)", Action::Delete),
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),

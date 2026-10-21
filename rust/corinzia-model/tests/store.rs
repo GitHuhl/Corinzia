@@ -41,7 +41,7 @@ fn sample() -> Project {
             player: 2,
             changes: vec![InstrumentChange { id: 23, at: Frac::ZERO, instrument: 3 }],
             clefs: vec![ClefChange { id: 24, at: Frac::int(3), clef: "bass".into() }],
-            texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
+            texts: vec![TextItem { id: 25, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression, shown: Shown::Parts }],
             chords: vec![ChordSymbol { id: 77, at: Frac::new(1, 4), text: "F♯m7♭5/E".into() }],
             lines: vec![LineSpan { id: 40, from: Frac::ZERO, to: Frac::int(1), kind: LineKind::Octave(1) }],
             voices: vec![Voice { id: 26, index: 1, events: Arc::new(events), tuplets: vec![Tuplet { start: Frac::int(5), length: Frac::new(1, 4), actual: 3, normal: 2 }] }],

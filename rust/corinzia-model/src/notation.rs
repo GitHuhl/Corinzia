@@ -107,7 +107,7 @@ fn bar_at_or_after(m: &Movement, at: corinzia_score::Frac) -> corinzia_score::Fr
 /// One player's part: their staves alone, as written (transposed), named
 /// in the header.
 pub fn part_score(project: &Project, m: &Movement, player: Id) -> sc::Score {
-    let mut s = score_as(project, m, true);
+    let mut s = score_for(project, m, true, true);
     let keep: Vec<bool> = m.lanes.iter().map(|l| l.player == player).collect();
     let mut k = 0;
     s.parts.retain(|_| {
@@ -126,6 +126,11 @@ pub fn part_score(project: &Project, m: &Movement, player: Id) -> sc::Score {
 /// The movement for the engraver: at concert pitch, or `transposed` with
 /// each transposing instrument's notes, key and chord symbols as written.
 pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score {
+    score_for(project, m, transposed, false)
+}
+
+/// The movement for the score, or (`part`) with the texts the parts show.
+fn score_for(project: &Project, m: &Movement, transposed: bool, part: bool) -> sc::Score {
     let groups = bracket_groups(project, m);
     let parts = m
         .lanes
@@ -144,6 +149,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
             let mut texts: Vec<sc::Text> = lane
                 .texts
                 .iter()
+                .filter(|t| t.shown != if part { Shown::Score } else { Shown::Parts })
                 .map(|t| sc::Text { id: t.id, at: t.at, text: t.text.clone(), technique: t.kind == TextKind::Technique })
                 .collect();
             for c in lane.changes.iter().skip(1) {

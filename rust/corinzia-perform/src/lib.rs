@@ -428,7 +428,7 @@ pub fn perform(m: &Movement) -> Performance {
                 let mut consumed: HashSet<Id> = HashSet::new(); // tie continuations
                 let shape = expressive_shape(evs, voice_slurs.get(&(li, vi)).map(Vec::as_slice).unwrap_or(&[]));
                 for (ei, ev) in evs.iter().enumerate() {
-                    if ev.is_rest() || ev.start < a || ev.start >= b {
+                    if ev.is_rest() || ev.articulations & art::CUE != 0 || ev.start < a || ev.start >= b {
                         continue;
                     }
                     let Some(inst) = lane.instrument_at(ev.start) else { continue };

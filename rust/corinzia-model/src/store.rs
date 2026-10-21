@@ -318,6 +318,11 @@ pub fn load(path: &Path) -> Result<Project> {
                         at: frac(&t["at"]),
                         text: t["t"].as_str().unwrap_or("").into(),
                         kind: if t["k"].as_str() == Some("t") { TextKind::Technique } else { TextKind::Expression },
+                        shown: match t["s"].as_str() {
+                            Some("s") => Shown::Score,
+                            Some("p") => Shown::Parts,
+                            _ => Shown::Both,
+                        },
                     });
                 }
             }
@@ -614,7 +619,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.clef})));
             texts.extend(l.texts.iter().map(|t| json!({
                 "id": t.id, "li": li, "at": jfrac(t.at), "t": t.text,
-                "k": if t.kind == TextKind::Technique { "t" } else { "x" }
+                "k": if t.kind == TextKind::Technique { "t" } else { "x" },
+                "s": match t.shown { Shown::Both => "", Shown::Score => "s", Shown::Parts => "p" }
             })));
             lines.extend(l.lines.iter().map(|x| json!({"id": x.id, "li": li, "from": jfrac(x.from), "to": jfrac(x.to), "k": x.kind.code()})));
         }

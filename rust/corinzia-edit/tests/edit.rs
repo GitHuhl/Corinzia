@@ -668,7 +668,7 @@ fn filters_pick_notes_by_place_pitch_voice_and_marks() {
         player: 1,
         changes: vec![],
         clefs: vec![],
-        texts: vec![TextItem { id: 70, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression }],
+        texts: vec![TextItem { id: 70, at: Frac::ZERO, text: "dolce".into(), kind: TextKind::Expression, shown: Shown::Both }],
         chords: vec![ChordSymbol { id: 80, at: Frac::ZERO, text: "C".into() }],
         lines: vec![],
         voices: vec![Voice { id: 6, index: 1, events: Arc::new(v1), tuplets: vec![] }, Voice { id: 7, index: 2, events: Arc::new(v2), tuplets: vec![] }],

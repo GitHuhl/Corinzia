@@ -870,7 +870,7 @@ impl App {
         let audition = matches!(a, Action::Note { .. } | Action::Pitch(_) | Action::Nudge(_) | Action::Accidental(_) | Action::Transpose(_) | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_));
         let reveal = matches!(
             a,
-            Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste
+            Action::Note { .. } | Action::Rest | Action::Step { .. } | Action::Edge { .. } | Action::Staff(_) | Action::Extend(_) | Action::CaretBy(_) | Action::CaretStaff(_) | Action::Paste | Action::PasteCue
         );
         let task = self.act_inner(a);
         if reveal {
@@ -997,6 +997,7 @@ impl App {
             Action::Copy => ed.copy(),
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
+            Action::PasteCue => ed.paste_cue(),
             Action::SelectAll => ed.select_all(),
             Action::Beam(mode) => ed.set_beam(mode),
             Action::Break { page } => {
