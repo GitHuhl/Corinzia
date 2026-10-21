@@ -186,10 +186,11 @@ Shift+A rehearsal mark; Ctrl+B inserts a bar. The full key map is in
 runs of empty bars as multi-bar rests; it edits like the score. Export →
 Parts (PDF) prints every part. `--part N` opens on player N's part.
 
-**Movements:** the Structure panel lists them (new, rename, delete);
+**Movements:** "All movements in view" (Structure panel) shows them one
+after another on the pages, as printed; a click on one edits it. The
+Structure panel lists them (new, rename, delete);
 Ctrl+PageUp/PageDown or the arrows in the status bar switch. PDF export
 prints the whole work, each movement from a new page.
 
 Not yet: bus routing and plugin delay compensation (tracks mix straight to
-the output), automation playback, saving plugin settings, and the movements shown
-one after another in the view.
+the output), automation playback and saving plugin settings.

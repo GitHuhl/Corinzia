@@ -58,6 +58,8 @@ pub enum Action {
     Break { page: bool },
     /// The Layout card.
     Layout,
+    /// Show every movement on the pages, one after another, or one.
+    AllMovements,
     /// Chords of one staff spread over the selected staves.
     Explode,
     /// The selected staves combined into chords on one.

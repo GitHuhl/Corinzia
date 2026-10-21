@@ -172,7 +172,7 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
     .into()
 }
 
-pub fn structure(ed: &Editor) -> Element<'_, Action> {
+pub fn structure(ed: &Editor, all_movements: bool) -> Element<'_, Action> {
     let pop = |label, kind: PopoverKind, key| wide(label, false, key, Action::Popover(kind));
     let movements: Vec<Element<'_, Action>> = ed
         .project
@@ -187,6 +187,7 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         wide("New movement", false, "After this one, with the same instruments", Action::AddMovement),
         pop("Rename movement…", PopoverKind::MovementTitle, "The movement's title"),
         wide("Delete movement", false, "This movement (undo brings it back)", Action::DeleteMovement),
+        wide("All movements in view", all_movements, "Every movement on the pages, one after another (Page view); a click edits the one clicked", Action::AllMovements),
         heading("At the selection or caret"),
         pop("Key signature…", PopoverKind::Key, "Shift+K"),
         pop("Time signature…", PopoverKind::Time, "Shift+M"),
@@ -222,10 +223,10 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
     .into()
 }
 
-pub fn panel(ed: &Editor, which: Panel) -> Element<'_, Action> {
+pub fn panel(ed: &Editor, which: Panel, all_movements: bool) -> Element<'_, Action> {
     let body = match which {
         Panel::Notes => notes(ed),
-        Panel::Structure => structure(ed),
+        Panel::Structure => structure(ed, all_movements),
     };
     container(scrollable(container(body).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 16.0, left: 12.0 })).height(Length::Fill)).width(WIDTH).height(Length::Fill).into()
 }

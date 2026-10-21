@@ -443,6 +443,20 @@ impl Editor {
         self.switch_movement_force(at);
     }
 
+    /// The movement holding element `id` (a note, rest, mark or text).
+    pub fn movement_of(&self, id: Id) -> Option<usize> {
+        let id = ids::as_dynamic(id).or(ids::as_lyric(id).map(|l| l.0)).unwrap_or(id);
+        self.project.movements.iter().position(|m| {
+            m.lanes.iter().any(|l| {
+                l.voices.iter().any(|v| v.events.iter().any(|e| e.id == id || e.heads.iter().any(|h| h.id == id) || e.graces.iter().any(|g| g.id == id || g.heads.iter().any(|h| h.id == id))))
+                    || l.texts.iter().any(|t| t.id == id)
+                    || l.chords.iter().any(|c| c.id == id)
+                    || l.clefs.iter().any(|c| c.id == id)
+            }) || edit::describe_item(m, id).is_some()
+                || m.slurs.iter().any(|s| s.id == id)
+        })
+    }
+
     fn switch_movement_force(&mut self, i: usize) {
         self.movement = i.min(self.project.movements.len().saturating_sub(1));
         self.selection = None;

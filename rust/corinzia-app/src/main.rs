@@ -263,6 +263,12 @@ struct App {
     part: Option<corinzia_model::Id>,
     /// The lane each engraved staff shows.
     staff_lanes: Vec<usize>,
+    /// Every movement on the pages, one after another (Page view).
+    all_movements: bool,
+    /// The movement each page shows.
+    page_movements: Vec<usize>,
+    /// The movement edited when the view was last brought up to date.
+    shown_movement: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -468,6 +474,9 @@ impl App {
             new_score: None,
             players: None,
             layout: None,
+            all_movements: false,
+            page_movements: Vec::new(),
+            shown_movement: 0,
             browser: None,
             confirm: None,
             path,
@@ -522,6 +531,13 @@ impl App {
         .into()
     }
 
+    /// The pages showing movement `mi`.
+    fn pages_of(&self, mi: usize) -> std::ops::Range<usize> {
+        let first = self.page_movements.iter().position(|&m| m == mi).unwrap_or(0);
+        let n = self.page_movements.iter().filter(|&&m| m == mi).count();
+        first..first + n
+    }
+
     /// Native engraving of the current movement (milliseconds).
     fn engrave(&mut self) {
         self.engraved = Some(self.editor.music_revision);
@@ -534,11 +550,37 @@ impl App {
         let part = self.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
         self.staff_lanes = (0..m.lanes.len()).filter(|&li| part.is_none_or(|p| m.lanes[li].player == p)).collect();
         let project = &self.editor.project;
-        let (score, (opt, spec)) = match part {
-            Some(p) => (corinzia_model::notation::part_score(project, m, p), files::page_setup(&project.part_layout, true)),
-            None => (corinzia_model::notation::score_as(project, m, self.editor.transposed), files::page_setup(&project.layout, false)),
+        let score_of = |mi: usize| {
+            let m = &project.movements[mi];
+            match part {
+                Some(p) => (corinzia_model::notation::part_score(project, m, p), files::page_setup(&project.part_layout, true)),
+                None => (corinzia_model::notation::score_as(project, m, self.editor.transposed), files::page_setup(&project.layout, false)),
+            }
         };
+        let (score, (opt, spec)) = score_of(self.editor.movement);
+        self.page_movements.clear();
         self.pages = match self.view {
+            // Every movement, as printed: each from a new page, the work's
+            // header on the first, page numbers running on.
+            View::Page if self.all_movements => {
+                let mut pages = Vec::new();
+                for mi in 0..project.movements.len() {
+                    if part.is_some_and(|p| !project.movements[mi].lanes.iter().any(|l| l.player == p)) {
+                        continue;
+                    }
+                    let (mut score, (opt, spec)) = score_of(mi);
+                    if mi > 0 {
+                        for t in [&mut score.work_title, &mut score.composer, &mut score.subtitle, &mut score.lyricist, &mut score.arranger, &mut score.copyright] {
+                            t.clear();
+                        }
+                    }
+                    let spec = corinzia_layout::PageSpec { first_page: pages.len() + 1, ..spec };
+                    let these = layout_pages(&score, &opt, &spec);
+                    self.page_movements.extend(std::iter::repeat_n(mi, these.len()));
+                    pages.extend(these);
+                }
+                pages
+            }
             View::Page => layout_pages(&score, &opt, &spec),
             View::Panorama => {
                 let mut l = layout_line(&score, &opt);
@@ -562,6 +604,9 @@ impl App {
                 vec![l]
             }
         };
+        if self.page_movements.len() != self.pages.len() {
+            self.page_movements = vec![self.editor.movement; self.pages.len()];
+        }
         self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
         self.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
@@ -570,6 +615,11 @@ impl App {
     fn sync(&mut self) {
         if self.engraved != Some(self.editor.music_revision) {
             self.engrave();
+        }
+        // Another movement edited, its pages out of sight: go to its first.
+        if self.shown_movement != self.editor.movement {
+            self.shown_movement = self.editor.movement;
+            self.show_movement_pages();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
         if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
@@ -780,6 +830,25 @@ impl App {
         self.pan = self.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
     }
 
+    /// Scrolls to the current movement's first page if none of its pages
+    /// is in view (several movements shown).
+    fn show_movement_pages(&mut self) {
+        let pages = self.pages_of(self.editor.movement);
+        if !self.all_movements || pages.is_empty() {
+            return;
+        }
+        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
+        let px = self.zoom * score_view::BASE_PX;
+        let vp = self.viewport();
+        let visible = pages.clone().any(|k| {
+            let (y0, y1) = (origins[k].y * px + self.pan.y, (origins[k].y + self.pages[k].height) * px + self.pan.y);
+            y1 > 0.0 && y0 < vp.height
+        });
+        if !visible {
+            self.pan.y = 24.0 - origins[pages.start].y * px;
+        }
+    }
+
     /// Ctrl+0: the page fills the canvas's width.
     fn fit_width(&mut self) {
         let Some(page) = self.pages.first() else { return };
@@ -930,6 +999,14 @@ impl App {
                 if let Err(e) = ed.toggle_break(page, self.part) {
                     ed.status = e;
                 }
+            }
+            Action::AllMovements => {
+                self.all_movements = !self.all_movements;
+                if self.all_movements && self.view != View::Page {
+                    self.view = View::Page;
+                }
+                self.engraved = None;
+                ed.status = if self.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
             }
             Action::Layout => {
                 let p = &ed.project;
@@ -1390,6 +1467,12 @@ impl App {
             Message::Canvas(ViewEvent::Click { hit, at, shift }) => {
                 self.export_menu = false;
                 self.editor.status.clear();
+                // Another movement's page: it becomes the one edited.
+                let clicked = at.map(|p| self.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
+                if let Some(mi) = clicked.filter(|mi| *mi != self.editor.movement) {
+                    self.editor.switch_movement(mi);
+                    self.sync();
+                }
                 self.click(hit, at, shift)
             }
             Message::Canvas(ViewEvent::Marquee { ids, shift }) => self.editor.select_elements(&ids, shift),
@@ -1661,7 +1744,11 @@ impl App {
             selected: &self.selected,
             caret,
             highlight,
-            playhead: self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q),
+            playhead: self.playback.playhead().and_then(|(id, q)| {
+                let mi = ed.project.movements.iter().position(|m| m.id == id)?;
+                (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
+            }),
+            active: self.pages_of(ed.movement),
             slur: ed.selected_slur(),
             cache: &self.cache,
         })
@@ -1789,7 +1876,7 @@ impl App {
             ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
         ]))
         .padding([10, 12]);
-        let side = container(column![tabs, panels::panel(ed, self.panel).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
+        let side = container(column![tabs, panels::panel(ed, self.panel, self.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
         let vline = || container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
         let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
 
@@ -2339,7 +2426,7 @@ mod tests {
         // A note, then a click on the paper just above the staff.
         let head = a.editor.project.movements[0].lanes[0].voices[0].events[0].heads[0].id;
         a.editor.select(Some(head));
-        let above = score_view::StaffPoint { part: 0, quarter: 0.5, step_below_top: -6 };
+        let above = score_view::StaffPoint { page: 0, part: 0, quarter: 0.5, step_below_top: -6 };
         let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(above), shift: false }));
         assert!(a.editor.selection.is_none() && a.editor.range.is_none());
         // A dynamic, then Escape.
@@ -2380,7 +2467,7 @@ mod tests {
         assert!(a.selected.contains(&slur), "drawn selected");
         // Dragging the end handle over to the fourth note: the end snaps from
         // note to note, and the whole drag is one undo step.
-        let q = |e: &corinzia_model::Event| score_view::StaffPoint { part: 0, quarter: quarters(e.start), step_below_top: 4 };
+        let q = |e: &corinzia_model::Event| score_view::StaffPoint { page: 0, part: 0, quarter: quarters(e.start), step_below_top: 4 };
         for k in [2, 3] {
             let _ = a.update(Message::Canvas(ViewEvent::SlurDrag { handle: SlurHandle::End, at: q(&n[k]) }));
         }
@@ -2507,7 +2594,7 @@ mod tests {
         assert!(a.pages[0].items.iter().any(|i| matches!(i, corinzia_layout::display::Item::Glyph { glyph, .. } if *glyph == eight)));
         // A click on the part's first staff enters into the piano's right hand.
         a.editor.set_input_mode(true);
-        a.click(None, Some(StaffPoint { part: 0, quarter: 0.0, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 0.0, step_below_top: 4 }), false);
         assert_eq!(a.editor.caret_lane, 2);
         assert!(!a.editor.project.movements[0].lanes[2].voices[0].events.iter().all(|e| e.is_rest()));
         // The clarinet's part is written a tone up: concert C is written D.
@@ -2620,20 +2707,20 @@ mod tests {
         let mut a = app(View::Page);
         a.sync();
         // Between notes of bar 2 on the cello's staff, on its middle line.
-        a.click(None, Some(StaffPoint { part: 1, quarter: 5.5, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 1, quarter: 5.5, step_below_top: 4 }), false);
         let r = a.editor.range.expect("a bar selected");
         assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (1, 1, Frac::int(1), Frac::int(2)));
         // Shift-click in bar 4 of the flute: bars 2-4 on both staves.
-        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 2 }), true);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 13.0, step_below_top: 2 }), true);
         let r = a.editor.range.unwrap();
         assert_eq!((r.lane_from, r.lane_to, r.from, r.to), (0, 1, Frac::int(1), Frac::int(4)));
         // Far from any staff: the selection clears.
-        a.click(None, Some(StaffPoint { part: 0, quarter: 13.0, step_below_top: 30 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 13.0, step_below_top: 30 }), false);
         assert!(a.editor.range.is_none());
         // In note input a click still enters a note.
         a.editor.set_input_mode(true);
         let rev = a.editor.music_revision;
-        a.click(None, Some(StaffPoint { part: 0, quarter: 1.0, step_below_top: 4 }), false);
+        a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 1.0, step_below_top: 4 }), false);
         assert!(a.editor.range.is_none() && a.editor.selection.is_some() && a.editor.music_revision > rev);
     }
 
@@ -3093,6 +3180,39 @@ mod tests {
         a.editor.select(None);
         a.editor.caret = corinzia_score::Frac::ZERO;
         assert!(a.editor.toggle_break(false, None).is_err());
+    }
+
+    #[test]
+    fn all_movements_one_after_another_in_the_view() {
+        let mut a = app(View::Page);
+        a.editor.add_movement();
+        a.editor.rename_movement("II. Allegro");
+        a.editor.switch_movement(0);
+        a.sync();
+        let one = a.pages.len();
+        let _ = a.update(Message::Act(Action::AllMovements));
+        a.sync();
+        assert!(a.pages.len() > one, "both movements' pages");
+        assert_eq!(a.page_movements.first(), Some(&0));
+        assert_eq!(a.page_movements.last(), Some(&1));
+        let second = a.page_movements.iter().position(|&m| m == 1).unwrap();
+        assert_eq!(a.pages_of(1), second..a.pages.len());
+        // The second movement's page is headed by its own title, not the work's.
+        let texts = |p: &DisplayList| p.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+        assert!(texts(&a.pages[second]).contains(&"II. Allegro".to_string()));
+        assert!(!texts(&a.pages[second]).contains(&"Serenade (demo)".to_string()));
+        // A click on it (empty paper, its first staff) edits that movement.
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(StaffPoint { page: second, part: 0, quarter: 0.0, step_below_top: 4 }), shift: false }));
+        assert_eq!(a.editor.movement, 1);
+        // A click on a note of the first movement takes the editing back.
+        let first_note = a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| !e.is_rest()).unwrap().heads[0].id;
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(first_note), at: None, shift: false }));
+        assert_eq!(a.editor.movement, 0);
+        assert_eq!(a.editor.selection, Some(first_note));
+        // Off again: one movement.
+        let _ = a.update(Message::Act(Action::AllMovements));
+        a.sync();
+        assert_eq!(a.pages.len(), one);
     }
 
     #[test]
