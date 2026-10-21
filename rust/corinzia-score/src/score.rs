@@ -211,7 +211,7 @@ impl Part {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Part {
     pub name: String,
     pub abbr: String,
@@ -319,7 +319,7 @@ pub struct Text {
     pub technique: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Voice {
     pub index: u8,
     pub events: Vec<Event>,

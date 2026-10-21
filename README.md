@@ -75,6 +75,12 @@ PipeWire.
 * **Cross-staff notes:** Ctrl+Shift+↓/↑ (or ⤓/⤒ in the Notes panel) writes
   the selected notes on the player's staff below or above, in that staff's
   clef; a beam with notes on both staves runs between them.
+* **Condensing** (Layout → Score → Condense): in the score, neighbouring
+  players of one instrument ("Flute 1", "Flute 2") share a staff named
+  "Flute 1.2", the first player stems up and the second down. A bar they play
+  alike is written once under "a 2", and the second player's resting bars
+  disappear. Parts are never condensed; clicks on a shared staff edit the
+  first player.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

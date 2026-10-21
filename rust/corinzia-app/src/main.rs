@@ -127,6 +127,7 @@ struct LayoutFields {
     system_gap: String,
     bars: String,
     page_numbers: bool,
+    condense: bool,
 }
 
 impl LayoutFields {
@@ -149,6 +150,7 @@ impl LayoutFields {
             system_gap: n(l.system_gap),
             bars: if l.bars_per_system == 0 { String::new() } else { l.bars_per_system.to_string() },
             page_numbers: l.page_numbers,
+            condense: l.condense,
         }
     }
 
@@ -169,6 +171,7 @@ impl LayoutFields {
             system_gap: num(&self.system_gap, "System gap (spaces)", 0.0, 40.0)?,
             bars_per_system: if self.bars.trim().is_empty() { 0 } else { num(&self.bars, "Bars per system", 1.0, 64.0)? as u32 },
             page_numbers: self.page_numbers,
+            condense: self.condense,
         })
     }
 }
@@ -180,6 +183,7 @@ enum LayoutMsg {
     Field(LayoutField, String),
     Landscape(bool),
     PageNumbers(bool),
+    Condense(bool),
     Text(usize, String),
     Defaults,
     Apply,
@@ -548,16 +552,24 @@ impl App {
         let t = Instant::now();
         // A part: the player's staves, as written, with multi-bar rests.
         let part = self.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
-        self.staff_lanes = (0..m.lanes.len()).filter(|&li| part.is_none_or(|p| m.lanes[li].player == p)).collect();
         let project = &self.editor.project;
         let score_of = |mi: usize| {
             let m = &project.movements[mi];
             match part {
-                Some(p) => (corinzia_model::notation::part_score(project, m, p), files::page_setup(&project.part_layout, true)),
-                None => (corinzia_model::notation::score_as(project, m, self.editor.transposed), files::page_setup(&project.layout, false)),
+                Some(p) => {
+                    let s = corinzia_model::notation::part_score(project, m, p);
+                    let lanes = (0..m.lanes.len()).filter(|&li| m.lanes[li].player == p).collect();
+                    ((s, lanes), files::page_setup(&project.part_layout, true))
+                }
+                None => {
+                    let mut s = corinzia_model::notation::score_as(project, m, self.editor.transposed);
+                    let lanes = if project.layout.condense { corinzia_model::notation::condense(&mut s) } else { (0..s.parts.len()).collect() };
+                    ((s, lanes), files::page_setup(&project.layout, false))
+                }
             }
         };
-        let (score, (opt, spec)) = score_of(self.editor.movement);
+        let ((score, lanes), (opt, spec)) = score_of(self.editor.movement);
+        self.staff_lanes = lanes;
         self.page_movements.clear();
         self.pages = match self.view {
             // Every movement, as printed: each from a new page, the work's
@@ -568,7 +580,7 @@ impl App {
                     if part.is_some_and(|p| !project.movements[mi].lanes.iter().any(|l| l.player == p)) {
                         continue;
                     }
-                    let (mut score, (opt, spec)) = score_of(mi);
+                    let ((mut score, _), (opt, spec)) = score_of(mi);
                     if mi > 0 {
                         for t in [&mut score.work_title, &mut score.composer, &mut score.subtitle, &mut score.lyricist, &mut score.arranger, &mut score.copyright] {
                             t.clear();
@@ -1245,6 +1257,7 @@ impl App {
             }
             LayoutMsg::Landscape(on) => f.landscape = on,
             LayoutMsg::PageNumbers(on) => f.page_numbers = on,
+            LayoutMsg::Condense(on) => f.condense = on,
             LayoutMsg::Text(i, v) => d.texts[i] = v,
             LayoutMsg::Defaults => *f = LayoutFields::of(&if d.parts { corinzia_model::Layout::parts() } else { corinzia_model::Layout::default() }),
             LayoutMsg::Cancel => self.layout = None,
@@ -2012,7 +2025,7 @@ fn layout_card(d: &LayoutDialog) -> Element<'_, Message> {
     let mut card = column![
         row![text("Layout").size(18).font(bold), panels::spacer(), segmented(vec![("Score", !d.parts, lm(LayoutMsg::Tab(false))), ("Parts", d.parts, lm(LayoutMsg::Tab(true)))])].align_y(iced::Alignment::Center),
         row![column![text("Page").size(12).style(theme::dim), size].spacing(3).width(Length::Fill), field("Width (mm)", &f.width, LayoutField::Width), field("Height (mm)", &f.height, LayoutField::Height)].spacing(10),
-        row![toggle("Portrait", !f.landscape, LayoutMsg::Landscape(false)), toggle("Landscape", f.landscape, LayoutMsg::Landscape(true)), panels::spacer(), toggle("Page numbers", f.page_numbers, LayoutMsg::PageNumbers(!f.page_numbers))].spacing(6),
+        row![toggle("Portrait", !f.landscape, LayoutMsg::Landscape(false)), toggle("Landscape", f.landscape, LayoutMsg::Landscape(true)), panels::spacer(), toggle("Page numbers", f.page_numbers, LayoutMsg::PageNumbers(!f.page_numbers)), { let e: iced::Element<'_, Message> = if d.parts { panels::spacer().into() } else { toggle("Condense", f.condense, LayoutMsg::Condense(!f.condense)).into() }; e }].spacing(6),
         row![field("Staff size (mm)", &f.staff, LayoutField::Staff), field("Margins top/bottom (mm)", &f.margin_y, LayoutField::MarginY), field("Margins sides (mm)", &f.margin_x, LayoutField::MarginX)].spacing(10),
         row![field("Note spacing (%)", &f.spacing, LayoutField::Spacing), field("Staff distance (spaces)", &f.staff_distance, LayoutField::StaffDistance), field("System gap (spaces)", &f.system_gap, LayoutField::SystemGap), field("Bars per system", &f.bars, LayoutField::Bars)].spacing(10),
         text("Breaks: Enter puts a system break before the selected bar, Ctrl+Enter a page break (in the part shown, or the full score).").size(11).style(theme::dim),
@@ -2581,6 +2594,41 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn condensing_puts_two_flutes_on_one_staff() {
+        let p = files::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
+        let mut a = App::new(p, None, View::Page, String::new());
+        // Bar 1 in unison, bar 2 apart; the cello rests.
+        for (lane, notes) in [(0, [0, 1, 2, 3, 4, 4, 4, 4]), (1, [0, 1, 2, 3, 2, 2, 2, 2])] {
+            a.editor.select(None);
+            a.editor.set_input_mode(true);
+            a.editor.caret_lane = lane;
+            a.editor.caret = corinzia_score::Frac::ZERO;
+            for s in notes {
+                a.editor.enter_note(s, false);
+            }
+            a.editor.set_input_mode(false);
+        }
+        let mut l = a.editor.project.layout.clone();
+        l.condense = true;
+        let parts = a.editor.project.part_layout.clone();
+        a.editor.set_layout(l, parts, Default::default());
+        a.sync();
+        assert_eq!(a.staff_lanes, [0, 2], "the flutes on staff 0, the cello on 1");
+        let m = a.editor.movement().unwrap();
+        let mut s = corinzia_model::notation::score(&a.editor.project, m);
+        corinzia_model::notation::condense(&mut s);
+        assert_eq!(s.parts[0].name, "Flute 1.2");
+        assert!(s.parts[0].texts.iter().any(|t| t.text == "a 2" && t.at.is_zero()));
+        let second = s.parts[0].voices.iter().find(|v| v.index == 2).unwrap();
+        assert!(second.events.iter().all(|e| e.start >= corinzia_score::Frac::int(1)), "bar 1 written once");
+        assert_eq!(second.events.iter().filter(|e| !e.pitches.is_empty()).count(), 4);
+        // Parts are never condensed.
+        let _ = a.update(Message::SetPart(Some(a.editor.project.players[1].id)));
+        a.sync();
+        assert_eq!(a.staff_lanes, [1]);
     }
 
     #[test]

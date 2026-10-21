@@ -480,6 +480,7 @@ fn layout_from(v: &Value, d: Layout) -> Layout {
         system_gap: f("system_gap", d.system_gap),
         bars_per_system: v["bars_per_system"].as_u64().unwrap_or(d.bars_per_system as u64) as u32,
         page_numbers: v["page_numbers"].as_bool().unwrap_or(d.page_numbers),
+        condense: v["condense"].as_bool().unwrap_or(d.condense),
     }
 }
 
@@ -488,7 +489,7 @@ fn layout_json(l: &Layout) -> Value {
         "page_width_mm": l.page_width_mm, "page_height_mm": l.page_height_mm, "landscape": l.landscape,
         "staff_mm": l.staff_mm, "margin_y_mm": l.margin_y_mm, "margin_x_mm": l.margin_x_mm,
         "spacing": l.spacing, "staff_distance": l.staff_distance, "system_gap": l.system_gap,
-        "bars_per_system": l.bars_per_system, "page_numbers": l.page_numbers,
+        "bars_per_system": l.bars_per_system, "page_numbers": l.page_numbers, "condense": l.condense,
     })
 }
 

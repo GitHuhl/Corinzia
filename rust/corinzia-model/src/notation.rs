@@ -308,3 +308,104 @@ fn score_for(project: &Project, m: &Movement, transposed: bool, part: bool) -> s
         slurs: m.slurs.clone(),
     }
 }
+
+/// A name's stem and trailing number: ("Flute", "1") for "Flute 1".
+fn numbered(name: &str) -> (&str, &str) {
+    let t = name.trim_end();
+    let stem = t.trim_end_matches(|c: char| c.is_ascii_digit());
+    if stem.len() == t.len() { (t, "") } else { (stem.trim_end(), &t[stem.len()..]) }
+}
+
+/// Bar starts of a score, and its end.
+fn bar_starts(s: &sc::Score) -> Vec<corinzia_score::Frac> {
+    let mut out = vec![corinzia_score::Frac::ZERO];
+    let mut t = corinzia_score::Frac::ZERO;
+    while t < s.length {
+        let len = s.meter.iter().rfind(|x| x.at <= t).map_or(corinzia_score::Frac::int(1), |x| corinzia_score::Frac::new(x.num.max(1), x.den.max(1)));
+        t = t + len;
+        out.push(t.min(s.length));
+    }
+    out
+}
+
+/// Condensing for the score: two neighbouring single-staff players of one
+/// instrument ("Flute 1", "Flute 2") share a staff, the first player's
+/// voice up, the second's down; where they play the same bar it is written
+/// once, under "a 2", and the second player's rests go. Returns, for each
+/// staff now, the staff it came from (the first of a pair).
+pub fn condense(s: &mut sc::Score) -> Vec<usize> {
+    let bars = bar_starts(s);
+    let mut map = Vec::new();
+    let mut parts = Vec::new();
+    let old = std::mem::take(&mut s.parts);
+    let single = |i: usize| !old[i].brace && (i == 0 || !old[i - 1].brace) && old[i].voices.iter().all(|v| v.index == 1 || v.events.is_empty());
+    let mut i = 0;
+    while i < old.len() {
+        let pair = i + 1 < old.len() && {
+            let (a, b) = (&old[i], &old[i + 1]);
+            let (na, nb) = (numbered(&a.name), numbered(&b.name));
+            na.0 == nb.0 && !na.0.is_empty() && a.clef == b.clef && a.transposition == b.transposition && a.group == b.group && single(i) && single(i + 1)
+        };
+        if !pair {
+            parts.push(old[i].clone());
+            map.push(i);
+            i += 1;
+            continue;
+        }
+        let (a, b) = (&old[i], &old[i + 1]);
+        let mut p = a.clone();
+        let (na, nb) = (numbered(&a.name), numbered(&b.name));
+        let nums = |x: &str, y: &str| if x.is_empty() && y.is_empty() { "1.2".to_string() } else { format!("{}.{}", if x.is_empty() { "1" } else { x }, if y.is_empty() { "2" } else { y }) };
+        p.name = format!("{} {}", na.0, nums(na.1, nb.1));
+        let (aa, ab) = (numbered(&a.abbr), numbered(&b.abbr));
+        p.abbr = if aa.0.is_empty() { String::new() } else { format!("{} {}", aa.0, nums(aa.1, ab.1)) };
+        let va: Vec<&sc::Event> = a.voices.iter().flat_map(|v| v.events.iter()).collect();
+        let vb: Vec<&sc::Event> = b.voices.iter().flat_map(|v| v.events.iter()).collect();
+        let in_bar = |evs: &[&sc::Event], from: corinzia_score::Frac, to: corinzia_score::Frac| -> Option<Vec<(corinzia_score::Frac, corinzia_score::Frac, Vec<(u8, i8, i8)>)>> {
+            let mut out = Vec::new();
+            for e in evs.iter().filter(|e| e.start < to && e.start + e.dur > from) {
+                if e.start < from || e.start + e.dur > to {
+                    return None; // across the barline: never the same
+                }
+                out.push((e.start, e.dur, e.pitches.iter().map(|p| (p.step, p.alter, p.octave)).collect()));
+            }
+            Some(out)
+        };
+        let mut drop_b: Vec<(corinzia_score::Frac, corinzia_score::Frac)> = Vec::new();
+        let mut was_unison = false;
+        let mut id = u64::MAX - 1000 - i as u64 * 10000;
+        for w in bars.windows(2) {
+            let (from, to) = (w[0], w[1]);
+            let (ea, eb) = (in_bar(&va, from, to), in_bar(&vb, from, to));
+            let b_rests = eb.as_ref().is_some_and(|x| x.iter().all(|e| e.2.is_empty()));
+            let unison = matches!((&ea, &eb), (Some(x), Some(y)) if x == y && x.iter().any(|e| !e.2.is_empty()));
+            if unison || b_rests {
+                drop_b.push((from, to));
+            }
+            if unison && !was_unison {
+                p.texts.push(sc::Text { id, at: from, text: "a 2".into(), technique: true });
+                id += 1;
+            }
+            was_unison = unison;
+        }
+        let dropped = |e: &sc::Event| drop_b.iter().any(|&(f, t)| e.start >= f && e.start + e.dur <= t);
+        let mut second: Vec<sc::Event> = vb.iter().filter(|e| !dropped(e)).map(|e| (*e).clone()).collect();
+        // Rests in voice 2 only where the second player rests beside the first's notes.
+        second.retain(|e| !e.pitches.is_empty() || va.iter().any(|x| !x.pitches.is_empty() && x.start < e.start + e.dur && e.start < x.start + x.dur));
+        let tuplets = b.voices.iter().flat_map(|v| v.tuplets.iter().copied()).collect();
+        if !second.is_empty() {
+            p.voices.retain(|v| !v.events.is_empty());
+            p.voices.push(sc::Voice { index: 2, events: second, tuplets });
+        }
+        for t in &b.texts {
+            if !p.texts.iter().any(|x| x.at == t.at && x.text == t.text) {
+                p.texts.push(t.clone());
+            }
+        }
+        parts.push(p);
+        map.push(i);
+        i += 2;
+    }
+    s.parts = parts;
+    map
+}

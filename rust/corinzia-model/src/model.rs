@@ -379,12 +379,15 @@ pub struct Layout {
     /// Bars on each system; 0 to let the line breaker choose.
     pub bars_per_system: u32,
     pub page_numbers: bool,
+    /// The score (not the parts) puts pairs of players of one instrument
+    /// on one staff.
+    pub condense: bool,
 }
 
 impl Default for Layout {
     /// A4 with an 18 pt staff, as LilyPond's default.
     fn default() -> Self {
-        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 4.0, bars_per_system: 0, page_numbers: true }
+        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 4.0, bars_per_system: 0, page_numbers: true, condense: false }
     }
 }
 

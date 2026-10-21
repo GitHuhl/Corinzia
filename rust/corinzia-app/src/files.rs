@@ -266,6 +266,9 @@ pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::D
     let mut pages = Vec::new();
     for (i, m) in project.movements.iter().enumerate() {
         let mut score = corinzia_model::notation::score_as(project, m, transposed);
+        if project.layout.condense {
+            corinzia_model::notation::condense(&mut score);
+        }
         if i > 0 {
             score.work_title.clear();
             score.composer.clear();
