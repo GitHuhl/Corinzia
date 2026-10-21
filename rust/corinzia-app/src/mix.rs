@@ -83,8 +83,11 @@ pub fn key_name(k: u8) -> String {
     format!("{}{}", N[(k % 12) as usize], k as i32 / 12 - 1)
 }
 
-/// A switch line's labels: (kind, value, second value) and their choices.
-fn switch_labels(a: corinzia_model::SwitchAction) -> (&'static str, String, Vec<String>, Option<(String, Vec<String>)>) {
+/// A choice and its options, as a pick list shows them.
+type Choice = (String, Vec<String>);
+
+/// A switch line's labels: (kind, value, its choices, the second value).
+fn switch_labels(a: corinzia_model::SwitchAction) -> (&'static str, String, Vec<String>, Option<Choice>) {
     use corinzia_model::SwitchAction::*;
     let numbers = |n: u32, from: u32| (from..from + n).map(|i| i.to_string()).collect::<Vec<_>>();
     match a {

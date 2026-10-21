@@ -170,7 +170,7 @@ mod tests {
         assert_eq!((infos.len(), errors.len(), probed.len()), (builtin + 1, 1, 0), "all from the cache, the crash remembered");
         std::fs::write(&bad, b"changed").unwrap();
         let _ = scan_with(&paths, Some(&cache), |p| fake(p, &mut probed));
-        assert_eq!(probed, [bad.clone()], "only the changed bundle");
+        assert_eq!(probed, std::slice::from_ref(&bad), "only the changed bundle");
         std::fs::remove_dir_all(&dir).ok();
     }
 

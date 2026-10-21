@@ -132,6 +132,12 @@ PipeWire.
   articulations (staccato, accent, legato, …; for that note). "ord." is the
   normal sound. Switches are sent just before the notes that need them and
   only when the sound changes, during playback and in exported MIDI files.
+* **MIDI keyboard input** (Preferences → MIDI keyboard): in note input,
+  each key played is entered at the caret with the current duration,
+  spelled in the key signature. Keys held together make a chord, and on a
+  drum set a key picks the drum mapped to it. Keys also sound on the
+  caret's instrument. On Linux the raw MIDI ports (`/dev/snd/midiC*D*`)
+  are read directly, with no library needed; Windows uses WinMM.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

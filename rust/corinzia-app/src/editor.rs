@@ -100,6 +100,33 @@ pub struct Locator {
     pub voice: usize, // index into lane.voices
 }
 
+/// A MIDI key spelled in a key: the scale's own note where the key has
+/// one, else a sharp in sharp keys (and C major), a flat in flat keys.
+pub fn spell_key(key: i32, fifths: i32) -> Pitch {
+    const SEMIS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let pc = key.rem_euclid(12);
+    let octave = key.div_euclid(12) - 1;
+    let pitch = |step: i32, alter: i32| {
+        // B# and Cb cross the octave line.
+        let o = octave + if SEMIS[step as usize] + alter >= 12 { -1 } else if SEMIS[step as usize] + alter < 0 { 1 } else { 0 };
+        Pitch { step: step as i8, alter: alter as i8, octave: o as i8 }
+    };
+    for step in 0..7 {
+        let alter = edit::key_alter(fifths, step);
+        if (SEMIS[step as usize] + alter).rem_euclid(12) == pc {
+            return pitch(step, alter);
+        }
+    }
+    // Outside the scale: the key's own accidental, else natural, else the other.
+    let first = if fifths < 0 { -1 } else { 1 };
+    for alter in [first, 0, -first] {
+        if let Some(step) = (0..7).find(|&s| (SEMIS[s as usize] + alter).rem_euclid(12) == pc) {
+            return pitch(step, alter);
+        }
+    }
+    pitch(0, 0)
+}
+
 fn key_fifths_at(m: &Movement, pos: Frac) -> i32 {
     m.keys.iter().filter(|k| k.at <= pos).last().map(|k| k.fifths).unwrap_or(0)
 }
@@ -1216,6 +1243,57 @@ impl Editor {
             }
         }
         self.accidental = None; // accidentals apply to one note
+    }
+
+    /// Note input from a MIDI keyboard: the key played (at concert pitch),
+    /// spelled in the key signature; on a drum set, the drum on that key.
+    /// `add_to_chord`: above the note just entered (keys held together).
+    pub fn enter_midi_key(&mut self, key: u8, add_to_chord: bool) {
+        let (lane, voice, caret, spec) = (self.caret_lane, self.voice, self.caret, self.spec);
+        let tuplet = self.tuplet_input;
+        let drum = self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.instrument_at(caret)).and_then(|i| self.project.instrument(i)).and_then(|i| i.drums.iter().find(|d| d.key == key).map(|d| d.position));
+        if self.lane_is_percussion(lane) && drum.is_none() {
+            self.status = format!("No drum on key {key}");
+            return;
+        }
+        let mut out: Option<EditResult> = None;
+        let mut chorded = false;
+        self.transact("Note input", |m, ids| {
+            if m.lanes.is_empty() {
+                return false;
+            }
+            let lane = lane.min(m.lanes.len() - 1);
+            let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
+            let p = drum.unwrap_or_else(|| spell_key(key as i32, key_fifths_at(m, caret)));
+            let evs = m.lanes[lane].voices[vi].events.clone();
+            let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
+            let r = match (add_to_chord, last) {
+                (true, Some(last)) => {
+                    chorded = true;
+                    match edit::add_to_chord(&evs, last.start, p, ids) {
+                        Some(r) => r,
+                        None => return false,
+                    }
+                }
+                _ => {
+                    let dur = input_duration(m, lane, vi, caret, spec, tuplet, ids);
+                    let evs = m.lanes[lane].voices[vi].events.clone();
+                    let r = edit::insert_event(&evs, edit::make_event(ids, caret, dur, &[p], 0), voice == 1, ids);
+                    extend_to(m, r.to);
+                    r
+                }
+            };
+            set_events(m, lane, vi, &r);
+            out = Some(r);
+            true
+        });
+        if let Some(r) = out {
+            self.selection = r.focus;
+            self.range = None;
+            if !chorded {
+                self.caret = r.caret;
+            }
+        }
     }
 
     /// A grace note before the note at the caret (a rest is put there

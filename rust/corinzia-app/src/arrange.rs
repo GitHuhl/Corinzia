@@ -176,18 +176,18 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 let p = pos?;
                 let c = self.curves.get(lane)?.as_ref()?;
                 let ev = ArrangeEvent::AutoMove { lane, index, q: self.snapped(p.x.max(HEADER)), value: self.curve_value(lane, c, p.y) };
-                return Some(canvas::Action::publish(ev).and_capture());
+                Some(canvas::Action::publish(ev).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.drag.is_some() => {
                 state.drag = None;
-                return Some(canvas::Action::publish(ArrangeEvent::AutoRelease).and_capture());
+                Some(canvas::Action::publish(ArrangeEvent::AutoRelease).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
                 let p = pos.filter(|p| p.x > HEADER)?;
                 let lane = self.lane_at(p.y)?;
                 let c = self.curves.get(lane)?.as_ref()?;
                 let index = self.point_at(lane, c, p)?;
-                return Some(canvas::Action::publish(ArrangeEvent::AutoDelete { lane, index }).and_capture());
+                Some(canvas::Action::publish(ArrangeEvent::AutoDelete { lane, index }).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = pos?;

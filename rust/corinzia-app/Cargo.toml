@@ -24,6 +24,9 @@ serde.workspace = true
 serde_json.workspace = true
 rfd = "0.15"
 
+[target.'cfg(windows)'.dependencies]
+midir = "0.10"
+
 [features]
 default = ["audio-out"]
 # Live output: PipeWire on Linux, WASAPI on Windows.

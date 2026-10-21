@@ -156,6 +156,7 @@ impl Effect {
                 let feedback = 0.7 + 0.28 * size;
                 for i in 0..ol.len() {
                     let x = (inp[0][i] + inp[1][i]) * 0.015;
+                    #[allow(clippy::needless_range_loop)] // one comb bank per channel
                     for ch in 0..2 {
                         let mut acc = 0.0;
                         for c in self.combs[ch].iter_mut() {

@@ -16,6 +16,7 @@ mod editor;
 mod fader;
 mod files;
 mod keys;
+mod midi_in;
 mod mix;
 mod playback;
 mod prefs;
@@ -184,6 +185,7 @@ struct PrefsDialog {
     draft: prefs::Prefs,
     paths: String,
     devices: Vec<(String, String)>,
+    midi_ports: Vec<(String, String)>,
     error: Option<String>,
 }
 
@@ -194,6 +196,7 @@ enum PrefsMsg {
     Device(String),
     Rate(u32),
     Buffer(u32),
+    Midi(String),
     Paths(String),
     DefaultPaths(bool),
     Cancel,
@@ -273,6 +276,9 @@ struct App {
     /// The preferences in use, and the card that edits them.
     prefs: prefs::Prefs,
     prefs_dialog: Option<PrefsDialog>,
+    /// The MIDI keyboard, when one is chosen, and the keys held on it.
+    midi: Option<midi_in::Input>,
+    midi_held: Vec<u8>,
     /// Corinzia's own file browser, when the system's dialog cannot open.
     browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
@@ -329,6 +335,8 @@ enum Message {
     Players(PlayersMsg),
     Layout(LayoutMsg),
     Prefs(PrefsMsg),
+    /// Read the MIDI keyboard.
+    MidiPoll,
     /// The answer to "discard unsaved changes?".
     ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
@@ -494,6 +502,7 @@ impl App {
         theme::set(&prefs.theme);
         let pb = playback::Playback::new(live, &prefs);
         let mut app = Self::with_playback(project, path, view, status, pb);
+        app.open_midi(&prefs.midi_input);
         app.prefs = prefs;
         app
     }
@@ -526,6 +535,8 @@ impl App {
             layout: None,
             prefs: prefs::Prefs::default(),
             prefs_dialog: None,
+            midi: None,
+            midi_held: Vec::new(),
             all_movements: false,
             page_movements: Vec::new(),
             shown_movement: 0,
@@ -1544,11 +1555,55 @@ impl App {
         }
     }
 
+    /// Opens a MIDI input port (none for an empty id).
+    fn open_midi(&mut self, id: &str) {
+        self.midi = None;
+        self.midi_held.clear();
+        if id.is_empty() {
+            return;
+        }
+        match midi_in::Input::open(id) {
+            Ok(i) => self.midi = Some(i),
+            Err(e) => self.editor.status = format!("MIDI input: {e}"),
+        }
+    }
+
+    /// Keys from the MIDI keyboard: in note input they are entered (keys
+    /// held together make a chord); they always sound on the staff's track.
+    fn midi_poll(&mut self) {
+        let Some(input) = &self.midi else { return };
+        let msgs: Vec<midi_in::MidiMsg> = input.rx.try_iter().collect();
+        for m in msgs {
+            match m {
+                midi_in::MidiMsg::On { key, .. } => {
+                    if self.editor.input_mode && self.tab == Tab::Score {
+                        let chord = !self.midi_held.is_empty();
+                        self.editor.enter_midi_key(key, chord);
+                    }
+                    self.midi_held.push(key);
+                    self.sound_key(key);
+                }
+                midi_in::MidiMsg::Off { key } => self.midi_held.retain(|k| *k != key),
+            }
+        }
+    }
+
+    /// Plays a key on the instrument of the caret's staff.
+    fn sound_key(&mut self, key: u8) {
+        let ed = &self.editor;
+        let Some(m) = ed.movement() else { return };
+        let Some(inst) = m.lanes.get(ed.caret_lane).and_then(|l| l.instrument_at(ed.caret)) else { return };
+        let Some(track) = ed.project.instrument(inst).and_then(|i| i.track) else { return };
+        let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
+        self.sync();
+        self.playback.preview(track, channel, &[key as i32]);
+    }
+
     /// The Preferences card: edit a copy, apply it (saved; the audio output
     /// restarts when the device, rate or buffer change).
     fn prefs_msg(&mut self, m: PrefsMsg) {
         if let PrefsMsg::Open = m {
-            self.prefs_dialog = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), error: None });
+            self.prefs_dialog = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), midi_ports: midi_in::ports(), error: None });
             return;
         }
         let Some(d) = self.prefs_dialog.as_mut() else { return };
@@ -1561,6 +1616,7 @@ impl App {
             }
             PrefsMsg::Device(label) => d.draft.output_device = d.devices.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
             PrefsMsg::Rate(r) => d.draft.sample_rate = r,
+            PrefsMsg::Midi(label) => d.draft.midi_input = d.midi_ports.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
             PrefsMsg::Buffer(b) => d.draft.buffer = b,
             PrefsMsg::Paths(t) => d.paths = t,
             PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
@@ -1589,6 +1645,9 @@ impl App {
                     self.playback = playback::Playback::new(live, &next);
                     self.playback.plugins = plugins;
                     self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+                }
+                if next.midi_input != self.prefs.midi_input || (self.midi.is_none() && !next.midi_input.is_empty()) {
+                    self.open_midi(&next.midi_input);
                 }
                 let paths = next.plugin_search_paths();
                 if paths != self.playback.search_paths {
@@ -1936,6 +1995,7 @@ impl App {
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
             Message::Prefs(m) => self.prefs_msg(m),
+            Message::MidiPoll => self.midi_poll(),
             Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
@@ -2321,12 +2381,27 @@ impl App {
         });
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
+        let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
         if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
         }
     }
+}
+
+/// Ticks to read the MIDI keyboard (every 8 ms) while one is open.
+fn midi_clock() -> impl iced::futures::Stream<Item = Message> {
+    let (mut tx, rx) = iced::futures::channel::mpsc::channel(1);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        if let Err(e) = tx.try_send(Message::MidiPoll) {
+            if e.is_disconnected() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// Ticks for plugin editors (their timers, descriptors and windows), about
@@ -2408,12 +2483,16 @@ fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
     devices.extend(d.devices.iter().map(|x| x.1.clone()));
     let device = d.devices.iter().find(|x| x.0 == d.draft.output_device).map(|x| x.1.clone()).unwrap_or_else(|| if d.draft.output_device.is_empty() { "System default".into() } else { d.draft.output_device.clone() });
     let pick = |opts: Vec<String>, cur: String, f: fn(String) -> PrefsMsg| iced::widget::pick_list(opts, Some(cur), move |v| pm(f(v))).text_size(13).padding([5, 9]).width(Length::Fill);
+    let mut midi_ports: Vec<String> = vec!["None".into()];
+    midi_ports.extend(d.midi_ports.iter().map(|x| x.1.clone()));
+    let midi_port = d.midi_ports.iter().find(|x| x.0 == d.draft.midi_input).map(|x| x.1.clone()).unwrap_or_else(|| if d.draft.midi_input.is_empty() { "None".into() } else { d.draft.midi_input.clone() });
     let rates: Vec<String> = prefs::SAMPLE_RATES.iter().map(|r| r.to_string()).collect();
     let buffers: Vec<String> = prefs::BUFFERS.iter().map(|r| r.to_string()).collect();
     let mut card = column![
         text("Preferences").size(18).font(bold),
         column![label("Theme"), pick(themes, d.draft.theme.clone(), PrefsMsg::Theme)].spacing(3),
         column![label("Audio output"), pick(devices, device, PrefsMsg::Device)].spacing(3),
+        column![label("MIDI keyboard (note input)"), pick(midi_ports, midi_port, PrefsMsg::Midi)].spacing(3),
         row![
             column![label("Sample rate (Hz)"), pick(rates, d.draft.sample_rate.to_string(), |v| PrefsMsg::Rate(v.parse().unwrap_or(48000)))].spacing(3).width(Length::Fill),
             column![label("Buffer (frames)"), pick(buffers, d.draft.buffer.to_string(), |v| PrefsMsg::Buffer(v.parse().unwrap_or(2048)))].spacing(3).width(Length::Fill),
@@ -3853,6 +3932,43 @@ mod tests {
         assert_eq!(tech(&a).len(), 1);
         a.sync();
         assert_eq!(mix::key_name(60), "C4");
+    }
+
+    #[test]
+    fn a_midi_keyboard_enters_notes_and_chords() {
+        let mut a = app(View::Page);
+        a.editor.select(None);
+        a.editor.set_input_mode(true);
+        a.editor.caret_lane = 0;
+        a.editor.caret = Frac::ZERO;
+        let first = a.editor.movement().unwrap().lanes[0].voices[0].events.len();
+        // C E G held together (a chord), let go; then D alone.
+        let path = std::env::temp_dir().join(format!("corinzia-midi-{}", std::process::id()));
+        std::fs::write(&path, [0x90, 72, 100, 76, 90, 79, 80, 0x80, 72, 0, 76, 0, 79, 0, 0x90, 74, 70, 74, 0]).unwrap();
+        a.open_midi(&path.to_string_lossy());
+        assert!(a.midi.is_some());
+        let mut tries = 0;
+        while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || a.midi_held.len() > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            a.midi_poll();
+            tries += 1;
+            assert!(tries < 200, "the keys arrive");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        a.midi_poll();
+        let evs = a.editor.movement().unwrap().lanes[0].voices[0].events.clone();
+        let names = |e: &corinzia_model::Event| e.heads.iter().map(|h| editor::pitch_name(h.pitch)).collect::<Vec<_>>().join("+");
+        assert_eq!(names(&evs[0]), "C5+E5+G5");
+        assert_eq!(names(&evs[1]), "D5");
+        assert!(evs.len() >= first.min(2));
+        // Spelling in the key: C# in D major, Db in F major, Bb in F major.
+        assert_eq!(editor::pitch_name(editor::spell_key(61, 2)), "C♯4");
+        assert_eq!(editor::pitch_name(editor::spell_key(61, -1)), "D♭4");
+        assert_eq!(editor::pitch_name(editor::spell_key(70, -1)), "B♭4");
+        assert_eq!(editor::pitch_name(editor::spell_key(60, -7)), "C4", "not in C-flat major: natural");
+        a.open_midi("");
+        assert!(a.midi.is_none());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
