@@ -139,6 +139,12 @@ pub fn load(path: &Path) -> Result<Project> {
                 pan: r.get(7)?,
                 mute: r.get::<_, i64>(8)? != 0,
                 solo: r.get::<_, i64>(9)? != 0,
+                inserts: vec![],
+                sends: vec![],
+                dynamics_cc: None,
+                program: None,
+                bank: None,
+                techniques: vec![],
             })
         })?;
         for t in rows {
@@ -188,6 +194,50 @@ pub fn load(path: &Path) -> Result<Project> {
         }
     }
 
+    // The mixer: effects, sends, buses and the master.
+    if let Some(m) = setting("mixer")? {
+        let ids = |v: &Value| -> Vec<Id> { v.as_array().into_iter().flatten().filter_map(|x| x.as_u64()).collect() };
+        for t in p.tracks.iter_mut() {
+            let tv = &m["tracks"][t.id.to_string()];
+            t.inserts = ids(&tv["inserts"]);
+            t.techniques = tv["tech"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| {
+                    let v = x["v"].as_u64().unwrap_or(0).min(127) as u8;
+                    let action = match x["a"].as_str()? {
+                        "key" => SwitchAction::Keyswitch(v),
+                        "prog" => SwitchAction::Program(v),
+                        "cc" => SwitchAction::Cc(v, x["w"].as_u64().unwrap_or(0).min(127) as u8),
+                        "ch" => SwitchAction::Channel(v.min(15)),
+                        _ => return None,
+                    };
+                    Some(TechniqueSwitch { technique: x["t"].as_str()?.to_string(), action })
+                })
+                .collect();
+            t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
+            t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
+            t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
+            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
+        }
+        p.buses = m["buses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|b| {
+                Some(Bus {
+                    id: b["id"].as_u64()?,
+                    name: b["name"].as_str().unwrap_or("Bus").to_string(),
+                    inserts: ids(&b["inserts"]),
+                    gain_db: b["db"].as_f64().unwrap_or(0.0),
+                    pan: b["pan"].as_f64().unwrap_or(0.0),
+                    mute: b["mute"].as_bool().unwrap_or(false),
+                })
+            })
+            .collect();
+        p.master = Master { inserts: ids(&m["master"]["inserts"]), gain_db: m["master"]["db"].as_f64().unwrap_or(0.0) };
+    }
     // Fretted instruments' tunings, by instrument.
     if let Some(t) = setting("tunings")? {
         for i in p.instruments.iter_mut() {
@@ -219,7 +269,7 @@ pub fn load(path: &Path) -> Result<Project> {
             navigation: vec![],
             slurs: vec![],
             endings: vec![],
-            lanes: vec![], breaks: vec![], cross: vec![],
+            lanes: vec![], breaks: vec![], cross: vec![], automation: vec![],
         };
         for t in serde_json::from_str::<Vec<Value>>(&tempo)? {
             m.tempo.push(Tempo {
@@ -298,6 +348,16 @@ pub fn load(path: &Path) -> Result<Project> {
             }
             for b in n["breaks"].as_array().into_iter().flatten() {
                 m.breaks.push(Break { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), page: b["page"].as_bool().unwrap_or(false), part: b["part"].as_u64() });
+            }
+            for a in n["automation"].as_array().into_iter().flatten() {
+                let id = |k: &str| a[k].as_u64().unwrap_or(0);
+                let target = match a["t"].as_str() {
+                    Some("gain") => AutoTarget::Gain(id("track")),
+                    Some("pan") => AutoTarget::Pan(id("track")),
+                    _ => AutoTarget::Param { node: id("node"), param: id("param") as u32 },
+                };
+                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()? })).collect();
+                m.automation.push(AutoLane { id: id("id"), target, points });
             }
             for c in n["cross"].as_array().into_iter().flatten() {
                 m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
@@ -517,8 +577,18 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .filter(|i| !i.drums.is_empty())
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
+    let mixer = json!({
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
+            SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
+            SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
+            SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
+            SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
+        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
+        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
+        "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
+    });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings))] {
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer)] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();
@@ -642,6 +712,14 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
+            "automation": m.automation.iter().map(|a| {
+                let points: Vec<Value> = a.points.iter().map(|p| json!([p.at.num, p.at.den, p.value])).collect();
+                match a.target {
+                    AutoTarget::Gain(t) => json!({"id": a.id, "t": "gain", "track": t, "points": points}),
+                    AutoTarget::Pan(t) => json!({"id": a.id, "t": "pan", "track": t, "points": points}),
+                    AutoTarget::Param { node, param } => json!({"id": a.id, "t": "param", "node": node, "param": param, "points": points}),
+                }
+            }).collect::<Vec<_>>(),
             "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
             "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
             "clefs": clefs,

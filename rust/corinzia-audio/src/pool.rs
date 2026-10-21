@@ -19,6 +19,8 @@ struct Key {
 pub struct PluginPool {
     libs: HashMap<PathBuf, Arc<Library>>,
     tracks: HashMap<Id, (Key, Arc<Plugin>)>,
+    /// Effect instances by audio node.
+    effects: HashMap<Id, (Key, Arc<Plugin>)>,
     pub sample_rate: f64,
     pub max_frames: u32,
     /// Problems loading plugins (shown in the Mix tab).
@@ -27,7 +29,7 @@ pub struct PluginPool {
 
 impl PluginPool {
     pub fn new(sample_rate: f64, max_frames: u32) -> PluginPool {
-        PluginPool { libs: HashMap::new(), tracks: HashMap::new(), sample_rate, max_frames, errors: Vec::new() }
+        PluginPool { libs: HashMap::new(), tracks: HashMap::new(), effects: HashMap::new(), sample_rate, max_frames, errors: Vec::new() }
     }
 
     fn key(project: &Project, track: Id) -> Key {
@@ -85,6 +87,49 @@ impl PluginPool {
         Some(plugin)
     }
 
+    /// The activated effect of an audio node (an insert), or None when it
+    /// is bypassed, missing or fails to load (the error is recorded once).
+    pub fn effect_for(&mut self, project: &Project, node: Id) -> Option<Arc<Plugin>> {
+        let n = project.node(node).filter(|n| n.kind == NodeKind::Plugin && !n.bundle.is_empty())?;
+        if n.bypassed {
+            return None;
+        }
+        let key = Key { bundle: n.bundle.clone(), plugin_id: n.plugin_id.clone(), node: Some(node) };
+        if let Some((k, p)) = self.effects.get(&node) {
+            if *k == key {
+                return Some(p.clone());
+            }
+            p.close_editor();
+        }
+        let made = self.instantiate(&key).and_then(|p| {
+            if let Some(state) = project.plugin_state.get(&node) {
+                if !p.load_state(state) {
+                    self.errors.push(format!("{}: could not restore its state", p.info.name));
+                }
+            }
+            p.activate(self.sample_rate, self.max_frames)?;
+            Ok(p)
+        });
+        match made {
+            Ok(p) => {
+                let p = Arc::new(p);
+                self.effects.insert(node, (key, p.clone()));
+                Some(p)
+            }
+            Err(e) => {
+                if !self.errors.contains(&e) {
+                    self.errors.push(e);
+                }
+                None
+            }
+        }
+    }
+
+    /// The effect instance of a node, if loaded.
+    pub fn effect(&self, node: Id) -> Option<&Arc<Plugin>> {
+        self.effects.get(&node).map(|(_, p)| p)
+    }
+
     fn instantiate(&mut self, key: &Key) -> Result<Plugin, String> {
         let lib = self.library(&key.bundle)?;
         Plugin::create(&lib, &key.plugin_id)
@@ -95,6 +140,15 @@ impl PluginPool {
     pub fn retain_tracks(&mut self, project: &Project) {
         self.tracks.retain(|t, (_, p)| {
             let keep = project.track(*t).is_some();
+            if !keep {
+                p.close_editor();
+            }
+            keep
+        });
+        // Effects no longer inserted anywhere go too.
+        let used = |n: Id| project.tracks.iter().any(|t| t.inserts.contains(&n)) || project.buses.iter().any(|b| b.inserts.contains(&n)) || project.master.inserts.contains(&n);
+        self.effects.retain(|n, (_, p)| {
+            let keep = used(*n);
             if !keep {
                 p.close_editor();
             }
@@ -124,11 +178,11 @@ impl PluginPool {
 
     /// Whether any editor is open (the app then pumps the plugin run loop).
     pub fn any_editor_open(&self) -> bool {
-        self.tracks.values().any(|(_, p)| p.editor_is_open())
+        self.tracks.values().chain(self.effects.values()).any(|(_, p)| p.editor_is_open())
     }
 
     pub fn close_editors(&self) {
-        for (_, p) in self.tracks.values() {
+        for (_, p) in self.tracks.values().chain(self.effects.values()) {
             p.close_editor();
         }
     }
@@ -137,14 +191,14 @@ impl PluginPool {
     /// descriptors, deferred work, editor windows.
     pub fn idle(&self) {
         crate::gui::pump();
-        for (_, p) in self.tracks.values() {
+        for (_, p) in self.tracks.values().chain(self.effects.values()) {
             p.idle();
         }
     }
 
     /// Writes the state of every plugin node into the project (before saving).
     pub fn store_states(&self, project: &mut Project) {
-        for (key, p) in self.tracks.values() {
+        for (key, p) in self.tracks.values().chain(self.effects.values()) {
             if let (Some(node), Some(state)) = (key.node, p.save_state()) {
                 project.plugin_state.insert(node, Arc::new(state));
             }

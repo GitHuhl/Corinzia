@@ -355,6 +355,49 @@ pub struct PerformedNote {
     pub full_off_q: f64, // the written end, before the gate
     pub gate: f64,
     pub roll_sec: f64, // arpeggio delay
+    /// The playing technique in force (the last technique text, canonical:
+    /// "pizz.", "arco", "con sord."…), and the note's own articulation
+    /// ("staccato", "legato"…), for expression maps.
+    pub technique: Option<&'static str>,
+    pub articulation: Option<&'static str>,
+}
+
+/// Technique texts Corinzia understands, by how they begin: (prefix, canonical).
+pub const TECHNIQUES: [(&str, &str); 16] = [
+    ("pizz", "pizz."),
+    ("arco", "arco"),
+    ("con sord", "con sord."),
+    ("senza sord", "senza sord."),
+    ("mute", "con sord."),
+    ("open", "senza sord."),
+    ("sul pont", "sul pont."),
+    ("sul tasto", "sul tasto"),
+    ("col legno", "col legno"),
+    ("ord", "ord."),
+    ("nat", "ord."),
+    ("norm", "ord."),
+    ("trem", "trem."),
+    ("flz", "flutter"),
+    ("flutter", "flutter"),
+    ("harm", "harmonics"),
+];
+
+/// Note articulations an expression map can answer, by priority.
+pub const ARTICULATIONS: [&str; 8] = ["staccatissimo", "staccato", "marcato", "accent", "tenuto", "tremolo", "trill", "legato"];
+
+/// A technique text's canonical name ("Pizzicato" → "pizz.").
+pub fn technique_of(text: &str) -> Option<&'static str> {
+    let t = text.trim().to_lowercase();
+    TECHNIQUES.iter().find(|(p, _)| t.starts_with(p)).map(|x| x.1)
+}
+
+/// A note's articulation for expression maps (the strongest it has).
+fn articulation_of(arts: u16, legato: bool) -> Option<&'static str> {
+    [(art::STACCATISSIMO, 0), (art::STACCATO, 1), (art::MARCATO, 2), (art::ACCENT, 3), (art::TENUTO, 4), (art::TREMOLO, 5), (art::TRILL, 6)]
+        .iter()
+        .find(|(bit, _)| arts & bit != 0)
+        .map(|(_, i)| ARTICULATIONS[*i])
+        .or(legato.then_some("legato"))
 }
 
 /// A written span placed on the performed timeline.
@@ -432,6 +475,17 @@ pub fn perform(m: &Movement) -> Performance {
                         continue;
                     }
                     let Some(inst) = lane.instrument_at(ev.start) else { continue };
+                    // The technique in force: the player's last technique text.
+                    let technique = m
+                        .lanes
+                        .iter()
+                        .filter(|o| o.player == lane.player)
+                        .flat_map(|o| o.texts.iter())
+                        .filter(|t| t.kind == TextKind::Technique && t.at <= ev.start)
+                        .filter_map(|t| Some((t.at, technique_of(&t.text)?)))
+                        .max_by_key(|x| x.0)
+                        .map(|x| x.1);
+                    let articulation = articulation_of(ev.articulations, shape[ei].legato);
                     // Grace notes play on the beat and take their time from
                     // the note: a 32nd each (a 64th for a slashed one), never
                     // more than half the note.
@@ -453,6 +507,8 @@ pub fn perform(m: &Movement) -> Performance {
                                     full_off_q: to_q(on + one),
                                     gate: 0.95,
                                     roll_sec: 0.0,
+                                    technique,
+                                    articulation: None,
                                 });
                             }
                         }
@@ -514,6 +570,8 @@ pub fn perform(m: &Movement) -> Performance {
                                 },
                                 gate: if fi + 1 < n { 0.95 } else if held.is_some() { 1.0 } else { gate },
                                 roll_sec: if fi == 0 { roll } else { 0.0 },
+                                technique,
+                                articulation,
                             });
                         }
                     }
@@ -541,9 +599,43 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
         .iter()
         .filter_map(|t| {
             let notes = by_track.get(&t.id)?;
+            // The expression map's switches, just before the notes that need them.
+            let mut sorted: Vec<&PerformedNote> = notes.to_vec();
+            sorted.sort_by(|a, b| a.on_q.total_cmp(&b.on_q));
+            let (mut programs, mut switch_ccs, mut keyswitches) = (Vec::new(), Vec::new(), Vec::new());
+            for (n, e) in sorted.iter().zip(expression(t, &sorted)) {
+                let before = perf.tempo.quarter_at((perf.tempo.seconds_at(n.on_q) - 0.003).max(0.0));
+                for a in e.before {
+                    match a {
+                        corinzia_model::SwitchAction::Program(p) => programs.push((before, p)),
+                        corinzia_model::SwitchAction::Cc(cc, v) => switch_ccs.push((before, cc, v)),
+                        corinzia_model::SwitchAction::Keyswitch(k) => keyswitches.push(doc::Note { on: before, off: perf.tempo.quarter_at((perf.tempo.seconds_at(n.on_q) - 0.001).max(0.0)), key: k, vel: 0.8 }),
+                        corinzia_model::SwitchAction::Channel(_) => {}
+                    }
+                }
+            }
             Some(doc::Track {
                 name: t.name.clone(),
                 channel: t.midi_channel & 15,
+                program: t.program.map(|p| (p, t.bank)),
+                // Dynamics as a controller: its value at each onset where it changes.
+                controls: match t.dynamics_cc {
+                    Some(cc) => {
+                        let mut last = None;
+                        notes
+                            .iter()
+                            .filter_map(|n| {
+                                let v = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+                                (last.replace(v) != Some(v)).then(|| (perf.tempo.quarter_at((perf.tempo.seconds_at(n.on_q) - 0.002).max(0.0)), cc, v))
+                            })
+                            .collect()
+                    }
+                    None => vec![],
+                }
+                .into_iter()
+                .chain(switch_ccs)
+                .collect(),
+                programs,
                 notes: notes
                     .iter()
                     .map(|n| {
@@ -551,6 +643,7 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
                         let off = on + (perf.tempo.seconds_at(n.full_off_q) - on) * n.gate;
                         doc::Note { on: perf.tempo.quarter_at(on), off: perf.tempo.quarter_at(off), key: project.sounding_key(n.instrument, n.key).clamp(0, 127) as u8, vel: n.velocity }
                     })
+                    .chain(keyswitches)
                     .collect(),
             })
         })
@@ -575,4 +668,37 @@ pub fn midi(project: &Project, m: &Movement) -> Result<Vec<u8>, String> {
 
 pub fn musicxml(project: &Project, m: &Movement) -> Result<String, String> {
     corinzia_export::musicxml::write(&document(project, m))
+}
+
+/// What a track's expression map asks for a note: switches to send just
+/// before it (only when the sound changes), and the channel it plays on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Expression {
+    pub before: Vec<corinzia_model::SwitchAction>,
+    pub channel: Option<u8>,
+}
+
+/// The expression map applied to a track's notes (in time order): each
+/// note's switch is its articulation's if mapped, else its technique's,
+/// else the map's "ord." (the normal sound), else nothing changes.
+pub fn expression(track: &corinzia_model::Track, notes: &[&PerformedNote]) -> Vec<Expression> {
+    use corinzia_model::SwitchAction;
+    let map = |name: &str| track.techniques.iter().find(|t| t.technique.trim().eq_ignore_ascii_case(name) || technique_of(&t.technique) == Some(name)).map(|t| t.action);
+    let mut current: Option<SwitchAction> = None;
+    notes
+        .iter()
+        .map(|n| {
+            let wanted = n.articulation.and_then(map).or_else(|| n.technique.and_then(map)).or_else(|| map("ord."));
+            let mut e = Expression::default();
+            match wanted {
+                Some(SwitchAction::Channel(c)) => e.channel = Some(c),
+                Some(a) if current != Some(a) => {
+                    e.before.push(a);
+                    current = Some(a);
+                }
+                _ => {}
+            }
+            e
+        })
+        .collect()
 }

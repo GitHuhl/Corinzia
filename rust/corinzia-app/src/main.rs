@@ -16,8 +16,11 @@ mod editor;
 mod fader;
 mod files;
 mod keys;
+mod midi_in;
 mod mix;
 mod playback;
+mod prefs;
+mod presets;
 mod panels;
 mod score_view;
 mod theme;
@@ -176,6 +179,30 @@ impl LayoutFields {
     }
 }
 
+/// The Preferences card: a copy being edited, the plugin folders as typed,
+/// the output devices found.
+struct PrefsDialog {
+    draft: prefs::Prefs,
+    paths: String,
+    devices: Vec<(String, String)>,
+    midi_ports: Vec<(String, String)>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PrefsMsg {
+    Open,
+    Theme(String),
+    Device(String),
+    Rate(u32),
+    Buffer(u32),
+    Midi(String),
+    Paths(String),
+    DefaultPaths(bool),
+    Cancel,
+    Apply,
+}
+
 #[derive(Debug, Clone)]
 enum LayoutMsg {
     Tab(bool),
@@ -225,6 +252,14 @@ struct App {
     playback: playback::Playback,
     tab: Tab,
     strip: Option<corinzia_model::Id>, // the Mix tab's selected strip
+    fx: Option<corinzia_model::Id>,    // and its selected effect (audio node)
+    /// The presets of the plugin shown in the Mix tab, and the name being typed.
+    preset_names: Vec<String>,
+    preset_name: String,
+    /// The automation each track's arrange lane shows (none: notes only),
+    /// and the curves drawn for them.
+    auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
+    arrange_curves: Vec<Option<arrange::Curve>>,
     arrange: arrange::Content,
     arrange_cache: canvas::Cache,
     arrange_ppq: f32,
@@ -238,6 +273,12 @@ struct App {
     new_score: Option<NewScore>,
     players: Option<PlayersDialog>,
     layout: Option<LayoutDialog>,
+    /// The preferences in use, and the card that edits them.
+    prefs: prefs::Prefs,
+    prefs_dialog: Option<PrefsDialog>,
+    /// The MIDI keyboard, when one is chosen, and the keys held on it.
+    midi: Option<midi_in::Input>,
+    midi_held: Vec<u8>,
     /// Corinzia's own file browser, when the system's dialog cannot open.
     browser: Option<browser::Browser>,
     /// What waits for "discard unsaved changes?" to be answered.
@@ -293,6 +334,9 @@ enum Message {
     NewCancel,
     Players(PlayersMsg),
     Layout(LayoutMsg),
+    Prefs(PrefsMsg),
+    /// Read the MIDI keyboard.
+    MidiPoll,
     /// The answer to "discard unsaved changes?".
     ConfirmDiscard(bool),
     /// Runs the message if there are no unsaved changes, or the user agrees to drop them.
@@ -454,7 +498,13 @@ impl App {
 
     fn new(project: Project, path: Option<PathBuf>, view: View, status: String) -> App {
         let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
-        Self::with_playback(project, path, view, status, playback::Playback::new(live))
+        let prefs = if cfg!(test) { prefs::Prefs::default() } else { prefs::Prefs::load() };
+        theme::set(&prefs.theme);
+        let pb = playback::Playback::new(live, &prefs);
+        let mut app = Self::with_playback(project, path, view, status, pb);
+        app.open_midi(&prefs.midi_input);
+        app.prefs = prefs;
+        app
     }
 
     /// A project in the window, keeping the audio output and plugins.
@@ -467,6 +517,11 @@ impl App {
             playback,
             tab: Tab::Score,
             strip: None,
+            fx: None,
+            preset_names: Vec::new(),
+            preset_name: String::new(),
+            auto_shown: Default::default(),
+            arrange_curves: Vec::new(),
             arrange: arrange::Content::default(),
             arrange_cache: canvas::Cache::new(),
             arrange_ppq: 40.0,
@@ -478,6 +533,10 @@ impl App {
             new_score: None,
             players: None,
             layout: None,
+            prefs: prefs::Prefs::default(),
+            prefs_dialog: None,
+            midi: None,
+            midi_held: Vec::new(),
             all_movements: false,
             page_movements: Vec::new(),
             shown_movement: 0,
@@ -623,11 +682,21 @@ impl App {
         self.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
 
+    /// The automation curve shown on a track's arrange lane.
+    fn curve(&self, track: corinzia_model::Id) -> Option<arrange::Curve> {
+        let target = *self.auto_shown.get(&track)?;
+        let (label, min, max) = mix::auto_options(&self.editor.project, &self.playback, track).into_iter().find(|o| o.1 == Some(target)).map(|o| (o.0, o.2, o.3))?;
+        let q = |f: Frac| f.num as f64 * 4.0 / f.den as f64;
+        let points = self.editor.auto_lane(target).map(|l| l.points.iter().map(|p| (q(p.at), p.value)).collect()).unwrap_or_default();
+        Some(arrange::Curve { label, min, max, points })
+    }
+
     /// Brings the engraving and the selection colours up to date.
     fn sync(&mut self) {
         if self.engraved != Some(self.editor.music_revision) {
             self.engrave();
         }
+        self.arrange_curves = self.arrange.lanes.iter().map(|l| self.curve(l.track)).collect();
         // Another movement edited, its pages out of sight: go to its first.
         if self.shown_movement != self.editor.movement {
             self.shown_movement = self.editor.movement;
@@ -1028,6 +1097,7 @@ impl App {
                 self.engraved = None;
                 ed.status = if self.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
             }
+            Action::Preferences => self.prefs_msg(PrefsMsg::Open),
             Action::Layout => {
                 let p = &ed.project;
                 self.layout = Some(LayoutDialog {
@@ -1096,7 +1166,7 @@ impl App {
     fn open(&mut self, path: PathBuf) {
         match files::load(&path) {
             Ok((p, kept, status)) => {
-                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
                 *self = App::with_playback(p, kept, view, status, pb);
             }
             Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
@@ -1156,7 +1226,7 @@ impl App {
             p
         }) {
             Ok(p) => {
-                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false)));
+                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
                 *self = App::with_playback(p, None, view, "New score · N starts note input".into(), pb);
                 self.editor.set_input_mode(true);
             }
@@ -1190,7 +1260,41 @@ impl App {
         };
     }
 
+    /// The plugin a preset target names, and its project node (where its state is kept).
+    fn preset_plugin(&self, t: mix::Target) -> Option<(std::sync::Arc<corinzia_audio::host::Plugin>, Option<corinzia_model::Id>)> {
+        match t {
+            mix::Target::Effect(n) => self.playback.pool.effect(n).cloned().map(|p| (p, Some(n))),
+            mix::Target::Track(id) => self.playback.pool.plugin_of_track(id).cloned().map(|p| (p, self.editor.project.track(id).and_then(|x| x.instrument_node))),
+        }
+    }
+
+    /// The presets of the plugin the Mix tab shows.
+    fn refresh_presets(&mut self) {
+        let target = match (self.fx, self.strip) {
+            (Some(n), _) => Some(mix::Target::Effect(n)),
+            (None, Some(t)) if self.editor.project.track(t).is_some() => Some(mix::Target::Track(t)),
+            _ => None,
+        };
+        self.preset_names = match (target.and_then(|t| self.preset_plugin(t)), Self::preset_base()) {
+            (Some((p, _)), Some(base)) => presets::list(&base, &p.info.id),
+            _ => vec![],
+        };
+    }
+
+    fn preset_base() -> Option<PathBuf> {
+        if cfg!(test) {
+            Some(std::env::temp_dir().join(format!("corinzia-test-presets-{}", std::process::id())))
+        } else {
+            presets::base()
+        }
+    }
+
     fn mix(&mut self, m: mix::MixMsg) {
+        self.mix_msg(m);
+        self.refresh_presets();
+    }
+
+    fn mix_msg(&mut self, m: mix::MixMsg) {
         use mix::MixMsg::*;
         match m {
             Select(t) => self.strip = Some(t),
@@ -1198,6 +1302,25 @@ impl App {
                 self.strip = Some(t);
                 self.toggle_editor(t);
             }
+            Gain(t, db) if t == editor::MASTER => {
+                if self.editor.project.master.gain_db != db {
+                    self.editor.set_master_gain(db);
+                    self.playback.live_levels(&self.editor.project);
+                }
+            }
+            Gain(b, db) if self.editor.project.bus(b).is_some() => {
+                if self.editor.project.bus(b).is_some_and(|x| x.gain_db != db) {
+                    self.editor.set_bus(b, "Bus gain", true, |x| x.gain_db = db);
+                    self.playback.live_levels(&self.editor.project);
+                }
+            }
+            Pan(b, pan) if self.editor.project.bus(b).is_some() => {
+                if self.editor.project.bus(b).is_some_and(|x| x.pan != pan) {
+                    self.editor.set_bus(b, "Bus pan", true, |x| x.pan = pan);
+                    self.playback.live_levels(&self.editor.project);
+                }
+            }
+            Mute(b) if self.editor.project.bus(b).is_some() => self.editor.set_bus(b, "Mute", false, |x| x.mute = !x.mute),
             Gain(t, db) => {
                 if self.editor.project.track(t).is_some_and(|x| x.gain_db != db) {
                     self.editor.set_track(t, "Gain", true, |x| x.gain_db = db);
@@ -1208,6 +1331,157 @@ impl App {
                 if self.editor.project.track(t).is_some_and(|x| x.pan != pan) {
                     self.editor.set_track(t, "Pan", true, |x| x.pan = pan);
                     self.playback.live_mix(&self.editor.project, t);
+                }
+            }
+            AddEffect(owner, i) => {
+                let Some(info) = self.playback.plugins.get(i).cloned() else { return };
+                let bundle = info.bundle.to_string_lossy().into_owned();
+                self.fx = self.editor.add_insert(owner, &info.name, &bundle, &info.id);
+            }
+            SelectEffect(n) => self.fx = Some(n),
+            EffectEditor(n) => {
+                self.fx = Some(n);
+                if let Some(pl) = self.playback.pool.effect(n) {
+                    if pl.editor_is_open() {
+                        pl.close_editor();
+                    } else {
+                        let title = self.editor.project.node(n).map(|x| x.name.clone()).unwrap_or_default();
+                        if let Err(e) = pl.open_editor(&title) {
+                            self.editor.status = e;
+                        }
+                    }
+                }
+            }
+            RemoveEffect(owner, n) => {
+                if let Some(pl) = self.playback.pool.effect(n) {
+                    pl.close_editor();
+                }
+                self.editor.remove_insert(owner, n);
+                if self.fx == Some(n) {
+                    self.fx = None;
+                }
+            }
+            MoveEffect(owner, n, by) => self.editor.move_insert(owner, n, by),
+            Bypass(n) => self.editor.toggle_bypass(n),
+            Param(n, id, v) => {
+                if let Some(pl) = self.playback.pool.effect(n) {
+                    pl.set_param(id, v);
+                    // Kept with the project (saved, and restored on the next load).
+                    if let Some(state) = pl.save_state().filter(|_| !pl.is_processing()) {
+                        self.editor.project.plugin_state.insert(n, std::sync::Arc::new(state));
+                    }
+                    self.editor.modified = true;
+                }
+            }
+            AddBus => {
+                let id = self.editor.add_bus("");
+                self.strip = Some(id);
+            }
+            RemoveBus(b) => self.editor.remove_bus(b),
+            Output(t, label) => {
+                let bus = self.editor.project.buses.iter().find(|b| b.name == label).map(|b| b.id);
+                self.editor.set_output(t, bus);
+            }
+            ToggleSend(t, b) => self.editor.toggle_send(t, b),
+            PresetName(n) => self.preset_name = n,
+            SavePreset(target) => {
+                let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                let Some(state) = pl.save_state() else {
+                    self.editor.status = format!("{} cannot save its state", pl.info.name);
+                    return;
+                };
+                match presets::save(&base, &pl.info.id, &self.preset_name, &state) {
+                    Ok(name) => {
+                        self.editor.status = format!("Preset {name} saved for {}", pl.info.name);
+                        self.preset_name.clear();
+                    }
+                    Err(e) => self.editor.status = e,
+                }
+            }
+            LoadPreset(target, name) => {
+                let (Some((pl, node)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                match presets::load(&base, &pl.info.id, &name) {
+                    Ok(state) if pl.load_state(&state) => {
+                        if let Some(n) = node {
+                            self.editor.project.plugin_state.insert(n, std::sync::Arc::new(state));
+                            self.editor.modified = true;
+                        }
+                        self.editor.status = format!("{}: {name}", pl.info.name);
+                    }
+                    Ok(_) => self.editor.status = format!("{} did not accept the preset {name}", pl.info.name),
+                    Err(e) => self.editor.status = e,
+                }
+            }
+            DeletePreset(target, name) => {
+                let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
+                if let Err(e) = presets::delete(&base, &pl.info.id, &name) {
+                    self.editor.status = e;
+                }
+            }
+            AutoShow(t, label) => {
+                match mix::auto_options(&self.editor.project, &self.playback, t).into_iter().find(|o| o.0 == label).and_then(|o| o.1) {
+                    Some(target) => {
+                        self.auto_shown.insert(t, target);
+                        self.editor.status = "Automation: click to add a point, drag to move, right-click to delete".into();
+                    }
+                    None => {
+                        self.auto_shown.remove(&t);
+                    }
+                }
+            }
+            DynamicsCc(t, label) => {
+                let cc = match label.as_str() {
+                    l if l.starts_with("CC1 ") => Some(1),
+                    l if l.starts_with("CC11") => Some(11),
+                    _ => None,
+                };
+                self.editor.set_track(t, "Dynamics controller", false, |x| x.dynamics_cc = cc);
+            }
+            TechAdd(t) => self.editor.set_track(t, "Playing technique", false, |x| {
+                x.techniques.push(corinzia_model::TechniqueSwitch { technique: if x.techniques.is_empty() { "ord.".into() } else { "pizz.".into() }, action: corinzia_model::SwitchAction::Keyswitch(24 + x.techniques.len() as u8) })
+            }),
+            TechRemove(t, i) => self.editor.set_track(t, "Playing technique", false, |x| {
+                if i < x.techniques.len() {
+                    x.techniques.remove(i);
+                }
+            }),
+            TechEdit(t, i, field, v) => self.editor.set_track(t, "Playing technique", false, |x| {
+                use corinzia_model::SwitchAction::*;
+                let Some(line) = x.techniques.get_mut(i) else { return };
+                let num = |s: &str| s.trim_start_matches("CC").split_whitespace().next().and_then(|n| n.parse::<u8>().ok());
+                match field {
+                    mix::TechField::Technique => line.technique = v,
+                    mix::TechField::Kind => {
+                        line.action = match v.as_str() {
+                            "Program" => Program(0),
+                            "Controller" => Cc(32, 0),
+                            "Channel" => Channel(0),
+                            _ => Keyswitch(24),
+                        }
+                    }
+                    mix::TechField::Value => {
+                        line.action = match line.action {
+                            Keyswitch(k) => Keyswitch((0..128u8).find(|&n| mix::key_name(n) == v).unwrap_or(k)),
+                            Program(p) => Program(presets::program_of(&v).unwrap_or(p)),
+                            Cc(c, w) => Cc(num(&v).unwrap_or(c).min(127), w),
+                            Channel(c) => Channel(num(&v).map(|n| n.clamp(1, 16) - 1).unwrap_or(c)),
+                        }
+                    }
+                    mix::TechField::Value2 => {
+                        if let Cc(c, w) = line.action {
+                            line.action = Cc(c, num(&v).unwrap_or(w).min(127));
+                        }
+                    }
+                }
+            }),
+            Program(t, label) => {
+                let program = presets::program_of(&label);
+                self.editor.set_track(t, "MIDI program", false, |x| x.program = program);
+            }
+            SendLevel(t, i, db) => {
+                if self.editor.project.track(t).and_then(|x| x.sends.get(i)).is_some_and(|s| s.gain_db != db) {
+                    self.editor.set_send(t, i, db);
+                    self.playback.live_levels(&self.editor.project);
                 }
             }
             // The gesture is over: the next one is its own undo step.
@@ -1223,7 +1497,7 @@ impl App {
                     self.editor.set_track_plugin(t, Some((&info.name, &bundle, &info.id)));
                 }
             }
-            Rescan => self.playback.scan(),
+            Rescan => self.playback.rescan(),
         }
     }
 
@@ -1277,6 +1551,114 @@ impl App {
                 let texts = d.texts.clone();
                 self.layout = None;
                 self.editor.set_layout(score, parts, texts);
+            }
+        }
+    }
+
+    /// Opens a MIDI input port (none for an empty id).
+    fn open_midi(&mut self, id: &str) {
+        self.midi = None;
+        self.midi_held.clear();
+        if id.is_empty() {
+            return;
+        }
+        match midi_in::Input::open(id) {
+            Ok(i) => self.midi = Some(i),
+            Err(e) => self.editor.status = format!("MIDI input: {e}"),
+        }
+    }
+
+    /// Keys from the MIDI keyboard: in note input they are entered (keys
+    /// held together make a chord); they always sound on the staff's track.
+    fn midi_poll(&mut self) {
+        let Some(input) = &self.midi else { return };
+        let msgs: Vec<midi_in::MidiMsg> = input.rx.try_iter().collect();
+        for m in msgs {
+            match m {
+                midi_in::MidiMsg::On { key, .. } => {
+                    if self.editor.input_mode && self.tab == Tab::Score {
+                        let chord = !self.midi_held.is_empty();
+                        self.editor.enter_midi_key(key, chord);
+                    }
+                    self.midi_held.push(key);
+                    self.sound_key(key);
+                }
+                midi_in::MidiMsg::Off { key } => self.midi_held.retain(|k| *k != key),
+            }
+        }
+    }
+
+    /// Plays a key on the instrument of the caret's staff.
+    fn sound_key(&mut self, key: u8) {
+        let ed = &self.editor;
+        let Some(m) = ed.movement() else { return };
+        let Some(inst) = m.lanes.get(ed.caret_lane).and_then(|l| l.instrument_at(ed.caret)) else { return };
+        let Some(track) = ed.project.instrument(inst).and_then(|i| i.track) else { return };
+        let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
+        self.sync();
+        self.playback.preview(track, channel, &[key as i32]);
+    }
+
+    /// The Preferences card: edit a copy, apply it (saved; the audio output
+    /// restarts when the device, rate or buffer change).
+    fn prefs_msg(&mut self, m: PrefsMsg) {
+        if let PrefsMsg::Open = m {
+            self.prefs_dialog = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), midi_ports: midi_in::ports(), error: None });
+            return;
+        }
+        let Some(d) = self.prefs_dialog.as_mut() else { return };
+        d.error = None;
+        match m {
+            PrefsMsg::Open => {}
+            PrefsMsg::Theme(t) => {
+                d.draft.theme = t;
+                theme::set(&d.draft.theme); // seen at once
+            }
+            PrefsMsg::Device(label) => d.draft.output_device = d.devices.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
+            PrefsMsg::Rate(r) => d.draft.sample_rate = r,
+            PrefsMsg::Midi(label) => d.draft.midi_input = d.midi_ports.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
+            PrefsMsg::Buffer(b) => d.draft.buffer = b,
+            PrefsMsg::Paths(t) => d.paths = t,
+            PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
+            PrefsMsg::Cancel => {
+                theme::set(&self.prefs.theme);
+                self.prefs_dialog = None;
+            }
+            PrefsMsg::Apply => {
+                let mut next = d.draft.clone();
+                next.plugin_paths = d.paths.split(';').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                let next = next.sane();
+                if !cfg!(test) {
+                    if let Err(e) = next.save() {
+                        d.error = Some(format!("Could not save the preferences: {e}"));
+                        return;
+                    }
+                }
+                self.prefs_dialog = None;
+                theme::set(&next.theme);
+                if self.prefs.audio_differs(&next) {
+                    // A new engine at the new rate: plugins come back with their state.
+                    self.playback.stop();
+                    self.playback.pool.store_states(&mut self.editor.project);
+                    let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
+                    let plugins = std::mem::take(&mut self.playback.plugins);
+                    self.playback = playback::Playback::new(live, &next);
+                    self.playback.plugins = plugins;
+                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+                }
+                if next.midi_input != self.prefs.midi_input || (self.midi.is_none() && !next.midi_input.is_empty()) {
+                    self.open_midi(&next.midi_input);
+                }
+                let paths = next.plugin_search_paths();
+                if paths != self.playback.search_paths {
+                    self.playback.search_paths = paths;
+                    self.playback.scan();
+                }
+                self.editor.status = match &self.playback.problem {
+                    Some(p) => format!("Preferences saved · {p}"),
+                    None => format!("Preferences saved · {} Hz, {} frames", next.sample_rate, next.buffer),
+                };
+                self.prefs = next;
             }
         }
     }
@@ -1463,6 +1845,24 @@ impl App {
                 }
                 arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
                 arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+                arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        let at = Frac::new((q * 16.0).round() as i64, 64);
+                        self.editor.add_auto_point(t, at, value);
+                    }
+                }
+                arrange::ArrangeEvent::AutoMove { lane, index, q, value } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        let at = Frac::new((q * 16.0).round() as i64, 64);
+                        self.editor.move_auto_point(t, index, at, value);
+                    }
+                }
+                arrange::ArrangeEvent::AutoDelete { lane, index } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        self.editor.delete_auto_point(t, index);
+                    }
+                }
+                arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
             },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
@@ -1507,13 +1907,14 @@ impl App {
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
                             self.new_score = None;
                             self.players = None;
                             self.layout = None;
+                            self.prefs_dialog = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -1593,6 +1994,8 @@ impl App {
             Message::NewCancel => self.new_score = None,
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
+            Message::Prefs(m) => self.prefs_msg(m),
+            Message::MidiPoll => self.midi_poll(),
             Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
@@ -1739,6 +2142,7 @@ impl App {
         let toolbar = toolbar
             .push(panels::spacer())
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
+            .push(panels::tip(flat("⚙", true, Message::Prefs(PrefsMsg::Open)), "Preferences: theme, audio output, plugin folders (Ctrl+,)"))
             .push(panels::tip(flat("Players", true, Message::Players(PlayersMsg::Open)), "Add, remove or reorder players (the instrumentation)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
@@ -1843,6 +2247,9 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if let Some(d) = &self.prefs_dialog {
+            desk = desk.push(container(iced::widget::opaque(container(prefs_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
         if let Some(d) = &self.layout {
             desk = desk.push(container(iced::widget::opaque(container(layout_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
@@ -1908,7 +2315,7 @@ impl App {
                 // The messages give way (clipped) to the controls on the right.
                 container(
                     row![
-                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::TEXT) }),
+                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::palette().text) }),
                         Space::new().width(24),
                         text(middle).size(12).wrapping(text::Wrapping::None),
                     ]
@@ -1950,13 +2357,14 @@ impl App {
                     selected: &self.selected,
                     playhead,
                     cache: &self.arrange_cache,
+                    curves: &self.arrange_curves,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill);
                 column![
                     Element::from(arr).map(Message::Arrange),
                     hline(),
-                    container(mix::view(&ed.project, &self.playback, self.strip).map(Message::Mix)).height(360).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
@@ -1973,12 +2381,27 @@ impl App {
         });
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
+        let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
         if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
         }
     }
+}
+
+/// Ticks to read the MIDI keyboard (every 8 ms) while one is open.
+fn midi_clock() -> impl iced::futures::Stream<Item = Message> {
+    let (mut tx, rx) = iced::futures::channel::mpsc::channel(1);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+        if let Err(e) = tx.try_send(Message::MidiPoll) {
+            if e.is_disconnected() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// Ticks for plugin editors (their timers, descriptors and windows), about
@@ -2044,6 +2467,55 @@ fn layout_card(d: &LayoutDialog) -> Element<'_, Message> {
             panels::spacer(),
             button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(lm(LayoutMsg::Cancel)),
             button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(lm(LayoutMsg::Apply)),
+        ]
+        .spacing(8),
+    )
+    .into()
+}
+
+/// The Preferences card.
+fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    let pm = |m: PrefsMsg| Message::Prefs(m);
+    let label = |t: &'static str| text(t).size(12).style(theme::dim);
+    let themes: Vec<String> = theme::THEMES.iter().map(|t| t.0.to_string()).collect();
+    let mut devices: Vec<String> = vec!["System default".into()];
+    devices.extend(d.devices.iter().map(|x| x.1.clone()));
+    let device = d.devices.iter().find(|x| x.0 == d.draft.output_device).map(|x| x.1.clone()).unwrap_or_else(|| if d.draft.output_device.is_empty() { "System default".into() } else { d.draft.output_device.clone() });
+    let pick = |opts: Vec<String>, cur: String, f: fn(String) -> PrefsMsg| iced::widget::pick_list(opts, Some(cur), move |v| pm(f(v))).text_size(13).padding([5, 9]).width(Length::Fill);
+    let mut midi_ports: Vec<String> = vec!["None".into()];
+    midi_ports.extend(d.midi_ports.iter().map(|x| x.1.clone()));
+    let midi_port = d.midi_ports.iter().find(|x| x.0 == d.draft.midi_input).map(|x| x.1.clone()).unwrap_or_else(|| if d.draft.midi_input.is_empty() { "None".into() } else { d.draft.midi_input.clone() });
+    let rates: Vec<String> = prefs::SAMPLE_RATES.iter().map(|r| r.to_string()).collect();
+    let buffers: Vec<String> = prefs::BUFFERS.iter().map(|r| r.to_string()).collect();
+    let mut card = column![
+        text("Preferences").size(18).font(bold),
+        column![label("Theme"), pick(themes, d.draft.theme.clone(), PrefsMsg::Theme)].spacing(3),
+        column![label("Audio output"), pick(devices, device, PrefsMsg::Device)].spacing(3),
+        column![label("MIDI keyboard (note input)"), pick(midi_ports, midi_port, PrefsMsg::Midi)].spacing(3),
+        row![
+            column![label("Sample rate (Hz)"), pick(rates, d.draft.sample_rate.to_string(), |v| PrefsMsg::Rate(v.parse().unwrap_or(48000)))].spacing(3).width(Length::Fill),
+            column![label("Buffer (frames)"), pick(buffers, d.draft.buffer.to_string(), |v| PrefsMsg::Buffer(v.parse().unwrap_or(2048)))].spacing(3).width(Length::Fill),
+        ]
+        .spacing(10),
+        column![
+            label("More plugin folders (separated by ;)"),
+            text_input("/path/to/plugins", &d.paths).on_input(move |v| pm(PrefsMsg::Paths(v))).padding(5).size(14),
+            button(text("Also search the usual folders (and CLAP_PATH, VST3_PATH)").size(13)).padding([5, 10]).style(theme::tool(d.draft.default_plugin_paths)).on_press(pm(PrefsMsg::DefaultPaths(!d.draft.default_plugin_paths))),
+        ]
+        .spacing(5),
+        text("Changing the output, rate or buffer restarts the audio; plugins keep their settings.").size(11).style(theme::dim),
+    ]
+    .spacing(10)
+    .width(520);
+    if let Some(e) = &d.error {
+        card = card.push(text(e).size(12).style(theme::danger));
+    }
+    card.push(
+        row![
+            panels::spacer(),
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(pm(PrefsMsg::Cancel)),
+            button(text("Apply").size(13)).padding([6, 14]).style(theme::primary).on_press(pm(PrefsMsg::Apply)),
         ]
         .spacing(8),
     )
@@ -2229,6 +2701,21 @@ fn load_text_fonts() -> Vec<Vec<u8>> {
 }
 
 fn main() -> iced::Result {
+    // The plugin scanner's child process: one bundle, its plugins as JSON.
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(String::as_str) == Some("--scan-plugin") {
+        match raw.get(2).map(|b| corinzia_audio::scan::bundle_json(std::path::Path::new(b))) {
+            Some(Ok(json)) => {
+                println!("{json}");
+                std::process::exit(0);
+            }
+            Some(Err(e)) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            None => std::process::exit(2),
+        }
+    }
     let a = args();
     if let Some(out) = a.export.clone() {
         // Headless: open, apply scripted keys, export, exit.
@@ -2595,6 +3082,30 @@ mod tests {
             text: None,
             repeat: false,
         }));
+    }
+
+    #[test]
+    fn preferences_change_the_theme_and_restart_audio_at_a_new_rate() {
+        let p = files::new_project("P", "Flute", 2).unwrap();
+        let mut a = App::new(p, None, View::Page, String::new());
+        let _ = a.update(Message::Act(Action::Preferences));
+        assert!(a.prefs_dialog.is_some());
+        let _ = a.update(Message::Prefs(PrefsMsg::Theme("Light".into())));
+        assert_eq!(theme::palette().text, theme::LIGHT.text, "seen at once");
+        let _ = a.update(Message::Prefs(PrefsMsg::Cancel));
+        assert_eq!(theme::palette().text, theme::DARK.text, "cancel goes back");
+        let _ = a.update(Message::Prefs(PrefsMsg::Open));
+        let _ = a.update(Message::Prefs(PrefsMsg::Theme("High contrast".into())));
+        let _ = a.update(Message::Prefs(PrefsMsg::Rate(96000)));
+        let _ = a.update(Message::Prefs(PrefsMsg::Buffer(512)));
+        let _ = a.update(Message::Prefs(PrefsMsg::Paths("/opt/a; /opt/b".into())));
+        let _ = a.update(Message::Prefs(PrefsMsg::Apply));
+        assert!(a.prefs_dialog.is_none());
+        assert_eq!((a.prefs.sample_rate, a.prefs.buffer, a.prefs.plugin_paths.len()), (96000, 512, 2));
+        assert_eq!(a.playback.sample_rate, 96000.0, "a new engine");
+        assert!(a.playback.search_paths[0].ends_with("opt/a"));
+        assert_eq!(a.editor.status, "Preferences saved · 96000 Hz, 512 frames");
+        theme::set("Dark");
     }
 
     #[test]
@@ -3283,6 +3794,181 @@ mod tests {
         assert_eq!(a.editor.project.movements[0].lanes.len(), 1);
         a.engrave();
         assert!(!a.pages.is_empty());
+    }
+
+    #[test]
+    fn effects_buses_and_sends_from_the_mix_tab() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let flute = a.editor.project.tracks[0].id;
+        let index = |a: &App, id: &str| a.playback.plugins.iter().position(|p| p.id == id).unwrap();
+        // A gain insert on the flute, its level from the parameter list.
+        let gain = index(&a, "org.corinzia.gain");
+        let _ = a.update(mx(mix::MixMsg::AddEffect(flute, gain)));
+        let node = a.fx.expect("the new effect is selected");
+        assert_eq!(a.editor.project.tracks[0].inserts, [node]);
+        a.sync();
+        assert!(a.playback.pool.effect(node).is_some(), "loaded with the new plan");
+        let _ = a.update(mx(mix::MixMsg::Param(node, 0, -60.0)));
+        assert_eq!(a.playback.pool.effect(node).unwrap().param_value(0), Some(-60.0));
+        // A bus with a reverb; the flute sends to it.
+        let _ = a.update(mx(mix::MixMsg::AddBus));
+        let bus = a.editor.project.buses[0].id;
+        assert_eq!((a.strip, a.editor.project.buses[0].name.as_str()), (Some(bus), "Bus 1"));
+        let reverb = index(&a, "org.corinzia.reverb");
+        let _ = a.update(mx(mix::MixMsg::AddEffect(bus, reverb)));
+        let _ = a.update(mx(mix::MixMsg::ToggleSend(flute, bus)));
+        let _ = a.update(mx(mix::MixMsg::SendLevel(flute, 0, -3.0)));
+        let _ = a.update(mx(mix::MixMsg::Released));
+        assert_eq!(a.editor.project.tracks[0].sends, [corinzia_model::SendLevel { bus, gain_db: -3.0 }]);
+        // The cello into the bus; the master down 6 dB.
+        let cello = a.editor.project.tracks[1].id;
+        let _ = a.update(mx(mix::MixMsg::Output(cello, "Bus 1".into())));
+        assert_eq!(a.editor.project.tracks[1].output_bus, Some(bus));
+        let _ = a.update(mx(mix::MixMsg::Gain(editor::MASTER, -6.0)));
+        assert_eq!(a.editor.project.master.gain_db, -6.0);
+        a.sync();
+        let _ = a.update(Message::Act(Action::PlayStop));
+        assert!(render(&mut a, 9600) > 0.001, "heard through the bus");
+        // Bypass and removal; one undo brings the bus back.
+        let _ = a.update(mx(mix::MixMsg::Bypass(node)));
+        assert!(a.editor.project.node(node).unwrap().bypassed);
+        let _ = a.update(mx(mix::MixMsg::RemoveBus(bus)));
+        assert!(a.editor.project.buses.is_empty() && a.editor.project.tracks[0].sends.is_empty() && a.editor.project.tracks[1].output_bus.is_none());
+        a.editor.undo();
+        assert_eq!(a.editor.project.buses.len(), 1);
+        a.sync();
+    }
+
+    #[test]
+    fn presets_and_programs_from_the_mix_tab() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let flute = a.editor.project.tracks[0].id;
+        let reverb = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.reverb").unwrap();
+        let _ = a.update(mx(mix::MixMsg::AddEffect(flute, reverb)));
+        a.sync();
+        let node = a.fx.unwrap();
+        let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.9)));
+        let _ = a.update(mx(mix::MixMsg::PresetName("Wet".into())));
+        let _ = a.update(mx(mix::MixMsg::SavePreset(mix::Target::Effect(node))));
+        assert_eq!(a.preset_names, ["Wet"], "{}", a.editor.status);
+        let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.1)));
+        let _ = a.update(mx(mix::MixMsg::LoadPreset(mix::Target::Effect(node), "Wet".into())));
+        assert_eq!(a.playback.pool.effect(node).unwrap().param_value(0), Some(0.9));
+        assert!(a.editor.project.plugin_state.contains_key(&node), "kept with the project");
+        let _ = a.update(mx(mix::MixMsg::DeletePreset(mix::Target::Effect(node), "Wet".into())));
+        assert!(a.preset_names.is_empty());
+        // A program for the flute: in the plan.
+        let _ = a.update(mx(mix::MixMsg::Program(flute, "74 Flute".into())));
+        assert_eq!(a.editor.project.tracks[0].program, Some(73));
+        a.sync();
+        let _ = a.update(mx(mix::MixMsg::Program(flute, "None".into())));
+        assert_eq!(a.editor.project.tracks[0].program, None);
+    }
+
+    #[test]
+    fn automation_lanes_in_the_arrange_view() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let flute = a.editor.project.tracks[0].id;
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Gain".into())));
+        a.sync();
+        assert_eq!(a.arrange_curves[0].as_ref().map(|c| (c.min, c.max, c.points.len())), Some((fader::MIN_DB, 6.0, 0)));
+        let ar = |e: arrange::ArrangeEvent| Message::Arrange(e);
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 0.0, value: 0.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 8.0, value: -20.0 }));
+        // A drag: one undo step.
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoMove { lane: 0, index: 1, q: 6.0, value: -24.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoMove { lane: 0, index: 1, q: 7.0, value: -30.0 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoRelease));
+        a.sync();
+        let lane = a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).unwrap().clone();
+        assert_eq!(lane.points.iter().map(|p| (p.at, p.value)).collect::<Vec<_>>(), [(Frac::ZERO, 0.0), (Frac::new(7, 4), -30.0)]);
+        a.editor.undo();
+        assert_eq!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).unwrap().points[1].value, -20.0);
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoDelete { lane: 0, index: 1 }));
+        let _ = a.update(ar(arrange::ArrangeEvent::AutoDelete { lane: 0, index: 0 }));
+        assert!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(flute)).is_none(), "an empty lane goes");
+        // Plugin parameters are offered too; dynamics as CC11.
+        let gain = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.gain").unwrap();
+        let _ = a.update(mx(mix::MixMsg::AddEffect(flute, gain)));
+        a.sync();
+        let labels: Vec<String> = mix::auto_options(&a.editor.project, &a.playback, flute).into_iter().map(|o| o.0).collect();
+        assert!(labels.contains(&"Corinzia Gain: Gain".to_string()), "{labels:?}");
+        let _ = a.update(mx(mix::MixMsg::DynamicsCc(flute, mix::DYNAMICS_CC[2].into())));
+        assert_eq!(a.editor.project.tracks[0].dynamics_cc, Some(11));
+        let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Off".into())));
+        a.sync();
+        assert!(a.arrange_curves[0].is_none());
+    }
+
+    #[test]
+    fn expression_maps_from_the_mix_tab() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let flute = a.editor.project.tracks[0].id;
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let _ = a.update(mx(mix::MixMsg::Select(flute)));
+        let _ = a.update(mx(mix::MixMsg::TechAdd(flute)));
+        let _ = a.update(mx(mix::MixMsg::TechAdd(flute)));
+        let tech = |a: &App| a.editor.project.tracks[0].techniques.clone();
+        assert_eq!(tech(&a).iter().map(|t| t.technique.as_str()).collect::<Vec<_>>(), ["ord.", "pizz."]);
+        use corinzia_model::SwitchAction::*;
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Kind, "Program".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Value, "46 Pizzicato Strings".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value, "D1".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Kind, "Controller".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value, "CC58".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value2, "64".into())));
+        assert_eq!(tech(&a).iter().map(|t| t.action).collect::<Vec<_>>(), [Cc(58, 64), Program(45)]);
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Kind, "Channel".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Value, "5".into())));
+        assert_eq!(tech(&a)[1].action, Channel(4));
+        let _ = a.update(mx(mix::MixMsg::TechRemove(flute, 0)));
+        assert_eq!(tech(&a).len(), 1);
+        a.sync();
+        assert_eq!(mix::key_name(60), "C4");
+    }
+
+    #[test]
+    fn a_midi_keyboard_enters_notes_and_chords() {
+        let mut a = app(View::Page);
+        a.editor.select(None);
+        a.editor.set_input_mode(true);
+        a.editor.caret_lane = 0;
+        a.editor.caret = Frac::ZERO;
+        let first = a.editor.movement().unwrap().lanes[0].voices[0].events.len();
+        // C E G held together (a chord), let go; then D alone.
+        let path = std::env::temp_dir().join(format!("corinzia-midi-{}", std::process::id()));
+        std::fs::write(&path, [0x90, 72, 100, 76, 90, 79, 80, 0x80, 72, 0, 76, 0, 79, 0, 0x90, 74, 70, 74, 0]).unwrap();
+        a.open_midi(&path.to_string_lossy());
+        assert!(a.midi.is_some());
+        let mut tries = 0;
+        while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || a.midi_held.len() > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            a.midi_poll();
+            tries += 1;
+            assert!(tries < 200, "the keys arrive");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        a.midi_poll();
+        let evs = a.editor.movement().unwrap().lanes[0].voices[0].events.clone();
+        let names = |e: &corinzia_model::Event| e.heads.iter().map(|h| editor::pitch_name(h.pitch)).collect::<Vec<_>>().join("+");
+        assert_eq!(names(&evs[0]), "C5+E5+G5");
+        assert_eq!(names(&evs[1]), "D5");
+        assert!(evs.len() >= first.min(2));
+        // Spelling in the key: C# in D major, Db in F major, Bb in F major.
+        assert_eq!(editor::pitch_name(editor::spell_key(61, 2)), "C♯4");
+        assert_eq!(editor::pitch_name(editor::spell_key(61, -1)), "D♭4");
+        assert_eq!(editor::pitch_name(editor::spell_key(70, -1)), "B♭4");
+        assert_eq!(editor::pitch_name(editor::spell_key(60, -7)), "C4", "not in C-flat major: natural");
+        a.open_midi("");
+        assert!(a.midi.is_none());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

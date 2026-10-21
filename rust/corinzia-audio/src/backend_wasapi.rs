@@ -22,14 +22,22 @@ impl Drop for Output {
     }
 }
 
-/// Starts the stream; `engine` moves to the audio callback. Fails when no
-/// output device can play `sample_rate` stereo (the engine is dropped).
-pub fn start(engine: Engine, sample_rate: u32, max_frames: u32) -> Result<Output, String> {
+/// Output devices: (name, name).
+pub fn devices() -> Vec<(String, String)> {
+    let host = cpal::default_host();
+    host.output_devices().map(|d| d.filter_map(|d| d.name().ok()).map(|n| (n.clone(), n)).collect()).unwrap_or_default()
+}
+
+/// Starts the stream; `engine` moves to the audio callback. `device`: a
+/// device name, or empty for the default. Fails when no output device can
+/// play `sample_rate` stereo (the engine is dropped).
+pub fn start(engine: Engine, sample_rate: u32, max_frames: u32, device: &str) -> Result<Output, String> {
+    let device = device.to_string();
     let (quit_tx, quit_rx) = mpsc::channel::<()>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let thread = std::thread::Builder::new()
         .name("corinzia-wasapi".into())
-        .spawn(move || match open(engine, sample_rate, max_frames) {
+        .spawn(move || match open(engine, sample_rate, max_frames, &device) {
             Ok(stream) => {
                 let _ = ready_tx.send(Ok(()));
                 let _ = quit_rx.recv();
@@ -50,9 +58,10 @@ pub fn start(engine: Engine, sample_rate: u32, max_frames: u32) -> Result<Output
     }
 }
 
-fn open(mut engine: Engine, rate: u32, max_frames: u32) -> Result<cpal::Stream, String> {
+fn open(mut engine: Engine, rate: u32, max_frames: u32, name: &str) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no audio output device")?;
+    let chosen = if name.is_empty() { None } else { host.output_devices().ok().and_then(|mut d| d.find(|d| d.name().is_ok_and(|n| n == name))) };
+    let device = chosen.or_else(|| host.default_output_device()).ok_or("no audio output device")?;
     let channels = device.default_output_config().map(|c| c.channels()).unwrap_or(2).max(2);
     let config = cpal::StreamConfig { channels, sample_rate: cpal::SampleRate(rate), buffer_size: cpal::BufferSize::Default };
     let block = max_frames as usize;

@@ -7,7 +7,7 @@
 //! snapshots out (dropped on the UI thread, which is where plugins may be
 //! deactivated and destroyed), and atomics for the playhead.
 
-use crate::snapshot::{ScheduledNote, Snapshot};
+use crate::snapshot::{Kind, ScheduledNote, Snapshot};
 use clap_sys::events::*;
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::audio_buffer::clap_audio_buffer;
@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub const MAX_NODES: usize = 256;
+pub const MAX_BUSES: usize = 64;
+pub const MAX_SENDS: usize = 8;
 pub const MAX_ACTIVE: usize = 4096;
 const EVENTS_PER_NODE: usize = 1024;
 
@@ -27,6 +29,12 @@ pub enum Command {
     Seek(i64),
     /// Live mixer change for a node: gain (linear), pan, audible.
     Mix { node: u32, gain: f32, pan: f32, audible: bool },
+    /// Live change of a bus: gain (linear), pan, audible.
+    MixBus { bus: u32, gain: f32, pan: f32, audible: bool },
+    /// Live change of a node's send (by its index in the node's sends).
+    Send { node: u32, index: u32, gain: f32 },
+    /// Live change of the master fader (linear).
+    Master { gain: f32 },
     /// Audition: velocity in 0..1; a negative velocity ends the note.
     Preview { node: u32, key: i16, channel: i16, velocity: f32 },
 }
@@ -96,6 +104,7 @@ union EventSlot {
     header: clap_event_header,
     note: clap_event_note,
     midi: clap_event_midi,
+    param: clap_event_param_value,
 }
 
 struct InputEvents {
@@ -126,6 +135,88 @@ struct NodeState {
     /// The left/right gains applied at the end of the last block: changes
     /// ramp from them across the next one (no zipper noise, no clicks).
     applied: Option<(f32, f32)>,
+    /// Send levels (linear), and the levels reached last block.
+    sends: [f32; MAX_SENDS],
+    send_applied: [Option<f32>; MAX_SENDS],
+}
+
+/// Effect automation for the block: the plan's effects (as pointers, to
+/// match the one running) and (effect, parameter, value, frame) to deliver.
+struct FxAuto {
+    effects: Vec<*const crate::host::Plugin>,
+    queue: Vec<(u32, u32, f64, u32)>,
+}
+
+/// A bus's mix buffer and fader.
+struct BusState {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    gain: f32,
+    pan: f32,
+    audible: bool,
+    applied: Option<(f32, f32)>,
+}
+
+/// Equal-power pan of a gain: (left, right); silent when not audible.
+fn pan_gains(gain: f32, pan: f32, audible: bool) -> (f32, f32) {
+    let angle = (pan + 1.0) * std::f32::consts::FRAC_PI_4;
+    let g = if audible { gain } else { 0.0 };
+    (g * angle.cos() * std::f32::consts::SQRT_2, g * angle.sin() * std::f32::consts::SQRT_2)
+}
+
+/// Adds `src` scaled by a gain ramping from `from` to `to` over the block.
+fn mix_into(dst: &mut [f32], src: &[f32], from: f32, to: f32) {
+    if from == 0.0 && to == 0.0 {
+        return;
+    }
+    let n = dst.len().max(1) as f32;
+    for (f, (d, s)) in dst.iter_mut().zip(src).enumerate() {
+        *d += s * (from + (to - from) * (f + 1) as f32 / n);
+    }
+}
+
+/// Runs an effect in place on `left`/`right` (through the scratch pair).
+///
+/// # Safety
+/// Audio thread; the buffers hold at least `frames` samples.
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_effect(plugin: &Arc<crate::host::Plugin>, left: &mut [f32], right: &mut [f32], tmp: &mut [Vec<f32>; 2], frames: usize, steady: i64, transport: &clap_event_transport, fx: &mut InputEvents, out_events: &clap_output_events, auto: &FxAuto) {
+    if !plugin.rt_start() {
+        return;
+    }
+    fx.events.clear();
+    plugin.rt_take_params(|id, v| {
+        if fx.events.len() < fx.events.capacity() {
+            fx.events.push(EventSlot { param: crate::host::param_event(id, v, 0) });
+        }
+    });
+    // Its automation in this block, in time order.
+    if let Some(k) = auto.effects.iter().position(|e| std::ptr::eq(*e, Arc::as_ptr(plugin))) {
+        for &(f, id, v, time) in &auto.queue {
+            if f as usize == k && fx.events.len() < fx.events.capacity() {
+                fx.events.push(EventSlot { param: crate::host::param_event(id, v, time) });
+            }
+        }
+    }
+    let events = &fx.list;
+    let mut ins = [left.as_mut_ptr(), right.as_mut_ptr()];
+    let mut outs = [tmp[0].as_mut_ptr(), tmp[1].as_mut_ptr()];
+    let input = clap_audio_buffer { data32: ins.as_mut_ptr(), data64: std::ptr::null_mut(), channel_count: 2, latency: 0, constant_mask: 0 };
+    let mut output = clap_audio_buffer { data32: outs.as_mut_ptr(), data64: std::ptr::null_mut(), channel_count: 2, latency: 0, constant_mask: 0 };
+    let p = clap_process {
+        steady_time: steady,
+        frames_count: frames as u32,
+        transport,
+        audio_inputs: &input,
+        audio_outputs: &mut output,
+        audio_inputs_count: 1,
+        audio_outputs_count: 1,
+        in_events: events,
+        out_events,
+    };
+    plugin.rt_process(&p);
+    left[..frames].copy_from_slice(&tmp[0][..frames]);
+    right[..frames].copy_from_slice(&tmp[1][..frames]);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -152,6 +243,14 @@ pub struct Engine {
     playing: bool,
     steady: i64,
     out_events: clap_output_events,
+    buses: Vec<BusState>,
+    master_gain: f32,
+    master_applied: Option<f32>,
+    /// Scratch for effects (their output before it is copied back).
+    tmp: [Vec<f32>; 2],
+    /// The events effects get.
+    fx_events: Box<InputEvents>,
+    fx_auto: FxAuto,
 }
 unsafe impl Send for Engine {}
 
@@ -166,9 +265,12 @@ pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
                 events: Vec::with_capacity(EVENTS_PER_NODE),
             });
             events.list.ctx = &mut *events as *mut InputEvents as *mut c_void;
-            NodeState { events, left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None }
+            NodeState { events, left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS] }
         })
         .collect();
+    let buses = (0..MAX_BUSES).map(|_| BusState { left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], gain: 1.0, pan: 0.0, audible: true, applied: None }).collect();
+    let mut fx_events = Box::new(InputEvents { list: clap_input_events { ctx: std::ptr::null_mut(), size: Some(in_size), get: Some(in_get) }, events: Vec::with_capacity(EVENTS_PER_NODE) });
+    fx_events.list.ctx = &mut *fx_events as *mut InputEvents as *mut c_void;
     let engine = Engine {
         commands: crx,
         retired: rtx,
@@ -183,6 +285,12 @@ pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
         playing: false,
         steady: 0,
         out_events: clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_push) },
+        buses,
+        master_gain: 1.0,
+        master_applied: None,
+        tmp: [vec![0.0; max_frames as usize], vec![0.0; max_frames as usize]],
+        fx_events,
+        fx_auto: FxAuto { effects: Vec::with_capacity(MAX_NODES * 4), queue: Vec::with_capacity(EVENTS_PER_NODE) },
     };
     (EngineHandle { commands: ctx, retired: rrx, shared, sample_rate, max_frames }, engine)
 }
@@ -249,9 +357,9 @@ impl Engine {
                     self.release_all(0);
                     self.flush_releases_to_old_plugins();
                     if let Some(old) = self.snap.take() {
-                        for n in &old.nodes {
-                            if !next.nodes.iter().any(|m| Arc::ptr_eq(&m.plugin, &n.plugin)) {
-                                n.plugin.rt_stop();
+                        for p in old.plugins() {
+                            if !next.plugins().any(|q| Arc::ptr_eq(q, p)) {
+                                p.rt_stop();
                             }
                         }
                         if let Err(rtrb::PushError::Full(Retired::Snapshot(s))) = self.retired.push(Retired::Snapshot(old)) {
@@ -263,14 +371,29 @@ impl Engine {
                         self.nodes[i].pan = n.pan;
                         self.nodes[i].audible = n.audible;
                         self.nodes[i].midi = n.plugin.midi_dialect;
+                        for (k, s) in n.sends.iter().enumerate().take(MAX_SENDS) {
+                            self.nodes[i].sends[k] = s.1;
+                        }
                     }
+                    for (i, b) in next.buses.iter().enumerate().take(MAX_BUSES) {
+                        let bs = &mut self.buses[i];
+                        (bs.gain, bs.pan, bs.audible) = (b.gain, b.pan, b.audible);
+                    }
+                    self.master_gain = next.master_gain;
                     self.shared.generation.store(next.generation, Ordering::Release);
+                    self.fx_auto.effects.clear();
+                    for e in next.effects.iter().take(self.fx_auto.effects.capacity()) {
+                        self.fx_auto.effects.push(Arc::as_ptr(e));
+                    }
                     self.snap = Some(next);
                     self.reset_cursor();
+                    self.chase();
                 }
                 Command::Play => {
                     self.playing = true;
                     self.reset_cursor();
+                    self.send_programs();
+                    self.chase();
                 }
                 Command::Stop => {
                     self.playing = false;
@@ -280,6 +403,7 @@ impl Engine {
                     self.release_all(0);
                     self.pos = s.max(0);
                     self.reset_cursor();
+                    self.chase();
                 }
                 Command::Mix { node, gain, pan, audible } => {
                     if let Some(n) = self.nodes.get_mut(node as usize) {
@@ -288,11 +412,103 @@ impl Engine {
                         n.audible = audible;
                     }
                 }
+                Command::MixBus { bus, gain, pan, audible } => {
+                    if let Some(b) = self.buses.get_mut(bus as usize) {
+                        (b.gain, b.pan, b.audible) = (gain, pan, audible);
+                    }
+                }
+                Command::Send { node, index, gain } => {
+                    if let Some(s) = self.nodes.get_mut(node as usize).and_then(|n| n.sends.get_mut(index as usize)) {
+                        *s = gain;
+                    }
+                }
+                Command::Master { gain } => self.master_gain = gain,
                 Command::Preview { node, key, channel, velocity } => {
                     let a = Active { node, note_id: -1, port: 0, channel, key };
                     self.push_event(node, a, velocity >= 0.0, velocity.max(0.0), 0);
                 }
             }
+        }
+    }
+
+    /// Automation before the playhead: each target takes its latest value
+    /// (faders and pans here; parameters and controllers with the block).
+    fn chase(&mut self) {
+        let Some(snap) = self.snap.take() else { return };
+        let upto = self.cursor.min(snap.notes.len());
+        // Latest first: a target already set is skipped.
+        let mut done: [u64; 64] = [u64::MAX; 64];
+        let mut n_done = 0;
+        for n in snap.notes[..upto].iter().rev() {
+            let key = match n.kind {
+                Kind::Note => continue,
+                Kind::Cc(cc) => (1u64 << 60) | ((n.node as u64) << 8) | cc as u64,
+                Kind::Program => (5u64 << 60) | n.node as u64,
+                Kind::Gain => (2u64 << 60) | n.node as u64,
+                Kind::Pan => (3u64 << 60) | n.node as u64,
+                Kind::Param { fx, id } => (4u64 << 60) | ((fx as u64) << 32) | id as u64 ^ ((n.node as u64) << 20),
+            };
+            if done[..n_done].contains(&key) {
+                continue;
+            }
+            if n_done == done.len() {
+                break;
+            }
+            done[n_done] = key;
+            n_done += 1;
+            self.apply(n, 0);
+        }
+        self.snap = Some(snap);
+    }
+
+    /// An automation or controller event at a frame of the block.
+    fn apply(&mut self, n: &ScheduledNote, time: u32) {
+        let Some(ns) = self.nodes.get_mut(n.node as usize) else { return };
+        match n.kind {
+            Kind::Note => {}
+            Kind::Gain => ns.gain = n.velocity,
+            Kind::Pan => ns.pan = n.velocity,
+            Kind::Cc(cc) => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    let data = [0xb0 | (n.channel as u8 & 15), cc & 0x7f, (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8];
+                    ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
+                }
+            }
+            Kind::Program => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    let data = [0xc0 | (n.channel as u8 & 15), n.key as u8 & 0x7f, 0];
+                    ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
+                }
+            }
+            Kind::Param { fx: u32::MAX, id } => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    ns.events.events.push(EventSlot { param: crate::host::param_event(id, n.velocity as f64, time) });
+                }
+            }
+            Kind::Param { fx, id } => {
+                if self.fx_auto.queue.len() < self.fx_auto.queue.capacity() {
+                    self.fx_auto.queue.push((fx, id, n.velocity as f64, time));
+                }
+            }
+        }
+    }
+
+    /// Each instrument's program (bank select first), at the block's start.
+    fn send_programs(&mut self) {
+        let Some(snap) = self.snap.as_ref() else { return };
+        for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
+            let Some((ch, program, bank)) = node.program else { continue };
+            let events = &mut self.nodes[i].events.events;
+            let mut midi = |data: [u8; 3]| {
+                if events.len() < EVENTS_PER_NODE {
+                    events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time: 0, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: 0, data } });
+                }
+            };
+            if let Some(b) = bank {
+                midi([0xb0 | ch, 0, (b >> 7) as u8 & 0x7f]);
+                midi([0xb0 | ch, 32, b as u8 & 0x7f]);
+            }
+            midi([0xc0 | ch, program & 0x7f, 0]);
         }
     }
 
@@ -332,6 +548,18 @@ impl Engine {
         for n in self.nodes.iter_mut() {
             n.events.events.clear();
         }
+        self.fx_auto.queue.clear();
+        // Parameter changes from the main thread lead the block.
+        if let Some(snap) = self.snap.as_ref() {
+            for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
+                let events = &mut self.nodes[i].events.events;
+                node.plugin.rt_take_params(|id, v| {
+                    if events.len() < EVENTS_PER_NODE {
+                        events.push(EventSlot { param: crate::host::param_event(id, v, 0) });
+                    }
+                });
+            }
+        }
         self.handle_commands();
         let block_start = self.pos;
         let block_end = self.pos + frames as i64;
@@ -368,6 +596,10 @@ impl Engine {
     }
 
     fn schedule(&mut self, n: &ScheduledNote, time: u32) {
+        if n.kind != Kind::Note {
+            self.apply(n, time);
+            return;
+        }
         let a = Active { node: n.node, note_id: n.note_id, port: n.port, channel: n.channel, key: n.key };
         if n.on {
             if self.active.len() < MAX_ACTIVE {
@@ -416,6 +648,11 @@ impl Engine {
     fn render(&mut self, left: &mut [f32], right: &mut [f32], frames: usize, at: i64) {
         let Some(snap) = self.snap.take() else { return };
         let transport = self.transport(at);
+        let nb = snap.buses.len().min(MAX_BUSES);
+        for b in self.buses.iter_mut().take(nb) {
+            b.left[..frames].fill(0.0);
+            b.right[..frames].fill(0.0);
+        }
         for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
             if !node.plugin.rt_start() {
                 continue;
@@ -435,20 +672,60 @@ impl Engine {
                 out_events: &self.out_events,
             };
             unsafe { node.plugin.rt_process(&p) };
+            // The track's effects, in order.
+            for fx in &node.inserts {
+                unsafe { run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+            }
             // Equal-power pan; silent when muted (or another track soloed).
-            let angle = (ns.pan + 1.0) * std::f32::consts::FRAC_PI_4;
-            let g = if ns.audible { ns.gain } else { 0.0 };
-            let (gl, gr) = (g * angle.cos() * std::f32::consts::SQRT_2, g * angle.sin() * std::f32::consts::SQRT_2);
+            let (gl, gr) = pan_gains(ns.gain, ns.pan, ns.audible);
             let (l0, r0) = ns.applied.unwrap_or((gl, gr));
             ns.applied = Some((gl, gr));
-            if l0 == 0.0 && r0 == 0.0 && gl == 0.0 && gr == 0.0 {
-                continue;
+            // Into its bus or the master; post-fader sends to buses.
+            let (dl, dr): (&mut [f32], &mut [f32]) = match node.out.filter(|&b| (b as usize) < nb) {
+                Some(b) => {
+                    let bs = &mut self.buses[b as usize];
+                    (&mut bs.left[..frames], &mut bs.right[..frames])
+                }
+                None => (&mut left[..frames], &mut right[..frames]),
+            };
+            mix_into(dl, &ns.left[..frames], l0, gl);
+            mix_into(dr, &ns.right[..frames], r0, gr);
+            for (k, &(bus, _)) in node.sends.iter().enumerate().take(MAX_SENDS) {
+                if (bus as usize) >= nb {
+                    continue;
+                }
+                let level = if ns.audible { ns.sends[k] } else { 0.0 };
+                let from = ns.send_applied[k].unwrap_or(level);
+                ns.send_applied[k] = Some(level);
+                let bs = &mut self.buses[bus as usize];
+                // The fader applies before the send (post-fader), panned as the track.
+                mix_into(&mut bs.left[..frames], &ns.left[..frames], from * l0, level * gl);
+                mix_into(&mut bs.right[..frames], &ns.right[..frames], from * r0, level * gr);
             }
+        }
+        for (b, strip) in snap.buses.iter().enumerate().take(nb) {
+            let bs = &mut self.buses[b];
+            for fx in &strip.inserts {
+                unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+            }
+            let (gl, gr) = pan_gains(bs.gain, bs.pan, bs.audible);
+            let (l0, r0) = bs.applied.unwrap_or((gl, gr));
+            bs.applied = Some((gl, gr));
+            mix_into(&mut left[..frames], &bs.left[..frames], l0, gl);
+            mix_into(&mut right[..frames], &bs.right[..frames], r0, gr);
+        }
+        for fx in &snap.master_inserts {
+            unsafe { run_effect(fx, &mut left[..frames], &mut right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+        }
+        let g = self.master_gain;
+        let g0 = self.master_applied.unwrap_or(g);
+        self.master_applied = Some(g);
+        if g0 != 1.0 || g != 1.0 {
             let n = frames.max(1) as f32;
             for f in 0..frames {
-                let k = (f + 1) as f32 / n;
-                left[f] += ns.left[f] * (l0 + (gl - l0) * k);
-                right[f] += ns.right[f] * (r0 + (gr - r0) * k);
+                let k = g0 + (g - g0) * (f + 1) as f32 / n;
+                left[f] *= k;
+                right[f] *= k;
             }
         }
         self.snap = Some(snap);
@@ -472,8 +749,8 @@ impl Drop for Engine {
     fn drop(&mut self) {
         // The audio thread is gone: stop the plugins it was processing.
         if let Some(s) = self.snap.as_ref() {
-            for n in &s.nodes {
-                n.plugin.rt_stop();
+            for p in s.plugins() {
+                p.rt_stop();
             }
         }
     }

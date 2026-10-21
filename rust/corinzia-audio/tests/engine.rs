@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -38,7 +38,7 @@ fn project() -> Project {
             chords: vec![],
             lines: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(vec![note(10, Frac::ZERO, 0), rest(20, Frac::new(1, 4)), note(30, Frac::new(3, 4), 5)]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![],
     });
     p
 }
@@ -51,9 +51,9 @@ fn rms(x: &[f32]) -> f32 {
 fn builtin_instrument_is_a_clap_plugin() {
     let lib = Library::builtin();
     let infos = lib.plugins();
-    assert_eq!(infos.len(), 1);
-    assert_eq!(infos[0].id, "org.corinzia.sine");
-    assert!(infos[0].is_instrument());
+    let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ids, ["org.corinzia.sine", "org.corinzia.gain", "org.corinzia.reverb"]);
+    assert!(infos[0].is_instrument() && !infos[1].is_instrument());
     let p = Plugin::create(&lib, "org.corinzia.sine").unwrap();
     assert!(!p.midi_dialect && p.output_channels == 2);
     p.activate(SR, 256).unwrap();
@@ -175,7 +175,187 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
+}
+
+/// An effect node with its parameters as Corinzia's effects keep them.
+fn effect(p: &mut Project, id: Id, plugin: &str, params: &[f64]) {
+    p.nodes.push(AudioNode { id, kind: NodeKind::Plugin, name: plugin.into(), bundle: host::BUILTIN.into(), plugin_id: plugin.into(), bypassed: false });
+    let mut state = b"CZF1".to_vec();
+    for v in params {
+        state.extend_from_slice(&v.to_le_bytes());
+    }
+    p.plugin_state.insert(id, Arc::new(state));
+}
+
+fn render(p: &Project, frames: usize) -> Vec<f32> {
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(p, SR, 1, &[0], &mut pool));
+    ui.play();
+    eng.render_offline(frames).0
+}
+
+#[test]
+fn inserts_buses_sends_and_the_master() {
+    let beat = (SR * 0.5) as usize;
+    let dry = render(&project(), 2 * beat);
+    assert!(rms(&dry[1000..beat / 2]) > 0.01);
+
+    // A gain insert at -6 dB halves the level.
+    let mut p = project();
+    effect(&mut p, 500, "org.corinzia.gain", &[-6.0, 0.0]);
+    p.tracks[0].inserts = vec![500];
+    let half = render(&p, 2 * beat);
+    let ratio = rms(&half[1000..beat / 2]) / rms(&dry[1000..beat / 2]);
+    assert!((ratio - 0.501).abs() < 0.01, "{ratio}");
+    // Bypassed: as if not there.
+    p.nodes[0].bypassed = true;
+    assert!((rms(&render(&p, 2 * beat)[1000..beat / 2]) - rms(&dry[1000..beat / 2])).abs() < 1e-4);
+
+    // Routed to a muted bus: silent; unmuted: heard.
+    let mut p = project();
+    p.buses.push(Bus { id: 60, name: "Strings".into(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: true });
+    p.tracks[0].output_bus = Some(60);
+    assert!(rms(&render(&p, 2 * beat)[1000..beat / 2]) < 1e-6);
+    p.buses[0].mute = false;
+    assert!((rms(&render(&p, 2 * beat)[1000..beat / 2]) - rms(&dry[1000..beat / 2])).abs() < 1e-4);
+
+    // A send to a reverb bus: a tail after the note's release.
+    let mut p = project();
+    effect(&mut p, 501, "org.corinzia.reverb", &[1.0, 0.8, 0.3]);
+    p.buses.push(Bus { id: 61, name: "Reverb".into(), inserts: vec![501], gain_db: 0.0, pan: 0.0, mute: false });
+    p.tracks[0].sends = vec![SendLevel { bus: 61, gain_db: 0.0 }];
+    let wet = render(&p, 2 * beat);
+    let tail = 3 * beat / 2 - 2000..3 * beat / 2;
+    assert!(rms(&dry[tail.clone()]) < 1e-5, "dry is silent there");
+    assert!(rms(&wet[tail]) > 1e-4, "the reverb rings on");
+
+    // The master fader at the bottom silences everything.
+    p.master.gain_db = -100.0;
+    assert!(rms(&render(&p, 2 * beat)[1000..beat]) < 1e-6);
+}
+
+#[test]
+fn effect_parameters_set_while_idle_and_while_playing() {
+    let lib = Library::builtin();
+    let gain = Plugin::create(&lib, "org.corinzia.gain").unwrap();
+    gain.activate(SR, 256).unwrap();
+    let names: Vec<String> = gain.params().iter().map(|p| p.name.clone()).collect();
+    assert_eq!(names, ["Gain", "Pan"]);
+    assert_eq!(gain.param_value(0), Some(0.0));
+    gain.set_param(0, -12.0); // not processing: flushed at once
+    assert_eq!(gain.param_value(0), Some(-12.0));
+    assert_eq!(gain.param_text(0, -12.0), "-12.0 dB");
+
+    // While playing: the change reaches the plugin with the next block.
+    let mut p = project();
+    effect(&mut p, 500, "org.corinzia.gain", &[0.0, 0.0]);
+    p.tracks[0].inserts = vec![500];
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.play();
+    let before = eng.render_offline(4096).0;
+    assert!(rms(&before[1000..]) > 0.01);
+    pool.effect(500).unwrap().set_param(0, -60.0);
+    let _ = eng.render_offline(512); // the change, then the fade over a block
+    let after = eng.render_offline(4096).0;
+    assert!(rms(&after) < 1e-6, "{}", rms(&after));
+    assert_eq!(pool.effect(500).unwrap().param_value(0), Some(-60.0));
+}
+
+#[test]
+fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
+    let beat = (SR * 0.5) as usize;
+    let organ = render(&project(), beat);
+    let mut p = project();
+    p.tracks[0].program = Some(1); // Corinzia Sine: pure sine
+    let pure = render(&p, beat);
+    // The same note, without the octave partial: a different waveform, less energy.
+    assert!(rms(&pure[1000..beat / 2]) < rms(&organ[1000..beat / 2]) * 0.995, "{} {}", rms(&pure[1000..beat / 2]), rms(&organ[1000..beat / 2]));
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert_eq!(snap.nodes[0].program, Some((0, 1, None)));
+}
+
+#[test]
+fn automation_and_dynamics_as_a_controller() {
+    let beat = (SR * 0.5) as usize;
+    // A long note: c'' for the whole bar.
+    let long = || {
+        let mut p = project();
+        let v = &mut p.movements[0].lanes[0].voices[0];
+        let mut evs = (*v.events).clone();
+        evs.truncate(1);
+        evs[0].duration = Frac::int(1);
+        v.events = Arc::new(evs);
+        p
+    };
+    let flat = render(&long(), 4 * beat);
+    // The fader from 0 dB to -60 dB (silence) over the bar.
+    let mut p = long();
+    p.movements[0].automation = vec![AutoLane { id: 90, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0 }, AutoPoint { at: Frac::int(1), value: -60.0 }] }];
+    let fade = render(&p, 4 * beat);
+    let early = rms(&fade[2000..beat / 2]) / rms(&flat[2000..beat / 2]);
+    let late = rms(&fade[3 * beat..4 * beat - 1000]) / rms(&flat[3 * beat..4 * beat - 1000]);
+    assert!(early > 0.5 && late < 0.1, "{early} {late}"); // about -3.5 dB early on (linear in dB)
+
+    // An effect's parameter: the gain insert down 20 dB from beat 3.
+    let mut p = long();
+    effect(&mut p, 500, "org.corinzia.gain", &[0.0, 0.0]);
+    p.tracks[0].inserts = vec![500];
+    p.movements[0].automation = vec![AutoLane { id: 91, target: AutoTarget::Param { node: 500, param: 0 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.0 }, AutoPoint { at: Frac::new(1, 2), value: -20.0 }] }];
+    let step = render(&p, 4 * beat);
+    let before = rms(&step[beat..2 * beat - 500]) / rms(&flat[beat..2 * beat - 500]);
+    let after = rms(&step[2 * beat + 2000..3 * beat]) / rms(&flat[2 * beat + 2000..3 * beat]);
+    assert!((before - 1.0).abs() < 0.02 && (after - 0.1).abs() < 0.02, "{before} {after}");
+
+    // Dynamics as CC11: the sine follows expression, so p (CC11 ≈ velocity) is softer twice over.
+    let mut p = long();
+    p.movements[0].lanes[0].voices[0].events = Arc::new({
+        let mut e = (*p.movements[0].lanes[0].voices[0].events).clone();
+        e[0].dynamic = Some(2); // p
+        e
+    });
+    let vel_only = render(&p, beat);
+    p.tracks[0].dynamics_cc = Some(11);
+    let with_cc = render(&p, beat);
+    let r = rms(&with_cc[2000..beat]) / rms(&vel_only[2000..beat]);
+    assert!(r < 0.7, "{r}");
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(11)));
+}
+
+#[test]
+fn expression_maps_switch_sounds() {
+    // c'' (beat 1) then "pizz." over a'' (beat 4).
+    let mut p = project();
+    p.movements[0].lanes[0].texts.push(TextItem { id: 70, at: Frac::new(1, 2), text: "pizz.".into(), kind: TextKind::Technique, shown: Shown::Both });
+    p.tracks[0].techniques = vec![
+        TechniqueSwitch { technique: "pizz.".into(), action: SwitchAction::Program(1) },
+        TechniqueSwitch { technique: "ord.".into(), action: SwitchAction::Program(0) },
+        TechniqueSwitch { technique: "staccato".into(), action: SwitchAction::Keyswitch(24) },
+    ];
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let programs: Vec<(i64, i16)> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Program).map(|n| (n.at, n.key)).collect();
+    let beat = (SR * 0.5) as i64;
+    assert_eq!(programs, [(0, 0), (3 * beat - 3, 1)], "ord. from the start, pizz. just before beat 4");
+    // A staccato note gets its keyswitch (and the next one goes back).
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = corinzia_score::score::art::STACCATO;
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let keys: Vec<(i64, i16, bool)> = snap.notes.iter().filter(|n| n.note_id == -2).map(|n| (n.at, n.key, n.on)).collect();
+    assert_eq!(keys, [(0, 24, true), (1, 24, false)]);
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Program && n.at == 3 * beat - 3 && n.key == 1));
+    // In the MIDI file too.
+    let doc = corinzia_perform::document(&p, &p.movements[0]);
+    let t = &doc.performance.tracks[0];
+    assert_eq!(t.programs.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    assert!(t.notes.iter().any(|n| n.key == 24));
 }

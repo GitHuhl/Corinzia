@@ -93,6 +93,51 @@ PipeWire.
   `<score-instrument>` each), drum sets (unpitched notes, noteheads and
   their sounds), guitar tunings (a TAB staff from another program becomes
   the tuning), and the subtitle, lyricist, arranger and copyright.
+* **Preferences** (⚙ in the toolbar, Ctrl+,): theme (dark, light, high
+  contrast), audio output device, sample rate, buffer size, and extra plugin
+  folders. They're saved in `~/.config/corinzia/preferences.json`
+  (`%APPDATA%\Corinzia` on Windows). Changing the device, rate or buffer
+  restarts the audio, and plugins keep their settings.
+* **Safe plugin scanning:** each plugin bundle is opened by a child process
+  (`corinzia --scan-plugin <bundle>`) with a 30-second limit, so a plugin
+  that crashes or hangs is listed as skipped instead of taking Corinzia
+  down. Results are cached in `plugins.json` beside the preferences and
+  reused until a bundle changes. Rescan plugins starts afresh.
+* **Effects, buses and the master** (Mix tab): each strip has an effect
+  chain (CLAP or VST3 effects, or the built-in Corinzia Gain and Corinzia
+  Reverb), and effects can be bypassed or reordered. Tracks can also go to
+  a bus instead of the master, and send to buses post-fader. Buses have
+  their own effects, fader, pan and mute; the master strip has effects and
+  a fader. A selected effect shows its editor button and a slider per
+  parameter.
+* **Presets and programs:** any plugin's sound (an instrument's or an
+  effect's) can be saved as a named preset and loaded into any project.
+  Presets live in `presets/<plugin>/` beside the preferences. VST3 plugins
+  now keep their state too. A track's MIDI program (General MIDI names,
+  optional bank) is sent to its instrument when playback starts, and is
+  written into exported MIDI files. Corinzia Sine has three programs: soft
+  organ, pure sine and bright.
+* **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
+  the track's lane in the arrange view: its gain, its pan, or any parameter
+  of its instrument or effects. Click to add a point, drag to move it,
+  right-click to delete it; values run in straight lines between points.
+  Automation follows repeats and is picked up when playback starts
+  mid-piece. A track's "Dynamics" can also send the performed dynamics and
+  hairpins as CC1 or CC11 for sample libraries, during playback and in
+  exported MIDI files (Corinzia Sine follows CC11 and CC7).
+* **Playing techniques (expression maps):** a track's "Playing techniques"
+  table (Mix tab, select the strip) maps techniques to a keyswitch, a program
+  change, a controller value or a MIDI channel. The techniques are technique
+  texts (pizz., arco, con sord., sul pont., trem., …; the last one lasts) and
+  articulations (staccato, accent, legato, …; for that note). "ord." is the
+  normal sound. Switches are sent just before the notes that need them and
+  only when the sound changes, during playback and in exported MIDI files.
+* **MIDI keyboard input** (Preferences → MIDI keyboard): in note input,
+  each key played is entered at the caret with the current duration,
+  spelled in the key signature. Keys held together make a chord, and on a
+  drum set a key picks the drum mapped to it. Keys also sound on the
+  caret's instrument. On Linux the raw MIDI ports (`/dev/snd/midiC*D*`)
+  are read directly, with no library needed; Windows uses WinMM.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

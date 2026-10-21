@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
@@ -55,10 +55,16 @@ fn sample() -> Project {
             chords: vec![],
             lines: vec![LineSpan { id: 43, from: Frac::ZERO, to: Frac::int(2), kind: LineKind::Pedal }],
             voices: vec![Voice { id: 44, index: 1, events: Arc::new(vec![]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![],
     });
     p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
     p.instruments[0].tuning = GUITAR_TUNING.to_vec();
+    p.tracks[0].inserts = vec![500, 501];
+    p.tracks[0].program = Some(40);
+    p.tracks[0].bank = Some(129);
+    p.tracks[0].sends = vec![SendLevel { bus: 60, gain_db: -6.0 }];
+    p.buses = vec![Bus { id: 60, name: "Reverb".into(), inserts: vec![502], gain_db: -3.0, pan: 0.2, mute: false }];
+    p.master = Master { inserts: vec![503], gain_db: -1.5 };
     p.subtitle = "for flute".into();
     p.lyricist = "Words: N.N.".into();
     p.arranger = "arr. X".into();
@@ -66,6 +72,17 @@ fn sample() -> Project {
     p.layout = Layout { page_width_mm: 215.9, page_height_mm: 279.4, landscape: true, staff_mm: 5.5, bars_per_system: 4, page_numbers: false, ..Layout::default() };
     p.part_layout.spacing = 1.2;
     p.movements[0].cross = vec![(12, 1)];
+    p.tracks[0].dynamics_cc = Some(11);
+    p.tracks[0].techniques = vec![
+        TechniqueSwitch { technique: "pizz.".into(), action: SwitchAction::Keyswitch(24) },
+        TechniqueSwitch { technique: "staccato".into(), action: SwitchAction::Cc(32, 5) },
+        TechniqueSwitch { technique: "con sord.".into(), action: SwitchAction::Channel(3) },
+        TechniqueSwitch { technique: "arco".into(), action: SwitchAction::Program(40) },
+    ];
+    p.movements[0].automation = vec![
+        AutoLane { id: 95, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0 }, AutoPoint { at: Frac::int(1), value: -12.0 }] },
+        AutoLane { id: 96, target: AutoTarget::Param { node: 500, param: 2 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.25 }] },
+    ];
     p.movements[0].breaks = vec![Break { id: 90, at: Frac::int(2), page: false, part: None }, Break { id: 91, at: Frac::int(4), page: true, part: Some(2) }];
     p
 }
@@ -88,9 +105,16 @@ fn save_and_load_round_trip() {
     assert_eq!(b.part_layout.staff_mm, 7.0);
     assert_eq!(b.movements[0].breaks, a.movements[0].breaks);
     assert_eq!(b.movements[0].cross, [(12, 1)]);
+    assert_eq!(b.movements[0].automation, a.movements[0].automation);
+    assert_eq!(b.tracks[0].dynamics_cc, Some(11));
+    assert_eq!(b.tracks[0].techniques, a.tracks[0].techniques);
+    assert_eq!(a.movements[0].automation[0].value_at(2.0), Some(-6.0), "halfway down");
     assert_eq!(b.movements[0].lanes[0].texts[0].shown, Shown::Parts);
     assert_eq!(b.instruments[0].drums, a.instruments[0].drums);
     assert_eq!(b.instruments[0].tuning, GUITAR_TUNING);
+    assert_eq!((&b.tracks[0].inserts, &b.tracks[0].sends), (&a.tracks[0].inserts, &a.tracks[0].sends));
+    assert_eq!((b.tracks[0].program, b.tracks[0].bank), (Some(40), Some(129)));
+    assert_eq!((&b.buses, &b.master), (&a.buses, &a.master));
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);
     assert_eq!(mb.lanes[0].voices[0].events[0].lyrics, ma.lanes[0].voices[0].events[0].lyrics);

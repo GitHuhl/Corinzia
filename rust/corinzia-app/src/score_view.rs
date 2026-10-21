@@ -24,7 +24,6 @@ const INK: Color = Color::from_rgb(0.08, 0.08, 0.1);
 const SELECTED: Color = Color::from_rgb(0.85, 0.28, 0.09);
 const PLAYHEAD: Color = Color::from_rgb(0.16, 0.62, 0.36);
 const CARET: Color = Color::from_rgb(0.12, 0.47, 0.90);
-const DESK: Color = crate::theme::DESK;
 
 /// Bravura glyph outlines as paths in staff spaces (y down), built once.
 fn glyph_path(codepoint: u32) -> Option<Path> {
@@ -422,7 +421,7 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
         let px = self.scale();
         let origins = page_origins(self.pages, self.vertical);
         let geometry = self.cache.draw(renderer, bounds.size(), |frame| {
-            frame.fill_rectangle(Point::ORIGIN, bounds.size(), DESK);
+            frame.fill_rectangle(Point::ORIGIN, bounds.size(), crate::theme::palette().desk);
             frame.translate(self.pan);
             frame.scale(px);
             for (k, (page, origin)) in self.pages.iter().zip(&origins).enumerate() {

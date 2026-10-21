@@ -9,8 +9,6 @@ use corinzia_audio::snapshot::{self, Timeline};
 use corinzia_model::{Id, Project};
 use std::time::{Duration, Instant};
 
-pub const SAMPLE_RATE: f64 = 48000.0;
-pub const MAX_FRAMES: u32 = 2048;
 
 pub struct Playback {
     handle: EngineHandle,
@@ -24,6 +22,9 @@ pub struct Playback {
     /// Track of each node of the current plan.
     node_tracks: Vec<Id>,
     built: Option<u64>,  // music revision of the plan
+    routing: String,     // the routing the plan was built for (see `snapshot::routing`)
+    /// Bus of each bus strip of the plan.
+    plan_buses: Vec<Id>,
     mixed: Option<u64>,  // revision whose mixer settings were sent
     generation: u64,
     previews: Vec<(Instant, u32, i16)>,
@@ -31,19 +32,24 @@ pub struct Playback {
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
     pub scan_errors: Vec<String>,
+    pub sample_rate: f64,
+    /// Where plugins are looked for (from the preferences).
+    pub search_paths: Vec<std::path::PathBuf>,
 }
 
 impl Playback {
-    /// Starts audio output (PipeWire, or WASAPI on Windows) unless `live` is false.
-    pub fn new(live: bool) -> Playback {
-        let (handle, eng) = engine::new(SAMPLE_RATE, MAX_FRAMES);
+    /// Starts audio output (PipeWire, or WASAPI on Windows) unless `live`
+    /// is false, at the preferences' rate and buffer, on their device.
+    pub fn new(live: bool, prefs: &crate::prefs::Prefs) -> Playback {
+        let (rate, frames) = (prefs.sample_rate as f64, prefs.buffer);
+        let (handle, eng) = engine::new(rate, frames);
         let mut offline = Some(eng);
         let mut problem = None;
         #[cfg(feature = "audio-out")]
         let mut output = None;
         if live {
             #[cfg(feature = "audio-out")]
-            match corinzia_audio::backend::start(offline.take().unwrap(), SAMPLE_RATE as u32, MAX_FRAMES) {
+            match corinzia_audio::backend::start(offline.take().unwrap(), prefs.sample_rate, frames, &prefs.output_device) {
                 Ok(o) => output = Some(o),
                 Err(e) => {
                     eprintln!("corinzia: no audio output: {e}");
@@ -60,30 +66,36 @@ impl Playback {
             #[cfg(feature = "audio-out")]
             _output: output,
             offline,
-            pool: PluginPool::new(SAMPLE_RATE, MAX_FRAMES),
+            pool: PluginPool::new(rate, frames),
             timeline: Timeline::default(),
             node_tracks: Vec::new(),
             built: None,
+            routing: String::new(),
+            plan_buses: Vec::new(),
             mixed: None,
             generation: 0,
             previews: Vec::new(),
             problem,
             plugins: Vec::new(),
             scan_errors: Vec::new(),
+            sample_rate: rate,
+            search_paths: prefs.plugin_search_paths(),
         }
     }
 
     /// Keeps the plan in step: rebuild on music changes, else send the mixer.
     pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64) {
-        if self.built != Some(music_revision) {
+        let routing = snapshot::routing(project);
+        if self.built != Some(music_revision) || routing != self.routing {
             self.built = Some(music_revision);
+            self.routing = routing;
             self.mixed = Some(revision);
             self.generation += 1;
             self.pool.retain_tracks(project);
             let movements: Vec<usize> = (0..project.movements.len()).collect();
-            let pool = &mut self.pool;
-            let snap = snapshot::build(project, SAMPLE_RATE, self.generation, &movements, |t| pool.plugin_for(project, t));
+            let snap = snapshot::build_from_pool(project, self.sample_rate, self.generation, &movements, &mut self.pool);
             self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
+            self.plan_buses = snap.buses.iter().map(|b| b.id).collect();
             self.timeline = snap.timeline();
             self.handle.swap(snap);
         } else if self.mixed != Some(revision) {
@@ -93,7 +105,28 @@ impl Playback {
                     let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
                 }
             }
+            self.send_levels(project);
         }
+    }
+
+    /// Buses, sends and the master: their levels, live.
+    fn send_levels(&mut self, project: &Project) {
+        for (bus, gain, pan, audible) in snapshot::bus_mix(project) {
+            if let Some(i) = self.plan_buses.iter().position(|b| *b == bus) {
+                let _ = self.handle.send(Command::MixBus { bus: i as u32, gain, pan, audible });
+            }
+        }
+        for (track, index, gain) in snapshot::send_mix(project) {
+            if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
+                let _ = self.handle.send(Command::Send { node: node as u32, index: index as u32, gain });
+            }
+        }
+        let _ = self.handle.send(Command::Master { gain: snapshot::db_to_gain(project.master.gain_db) });
+    }
+
+    /// A bus's, a send's or the master's level while a control moves.
+    pub fn live_levels(&mut self, project: &Project) {
+        self.send_levels(project);
     }
 
     /// A live mixer value while a slider moves (committed separately).
@@ -162,10 +195,35 @@ impl Playback {
         self.is_playing() || !self.previews.is_empty()
     }
 
+    /// Scans again from scratch (the cache forgotten): a plugin that timed
+    /// out or crashed gets another try.
+    pub fn rescan(&mut self) {
+        if let Some(c) = crate::prefs::folder().map(|d| d.join("plugins.json")).filter(|_| !cfg!(test)) {
+            let _ = std::fs::remove_file(c);
+        }
+        self.scan();
+    }
+
     pub fn scan(&mut self) {
-        let (infos, errors) = host::scan(&host::search_paths());
+        // Each bundle is opened by a child process (a crashing plugin takes
+        // only that down), and remembered until it changes.
+        let (infos, errors) = if cfg!(test) {
+            corinzia_audio::scan::scan_with(&self.search_paths, None, |b| host::Library::load(b).map(|l| l.plugins()))
+        } else {
+            let exe = std::env::current_exe().unwrap_or_else(|_| "corinzia".into());
+            let cache = crate::prefs::folder().map(|d| d.join("plugins.json"));
+            corinzia_audio::scan::scan_with(&self.search_paths, cache.as_deref(), |b| corinzia_audio::scan::run_child(&exe, b, std::time::Duration::from_secs(30)))
+        };
         self.plugins = infos;
         self.scan_errors = errors;
+    }
+
+    /// Output devices to choose from: (id, label).
+    pub fn devices() -> Vec<(String, String)> {
+        #[cfg(feature = "audio-out")]
+        return corinzia_audio::backend::devices();
+        #[cfg(not(feature = "audio-out"))]
+        Vec::new()
     }
 
     /// The plugin name a track plays through.

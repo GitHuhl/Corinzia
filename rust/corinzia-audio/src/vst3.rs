@@ -342,6 +342,60 @@ impl Instance {
         ctrl.setComponentHandler(self.handler.as_com_ref::<IComponentHandler>().unwrap().as_ptr());
     }
 
+    /// The plugin's state: "CZV3", the component's chunk (its length first,
+    /// little-endian u32), then the controller's.
+    pub fn save_state(&self) -> Option<Vec<u8>> {
+        unsafe {
+            let comp = ComWrapper::new(Stream::default());
+            if !ok(self.component.getState(comp.as_com_ref::<IBStream>().unwrap().as_ptr())) {
+                return None;
+            }
+            let comp = comp.bytes();
+            let ctrl = match &self.controller {
+                Some(c) if self.separate => {
+                    let st = ComWrapper::new(Stream::default());
+                    if ok(c.getState(st.as_com_ref::<IBStream>().unwrap().as_ptr())) {
+                        st.bytes()
+                    } else {
+                        vec![]
+                    }
+                }
+                _ => vec![],
+            };
+            let mut out = b"CZV3".to_vec();
+            out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
+            out.extend_from_slice(&comp);
+            out.extend_from_slice(&ctrl);
+            Some(out)
+        }
+    }
+
+    /// Restores a chunk from [`Instance::save_state`].
+    pub fn load_state(&self, bytes: &[u8]) -> bool {
+        if bytes.len() < 8 || &bytes[..4] != b"CZV3" {
+            return false;
+        }
+        let n = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let Some(comp) = bytes.get(8..8 + n) else { return false };
+        let ctrl = &bytes[8 + n..];
+        unsafe {
+            let st = ComWrapper::new(Stream::with(comp.to_vec()));
+            let sp = st.as_com_ref::<IBStream>().unwrap().as_ptr();
+            if !ok(self.component.setState(sp)) {
+                return false;
+            }
+            if let Some(c) = &self.controller {
+                st.rewind();
+                c.setComponentState(sp);
+                if self.separate && !ctrl.is_empty() {
+                    let cs = ComWrapper::new(Stream::with(ctrl.to_vec()));
+                    c.setState(cs.as_com_ref::<IBStream>().unwrap().as_ptr());
+                }
+            }
+        }
+        true
+    }
+
     /// Stereo on the main output where the plugin agrees; the main output
     /// and the first event input active.
     unsafe fn configure_buses(&mut self) {
@@ -382,6 +436,11 @@ impl Instance {
         for i in 0..self.event_inputs {
             c.activateBus(MediaTypes_::kEvent as i32, BusDirections_::kInput as i32, i, (i == 0) as TBool);
         }
+    }
+
+    /// Channels of the main audio input (0: an instrument).
+    pub fn input_channels(&self) -> u32 {
+        self.in_channels.first().copied().unwrap_or(0).max(0) as u32
     }
 
     pub fn output_channels(&self) -> u32 {
@@ -539,9 +598,15 @@ impl Instance {
         if let Some(c) = main.get_mut(1) {
             *c = right;
         }
-        for bus in &rt.in_ptrs {
-            for &c in bus {
-                std::slice::from_raw_parts_mut(c, frames as usize).fill(0.0);
+        // The main input takes the engine's audio (an effect's signal); the rest is silent.
+        let given = if p.audio_inputs.is_null() || p.audio_inputs_count == 0 { None } else { Some(&*p.audio_inputs) };
+        for (bi, bus) in rt.in_ptrs.iter().enumerate() {
+            for (ci, &c) in bus.iter().enumerate() {
+                let dst = std::slice::from_raw_parts_mut(c, frames as usize);
+                match given.filter(|g| bi == 0 && g.channel_count > 0) {
+                    Some(g) => dst.copy_from_slice(std::slice::from_raw_parts(*g.data32.add(ci.min(g.channel_count as usize - 1)), frames as usize)),
+                    None => dst.fill(0.0),
+                }
             }
         }
         for b in rt.inputs.iter_mut().chain(rt.outputs.iter_mut()) {
@@ -1038,6 +1103,12 @@ struct Stream {
 }
 
 impl Stream {
+    fn with(bytes: Vec<u8>) -> Stream {
+        Stream { data: Mutex::new((bytes, 0)) }
+    }
+    fn bytes(&self) -> Vec<u8> {
+        self.data.lock().map(|d| d.0.clone()).unwrap_or_default()
+    }
     fn rewind(&self) {
         if let Ok(mut d) = self.data.lock() {
             d.1 = 0;

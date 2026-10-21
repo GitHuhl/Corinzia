@@ -102,6 +102,19 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, String> {
     for tr in &perf.tracks {
         let ch = tr.channel & 0x0f;
         let mut evs: Vec<Ev> = vec![(0, 0, meta_text(0x03, &tr.name))];
+        if let Some((program, bank)) = tr.program {
+            if let Some(b) = bank {
+                evs.push((0, 1, vec![0xb0 | ch, 0, (b >> 7) as u8 & 0x7f]));
+                evs.push((0, 1, vec![0xb0 | ch, 32, b as u8 & 0x7f]));
+            }
+            evs.push((0, 1, vec![0xc0 | ch, program & 0x7f]));
+        }
+        for &(q, p) in &tr.programs {
+            evs.push((ticks(q), 1, vec![0xc0 | ch, p & 0x7f]));
+        }
+        for &(q, cc, v) in &tr.controls {
+            evs.push((ticks(q), 1, vec![0xb0 | ch, cc & 0x7f, v & 0x7f]));
+        }
         for n in &tr.notes {
             let on = ticks(n.on);
             let off = ticks(n.off).max(on + 1);

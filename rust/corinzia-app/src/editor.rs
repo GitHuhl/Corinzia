@@ -37,6 +37,9 @@ struct Clip {
 
 const UNDO_LIMIT: usize = 500;
 
+/// The master strip's id in mixer messages and effect chains.
+pub const MASTER: Id = Id::MAX;
+
 /// Rhythmic grid choices (whole-note fractions) and their labels.
 pub const GRIDS: [(i64, i64, &str); 5] = [(1, 4, "1/4"), (1, 8, "1/8"), (1, 16, "1/16"), (1, 32, "1/32"), (1, 12, "1/8T")];
 
@@ -95,6 +98,33 @@ pub struct Editor {
 pub struct Locator {
     pub lane: usize,
     pub voice: usize, // index into lane.voices
+}
+
+/// A MIDI key spelled in a key: the scale's own note where the key has
+/// one, else a sharp in sharp keys (and C major), a flat in flat keys.
+pub fn spell_key(key: i32, fifths: i32) -> Pitch {
+    const SEMIS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let pc = key.rem_euclid(12);
+    let octave = key.div_euclid(12) - 1;
+    let pitch = |step: i32, alter: i32| {
+        // B# and Cb cross the octave line.
+        let o = octave + if SEMIS[step as usize] + alter >= 12 { -1 } else if SEMIS[step as usize] + alter < 0 { 1 } else { 0 };
+        Pitch { step: step as i8, alter: alter as i8, octave: o as i8 }
+    };
+    for step in 0..7 {
+        let alter = edit::key_alter(fifths, step);
+        if (SEMIS[step as usize] + alter).rem_euclid(12) == pc {
+            return pitch(step, alter);
+        }
+    }
+    // Outside the scale: the key's own accidental, else natural, else the other.
+    let first = if fifths < 0 { -1 } else { 1 };
+    for alter in [first, 0, -first] {
+        if let Some(step) = (0..7).find(|&s| (SEMIS[s as usize] + alter).rem_euclid(12) == pc) {
+            return pitch(step, alter);
+        }
+    }
+    pitch(0, 0)
 }
 
 fn key_fifths_at(m: &Movement, pos: Frac) -> i32 {
@@ -200,7 +230,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     // A drum set starts with its map, and plays on the drum channel (10).
     let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
-    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
+    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
     p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
@@ -435,7 +465,7 @@ impl Editor {
             endings: vec![],
             navigation: vec![],
             slurs: vec![],
-            breaks: vec![], cross: vec![],
+            breaks: vec![], cross: vec![], automation: vec![],
             lanes,
         };
         let at = self.movement + 1;
@@ -704,6 +734,194 @@ impl Editor {
         };
         self.status = format!("{} plays {name}", self.project.tracks[ti].name);
         self.commit_with(before, "Instrument plugin", true, None);
+    }
+
+    // -------------------------------------------------------------- mixer --
+    /// The effect chain of a strip: a track, a bus, or the master ([`MASTER`]).
+    fn inserts_mut(p: &mut Project, owner: Id) -> Option<&mut Vec<Id>> {
+        if owner == MASTER {
+            return Some(&mut p.master.inserts);
+        }
+        if let Some(t) = p.tracks.iter_mut().find(|t| t.id == owner) {
+            return Some(&mut t.inserts);
+        }
+        p.buses.iter_mut().find(|b| b.id == owner).map(|b| &mut b.inserts)
+    }
+
+    /// A strip's name: the track's, the bus's, or "Master".
+    pub fn strip_name(&self, owner: Id) -> String {
+        if owner == MASTER {
+            return "Master".into();
+        }
+        self.project.track(owner).map(|t| t.name.clone()).or_else(|| self.project.bus(owner).map(|b| b.name.clone())).unwrap_or_default()
+    }
+
+    /// Adds an effect (name, bundle, plugin id) at the end of a strip's chain.
+    pub fn add_insert(&mut self, owner: Id, name: &str, bundle: &str, plugin_id: &str) -> Option<Id> {
+        let before = self.snapshot();
+        let node = self.project.allocate_id();
+        Self::inserts_mut(&mut self.project, owner)?.push(node);
+        self.project.nodes.push(AudioNode { id: node, kind: NodeKind::Plugin, name: name.into(), bundle: bundle.into(), plugin_id: plugin_id.into(), bypassed: false });
+        self.status = format!("{name} on {}", self.strip_name(owner));
+        self.commit_with(before, "Add effect", false, None);
+        Some(node)
+    }
+
+    /// Takes an effect out of its strip (its node and state go).
+    pub fn remove_insert(&mut self, owner: Id, node: Id) {
+        let before = self.snapshot();
+        let Some(list) = Self::inserts_mut(&mut self.project, owner) else { return };
+        list.retain(|n| *n != node);
+        let name = self.project.node(node).map(|n| n.name.clone()).unwrap_or_default();
+        self.project.nodes.retain(|n| n.id != node);
+        self.project.plugin_state.remove(&node);
+        self.status = format!("{name} removed");
+        self.commit_with(before, "Remove effect", false, None);
+    }
+
+    /// Moves an effect earlier (-1) or later (+1) in its chain.
+    pub fn move_insert(&mut self, owner: Id, node: Id, by: i32) {
+        let before = self.snapshot();
+        let Some(list) = Self::inserts_mut(&mut self.project, owner) else { return };
+        let Some(i) = list.iter().position(|n| *n == node) else { return };
+        let j = (i as i32 + by).clamp(0, list.len() as i32 - 1) as usize;
+        if i == j {
+            return;
+        }
+        list.swap(i, j);
+        self.commit_with(before, "Move effect", false, None);
+    }
+
+    /// Bypasses an effect, or brings it back.
+    pub fn toggle_bypass(&mut self, node: Id) {
+        let before = self.snapshot();
+        let Some(n) = self.project.nodes.iter_mut().find(|n| n.id == node) else { return };
+        n.bypassed = !n.bypassed;
+        self.status = format!("{} {}", n.name, if n.bypassed { "bypassed" } else { "back on" });
+        self.commit_with(before, "Bypass", false, None);
+    }
+
+    /// A new bus ("Bus 1", "Reverb"…), into the master.
+    pub fn add_bus(&mut self, name: &str) -> Id {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let name = if name.is_empty() { format!("Bus {}", self.project.buses.len() + 1) } else { name.to_string() };
+        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false });
+        self.status = format!("{name} added");
+        self.commit_with(before, "Add bus", false, None);
+        id
+    }
+
+    /// Removes a bus: tracks routed to it go to the master, sends to it go.
+    pub fn remove_bus(&mut self, bus: Id) {
+        let before = self.snapshot();
+        let Some(i) = self.project.buses.iter().position(|b| b.id == bus) else { return };
+        let b = self.project.buses.remove(i);
+        for n in &b.inserts {
+            self.project.nodes.retain(|x| x.id != *n);
+            self.project.plugin_state.remove(n);
+        }
+        for t in self.project.tracks.iter_mut() {
+            if t.output_bus == Some(bus) {
+                t.output_bus = None;
+            }
+            t.sends.retain(|s| s.bus != bus);
+        }
+        self.status = format!("{} removed", b.name);
+        self.commit_with(before, "Remove bus", false, None);
+    }
+
+    /// Where a track goes: a bus, or the master (`None`).
+    pub fn set_output(&mut self, track: Id, bus: Option<Id>) {
+        self.set_track(track, "Output", false, |t| t.output_bus = bus);
+    }
+
+    /// A send from a track to a bus (at -6 dB), or none when there is one.
+    pub fn toggle_send(&mut self, track: Id, bus: Id) {
+        self.set_track(track, "Send", false, |t| {
+            if t.sends.iter().any(|s| s.bus == bus) {
+                t.sends.retain(|s| s.bus != bus);
+            } else {
+                t.sends.push(SendLevel { bus, gain_db: -6.0 });
+            }
+        });
+    }
+
+    pub fn set_send(&mut self, track: Id, index: usize, db: f64) {
+        self.set_track(track, "Send level", true, |t| {
+            if let Some(s) = t.sends.get_mut(index) {
+                s.gain_db = db;
+            }
+        });
+    }
+
+    pub fn set_bus(&mut self, bus: Id, label: &str, merge: bool, f: impl FnOnce(&mut Bus)) {
+        let before = self.snapshot();
+        let Some(b) = self.project.buses.iter_mut().find(|b| b.id == bus) else { return };
+        f(b);
+        self.commit_with(before, label, false, merge.then_some(bus));
+    }
+
+    pub fn set_master_gain(&mut self, db: f64) {
+        let before = self.snapshot();
+        self.project.master.gain_db = db;
+        self.commit_with(before, "Master", false, Some(MASTER));
+    }
+
+    // --------------------------------------------------------- automation --
+    /// The current movement's lane for a target, if any.
+    pub fn auto_lane(&self, target: AutoTarget) -> Option<&AutoLane> {
+        self.movement()?.automation.iter().find(|l| l.target == target)
+    }
+
+    /// Adds a point (a lane is made for the target if need be); returns its index.
+    pub fn add_auto_point(&mut self, target: AutoTarget, at: Frac, value: f64) -> Option<usize> {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let m = self.project.movements.get_mut(self.movement)?;
+        let lane = match m.automation.iter().position(|l| l.target == target) {
+            Some(i) => &mut m.automation[i],
+            None => {
+                m.automation.push(AutoLane { id, target, points: vec![] });
+                m.automation.last_mut().unwrap()
+            }
+        };
+        let i = lane.points.partition_point(|p| p.at <= at);
+        lane.points.insert(i, AutoPoint { at, value });
+        self.commit_with(before, "Automation point", false, None);
+        Some(i)
+    }
+
+    /// Moves a point (kept between its neighbours); a drag is one undo step.
+    pub fn move_auto_point(&mut self, target: AutoTarget, index: usize, at: Frac, value: f64) {
+        let before = self.snapshot();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        let Some(lane) = m.automation.iter_mut().find(|l| l.target == target) else { return };
+        let lo = index.checked_sub(1).and_then(|i| lane.points.get(i)).map_or(Frac::ZERO, |p| p.at);
+        let hi = lane.points.get(index + 1).map_or(m.length, |p| p.at);
+        let Some(p) = lane.points.get_mut(index) else { return };
+        let at = at.max(lo).min(hi);
+        if (p.at, p.value) == (at, value) {
+            return;
+        }
+        (p.at, p.value) = (at, value);
+        let key = lane.id;
+        self.commit_with(before, "Move automation", false, Some(key));
+    }
+
+    /// Deletes a point; an empty lane goes.
+    pub fn delete_auto_point(&mut self, target: AutoTarget, index: usize) {
+        let before = self.snapshot();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        let Some(li) = m.automation.iter().position(|l| l.target == target) else { return };
+        if index >= m.automation[li].points.len() {
+            return;
+        }
+        m.automation[li].points.remove(index);
+        if m.automation[li].points.is_empty() {
+            m.automation.remove(li);
+        }
+        self.commit_with(before, "Delete automation", false, None);
     }
 
     // ------------------------------------------------------------ players --
@@ -1025,6 +1243,57 @@ impl Editor {
             }
         }
         self.accidental = None; // accidentals apply to one note
+    }
+
+    /// Note input from a MIDI keyboard: the key played (at concert pitch),
+    /// spelled in the key signature; on a drum set, the drum on that key.
+    /// `add_to_chord`: above the note just entered (keys held together).
+    pub fn enter_midi_key(&mut self, key: u8, add_to_chord: bool) {
+        let (lane, voice, caret, spec) = (self.caret_lane, self.voice, self.caret, self.spec);
+        let tuplet = self.tuplet_input;
+        let drum = self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.instrument_at(caret)).and_then(|i| self.project.instrument(i)).and_then(|i| i.drums.iter().find(|d| d.key == key).map(|d| d.position));
+        if self.lane_is_percussion(lane) && drum.is_none() {
+            self.status = format!("No drum on key {key}");
+            return;
+        }
+        let mut out: Option<EditResult> = None;
+        let mut chorded = false;
+        self.transact("Note input", |m, ids| {
+            if m.lanes.is_empty() {
+                return false;
+            }
+            let lane = lane.min(m.lanes.len() - 1);
+            let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
+            let p = drum.unwrap_or_else(|| spell_key(key as i32, key_fifths_at(m, caret)));
+            let evs = m.lanes[lane].voices[vi].events.clone();
+            let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
+            let r = match (add_to_chord, last) {
+                (true, Some(last)) => {
+                    chorded = true;
+                    match edit::add_to_chord(&evs, last.start, p, ids) {
+                        Some(r) => r,
+                        None => return false,
+                    }
+                }
+                _ => {
+                    let dur = input_duration(m, lane, vi, caret, spec, tuplet, ids);
+                    let evs = m.lanes[lane].voices[vi].events.clone();
+                    let r = edit::insert_event(&evs, edit::make_event(ids, caret, dur, &[p], 0), voice == 1, ids);
+                    extend_to(m, r.to);
+                    r
+                }
+            };
+            set_events(m, lane, vi, &r);
+            out = Some(r);
+            true
+        });
+        if let Some(r) = out {
+            self.selection = r.focus;
+            self.range = None;
+            if !chorded {
+                self.caret = r.caret;
+            }
+        }
     }
 
     /// A grace note before the note at the caret (a rest is put there
