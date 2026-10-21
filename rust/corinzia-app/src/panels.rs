@@ -137,6 +137,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("↻", false, false, "Repeat selection (R)", Action::Repeat),
         tool("⌫", false, false, "Delete (Del)", Action::Delete),
         tool("▣", false, false, "Select all (Ctrl+A)", Action::SelectAll),
+        tool("≈", false, false, "Select similar (Ctrl+Shift+A)", Action::SelectSimilar),
+        tool("⧩", false, false, "Select only… top, voice 2, above C5, F#, staccato, dynamics (Ctrl+F)", Action::Popover(PopoverKind::Filter)),
     ];
     column![
         heading("Duration"),

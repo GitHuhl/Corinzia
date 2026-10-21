@@ -498,6 +498,7 @@ impl App {
             }
         }
         sel.extend(self.editor.selected_slur());
+        sel.extend(self.editor.picked.iter().copied());
         self.selected = sel;
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
@@ -818,6 +819,11 @@ impl App {
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
             Action::SelectAll => ed.select_all(),
+            Action::SelectSimilar => {
+                if let Err(e) = ed.select_similar() {
+                    ed.status = e;
+                }
+            }
             Action::InsertBar => ed.insert_bars(1),
             Action::DeleteBars => ed.delete_bars(),
             Action::FirstSecondEndings => ed.add_first_second_endings(),
@@ -1810,6 +1816,8 @@ fn help_card() -> Element<'static, Message> {
                 ("Shift+C", "Clef; 8va, 8vb, loco"),
                 ("Shift+I", "Instrument change (a doubling)"),
                 ("Ctrl+Shift+T", "Transpose: up M2, to Eb…"),
+                ("Ctrl+F", "Select only: top, voice 2, above C5, F#…"),
+                ("Ctrl+Shift+A", "Select similar"),
                 ("Shift+B  R", "Barline; ending, segno, D.C.…"),
                 ("Shift+X  P  O", "Expression, technique (ped), ornament"),
                 ("Shift+D", "Dynamic: pp, mf, sfz, fp…"),
@@ -2643,6 +2651,58 @@ mod tests {
         assert!(a.editor.apply_popover(PopoverKind::Transpose, "sideways").is_err());
         assert_eq!(editor::interval_name(corinzia_model::Interval::new(3, 6)), "up an augmented 4th");
         assert_eq!(editor::interval_name(corinzia_model::Interval::new(-2, -3)), "down a minor 3rd");
+    }
+
+    #[test]
+    fn filters_and_select_similar_pick_elements_to_edit() {
+        let mut a = app(View::Page);
+        let notes = |a: &App, lane: usize| a.editor.project.movements[0].lanes[lane].voices[0].events.iter().filter(|e| !e.is_rest()).cloned().collect::<Vec<_>>();
+        let high: Vec<u64> = notes(&a, 0).iter().filter(|e| e.heads[0].pitch.midi_key() > 72).map(|e| e.heads[0].id).collect();
+        assert!(high.len() > 3);
+        // Ctrl+F "above C5": the flute's high notes, highlighted.
+        let _ = a.update(Message::Act(Action::Popover(PopoverKind::Filter)));
+        let _ = a.update(Message::PopoverInput("above C5".into()));
+        let _ = a.update(Message::PopoverSubmit);
+        assert_eq!(a.editor.picked, high);
+        assert_eq!(a.editor.status, format!("{} notes picked in the movement", high.len()));
+        assert!(high.iter().all(|id| a.selected.contains(id)));
+        // Edits apply to each: staccato, then up a step.
+        a.editor.toggle_articulation(corinzia_score::score::art::STACCATO);
+        let stacc = |a: &App| notes(a, 0).iter().filter(|e| e.articulations & corinzia_score::score::art::STACCATO != 0).count();
+        assert_eq!(stacc(&a), high.len());
+        let before: Vec<i32> = notes(&a, 0).iter().map(|e| e.heads[0].pitch.midi_key()).collect();
+        a.editor.transpose_selection(1);
+        let after: Vec<i32> = notes(&a, 0).iter().map(|e| e.heads[0].pitch.midi_key()).collect();
+        assert_eq!(before.iter().zip(&after).filter(|(b, a)| b != a).count(), high.len(), "only the picked notes moved");
+        a.editor.undo();
+        a.editor.undo();
+        assert_eq!(stacc(&a), 0);
+        // Narrowing: among those picked, only E.
+        a.editor.picked = high.clone();
+        a.editor.filter("E").unwrap();
+        assert!(a.editor.picked.len() < high.len() && !a.editor.picked.is_empty());
+        // Delete takes the picked notes (rests in voice 1), one undo step.
+        let n_rests = |a: &App| a.editor.project.movements[0].lanes[0].voices[0].events.iter().filter(|e| e.is_rest()).count();
+        let (rests, picked) = (n_rests(&a), a.editor.picked.len());
+        a.editor.delete_selection();
+        assert!(n_rests(&a) > rests);
+        assert_eq!(notes(&a, 0).len(), notes(&app(View::Page), 0).len() - picked);
+        a.editor.undo();
+        // Select similar from a dynamic: the same mark everywhere (mp: one).
+        let first = notes(&a, 0)[0].id;
+        a.editor.select(Some(corinzia_score::score::ids::dynamic(first)));
+        let _ = a.update(Message::Act(Action::SelectSimilar));
+        assert_eq!(a.editor.picked, vec![corinzia_score::score::ids::dynamic(first)]);
+        // From a note: every note on its staff; a mark applies to all.
+        a.editor.select(Some(notes(&a, 1)[0].heads[0].id));
+        let _ = a.update(Message::Act(Action::SelectSimilar));
+        assert_eq!(a.editor.picked.len(), notes(&a, 1).iter().map(|e| e.heads.len()).sum::<usize>());
+        a.editor.set_dynamic(corinzia_model::dynamic_index("ff"));
+        assert!(notes(&a, 1).iter().all(|e| e.dynamic == corinzia_model::dynamic_index("ff")));
+        // Nothing found says so; Escape lets go.
+        assert_eq!(a.editor.filter("dynamics sfz"), Err("No dynamics in the movement".into()));
+        let _ = a.update(Message::Act(Action::Escape));
+        assert!(a.editor.picked.is_empty());
     }
 
     #[test]

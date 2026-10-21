@@ -65,6 +65,9 @@ pub struct Editor {
     pub grace_input: Option<bool>,
     pub selection: Option<Id>,
     pub range: Option<Range>,
+    /// Elements picked by a filter or Select similar (noteheads, rests,
+    /// dynamics, lyrics, chord symbols, text): edits apply to each.
+    pub picked: Vec<Id>,
     /// A slur selected (its first event's id); see `selected_slur`.
     slur: Option<Id>,
     /// The fixed end of a passage grown with Shift+arrows (the other end
@@ -289,6 +292,7 @@ impl Editor {
             caret_lane: 0,
             caret: Frac::ZERO,
             selection: None,
+            picked: Vec::new(),
             range: None,
             range_anchor: None,
             transposed: false,
@@ -1277,6 +1281,7 @@ impl Editor {
     pub fn select(&mut self, id: Option<Id>) {
         self.selection = id;
         self.range = None;
+        self.picked.clear();
         self.slur = None;
         if let Some((lane, start)) = id.and_then(|id| self.event_of(id)).map(|(loc, e)| (loc.lane, e.start)) {
             if !self.input_mode {
@@ -1289,6 +1294,7 @@ impl Editor {
     pub fn clear_selection(&mut self) {
         self.selection = None;
         self.range = None;
+        self.picked.clear();
         self.range_anchor = None;
         self.slur = None;
     }
@@ -1304,6 +1310,7 @@ impl Editor {
 
     fn set_range(&mut self, r: Range) {
         self.selection = None;
+        self.picked.clear();
         self.caret_lane = r.lane_from;
         self.caret = r.from;
         self.range = Some(r);
@@ -1398,6 +1405,10 @@ impl Editor {
     }
 
     pub fn delete_selection(&mut self) {
+        if !self.picked.is_empty() {
+            self.delete_picked();
+            return;
+        }
         if let Some(r) = self.range {
             self.edit_range_voices("Delete", |evs, index, ids| Some(edit::erase_range(evs, r.from, r.to, index == 1, ids)));
             // Tuplets inside the passage go with it.
@@ -1419,6 +1430,12 @@ impl Editor {
     }
 
     pub fn toggle_articulation(&mut self, flag: u16) {
+        if !self.picked.is_empty() {
+            let Some(m) = self.movement() else { return };
+            let set = !self.picked_events(m).iter().all(|(_, e, _)| e.articulations & flag != 0);
+            self.modify_picked("Articulation", |e, _| e.articulations = if set { e.articulations | flag } else { e.articulations & !flag });
+            return;
+        }
         if let Some(r) = self.range {
             // If every note in the passage already has it, remove it; else add it.
             let Some(m) = self.movement() else { return };
@@ -1448,6 +1465,10 @@ impl Editor {
     /// `None` clears the dynamic.
     pub fn set_dynamic(&mut self, mark: Option<u8>) {
         let mark = mark.filter(|&m| (m as usize) < DYNAMICS.len());
+        if !self.picked.is_empty() {
+            self.modify_picked("Dynamic", |e, _| e.dynamic = mark);
+            return;
+        }
         // A selected dynamic: that one.
         if let Some(ev) = self.selection.and_then(ids::as_dynamic) {
             self.set_dynamic_of(ev, mark);
@@ -1487,7 +1508,7 @@ impl Editor {
 
     /// True when a note, rest or passage is selected.
     pub fn has_selection(&self) -> bool {
-        self.range.is_some() || self.selection.is_some_and(|id| self.event_of(id).is_some())
+        !self.picked.is_empty() || self.range.is_some() || self.selection.is_some_and(|id| self.event_of(id).is_some())
     }
 
     /// Changes the rhythm of the selection (a note or rest, or every event
@@ -1702,6 +1723,16 @@ impl Editor {
     /// An accidental key with music selected (outside note input): the
     /// selected heads take it; pressing it again returns to the key's.
     pub fn set_selection_accidental(&mut self, alter: i8) {
+        if !self.picked.is_empty() {
+            self.modify_picked("Accidental", |e, heads| {
+                for &k in heads {
+                    let h = &mut e.heads[k];
+                    h.pitch.alter = if h.pitch.alter == alter { 0 } else { alter };
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            return;
+        }
         let Some(m) = self.movement() else { return };
         let keys: Vec<(Frac, i32)> = m.keys.iter().map(|k| (k.at, k.fifths)).collect();
         let key_at = move |at: Frac| keys.iter().filter(|k| k.0 <= at).last().map(|k| k.1).unwrap_or(0);
@@ -1747,6 +1778,179 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    // ------------------------------------------------------------ filters --
+    /// Picks what a filter query finds ("top", "voice 2", "above C5", "F#",
+    /// "staccato", "rests", "dynamics mf"…) in the selected passage, among
+    /// the elements already picked, or else in the whole movement.
+    pub fn filter(&mut self, text: &str) -> Result<(), String> {
+        let q = edit::select::parse_query(text)?;
+        let m = self.movement().ok_or("No movement")?;
+        if m.lanes.is_empty() {
+            return Err("No staves".into());
+        }
+        let (lanes, from, to, scope) = match self.range {
+            Some(r) => (r.lane_from..=r.lane_to, r.from, r.to, "in the passage"),
+            None => (0..=m.lanes.len() - 1, Frac::ZERO, m.length, "in the movement"),
+        };
+        let mut found = edit::select::find(m, lanes, from, to, &q);
+        if self.range.is_none() && !self.picked.is_empty() {
+            found.retain(|id| self.picked.contains(id));
+        }
+        self.pick(found, &q.pick, scope)
+    }
+
+    /// Picks what is like the selected element in the movement (or the
+    /// passage): notes on its staff, rests, the same dynamic, the same
+    /// verse's lyrics, chord symbols, the same text.
+    pub fn select_similar(&mut self) -> Result<(), String> {
+        let id = self.selection.or(self.picked.first().copied()).ok_or("Select something first")?;
+        let m = self.movement().ok_or("No movement")?;
+        let all = 0..=m.lanes.len().saturating_sub(1);
+        let (q, lanes) = if let Some(ev) = ids::as_dynamic(id) {
+            let mark = self.event_of(ev).and_then(|(_, e)| e.dynamic);
+            (edit::select::Query::of(edit::select::Pick::Dynamics(mark)), all)
+        } else if let Some((_, verse)) = ids::as_lyric(id) {
+            (edit::select::Query::of(edit::select::Pick::Lyrics(Some(verse))), all)
+        } else if m.lanes.iter().any(|l| l.chords.iter().any(|c| c.id == id)) {
+            (edit::select::Query::of(edit::select::Pick::ChordSymbols), all)
+        } else if let Some(t) = m.lanes.iter().flat_map(|l| l.texts.iter()).find(|t| t.id == id) {
+            (edit::select::Query::of(edit::select::Pick::Texts(Some(t.text.to_lowercase()))), all)
+        } else if let Some((loc, e)) = self.event_of(id) {
+            if e.is_rest() {
+                (edit::select::Query::of(edit::select::Pick::Rests), all)
+            } else {
+                (edit::select::Query::notes(), loc.lane..=loc.lane)
+            }
+        } else {
+            return Err("Nothing like it to select".into());
+        };
+        let (lanes, from, to, scope) = match self.range {
+            Some(r) => (r.lane_from..=r.lane_to, r.from, r.to, "in the passage"),
+            None if q.pick == edit::select::Pick::Notes => (lanes, Frac::ZERO, m.length, "on the staff"),
+            None => (lanes, Frac::ZERO, m.length, "in the movement"),
+        };
+        let found = edit::select::find(m, lanes, from, to, &q);
+        self.pick(found, &q.pick, scope)
+    }
+
+    fn pick(&mut self, found: Vec<Id>, what: &edit::select::Pick, scope: &str) -> Result<(), String> {
+        if found.is_empty() {
+            return Err(format!("No {} {scope}", edit::select::describe(what, 2).trim_start_matches("2 ")));
+        }
+        self.status = format!("{} picked {scope}", edit::select::describe(what, found.len()));
+        self.selection = None;
+        self.range = None;
+        self.slur = None;
+        self.picked = found;
+        self.revision += 1; // shown, not changed
+        Ok(())
+    }
+
+    /// The events holding picked noteheads (or picked dynamics, whose
+    /// events they are): (lane, event, picked head indices).
+    fn picked_events<'m>(&self, m: &'m Movement) -> Vec<(usize, &'m Event, Vec<usize>)> {
+        let mut out = Vec::new();
+        for (li, l) in m.lanes.iter().enumerate() {
+            for v in &l.voices {
+                for e in v.events.iter() {
+                    let heads: Vec<usize> = e.heads.iter().enumerate().filter(|(_, h)| self.picked.contains(&h.id)).map(|(k, _)| k).collect();
+                    if !heads.is_empty() || self.picked.contains(&ids::dynamic(e.id)) && !e.is_rest() {
+                        out.push((li, e, heads));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Changes every event holding a picked note (given the picked heads'
+    /// indices; all of them for a picked dynamic). One undo step.
+    fn modify_picked(&mut self, label: &str, mut f: impl FnMut(&mut Event, &[usize])) -> bool {
+        let before = self.snapshot();
+        let picked = self.picked.clone();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return false };
+        let mut any = false;
+        for l in m.lanes.iter_mut() {
+            for v in l.voices.iter_mut() {
+                let touched = v.events.iter().any(|e| e.heads.iter().any(|h| picked.contains(&h.id)) || (!e.is_rest() && picked.contains(&ids::dynamic(e.id))));
+                if !touched {
+                    continue;
+                }
+                let mut evs = (*v.events).clone();
+                for e in evs.iter_mut() {
+                    let mut heads: Vec<usize> = e.heads.iter().enumerate().filter(|(_, h)| picked.contains(&h.id)).map(|(k, _)| k).collect();
+                    if heads.is_empty() && !e.is_rest() && picked.contains(&ids::dynamic(e.id)) {
+                        heads = (0..e.heads.len()).collect();
+                    }
+                    if !heads.is_empty() {
+                        f(e, &heads);
+                        any = true;
+                    }
+                }
+                v.events = Arc::new(evs);
+            }
+        }
+        if any {
+            self.commit(before, label);
+        } else {
+            self.project = before;
+        }
+        any
+    }
+
+    /// Deletes what is picked: notes (rests in voice 1), dynamics, lyrics,
+    /// chord symbols and text. One undo step.
+    fn delete_picked(&mut self) {
+        let before = self.snapshot();
+        let picked = std::mem::take(&mut self.picked);
+        let mut ids = Ids(self.project.next_id);
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        let mut n = 0;
+        for id in &picked {
+            if edit::remove_item(m, *id).is_some() {
+                n += 1;
+            }
+        }
+        for l in m.lanes.iter_mut() {
+            for v in l.voices.iter_mut() {
+                let mut evs = (*v.events).clone();
+                let mut changed = false;
+                for e in evs.iter_mut() {
+                    if picked.contains(&ids::dynamic(e.id)) && e.dynamic.is_some() {
+                        e.dynamic = None;
+                        changed = true;
+                        n += 1;
+                    }
+                    let before = e.lyrics.len();
+                    e.lyrics.retain(|ly| !picked.contains(&ids::lyric(e.id, ly.verse)));
+                    if e.lyrics.len() != before {
+                        changed = true;
+                        n += before - e.lyrics.len();
+                    }
+                }
+                // Notes, one by one (a chord loses heads, the last leaves a rest).
+                let heads: Vec<Id> = evs.iter().flat_map(|e| e.heads.iter().map(|h| h.id)).filter(|h| picked.contains(h)).collect();
+                for h in heads {
+                    if let Some(r) = edit::delete_element(&evs, h, v.index == 1, &mut ids) {
+                        evs = r.events;
+                        changed = true;
+                        n += 1;
+                    }
+                }
+                if changed {
+                    v.events = Arc::new(evs);
+                }
+            }
+        }
+        self.project.next_id = ids.0;
+        if n > 0 {
+            self.commit(before, "Delete");
+            self.status = format!("{n} deleted");
+        } else {
+            self.project = before;
+        }
+    }
+
     /// Transposes by an interval ("up M2", "down P5") or to a key ("to
     /// Eb", by the nearer way from the key in force): the selected passage
     /// (notes and chord symbols), or with nothing selected the whole score,
@@ -1765,6 +1969,16 @@ impl Editor {
         };
         if by.is_zero() {
             return Err("That is the key it is in".into());
+        }
+        if !self.picked.is_empty() {
+            self.modify_picked("Transpose", |e, heads| {
+                for &k in heads {
+                    e.heads[k].pitch = e.heads[k].pitch.transposed(by);
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            self.status = format!("{} notes transposed {}", self.picked.len(), interval_name(by));
+            return Ok(());
         }
         let before = self.snapshot();
         let chord = |c: &mut ChordSymbol| c.text = notation::transpose_chord_text(&c.text, by);
@@ -1804,6 +2018,16 @@ impl Editor {
     }
 
     pub fn transpose_selection(&mut self, steps: i32) {
+        if !self.picked.is_empty() {
+            self.modify_picked("Transpose", |e, heads| {
+                for &k in heads {
+                    let h = &mut e.heads[k];
+                    h.pitch = edit::from_diatonic(edit::diatonic(h.pitch) + steps, h.pitch.alter as i32);
+                }
+                e.heads.sort_by_key(|h| h.pitch.midi_key());
+            });
+            return;
+        }
         if let Some(r) = self.range {
             self.edit_range_voices("Transpose", |evs, _, _| edit::transpose_range(evs, r.from, r.to, steps));
             return;
@@ -2099,6 +2323,9 @@ impl Editor {
         if kind == PopoverKind::Transpose {
             return self.transpose(&text);
         }
+        if kind == PopoverKind::Filter {
+            return self.filter(&text);
+        }
         if kind == PopoverKind::MovementTitle {
             self.rename_movement(&text);
             return Ok(());
@@ -2254,7 +2481,7 @@ impl Editor {
                 };
                 return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -2554,6 +2781,9 @@ impl Editor {
     /// The selection in words: "E5 · Flute", "Bars 2–4 · 3 staves".
     pub fn selection_label(&self) -> String {
         let Some(m) = self.movement() else { return String::new() };
+        if !self.picked.is_empty() {
+            return format!("{} picked", self.picked.len());
+        }
         if let Some(r) = self.range {
             let b0 = edit::bar_number(m, r.from).0;
             let b1 = edit::bar_number(m, (r.to - Frac::new(1, 1024)).max(r.from)).0;
@@ -2601,6 +2831,7 @@ pub enum PopoverKind {
     Composer,
     Instrument,
     Transpose,
+    Filter,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -2625,6 +2856,7 @@ impl PopoverKind {
             PopoverKind::Composer => "Composer",
             PopoverKind::Instrument => "Instrument change",
             PopoverKind::Transpose => "Transpose",
+            PopoverKind::Filter => "Select only",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -2649,6 +2881,7 @@ impl PopoverKind {
             PopoverKind::Composer => "J. S. Bach",
             PopoverKind::Instrument => "Piccolo, Clarinet in A, Flute…; empty removes",
             PopoverKind::Transpose => "up M2, down P5, -m3, octave; to Eb",
+            PopoverKind::Filter => "top, bottom, voice 2, above C5, F#, staccato, tied, rests, dynamics mf, lyrics",
         }
     }
 }

@@ -43,6 +43,14 @@ PipeWire.
   "-m3", "octave") or to a key ("to Eb", the nearer way), spelt by the
   interval. A selected passage moves alone; otherwise the whole score,
   with its key signatures and chord symbols.
+* **Select only and Select similar:** Ctrl+F picks, in the selected
+  passage or the whole movement, what a few words describe: "top",
+  "bottom", "chords", "voice 2", "above C5", "below G3", "F#" or "Bb4",
+  "staccato", "tied", "rests", "dynamics mf", "lyrics verse 2", "chord
+  symbols", "text dolce". Ctrl+Shift+A picks what is like the selected
+  element (notes on its staff, the same dynamic, verse or text). Delete,
+  articulations, dynamics, accidentals, ↑/↓ and Transpose apply to each
+  picked element, as one undo step.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

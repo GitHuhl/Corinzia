@@ -123,6 +123,13 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
     ("F#m7b5/E" is written F♯m7♭5/E);
   * insertion and deletion of bars. Map entries at 0 stay; a barline at the
     cut closes the gap; endings are clipped.
+* **Filters** (`select.rs`): a query of a few words (notes by default, or
+  rests, dynamics, lyrics, chord symbols, text; for notes: top/bottom of
+  chords, chords, voice, pitch, above/below a pitch, articulations, tied)
+  is matched over staves and a time span, giving element ids as the
+  engraving tags them. The editor keeps them as a third kind of selection,
+  `picked`, which Delete, articulations, dynamics, accidentals and
+  transposition apply to element by element.
 * **`Editor`** (in the app, UI-independent and unit-tested) holds:
   * the caret, input state, selection or passage, clipboard and popover
     targets;
