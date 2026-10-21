@@ -62,6 +62,15 @@ PipeWire.
   Beams buttons break a beam before the selected notes, join them to the
   beam before (across beat groups), leave them flagged, or go back to
   automatic.
+* **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
+  Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
+  spacing, staff and system distances, bars per system and page numbers,
+  for the full score and, separately, for the parts; and the page texts:
+  subtitle, lyricist, arranger and copyright. The view and PDF export
+  follow them. Enter puts a system break before the selected bar,
+  Ctrl+Enter a page break (again removes it); shown a part, the break is
+  that part's alone. Later systems name staves by their short names, set
+  in Players as "Violin I / Vln. I".
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

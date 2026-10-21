@@ -54,6 +54,10 @@ pub enum Action {
     SelectSimilar,
     /// Beams by hand: a `span::BEAMS` bit, or 0 for automatic.
     Beam(u8),
+    /// A system (or page) break before the selected bar, or none.
+    Break { page: bool },
+    /// The Layout card.
+    Layout,
     /// Chords of one staff spread over the selected staves.
     Explode,
     /// The selected staves combined into chords on one.
@@ -101,6 +105,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if let Key::Named(n) = key {
         return Some(match (n, ctrl, alt) {
             (Named::Escape, ..) => Escape,
+            (Named::Enter, false, false) if !input_mode => Break { page: false },
+            (Named::Enter, true, false) => Break { page: true },
             (Named::F1, ..) => Help,
             (Named::Space, false, false) => PlayStop,
             // Input mode moves the caret; otherwise the arrows walk notes.

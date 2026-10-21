@@ -213,6 +213,10 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         heading("Bars"),
         wide("Insert bar", false, "Ctrl+B: before the selected bar", Action::InsertBar),
         wide("Delete bars", false, "Ctrl+Shift+Backspace", Action::DeleteBars),
+        heading("Page"),
+        wide("Layout…", false, "Page size, staff size, margins, spacing, page texts; score and parts", Action::Layout),
+        wide("System break", false, "Enter: before the selected bar, in the score or the part shown (again removes it)", Action::Break { page: false }),
+        wide("Page break", false, "Ctrl+Enter: before the selected bar", Action::Break { page: true }),
     ]
     .spacing(6)
     .into()

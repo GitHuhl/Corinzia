@@ -22,10 +22,12 @@ pub struct Options {
     pub names: bool,
     /// Runs of empty bars as one multi-bar rest (parts).
     pub multirest: bool,
+    /// Note spacing, 1.0 as LilyPond's.
+    pub spacing: f32,
 }
 impl Default for Options {
     fn default() -> Self {
-        Options { staff_distance: 9.0, margin: 1.0, names: true, multirest: false }
+        Options { staff_distance: 9.0, margin: 1.0, names: true, multirest: false, spacing: 1.0 }
     }
 }
 
@@ -1139,7 +1141,7 @@ impl<'a> Engraver<'a> {
                 if gap <= Frac::ZERO || dmin <= Frac::ZERO {
                     return None;
                 }
-                let space = ideal_space(dmin, m.shortest) * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
+                let space = ideal_space(dmin, m.shortest) * self.opt.spacing * (gap.num as f32 / gap.den as f32) / (dmin.num as f32 / dmin.den as f32);
                 let stretch = (space - SPACING_INCREMENT as f32).max(0.0);
                 Some((stretch + self.column_head_width(col), stretch))
             };
@@ -1222,7 +1224,7 @@ impl<'a> Engraver<'a> {
             }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
-                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0);
+                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0) * self.opt.spacing;
             }
             breaks.push((x1, stretch));
             self.ms[mi].stretch = stretch - bar_stretch;
@@ -2930,6 +2932,7 @@ fn compress_empty(score: &Score, ms: Vec<Measure>) -> Vec<Measure> {
             && !score.tempo.iter().any(|x| x.at == t)
             && !score.navigation.iter().any(|x| x.at == t)
             && !score.endings.iter().any(|e| e.from <= t && e.to >= t)
+            && !score.breaks.iter().any(|b| b.0 == t)
     };
     let mut out: Vec<Measure> = Vec::with_capacity(ms.len());
     for m in ms {
@@ -3037,10 +3040,16 @@ pub struct PageSpec {
     pub system_gap: f32,
     /// The number of the first page (a later movement goes on counting).
     pub first_page: usize,
+    /// Bars on each system (0: the line breaker chooses).
+    pub bars_per_system: usize,
+    /// Page numbers (and a running header) on every page but the first.
+    pub page_numbers: bool,
+    /// Points per staff space when printed (0: as wide as A4).
+    pub space_pt: f32,
 }
 impl Default for PageSpec {
     fn default() -> Self {
-        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1 }
+        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1, bars_per_system: 0, page_numbers: true, space_pt: 0.0 }
     }
 }
 
@@ -3050,14 +3059,42 @@ impl Default for PageSpec {
 /// compressed down to `MAX_COMPRESSION`; a bar wider than the line gets a
 /// system to itself. Like LilyPond (`ragged-last = ##f`), the last line is
 /// justified too.
-fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32) -> Vec<(usize, usize)> {
+///
+/// A system always ends before a bar in `forced`; with `per_system` > 0
+/// systems hold that many bars instead (still ending at forced breaks).
+fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32, forced: &[usize], per_system: usize) -> Vec<(usize, usize)> {
     let n = natural.len();
+    let mut cuts: Vec<usize> = forced.iter().copied().filter(|&f| f > 0 && f < n).collect();
+    cuts.push(0);
+    cuts.push(n);
+    cuts.sort();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for seg in cuts.windows(2) {
+        let (lo, hi) = (seg[0], seg[1]);
+        if per_system > 0 {
+            let mut a = lo;
+            while a < hi {
+                let b = (a + per_system).min(hi);
+                out.push((a, b));
+                a = b;
+            }
+        } else {
+            out.extend(break_range(natural, stretch, &prefix, line, lo, hi));
+        }
+    }
+    out
+}
+
+/// The optimal breaks of bars `lo..hi`.
+fn break_range(natural: &[f32], stretch: &[f32], prefix: &impl Fn(usize) -> f32, line: f32, lo: usize, hi: usize) -> Vec<(usize, usize)> {
+    let n = hi;
     let mut best = vec![f32::INFINITY; n + 1];
-    let mut from = vec![0usize; n + 1];
-    best[0] = 0.0;
-    for b in 1..=n {
+    let mut from = vec![lo; n + 1];
+    best[lo] = 0.0;
+    for b in lo + 1..=n {
         let (mut sum, mut k) = (0.0, 0.0);
-        for a in (0..b).rev() {
+        for a in (lo..b).rev() {
             sum += natural[a];
             k += stretch[a];
             let width = prefix(a) + sum;
@@ -3074,7 +3111,7 @@ fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32
     }
     let mut out = Vec::new();
     let mut b = n;
-    while b > 0 {
+    while b > lo {
         out.push((from[b], b));
         b = from[b];
     }
@@ -3108,11 +3145,15 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         e.left + 0.8 + clef_w + 0.8 + 3.0
     };
     let stretch: Vec<f32> = natural_line.ms.iter().map(|m| m.stretch).collect();
-    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line);
+    // Breaks by hand: before the bars starting there.
+    let bar_of = |t: Frac| ms.iter().position(|m| m.start == t);
+    let forced: Vec<usize> = score.breaks.iter().filter_map(|b| bar_of(b.0)).collect();
+    let page_breaks: Vec<usize> = score.breaks.iter().filter(|b| b.1).filter_map(|b| bar_of(b.0)).collect();
+    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line, &forced, page.bars_per_system);
 
     // Lay out each system, then stack them on pages by their real extents.
     let mut pages: Vec<DisplayList> = Vec::new();
-    let new_page = || DisplayList { width: page.width, height: page.height, ..Default::default() };
+    let new_page = || DisplayList { width: page.width, height: page.height, space_pt: page.space_pt, ..Default::default() };
     let mut cur = new_page();
     let mut y = page.margin_y;
     // The header, as LilyPond sets it: the title centred and bold, the
@@ -3123,17 +3164,25 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     if !title.is_empty() {
         cur.items.push(text(title, page.width / 2.0, y + 3.0, 3.2, true, 1, title_id));
         y += 5.0;
+        // The work's subtitle (first movement only), then the movement's.
+        if !score.subtitle.is_empty() && page.first_page == 1 {
+            cur.items.push(text(&score.subtitle, page.width / 2.0, y + 2.0, 2.4, false, 1, ids::SUBTITLE));
+            y += 3.5;
+        }
         if let Some(sub) = subtitle {
             cur.items.push(text(sub, page.width / 2.0, y + 2.0, 2.4, false, 1, ids::MOVEMENT_TITLE));
             y += 3.5;
         }
-        if !score.composer.is_empty() || !score.instrument.is_empty() {
-            // The composer flush right; a part's instrument flush left.
-            if !score.composer.is_empty() {
-                cur.items.push(text(&score.composer, page.width - page.margin_x, y + 1.6, 2.0, false, 2, ids::COMPOSER));
+        // Flush left: a part's instrument, the lyricist; flush right: the
+        // composer, the arranger.
+        let left: Vec<(&str, u64)> = [(score.instrument.as_str(), 0), (score.lyricist.as_str(), ids::LYRICIST)].into_iter().filter(|(t, _)| !t.is_empty()).collect();
+        let right: Vec<(&str, u64)> = [(score.composer.as_str(), ids::COMPOSER), (score.arranger.as_str(), ids::ARRANGER)].into_iter().filter(|(t, _)| !t.is_empty()).collect();
+        for row in 0..left.len().max(right.len()) {
+            if let Some((t, id)) = left.get(row) {
+                cur.items.push(text(t, page.margin_x, y + 1.6, 2.0, false, 0, *id));
             }
-            if !score.instrument.is_empty() {
-                cur.items.push(text(&score.instrument, page.margin_x, y + 1.6, 2.0, false, 0, 0));
+            if let Some((t, id)) = right.get(row) {
+                cur.items.push(text(t, page.width - page.margin_x, y + 1.6, 2.0, false, 2, *id));
             }
             y += 2.5;
         }
@@ -3170,7 +3219,8 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
             y1 = y1.max(r[3]);
         }
         let mut offset = y - y0;
-        if offset + y1 > page.height - page.margin_y && !cur.staves.is_empty() {
+        let page_break = page_breaks.contains(&a);
+        if (page_break || offset + y1 > page.height - page.margin_y) && !cur.staves.is_empty() {
             fill(&mut cur, &starts, used);
             starts.clear();
             pages.push(std::mem::replace(&mut cur, new_page()));
@@ -3198,14 +3248,23 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
     }
     // (The last page stays ragged at the bottom, as in LilyPond.)
     pages.push(cur);
-    // Page numbers from page 2, in the outer corner of the top margin.
+    // From page 2: the page number in the outer corner of the top margin,
+    // and in a part its instrument centred (as LilyPond's headers).
+    let running = score.instrument.clone();
     for (k, p) in pages.iter_mut().enumerate() {
         let n = k + page.first_page;
-        if n < 2 {
+        if n < 2 || !page.page_numbers {
             continue;
         }
         let (x, anchor) = if n % 2 == 0 { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
         p.items.push(Item::Text { text: n.to_string(), at: pt(x, page.margin_y * 0.6), size: 2.0, italic: false, bold: false, anchor, id: 0 });
+        if !running.is_empty() {
+            p.items.push(Item::Text { text: running.clone(), at: pt(page.width / 2.0, page.margin_y * 0.6), size: 1.8, italic: true, bold: false, anchor: 1, id: 0 });
+        }
+    }
+    // The copyright at the foot of the first page.
+    if let (Some(p), false, 1) = (pages.first_mut(), score.copyright.is_empty(), page.first_page) {
+        p.items.push(Item::Text { text: score.copyright.clone(), at: pt(page.width / 2.0, page.height - page.margin_y * 0.45), size: 1.6, italic: false, bold: false, anchor: 1, id: ids::COPYRIGHT });
     }
     pages
 }

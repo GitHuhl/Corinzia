@@ -760,3 +760,65 @@ fn beams_follow_the_meter_groups_and_hand_overrides() {
     preview("beams-by-hand", &l);
 }
 
+
+/// The first written quarter of every system, page by page.
+fn system_starts(pages: &[corinzia_layout::DisplayList]) -> Vec<Vec<f64>> {
+    pages
+        .iter()
+        .map(|p| {
+            let mut firsts: Vec<(u32, f64)> = Vec::new();
+            for c in &p.columns {
+                match firsts.iter_mut().find(|f| f.0 == c.system) {
+                    Some(f) => f.1 = f.1.min(c.quarter),
+                    None => firsts.push((c.system, c.quarter)),
+                }
+            }
+            firsts.sort_by_key(|f| f.0);
+            firsts.into_iter().map(|f| f.1).collect()
+        })
+        .collect()
+}
+
+#[test]
+fn breaks_by_hand_bars_per_system_and_page_text() {
+    use corinzia_layout::{layout_pages, PageSpec};
+    use corinzia_score::Frac;
+    let bars = "c'4 d' e' f' | ".repeat(16);
+    let mut s = score(&[("treble", &[bars.as_str()])], (4, 4), 0);
+    s.work_title = "Suite".into();
+    let auto = layout_pages(&s, &Options::default(), &PageSpec::default());
+    assert_eq!(auto.len(), 1);
+    // A system break before bar 3 and bar 10: systems start there.
+    s.breaks = vec![(Frac::int(2), false), (Frac::int(9), false)];
+    let pages = layout_pages(&s, &Options::default(), &PageSpec::default());
+    let starts: Vec<f64> = system_starts(&pages).concat();
+    assert!(starts.contains(&8.0) && starts.contains(&36.0), "{starts:?}");
+    // Four bars a system: 0, 16, 32, 48 quarters (still breaking at bar 3 and 10).
+    s.breaks.clear();
+    let four = PageSpec { bars_per_system: 4, ..PageSpec::default() };
+    assert_eq!(system_starts(&layout_pages(&s, &Options::default(), &four)).concat(), [0.0, 16.0, 32.0, 48.0]);
+    // A page break before bar 9: two pages, the second numbered; a part's
+    // pages carry its instrument as their running header.
+    s.breaks = vec![(Frac::int(8), true)];
+    s.instrument = "Viola".into();
+    let pages = layout_pages(&s, &Options::default(), &four);
+    assert_eq!(system_starts(&pages), [vec![0.0, 16.0], vec![32.0, 48.0]]);
+    let texts = |p: &corinzia_layout::DisplayList| p.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect::<Vec<_>>();
+    assert!(texts(&pages[1]).contains(&"2".to_string()) && texts(&pages[1]).contains(&"Viola".to_string()));
+    s.instrument.clear();
+    let quiet = PageSpec { page_numbers: false, ..four.clone() };
+    assert!(!texts(&layout_pages(&s, &Options::default(), &quiet)[1]).contains(&"2".to_string()));
+    // Header and footer texts.
+    s.subtitle = "for strings".into();
+    s.lyricist = "Words by N.N.".into();
+    s.composer = "A. Composer".into();
+    s.arranger = "arr. B".into();
+    s.copyright = "© 2026 Corinzia".into();
+    let p1 = texts(&layout_pages(&s, &Options::default(), &four)[0]);
+    for t in ["Suite", "for strings", "Words by N.N.", "A. Composer", "arr. B", "© 2026 Corinzia"] {
+        assert!(p1.contains(&t.to_string()), "{t} in {p1:?}");
+    }
+    // Wider note spacing: a wider natural line.
+    let line = |sp: f32| layout_line(&score(&[("treble", &["c'8 d' e' f' g' a' b' c''"])], (4, 4), 0), &Options { spacing: sp, ..Options::default() }).width;
+    assert!(line(1.5) > line(1.0) * 1.2);
+}

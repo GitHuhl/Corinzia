@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS project (
     modified_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- Project-wide settings as JSON by key: "layout", "part_layout" (page
+-- layout of the score and of the parts), "texts" (subtitle, lyricist,
+-- arranger, copyright).
+CREATE TABLE IF NOT EXISTS setting (
+    key    TEXT PRIMARY KEY,
+    value  BLOB NOT NULL
+);
+
 -- ------------------------------------------------------- routing / mixer --
 CREATE TABLE IF NOT EXISTS audio_node (
     id              INTEGER PRIMARY KEY,

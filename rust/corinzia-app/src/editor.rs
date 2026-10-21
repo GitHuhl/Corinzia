@@ -209,12 +209,18 @@ fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) 
     let mut free = held.clone();
     let mut result: Vec<Option<Id>> = vec![None; specs.len()];
     let name_of = |p: &Project, i: Id| p.instrument(i).map(|x| x.name.clone()).unwrap_or_default();
+    let mut changed = 0;
     for (k, s) in specs.iter().enumerate() {
         if let Some(pos) = free.iter().position(|i| name_of(p, *i).eq_ignore_ascii_case(&s.name)) {
-            result[k] = Some(free.remove(pos));
+            let id = free.remove(pos);
+            // The same instrument; its short name may be new.
+            if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id && i.engraver_name != s.abbr) {
+                i.engraver_name = s.abbr.clone();
+                changed += 1;
+            }
+            result[k] = Some(id);
         }
     }
-    let mut changed = 0;
     for (k, s) in specs.iter().enumerate() {
         if result[k].is_some() {
             continue;
@@ -425,6 +431,7 @@ impl Editor {
             endings: vec![],
             navigation: vec![],
             slurs: vec![],
+            breaks: vec![],
             lanes,
         };
         let at = self.movement + 1;
@@ -1803,6 +1810,66 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    // ------------------------------------------------------------- layout --
+    /// The score's and the parts' layouts and the page texts (subtitle,
+    /// lyricist, arranger, copyright), as one undo step.
+    pub fn set_layout(&mut self, layout: Layout, parts: Layout, texts: [String; 4]) {
+        let p = &self.project;
+        let unchanged = p.layout == layout && p.part_layout == parts && [&p.subtitle, &p.lyricist, &p.arranger, &p.copyright].iter().zip(&texts).all(|(a, b)| *a == b);
+        if unchanged {
+            self.status = "No changes to the layout".into();
+            return;
+        }
+        let before = self.snapshot();
+        let p = &mut self.project;
+        p.layout = layout;
+        p.part_layout = parts;
+        let [subtitle, lyricist, arranger, copyright] = texts;
+        (p.subtitle, p.lyricist, p.arranger, p.copyright) = (subtitle, lyricist, arranger, copyright);
+        self.commit(before, "Layout");
+        self.status = "Layout changed".into();
+    }
+
+    /// A system break (or page break) before the selected bar, or the
+    /// caret's; in `part`'s part, or in the full score. Again removes it;
+    /// the other kind there turns it into this one.
+    pub fn toggle_break(&mut self, page: bool, part: Option<Id>) -> Result<(), String> {
+        let m = self.movement().ok_or("No movement")?;
+        let t = match (self.range, self.selection.and_then(|id| self.event_of(id))) {
+            (Some(r), _) => r.from,
+            (None, Some((_, e))) => e.start,
+            _ => self.caret,
+        };
+        let bar = edit::bar_start_at_or_before(m, t.min(m.length));
+        if bar == Frac::ZERO {
+            return Err("A break goes before a bar after the first: select a later bar".into());
+        }
+        let n = edit::bar_number(m, bar).0;
+        let what = if page { "Page break" } else { "System break" };
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let m = &mut self.project.movements[self.movement];
+        let label = match m.breaks.iter().position(|b| b.at == bar && b.part == part) {
+            Some(i) if m.breaks[i].page == page => {
+                m.breaks.remove(i);
+                format!("{what} removed")
+            }
+            Some(i) => {
+                m.breaks[i].page = page;
+                what.to_string()
+            }
+            None => {
+                m.breaks.push(Break { id, at: bar, page, part });
+                m.breaks.sort_by_key(|b| b.at);
+                what.to_string()
+            }
+        };
+        self.commit(before, &label);
+        let scope = if part.is_some() { " in the part" } else { "" };
+        self.status = format!("{label} before bar {n}{scope}");
+        Ok(())
+    }
+
     // ------------------------------------------------------ explode/reduce --
     /// The passage's staves, its voice-1 index on each, checked for
     /// explode/reduce: two staves or more, no tuplets.

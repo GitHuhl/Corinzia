@@ -308,6 +308,11 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
     let q = end * Frac::new(bar.den, bar.num);
     let bars = (q.num + q.den - 1) / q.den;
     Score {
+        subtitle: String::new(),
+        lyricist: String::new(),
+        arranger: String::new(),
+        copyright: String::new(),
+        breaks: vec![],
         title: String::new(),
         work_title: String::new(),
         composer: String::new(),

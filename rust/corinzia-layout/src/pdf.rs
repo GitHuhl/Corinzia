@@ -8,9 +8,13 @@ use crate::font::{Font, FONT_DATA};
 use pdf_writer::types::LineCapStyle;
 use pdf_writer::{Content, Finish, Pdf, Rect, Ref, TextStr};
 
-/// Points per staff space for a page `width` staff spaces wide on A4.
+/// Points per staff space: the page's own, or as wide as A4.
 fn pt_per_space(page: &DisplayList) -> f32 {
-    595.28 / page.width.max(1.0)
+    if page.space_pt > 0.0 {
+        page.space_pt
+    } else {
+        595.28 / page.width.max(1.0)
+    }
 }
 
 /// Writes outlines through a mapping from font units to page points.

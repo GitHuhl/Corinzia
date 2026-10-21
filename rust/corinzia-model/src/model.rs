@@ -329,7 +329,70 @@ pub struct Movement {
     pub lanes: Vec<Lane>,
     /// Slurs between notes (event ids), in any voices or staves of a player.
     pub slurs: Vec<Slur>,
+    /// System and page breaks by hand, at bar starts.
+    pub breaks: Vec<Break>,
 }
+
+/// A system (or page) break before the bar at `at`: in the full score, or
+/// in one player's part.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Break {
+    pub id: Id,
+    pub at: Frac,
+    pub page: bool,
+    /// The player whose part it is in; None: the full score.
+    pub part: Option<Id>,
+}
+
+/// How a score (or the parts) is laid out on the page. Lengths in
+/// millimetres, distances in staff spaces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    /// Portrait page size; `landscape` turns it.
+    pub page_width_mm: f64,
+    pub page_height_mm: f64,
+    pub landscape: bool,
+    /// Staff height, bottom line to top line (four staff spaces).
+    pub staff_mm: f64,
+    /// Margins top and bottom, and at the sides.
+    pub margin_y_mm: f64,
+    pub margin_x_mm: f64,
+    /// Note spacing, 1.0 as LilyPond's.
+    pub spacing: f64,
+    /// Least distance from staff to staff (top line to top line).
+    pub staff_distance: f64,
+    /// Space between systems (between their outermost marks).
+    pub system_gap: f64,
+    /// Bars on each system; 0 to let the line breaker choose.
+    pub bars_per_system: u32,
+    pub page_numbers: bool,
+}
+
+impl Default for Layout {
+    /// A4 with an 18 pt staff, as LilyPond's default.
+    fn default() -> Self {
+        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 4.0, bars_per_system: 0, page_numbers: true }
+    }
+}
+
+impl Layout {
+    /// The parts' default: a larger staff (7 mm), as parts are read from a stand.
+    pub fn parts() -> Layout {
+        Layout { staff_mm: 7.0, ..Layout::default() }
+    }
+    /// One staff space in millimetres.
+    pub fn space_mm(&self) -> f64 {
+        self.staff_mm / 4.0
+    }
+    /// The page in staff spaces (width, height), turned if landscape.
+    pub fn page_spaces(&self) -> (f64, f64) {
+        let (w, h) = if self.landscape { (self.page_height_mm, self.page_width_mm) } else { (self.page_width_mm, self.page_height_mm) };
+        (w / self.space_mm(), h / self.space_mm())
+    }
+}
+
+/// Named page sizes in millimetres (portrait).
+pub const PAGE_SIZES: [(&str, f64, f64); 7] = [("A4", 210.0, 297.0), ("Letter", 215.9, 279.4), ("A3", 297.0, 420.0), ("B4", 250.0, 353.0), ("Legal", 215.9, 355.6), ("Tabloid", 279.4, 431.8), ("A5", 148.0, 210.0)];
 
 impl Movement {
     /// Each note's (lane, voice index into `lane.voices`, start), by event id.
@@ -424,10 +487,19 @@ pub struct AudioEdge {
     pub gain: f64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Project {
     pub title: String,
     pub composer: String,
+    /// Under the title; lyricist top left, arranger under the composer;
+    /// the copyright at the foot of the first page.
+    pub subtitle: String,
+    pub lyricist: String,
+    pub arranger: String,
+    pub copyright: String,
+    /// The full score's layout and the parts'.
+    pub layout: Layout,
+    pub part_layout: Layout,
     pub sample_rate: f64,
     pub next_id: u64,
     pub players: Vec<Player>,
@@ -438,6 +510,30 @@ pub struct Project {
     pub nodes: Vec<AudioNode>,
     pub edges: Vec<AudioEdge>,
     pub plugin_state: std::collections::BTreeMap<Id, Arc<Vec<u8>>>,
+}
+
+impl Default for Project {
+    fn default() -> Self {
+        Project {
+            title: String::new(),
+            composer: String::new(),
+            subtitle: String::new(),
+            lyricist: String::new(),
+            arranger: String::new(),
+            copyright: String::new(),
+            layout: Layout::default(),
+            part_layout: Layout::parts(),
+            sample_rate: 48000.0,
+            next_id: 1,
+            players: vec![],
+            instruments: vec![],
+            tracks: vec![],
+            movements: vec![],
+            nodes: vec![],
+            edges: vec![],
+            plugin_state: Default::default(),
+        }
+    }
 }
 
 impl Project {

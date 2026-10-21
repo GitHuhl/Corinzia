@@ -70,6 +70,8 @@ pub struct Column {
 pub struct DisplayList {
     pub width: f32,
     pub height: f32,
+    /// Points per staff space when printed (0: as wide as A4).
+    pub space_pt: f32,
     pub items: Vec<Item>,
     pub staves: Vec<StaffGeom>,
     pub columns: Vec<Column>,

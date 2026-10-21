@@ -11,6 +11,10 @@ pub mod ids {
     pub const PROJECT_TITLE: u64 = u64::MAX - 1;
     pub const MOVEMENT_TITLE: u64 = u64::MAX - 2;
     pub const COMPOSER: u64 = u64::MAX - 3;
+    pub const SUBTITLE: u64 = u64::MAX - 4;
+    pub const LYRICIST: u64 = u64::MAX - 5;
+    pub const ARRANGER: u64 = u64::MAX - 6;
+    pub const COPYRIGHT: u64 = u64::MAX - 7;
     const TEMPO: u64 = 1 << 62;
     const DYNAMIC: u64 = 1 << 61;
     const LYRIC: u64 = 1 << 60; // verse in bits 52..60
@@ -47,6 +51,14 @@ pub struct Score {
     pub composer: String,
     /// A part's instrument, printed top left of the first page.
     pub instrument: String,
+    /// The work's subtitle; lyricist (left) and arranger (under the
+    /// composer); the copyright line at the foot of the first page.
+    pub subtitle: String,
+    pub lyricist: String,
+    pub arranger: String,
+    pub copyright: String,
+    /// Breaks by hand before the bars starting here: (at, page break).
+    pub breaks: Vec<(Frac, bool)>,
     pub length: Frac,
     pub tempo: Vec<Tempo>,
     pub meter: Vec<Meter>,

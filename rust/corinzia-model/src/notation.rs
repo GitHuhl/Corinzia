@@ -117,6 +117,8 @@ pub fn part_score(project: &Project, m: &Movement, player: Id) -> sc::Score {
     for p in s.parts.iter_mut() {
         p.group = 0;
     }
+    // A part has breaks of its own.
+    s.breaks = m.breaks.iter().filter(|b| b.part == Some(player)).map(|b| (b.at, b.page)).collect();
     s.instrument = s.parts.first().map(|p| p.name.clone()).or_else(|| project.player(player).map(|p| p.name.clone())).unwrap_or_default();
     s
 }
@@ -244,6 +246,11 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         })
         .collect();
     sc::Score {
+        subtitle: project.subtitle.clone(),
+        lyricist: project.lyricist.clone(),
+        arranger: project.arranger.clone(),
+        copyright: project.copyright.clone(),
+        breaks: m.breaks.iter().filter(|b| b.part.is_none()).map(|b| (b.at, b.page)).collect(),
         title: m.title.clone(),
         work_title: project.title.clone(),
         composer: project.composer.clone(),

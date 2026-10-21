@@ -274,8 +274,20 @@ Items that join staves (barlines) belong to no staff's skyline.
 * `tests/lilypond.rs` also checks justified lines and system breaks against
   LilyPond. The breaks match at 23 of 30 line widths.
 * Ties and endings that cross a break are split.
-* Systems are stacked by their real extents onto A4 pages (132.3 × 187.1
-  staff spaces), with the title on page 1.
+* Systems are stacked by their real extents onto pages, by default A4
+  (132.3 × 187.1 staff spaces at an 18 pt staff), with the title block on
+  page 1: title, subtitle, the movement's title; the instrument and the
+  lyricist flush left; the composer and the arranger flush right. The
+  copyright goes at the foot of the first page; page numbers in the outer
+  corners from page 2, with a part's instrument as the running header.
+* The project's `Layout` (one for the full score, one for the parts) gives
+  the page in millimetres, the staff size (so staff spaces in mm and
+  points per space for the PDF), margins, note spacing, staff and system
+  distances, bars per system and page numbers (`files::page_setup`).
+* Breaks by hand (`Movement::breaks`, at bar starts, for the full score or
+  one player's part): the breaker ends a system there and a page break
+  starts a new page; with bars per system set, systems hold that many bars
+  between them. Multi-bar rests do not run across a break.
 
 **Text** is measured with the font that draws it (`set_text_font`; the app
 uses DejaVu Serif). The test notation (`notation.rs`, LilyPond-like) builds
