@@ -1809,6 +1809,7 @@ fn help_card() -> Element<'static, Message> {
                 ("Shift+K  M  T", "Key, time, tempo"),
                 ("Shift+C", "Clef; 8va, 8vb, loco"),
                 ("Shift+I", "Instrument change (a doubling)"),
+                ("Ctrl+Shift+T", "Transpose: up M2, to Eb…"),
                 ("Shift+B  R", "Barline; ending, segno, D.C.…"),
                 ("Shift+X  P  O", "Expression, technique (ped), ornament"),
                 ("Shift+D", "Dynamic: pp, mf, sfz, fp…"),
@@ -2600,6 +2601,48 @@ mod tests {
         a.editor.undo();
         a.editor.undo();
         assert_eq!(a.editor.project.player(flute).unwrap().instruments.len(), 1);
+    }
+
+    #[test]
+    fn transposing_the_score_a_passage_or_to_a_key() {
+        let mut a = app(View::Page);
+        let pitch = |a: &App, lane: usize, k: usize| a.editor.project.movements[0].lanes[lane].voices[0].events.iter().filter(|e| !e.is_rest()).nth(k).unwrap().heads[0].pitch;
+        let name = |p: corinzia_model::Pitch| editor::pitch_name(p);
+        assert_eq!(name(pitch(&a, 0, 0)), "E5");
+        // A chord symbol goes along.
+        a.editor.caret_lane = 0;
+        a.editor.caret = corinzia_score::Frac::ZERO;
+        a.editor.apply_popover(PopoverKind::Chord, "C").unwrap();
+        // The whole score up a major second: D major, F sharp, chord D.
+        a.editor.apply_popover(PopoverKind::Transpose, "up M2").unwrap();
+        assert_eq!(a.editor.status, "The score transposed up a major 2nd");
+        let m = &a.editor.project.movements[0];
+        assert_eq!(m.keys[0].fifths, 2);
+        assert_eq!(name(pitch(&a, 0, 0)), "F♯5");
+        assert_eq!(name(pitch(&a, 1, 0)), "D3");
+        assert_eq!(m.lanes[0].chords[0].text, "D");
+        a.editor.undo();
+        assert_eq!(a.editor.project.movements[0].keys[0].fifths, 0, "one undo step");
+        // To E-flat: the nearer way is up a minor third.
+        a.editor.apply_popover(PopoverKind::Transpose, "to Eb").unwrap();
+        assert_eq!(a.editor.project.movements[0].keys[0].fifths, -3);
+        assert_eq!(name(pitch(&a, 0, 0)), "G5");
+        assert!(a.editor.apply_popover(PopoverKind::Transpose, "to Eb").is_err(), "already there");
+        a.editor.undo();
+        // A passage: the flute's first bar only, keys untouched.
+        let id = a.editor.project.movements[0].lanes[0].voices[0].events[0].heads[0].id;
+        a.editor.select(Some(id));
+        a.editor.select_bar(0, corinzia_score::Frac::ZERO, false);
+        a.editor.apply_popover(PopoverKind::Transpose, "down P8").unwrap();
+        assert_eq!(a.editor.status, "The passage transposed down an octave");
+        assert_eq!(name(pitch(&a, 0, 0)), "E4");
+        assert_eq!(a.editor.project.movements[0].keys[0].fifths, 0);
+        assert_eq!(name(pitch(&a, 1, 0)), "C3", "other staves stay");
+        let later = a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| e.start >= corinzia_score::Frac::int(1) && !e.is_rest()).unwrap();
+        assert_eq!(name(later.heads[0].pitch), "E5", "bar 2 stays");
+        assert!(a.editor.apply_popover(PopoverKind::Transpose, "sideways").is_err());
+        assert_eq!(editor::interval_name(corinzia_model::Interval::new(3, 6)), "up an augmented 4th");
+        assert_eq!(editor::interval_name(corinzia_model::Interval::new(-2, -3)), "down a minor 3rd");
     }
 
     #[test]

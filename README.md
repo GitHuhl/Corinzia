@@ -39,6 +39,10 @@ PipeWire.
   needed. The name is written above the staff, the clef follows, playback
   moves to that instrument's track, and the transposed score changes key
   at the next barline.
+* **Transpose** (Ctrl+Shift+T): by an interval ("up M2", "down P5",
+  "-m3", "octave") or to a key ("to Eb", the nearer way), spelt by the
+  interval. A selected passage moves alone; otherwise the whole score,
+  with its key signatures and chord symbols.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

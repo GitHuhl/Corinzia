@@ -1747,6 +1747,62 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    /// Transposes by an interval ("up M2", "down P5") or to a key ("to
+    /// Eb", by the nearer way from the key in force): the selected passage
+    /// (notes and chord symbols), or with nothing selected the whole score,
+    /// key signatures included. One undo step.
+    pub fn transpose(&mut self, text: &str) -> Result<(), String> {
+        let spec = edit::parse_transpose(text).ok_or("Not understood: an interval (up M2, down P5, -m3, octave) or a key (to Eb)")?;
+        let range = self.range;
+        let m = self.movement().ok_or("No movement")?;
+        let by = match spec {
+            edit::TransposeSpec::By(i) => i,
+            edit::TransposeSpec::To { step, alter } => {
+                let at = range.map(|r| r.from).unwrap_or(Frac::ZERO);
+                let k = m.keys.iter().rfind(|k| k.at <= at).copied().unwrap_or(Key { at: Frac::ZERO, fifths: 0, minor: false });
+                edit::interval_between(edit::key_tonic(k.fifths, k.minor), (step, alter))
+            }
+        };
+        if by.is_zero() {
+            return Err("That is the key it is in".into());
+        }
+        let before = self.snapshot();
+        let chord = |c: &mut ChordSymbol| c.text = notation::transpose_chord_text(&c.text, by);
+        match range {
+            Some(r) => {
+                let m = &mut self.project.movements[self.movement];
+                for li in r.lane_from..=r.lane_to.min(m.lanes.len().saturating_sub(1)) {
+                    let lane = &mut m.lanes[li];
+                    for v in lane.voices.iter_mut() {
+                        if let Some(res) = edit::transpose_by(&v.events, r.from, r.to, by) {
+                            v.events = Arc::new(res.events);
+                        }
+                    }
+                    lane.chords.iter_mut().filter(|c| c.at >= r.from && c.at < r.to).for_each(chord);
+                }
+            }
+            None => {
+                for m in self.project.movements.iter_mut() {
+                    for k in m.keys.iter_mut() {
+                        k.fifths = shift_key(k.fifths, by.fifths());
+                    }
+                    for lane in m.lanes.iter_mut() {
+                        for v in lane.voices.iter_mut() {
+                            let mut evs = (*v.events).clone();
+                            evs.iter_mut().for_each(|e| edit::transpose_event(e, by));
+                            v.events = Arc::new(evs);
+                        }
+                        lane.chords.iter_mut().for_each(chord);
+                    }
+                }
+            }
+        }
+        self.commit(before, "Transpose");
+        let what = if range.is_some() { "The passage" } else { "The score" };
+        self.status = format!("{what} transposed {}", interval_name(by));
+        Ok(())
+    }
+
     pub fn transpose_selection(&mut self, steps: i32) {
         if let Some(r) = self.range {
             self.edit_range_voices("Transpose", |evs, _, _| edit::transpose_range(evs, r.from, r.to, steps));
@@ -2040,6 +2096,9 @@ impl Editor {
         if kind == PopoverKind::Instrument {
             return self.change_instrument(&text);
         }
+        if kind == PopoverKind::Transpose {
+            return self.transpose(&text);
+        }
         if kind == PopoverKind::MovementTitle {
             self.rename_movement(&text);
             return Ok(());
@@ -2195,7 +2254,7 @@ impl Editor {
                 };
                 return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);
@@ -2541,6 +2600,7 @@ pub enum PopoverKind {
     Title,
     Composer,
     Instrument,
+    Transpose,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -2564,6 +2624,7 @@ impl PopoverKind {
             PopoverKind::Title => "Title",
             PopoverKind::Composer => "Composer",
             PopoverKind::Instrument => "Instrument change",
+            PopoverKind::Transpose => "Transpose",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -2587,7 +2648,36 @@ impl PopoverKind {
             PopoverKind::Title => "Serenade",
             PopoverKind::Composer => "J. S. Bach",
             PopoverKind::Instrument => "Piccolo, Clarinet in A, Flute…; empty removes",
+            PopoverKind::Transpose => "up M2, down P5, -m3, octave; to Eb",
         }
+    }
+}
+
+/// "up a major 2nd", "down a perfect 5th".
+pub fn interval_name(i: Interval) -> String {
+    let (dir, i) = if i.semitones < 0 || (i.semitones == 0 && i.steps < 0) { ("down", i.inverse()) } else { ("up", i) };
+    const BASE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let class = i.steps.rem_euclid(7);
+    let diff = i.semitones - BASE[class as usize] - 12 * i.steps.div_euclid(7);
+    let perfect = matches!(class, 0 | 3 | 4);
+    let quality = match (perfect, diff) {
+        (true, 0) => "perfect",
+        (false, 0) => "major",
+        (false, -1) => "minor",
+        (_, d) if d > 0 => "augmented",
+        _ => "diminished",
+    };
+    let n = i.steps + 1;
+    let suffix = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "st",
+        (2, x) if x != 12 => "nd",
+        (3, x) if x != 13 => "rd",
+        _ => "th",
+    };
+    let article = if quality.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    match (quality, n) {
+        ("perfect", 8) => format!("{dir} an octave"),
+        _ => format!("{dir} {article} {quality} {n}{suffix}"),
     }
 }
 

@@ -602,3 +602,34 @@ fn fingering_and_bowing_popovers() {
     assert_eq!(parse_bowing("pizz."), None);
     assert_eq!(parse_ornament("up bow"), Some(art::UP_BOW));
 }
+
+#[test]
+fn transposition_intervals_and_keys() {
+    use corinzia_edit::{interval_between, key_tonic, parse_interval, parse_transpose, TransposeSpec};
+    use corinzia_model::Interval;
+    assert_eq!(parse_interval("M2"), Some(Interval::new(1, 2)));
+    assert_eq!(parse_interval("up m3"), Some(Interval::new(2, 3)));
+    assert_eq!(parse_interval("down P5"), Some(Interval::new(-4, -7)));
+    assert_eq!(parse_interval("-M2"), Some(Interval::new(-1, -2)));
+    assert_eq!(parse_interval("A4"), Some(Interval::new(3, 6)));
+    assert_eq!(parse_interval("d5"), Some(Interval::new(4, 6)));
+    assert_eq!(parse_interval("P8"), Some(Interval::new(7, 12)));
+    assert_eq!(parse_interval("down an octave"), Some(Interval::new(-7, -12)));
+    assert_eq!(parse_interval("M10"), Some(Interval::new(9, 16)));
+    assert_eq!(parse_interval("P3"), None, "no perfect third");
+    assert_eq!(parse_interval("M5"), None);
+    assert_eq!(parse_interval("x"), None);
+    // Tonics on the line of fifths.
+    assert_eq!(key_tonic(0, false), (0, 0)); // C
+    assert_eq!(key_tonic(-3, false), (2, -1)); // E-flat
+    assert_eq!(key_tonic(0, true), (5, 0)); // a
+    assert_eq!(key_tonic(6, false), (3, 1)); // F-sharp
+    assert_eq!(key_tonic(3, true), (3, 1)); // f-sharp minor (A major's relative)
+    // The nearer way: C to E-flat is up a minor third; C to A down a minor third.
+    assert_eq!(interval_between((0, 0), (2, -1)), Interval::new(2, 3));
+    assert_eq!(interval_between((0, 0), (5, 0)), Interval::new(-2, -3));
+    assert_eq!(parse_transpose("to Eb"), Some(TransposeSpec::To { step: 2, alter: -1 }));
+    assert_eq!(parse_transpose("to f#"), Some(TransposeSpec::To { step: 3, alter: 1 }));
+    assert_eq!(parse_transpose("to H"), None);
+    assert_eq!(parse_transpose("up M2"), Some(TransposeSpec::By(Interval::new(1, 2))));
+}

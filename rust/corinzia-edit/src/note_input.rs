@@ -562,6 +562,24 @@ pub fn cycle_dots(d: Frac) -> Frac {
 }
 
 /// Diatonic transposition of every head in the range (accidentals kept).
+/// The passage moved by an interval, spelt by it (grace notes too).
+pub fn transpose_by(list: &[Event], from: Frac, to: Frac, by: corinzia_model::Interval) -> Option<EditResult> {
+    apply_to_range(list, from, to, |e| transpose_event(e, by))
+}
+
+/// One event moved by an interval: its heads and grace notes.
+pub fn transpose_event(e: &mut Event, by: corinzia_model::Interval) {
+    for h in e.heads.iter_mut() {
+        h.pitch = h.pitch.transposed(by);
+    }
+    e.heads.sort_by_key(|h| h.pitch.midi_key());
+    for g in e.graces.iter_mut() {
+        for h in g.heads.iter_mut() {
+            h.pitch = h.pitch.transposed(by);
+        }
+    }
+}
+
 pub fn transpose_range(list: &[Event], from: Frac, to: Frac, steps: i32) -> Option<EditResult> {
     apply_to_range(list, from, to, |e| {
         for h in e.heads.iter_mut() {

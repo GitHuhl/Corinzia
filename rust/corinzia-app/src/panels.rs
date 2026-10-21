@@ -181,6 +181,7 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         pop("Time signature…", PopoverKind::Time, "Shift+M"),
         pop("Clef or octave line…", PopoverKind::Clef, "Shift+C: treble, bass… 8va, 8vb, loco"),
         pop("Instrument change…", PopoverKind::Instrument, "Shift+I: a doubling (Piccolo…), from here on"),
+        pop("Transpose…", PopoverKind::Transpose, "Ctrl+Shift+T: the passage, or the whole score"),
         pop("Tempo…", PopoverKind::Tempo, "Shift+T"),
         pop("Barline…", PopoverKind::Barline, "Shift+B"),
         pop("Expression text…", PopoverKind::Expression, "Shift+X"),
