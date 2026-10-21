@@ -701,3 +701,51 @@ fn filters_pick_notes_by_place_pitch_voice_and_marks() {
     assert!(parse_query("above C").is_err(), "needs an octave");
     assert_eq!(parse_query("lyrics verse 2").unwrap().pick, Pick::Lyrics(Some(2)));
 }
+
+#[test]
+fn explode_spreads_chords_and_reduce_combines_staves() {
+    use corinzia_edit::staves::{explode, reduce};
+    use corinzia_model::*;
+    use corinzia_score::Frac;
+    let p = |step, octave| Pitch { step, alter: 0, octave };
+    let h = |pitch| Head { id: 1, pitch, tie: false, velocity: 0 };
+    let ev = |start: Frac, dur: Frac, heads: Vec<Head>| Event {
+        id: 1,
+        kind: if heads.is_empty() { EventKind::Rest } else { EventKind::Note },
+        start,
+        duration: dur,
+        heads,
+        articulations: 0,
+        dynamic: None,
+        spans: 0,
+        lyrics: vec![],
+        graces: vec![],
+        fingering: vec![],
+    };
+    let q = Frac::new(1, 4);
+    // C-E-G-C chord, E-G, a single A, a rest.
+    let src = vec![
+        ev(Frac::ZERO, q, vec![h(p(0, 4)), h(p(2, 4)), h(p(4, 4)), h(p(0, 5))]),
+        ev(q, q, vec![h(p(2, 4)), h(p(4, 4))]),
+        ev(q * Frac::int(2), q, vec![h(p(5, 4))]),
+        ev(q * Frac::int(3), q, vec![]),
+    ];
+    let names = |e: &Event| e.heads.iter().map(|h| format!("{}{}", "CDEFGAB".as_bytes()[h.pitch.step as usize] as char, h.pitch.octave)).collect::<Vec<_>>().join("-");
+    let three = explode(&src, Frac::ZERO, Frac::int(1), 3);
+    assert_eq!(three.len(), 3);
+    let col = |k: usize| three.iter().map(|s| names(&s[k])).collect::<Vec<_>>();
+    assert_eq!(col(0), ["C5", "G4", "C4-E4"], "more notes than staves: the bottom keeps the rest");
+    assert_eq!(col(1), ["G4", "E4", "E4"], "fewer: the lowest is doubled");
+    assert_eq!(col(2), ["A4", "A4", "A4"]);
+    assert!(three.iter().all(|s| s[3].is_rest()));
+    // Reduce: a half note against two quarters; a rest against a note.
+    let top = vec![ev(Frac::ZERO, q * Frac::int(2), vec![h(p(4, 5))]), ev(q * Frac::int(2), q * Frac::int(2), vec![])];
+    let bottom = vec![ev(Frac::ZERO, q, vec![h(p(0, 4))]), ev(q, q, vec![h(p(4, 5))]), ev(q * Frac::int(2), q, vec![h(p(2, 4))]), ev(q * Frac::int(3), q, vec![])];
+    let r = reduce(&[&top, &bottom], Frac::ZERO, Frac::int(1));
+    assert_eq!(r.iter().map(names).collect::<Vec<_>>(), ["C4-G5", "G5", "E4", ""]);
+    assert!(r[0].heads[1].tie, "the held G is tied over the cut");
+    assert!(!r[0].heads[0].tie);
+    assert_eq!(r[1].heads.len(), 1, "G in both staves sounds once");
+    assert_eq!(r[3].duration, q, "the closing rest");
+    assert_eq!(r.iter().map(|e| e.duration).fold(Frac::ZERO, |a, b| a + b), Frac::int(1));
+}

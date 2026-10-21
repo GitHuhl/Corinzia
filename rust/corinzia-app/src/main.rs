@@ -819,6 +819,12 @@ impl App {
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
             Action::SelectAll => ed.select_all(),
+            Action::Explode | Action::Reduce => {
+                let r = if a == Action::Explode { ed.explode() } else { ed.reduce() };
+                if let Err(e) = r {
+                    ed.status = e;
+                }
+            }
             Action::SelectSimilar => {
                 if let Err(e) = ed.select_similar() {
                     ed.status = e;
@@ -2703,6 +2709,58 @@ mod tests {
         assert_eq!(a.editor.filter("dynamics sfz"), Err("No dynamics in the movement".into()));
         let _ = a.update(Message::Act(Action::Escape));
         assert!(a.editor.picked.is_empty());
+    }
+
+    #[test]
+    fn explode_and_reduce_move_music_between_staves() {
+        use corinzia_model::{Event, EventKind, Head, Pitch};
+        use corinzia_score::Frac;
+        let project = files::new_project("T", "Violin, Viola, Cello, Piano", 2).unwrap();
+        let mut ed = editor::Editor::new(project);
+        // Lanes: violin, viola, cello, piano right hand, piano left hand.
+        let chord = |id: u64, k: i64| Event {
+            id,
+            kind: EventKind::Chord,
+            start: Frac::new(k, 4),
+            duration: Frac::new(1, 4),
+            heads: [(0, 4), (2, 4), (4, 4), (0, 5)].iter().enumerate().map(|(n, &(step, octave))| Head { id: id * 10 + n as u64, pitch: Pitch { step, alter: 0, octave }, tie: false, velocity: 0 }).collect(),
+            articulations: 0,
+            dynamic: None,
+            spans: 0,
+            lyrics: vec![],
+            graces: vec![],
+            fingering: vec![],
+        };
+        let mut rh: Vec<Event> = (0..4).map(|k| chord(9000 + k as u64, k)).collect();
+        rh.push(Event { id: 9100, kind: EventKind::Rest, start: Frac::int(1), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] });
+        ed.project.next_id = 100_000;
+        ed.project.movements[0].lanes[3].voices[0].events = std::sync::Arc::new(rh);
+        let top = |ed: &editor::Editor, lane: usize| ed.project.movements[0].lanes[lane].voices[0].events.iter().filter(|e| !e.is_rest()).map(|e| e.heads.iter().map(|h| editor::pitch_name(h.pitch)).collect::<Vec<_>>().join("-")).collect::<Vec<_>>();
+        // Nothing selected, or one staff: says what to do.
+        assert!(ed.explode().unwrap_err().contains("two or more staves"));
+        // The chords onto violin, viola, cello and the right hand.
+        ed.range = Some(editor::Range { lane_from: 0, lane_to: 3, from: Frac::ZERO, to: Frac::int(1) });
+        ed.explode().unwrap();
+        assert_eq!(top(&ed, 0), ["C5"; 4]);
+        assert_eq!(top(&ed, 1), ["G4"; 4]);
+        assert_eq!(top(&ed, 2), ["E4"; 4]);
+        assert_eq!(top(&ed, 3), ["C4"; 4]);
+        assert_eq!(ed.status, "Exploded onto 4 staves");
+        // Reduce all five: onto the empty left hand, as the chords again.
+        ed.range = Some(editor::Range { lane_from: 0, lane_to: 4, from: Frac::ZERO, to: Frac::int(1) });
+        ed.reduce().unwrap();
+        assert_eq!(top(&ed, 4), ["C4-E4-G4-C5"; 4]);
+        assert_eq!(ed.status, "Reduced onto Piano");
+        // Ids stay unique.
+        let mut ids: Vec<u64> = ed.project.movements[0].lanes.iter().flat_map(|l| l.voices[0].events.iter().flat_map(|e| std::iter::once(e.id).chain(e.heads.iter().map(|h| h.id)))).collect();
+        let n = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+        ed.undo();
+        ed.undo();
+        assert_eq!(top(&ed, 3), ["C4-E4-G4-C5"; 4], "one undo step each");
+        assert!(top(&ed, 0).is_empty());
     }
 
     #[test]

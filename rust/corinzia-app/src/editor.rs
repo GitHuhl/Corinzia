@@ -1778,6 +1778,68 @@ impl Editor {
     }
 
     /// Diatonic steps (±7 = an octave); a selected head moves alone.
+    // ------------------------------------------------------ explode/reduce --
+    /// The passage's staves, its voice-1 index on each, checked for
+    /// explode/reduce: two staves or more, no tuplets.
+    fn staves_passage(&self, what: &str) -> Result<(Range, Vec<usize>), String> {
+        let r = self.range.filter(|r| r.lane_to > r.lane_from).ok_or_else(|| format!("{what}: select a passage across two or more staves"))?;
+        let m = self.movement().ok_or("No movement")?;
+        let mut voice1 = Vec::new();
+        for li in r.lane_from..=r.lane_to {
+            let l = m.lanes.get(li).ok_or("No such staff")?;
+            if l.voices.iter().any(|v| v.tuplets.iter().any(|t| t.start < r.to && t.end() > r.from)) {
+                return Err(format!("{what} does not handle tuplets yet"));
+            }
+            voice1.push(l.voices.iter().position(|v| v.index == 1).ok_or("A staff has no voice 1")?);
+        }
+        Ok((r, voice1))
+    }
+
+    /// Spreads the chords of a staff in the passage over all its staves,
+    /// top note to the top staff. One undo step.
+    pub fn explode(&mut self) -> Result<(), String> {
+        let (r, voice1) = self.staves_passage("Explode")?;
+        let m = self.movement().unwrap();
+        let has_chords = |li: usize| m.lanes[li].voices[voice1[li - r.lane_from]].events.iter().any(|e| e.start >= r.from && e.start < r.to && e.heads.len() > 1);
+        let source = (r.lane_from..=r.lane_to).find(|&li| has_chords(li)).ok_or("Explode: no chords in the passage")?;
+        let src = m.lanes[source].voices[voice1[source - r.lane_from]].events.clone();
+        let parts = edit::staves::explode(&src, r.from, r.to, r.lane_to - r.lane_from + 1);
+        self.transact("Explode", |m, ids| {
+            for (j, clip) in parts.iter().enumerate() {
+                let (li, vi) = (r.lane_from + j, voice1[j]);
+                let res = edit::paste_events(&m.lanes[li].voices[vi].events, clip, r.from, r.to - r.from, true, ids);
+                set_events(m, li, vi, &res);
+            }
+            true
+        });
+        self.status = format!("Exploded onto {} staves", parts.len());
+        Ok(())
+    }
+
+    /// Combines the passage's staves into chords on one: an empty staff of
+    /// the passage if there is one, else the top one. One undo step.
+    pub fn reduce(&mut self) -> Result<(), String> {
+        let (r, voice1) = self.staves_passage("Reduce")?;
+        let m = self.movement().unwrap();
+        let empty = |li: usize| m.lanes[li].voices.iter().all(|v| v.events.iter().all(|e| e.start < r.from || e.start >= r.to || e.is_rest()));
+        let dest = (r.lane_from..=r.lane_to).find(|&li| empty(li)).unwrap_or(r.lane_from);
+        let sources: Vec<std::sync::Arc<Vec<Event>>> = (r.lane_from..=r.lane_to).filter(|&li| li != dest || !empty(li)).flat_map(|li| m.lanes[li].voices.iter().map(|v| v.events.clone())).collect();
+        let lists: Vec<&[Event]> = sources.iter().map(|v| v.as_slice()).collect();
+        let clip = edit::staves::reduce(&lists, r.from, r.to);
+        if clip.iter().all(|e| e.is_rest()) {
+            return Err("Reduce: no notes in the passage".into());
+        }
+        let vi = voice1[dest - r.lane_from];
+        self.transact("Reduce", |m, ids| {
+            let res = edit::paste_events(&m.lanes[dest].voices[vi].events, &clip, r.from, r.to - r.from, true, ids);
+            set_events(m, dest, vi, &res);
+            true
+        });
+        let name = self.movement().and_then(|m| m.lanes[dest].changes.first()).and_then(|c| self.project.instrument(c.instrument)).map(|i| i.name.clone()).unwrap_or_default();
+        self.status = format!("Reduced onto {name}");
+        Ok(())
+    }
+
     // ------------------------------------------------------------ filters --
     /// Picks what a filter query finds ("top", "voice 2", "above C5", "F#",
     /// "staccato", "rests", "dynamics mf"…) in the selected passage, among

@@ -51,6 +51,12 @@ PipeWire.
   element (notes on its staff, the same dynamic, verse or text). Delete,
   articulations, dynamics, accidentals, ↑/↓ and Transpose apply to each
   picked element, as one undo step.
+* **Explode and reduce** (Structure panel): with a passage selected over
+  several staves, Explode spreads one staff's chords over them, top note
+  to the top staff (a staff short of a note doubles the lowest; extra notes
+  stay on the bottom staff), and Reduce combines them into chords on an
+  empty staff among them (else the top one), tying notes held across
+  others' attacks.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

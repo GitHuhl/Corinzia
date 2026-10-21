@@ -184,6 +184,8 @@ pub fn structure(ed: &Editor) -> Element<'_, Action> {
         pop("Clef or octave line…", PopoverKind::Clef, "Shift+C: treble, bass… 8va, 8vb, loco"),
         pop("Instrument change…", PopoverKind::Instrument, "Shift+I: a doubling (Piccolo…), from here on"),
         pop("Transpose…", PopoverKind::Transpose, "Ctrl+Shift+T: the passage, or the whole score"),
+        wide("Explode chords", false, "Select the chords' staff and the staves to fill: top note to the top staff", Action::Explode),
+        wide("Reduce to chords", false, "Select staves: combined on an empty one among them, else the top one", Action::Reduce),
         pop("Tempo…", PopoverKind::Tempo, "Shift+T"),
         pop("Barline…", PopoverKind::Barline, "Shift+B"),
         pop("Expression text…", PopoverKind::Expression, "Shift+X"),
