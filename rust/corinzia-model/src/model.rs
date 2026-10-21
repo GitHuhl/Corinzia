@@ -635,6 +635,27 @@ pub struct Track {
     /// start, for plugins and General MIDI files; none: left alone.
     pub program: Option<u8>,
     pub bank: Option<u16>,
+    /// Its expression map: what each playing technique does to the sound.
+    pub techniques: Vec<TechniqueSwitch>,
+}
+
+/// One line of an expression map: a technique ("pizz.", "staccato"…) and
+/// how the instrument is told.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TechniqueSwitch {
+    pub technique: String,
+    pub action: SwitchAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SwitchAction {
+    /// A keyswitch: this key, pressed just before the note.
+    Keyswitch(u8),
+    Program(u8),
+    /// A controller and value.
+    Cc(u8, u8),
+    /// The notes go out on this channel (0-15) instead.
+    Channel(u8),
 }
 
 /// A track's send: how much of it goes to a bus.

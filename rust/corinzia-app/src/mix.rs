@@ -48,6 +48,78 @@ pub enum MixMsg {
     AutoShow(Id, String),
     /// Dynamics as a controller, by label.
     DynamicsCc(Id, String),
+    /// The track's expression map: add a line, remove one, or change one
+    /// (technique, kind of switch, value, second value: all by label).
+    TechAdd(Id),
+    TechRemove(Id, usize),
+    TechEdit(Id, usize, TechField, String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TechField {
+    Technique,
+    Kind,
+    Value,
+    Value2,
+}
+
+/// Techniques a map line can name: texts, then articulations.
+pub fn technique_names() -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    for (_, t) in corinzia_perform::TECHNIQUES {
+        if !v.iter().any(|x| x == t) {
+            v.push(t.to_string());
+        }
+    }
+    v.extend(corinzia_perform::ARTICULATIONS.iter().map(|s| s.to_string()));
+    v
+}
+
+pub const SWITCH_KINDS: [&str; 4] = ["Keyswitch", "Program", "Controller", "Channel"];
+
+/// A key's name, middle C as C4 ("C-1" for 0).
+pub fn key_name(k: u8) -> String {
+    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    format!("{}{}", N[(k % 12) as usize], k as i32 / 12 - 1)
+}
+
+/// A switch line's labels: (kind, value, second value) and their choices.
+fn switch_labels(a: corinzia_model::SwitchAction) -> (&'static str, String, Vec<String>, Option<(String, Vec<String>)>) {
+    use corinzia_model::SwitchAction::*;
+    let numbers = |n: u32, from: u32| (from..from + n).map(|i| i.to_string()).collect::<Vec<_>>();
+    match a {
+        Keyswitch(k) => ("Keyswitch", key_name(k), (0..128).map(key_name).collect(), None),
+        Program(p) => ("Program", crate::presets::program_label(p), (0..128).map(crate::presets::program_label).collect(), None),
+        Cc(c, v) => ("Controller", format!("CC{c}"), (0..128).map(|i| format!("CC{i}")).collect(), Some((v.to_string(), numbers(128, 0)))),
+        Channel(c) => ("Channel", (c + 1).to_string(), numbers(16, 1), None),
+    }
+}
+
+/// The expression map table of a track.
+fn techniques_block<'a>(t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
+    let track = t.id;
+    let mut col = column![
+        text("Playing techniques").size(13),
+        text("Technique texts (pizz., con sord.…) and articulations switch the sound; \"ord.\" is the normal one.").size(11).style(crate::theme::dim),
+    ]
+    .spacing(4);
+    let names = technique_names();
+    for (i, line) in t.techniques.iter().enumerate() {
+        let (kind, value, values, second) = switch_labels(line.action);
+        let mut r = row![
+            pick_list(names.clone(), Some(line.technique.clone()), move |v| MixMsg::TechEdit(track, i, TechField::Technique, v)).text_size(11).padding([2, 4]).width(90),
+            pick_list(SWITCH_KINDS.map(String::from).to_vec(), Some(kind.to_string()), move |v| MixMsg::TechEdit(track, i, TechField::Kind, v)).text_size(11).padding([2, 4]).width(84),
+            pick_list(values, Some(value), move |v| MixMsg::TechEdit(track, i, TechField::Value, v)).text_size(11).padding([2, 4]).width(Length::Fill),
+        ]
+        .spacing(3)
+        .align_y(Alignment::Center);
+        if let Some((v2, choices)) = second {
+            r = r.push(pick_list(choices, Some(v2), move |v| MixMsg::TechEdit(track, i, TechField::Value2, v)).text_size(11).padding([2, 4]).width(48));
+        }
+        r = r.push(button(text("×").size(11)).padding([2, 5]).style(crate::theme::flat(false)).on_press(MixMsg::TechRemove(track, i)));
+        col = col.push(r);
+    }
+    col.push(button(text("+ Technique").size(12)).padding([3, 8]).style(crate::theme::tool(false)).on_press(MixMsg::TechAdd(track))).into()
 }
 
 /// What a track's lane can automate: (label, target, min, max); "Off" first.
@@ -339,6 +411,9 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
             );
             if fx.is_none() && play.pool.plugin_of_track(t.id).is_some() {
                 browser = browser.push(presets_block(Target::Track(t.id), &ps));
+            }
+            if fx.is_none() {
+                browser = browser.push(techniques_block(t));
             }
             browser = browser.push(Space::new().height(4));
             let current_bundle = play.pool.plugin_of_track(t.id).map(|p| (p.info.bundle.clone(), p.info.id.clone()));

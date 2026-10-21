@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -175,7 +175,7 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
 }
@@ -328,4 +328,34 @@ fn automation_and_dynamics_as_a_controller() {
     let mut pool = PluginPool::new(SR, 256);
     let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
     assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(11)));
+}
+
+#[test]
+fn expression_maps_switch_sounds() {
+    // c'' (beat 1) then "pizz." over a'' (beat 4).
+    let mut p = project();
+    p.movements[0].lanes[0].texts.push(TextItem { id: 70, at: Frac::new(1, 2), text: "pizz.".into(), kind: TextKind::Technique, shown: Shown::Both });
+    p.tracks[0].techniques = vec![
+        TechniqueSwitch { technique: "pizz.".into(), action: SwitchAction::Program(1) },
+        TechniqueSwitch { technique: "ord.".into(), action: SwitchAction::Program(0) },
+        TechniqueSwitch { technique: "staccato".into(), action: SwitchAction::Keyswitch(24) },
+    ];
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let programs: Vec<(i64, i16)> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Program).map(|n| (n.at, n.key)).collect();
+    let beat = (SR * 0.5) as i64;
+    assert_eq!(programs, [(0, 0), (3 * beat - 3, 1)], "ord. from the start, pizz. just before beat 4");
+    // A staccato note gets its keyswitch (and the next one goes back).
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = corinzia_score::score::art::STACCATO;
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let keys: Vec<(i64, i16, bool)> = snap.notes.iter().filter(|n| n.note_id == -2).map(|n| (n.at, n.key, n.on)).collect();
+    assert_eq!(keys, [(0, 24, true), (1, 24, false)]);
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Program && n.at == 3 * beat - 3 && n.key == 1));
+    // In the MIDI file too.
+    let doc = corinzia_perform::document(&p, &p.movements[0]);
+    let t = &doc.performance.tracks[0];
+    assert_eq!(t.programs.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    assert!(t.notes.iter().any(|n| n.key == 24));
 }

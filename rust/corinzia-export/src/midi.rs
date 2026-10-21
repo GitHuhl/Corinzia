@@ -109,6 +109,9 @@ pub fn write(doc: &Document) -> Result<Vec<u8>, String> {
             }
             evs.push((0, 1, vec![0xc0 | ch, program & 0x7f]));
         }
+        for &(q, p) in &tr.programs {
+            evs.push((ticks(q), 1, vec![0xc0 | ch, p & 0x7f]));
+        }
         for &(q, cc, v) in &tr.controls {
             evs.push((ticks(q), 1, vec![0xb0 | ch, cc & 0x7f, v & 0x7f]));
         }

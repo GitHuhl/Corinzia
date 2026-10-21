@@ -16,6 +16,8 @@ pub enum Kind {
     Note,
     /// A MIDI controller to the node's instrument; the value is `velocity` (0..1).
     Cc(u8),
+    /// A program change to the node's instrument (the program in `key`).
+    Program,
     /// The node's fader (linear gain in `velocity`) or pan (-1..1).
     Gain,
     Pan,
@@ -204,6 +206,7 @@ pub fn routing(project: &Project) -> String {
     }
     for t in &project.tracks {
         t.dynamics_cc.hash(&mut h);
+        format!("{:?}", t.techniques).hash(&mut h);
     }
     s + &format!("m[{}]a{:x}", fx(&project.master.inserts), h.finish())
 }
@@ -281,10 +284,44 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
         let Some(m) = project.movements.get(mi) else { continue };
         let perf = corinzia_perform::perform(m);
         let to_sample = |q: f64| start + (perf.tempo.seconds_at(q) * sample_rate).round() as i64;
-        for n in &perf.notes {
+        // Expression maps: per track, its notes in time order.
+        let mut by_track: std::collections::HashMap<Id, Vec<usize>> = Default::default();
+        for (i, n) in perf.notes.iter().enumerate() {
+            if let Some(t) = project.instrument(n.instrument).and_then(|i| i.track) {
+                by_track.entry(t).or_default().push(i);
+            }
+        }
+        let mut channels: Vec<Option<u8>> = vec![None; perf.notes.len()];
+        for (track, mut idx) in by_track {
+            let (Some(t), Some(node)) = (project.track(track), node_of(track)) else { continue };
+            if t.techniques.is_empty() {
+                continue;
+            }
+            idx.sort_by(|a, b| perf.notes[*a].on_q.total_cmp(&perf.notes[*b].on_q));
+            let list: Vec<&corinzia_perform::PerformedNote> = idx.iter().map(|&i| &perf.notes[i]).collect();
+            for (k, e) in corinzia_perform::expression(t, &list).into_iter().enumerate() {
+                channels[idx[k]] = e.channel;
+                let on = start + (perf.tempo.seconds_at(perf.notes[idx[k]].on_q) * sample_rate).round() as i64;
+                let channel = t.midi_channel as i16 & 15;
+                let ev = |kind: Kind, at: i64, key: i16, on: bool, velocity: f32| ScheduledNote { kind, at: at.max(0), node, note_id: -1, port: 0, channel, key, on, velocity, element: 0 };
+                for a in e.before {
+                    match a {
+                        // Pressed and let go just before the note.
+                        corinzia_model::SwitchAction::Keyswitch(key) => {
+                            notes.push(ScheduledNote { note_id: -2, ..ev(Kind::Note, on - 3, key as i16, true, 0.8) });
+                            notes.push(ScheduledNote { note_id: -2, ..ev(Kind::Note, (on - 2).max((on - 3).max(0) + 1), key as i16, false, 0.0) });
+                        }
+                        corinzia_model::SwitchAction::Program(p) => notes.push(ev(Kind::Program, on - 3, p as i16, false, 0.0)),
+                        corinzia_model::SwitchAction::Cc(cc, v) => notes.push(ev(Kind::Cc(cc), on - 3, 0, false, v as f32 / 127.0)),
+                        corinzia_model::SwitchAction::Channel(_) => {}
+                    }
+                }
+            }
+        }
+        for (ni, n) in perf.notes.iter().enumerate() {
             let Some(track) = project.instrument(n.instrument).and_then(|i| i.track) else { continue };
             let Some(node) = node_of(track) else { continue };
-            let channel = project.track(track).map(|t| t.midi_channel as i16 & 15).unwrap_or(0);
+            let channel = channels[ni].map(|c| c as i16).unwrap_or_else(|| project.track(track).map(|t| t.midi_channel as i16 & 15).unwrap_or(0));
             let port = project.track(track).map(|t| t.note_port as i16).unwrap_or(0);
             let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
             let off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;

@@ -144,6 +144,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 dynamics_cc: None,
                 program: None,
                 bank: None,
+                techniques: vec![],
             })
         })?;
         for t in rows {
@@ -199,6 +200,22 @@ pub fn load(path: &Path) -> Result<Project> {
         for t in p.tracks.iter_mut() {
             let tv = &m["tracks"][t.id.to_string()];
             t.inserts = ids(&tv["inserts"]);
+            t.techniques = tv["tech"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| {
+                    let v = x["v"].as_u64().unwrap_or(0).min(127) as u8;
+                    let action = match x["a"].as_str()? {
+                        "key" => SwitchAction::Keyswitch(v),
+                        "prog" => SwitchAction::Program(v),
+                        "cc" => SwitchAction::Cc(v, x["w"].as_u64().unwrap_or(0).min(127) as u8),
+                        "ch" => SwitchAction::Channel(v.min(15)),
+                        _ => return None,
+                    };
+                    Some(TechniqueSwitch { technique: x["t"].as_str()?.to_string(), action })
+                })
+                .collect();
             t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
             t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
             t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
@@ -561,7 +578,12 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some()).map(|t| (t.id.to_string(), json!({"dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
+            SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
+            SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
+            SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
+            SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
+        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
         "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });

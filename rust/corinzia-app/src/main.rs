@@ -1426,6 +1426,43 @@ impl App {
                 };
                 self.editor.set_track(t, "Dynamics controller", false, |x| x.dynamics_cc = cc);
             }
+            TechAdd(t) => self.editor.set_track(t, "Playing technique", false, |x| {
+                x.techniques.push(corinzia_model::TechniqueSwitch { technique: if x.techniques.is_empty() { "ord.".into() } else { "pizz.".into() }, action: corinzia_model::SwitchAction::Keyswitch(24 + x.techniques.len() as u8) })
+            }),
+            TechRemove(t, i) => self.editor.set_track(t, "Playing technique", false, |x| {
+                if i < x.techniques.len() {
+                    x.techniques.remove(i);
+                }
+            }),
+            TechEdit(t, i, field, v) => self.editor.set_track(t, "Playing technique", false, |x| {
+                use corinzia_model::SwitchAction::*;
+                let Some(line) = x.techniques.get_mut(i) else { return };
+                let num = |s: &str| s.trim_start_matches("CC").split_whitespace().next().and_then(|n| n.parse::<u8>().ok());
+                match field {
+                    mix::TechField::Technique => line.technique = v,
+                    mix::TechField::Kind => {
+                        line.action = match v.as_str() {
+                            "Program" => Program(0),
+                            "Controller" => Cc(32, 0),
+                            "Channel" => Channel(0),
+                            _ => Keyswitch(24),
+                        }
+                    }
+                    mix::TechField::Value => {
+                        line.action = match line.action {
+                            Keyswitch(k) => Keyswitch((0..128u8).find(|&n| mix::key_name(n) == v).unwrap_or(k)),
+                            Program(p) => Program(presets::program_of(&v).unwrap_or(p)),
+                            Cc(c, w) => Cc(num(&v).unwrap_or(c).min(127), w),
+                            Channel(c) => Channel(num(&v).map(|n| n.clamp(1, 16) - 1).unwrap_or(c)),
+                        }
+                    }
+                    mix::TechField::Value2 => {
+                        if let Cc(c, w) = line.action {
+                            line.action = Cc(c, num(&v).unwrap_or(w).min(127));
+                        }
+                    }
+                }
+            }),
             Program(t, label) => {
                 let program = presets::program_of(&label);
                 self.editor.set_track(t, "MIDI program", false, |x| x.program = program);
@@ -3788,6 +3825,34 @@ mod tests {
         let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Off".into())));
         a.sync();
         assert!(a.arrange_curves[0].is_none());
+    }
+
+    #[test]
+    fn expression_maps_from_the_mix_tab() {
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let flute = a.editor.project.tracks[0].id;
+        let mx = |m: mix::MixMsg| Message::Mix(m);
+        let _ = a.update(mx(mix::MixMsg::Select(flute)));
+        let _ = a.update(mx(mix::MixMsg::TechAdd(flute)));
+        let _ = a.update(mx(mix::MixMsg::TechAdd(flute)));
+        let tech = |a: &App| a.editor.project.tracks[0].techniques.clone();
+        assert_eq!(tech(&a).iter().map(|t| t.technique.as_str()).collect::<Vec<_>>(), ["ord.", "pizz."]);
+        use corinzia_model::SwitchAction::*;
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Kind, "Program".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Value, "46 Pizzicato Strings".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value, "D1".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Kind, "Controller".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value, "CC58".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 0, mix::TechField::Value2, "64".into())));
+        assert_eq!(tech(&a).iter().map(|t| t.action).collect::<Vec<_>>(), [Cc(58, 64), Program(45)]);
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Kind, "Channel".into())));
+        let _ = a.update(mx(mix::MixMsg::TechEdit(flute, 1, mix::TechField::Value, "5".into())));
+        assert_eq!(tech(&a)[1].action, Channel(4));
+        let _ = a.update(mx(mix::MixMsg::TechRemove(flute, 0)));
+        assert_eq!(tech(&a).len(), 1);
+        a.sync();
+        assert_eq!(mix::key_name(60), "C4");
     }
 
     #[test]

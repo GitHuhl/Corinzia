@@ -43,6 +43,8 @@ pub struct Track {
     pub program: Option<(u8, Option<u16>)>,
     /// Controller changes: (performed quarter, controller, value).
     pub controls: Vec<(f64, u8, u8)>,
+    /// Program changes along the way (expression maps): (performed quarter, program).
+    pub programs: Vec<(f64, u8)>,
     pub notes: Vec<Note>,
 }
 

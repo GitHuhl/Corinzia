@@ -125,6 +125,13 @@ PipeWire.
   mid-piece. A track's "Dynamics" can also send the performed dynamics and
   hairpins as CC1 or CC11 for sample libraries, during playback and in
   exported MIDI files (Corinzia Sine follows CC11 and CC7).
+* **Playing techniques (expression maps):** a track's "Playing techniques"
+  table (Mix tab, select the strip) maps techniques to a keyswitch, a program
+  change, a controller value or a MIDI channel. The techniques are technique
+  texts (pizz., arco, con sord., sul pont., trem., …; the last one lasts) and
+  articulations (staccato, accent, legato, …; for that note). "ord." is the
+  normal sound. Switches are sent just before the notes that need them and
+  only when the sound changes, during playback and in exported MIDI files.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

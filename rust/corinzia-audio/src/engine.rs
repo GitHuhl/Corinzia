@@ -443,6 +443,7 @@ impl Engine {
             let key = match n.kind {
                 Kind::Note => continue,
                 Kind::Cc(cc) => (1u64 << 60) | ((n.node as u64) << 8) | cc as u64,
+                Kind::Program => (5u64 << 60) | n.node as u64,
                 Kind::Gain => (2u64 << 60) | n.node as u64,
                 Kind::Pan => (3u64 << 60) | n.node as u64,
                 Kind::Param { fx, id } => (4u64 << 60) | ((fx as u64) << 32) | id as u64 ^ ((n.node as u64) << 20),
@@ -470,6 +471,12 @@ impl Engine {
             Kind::Cc(cc) => {
                 if ns.events.events.len() < EVENTS_PER_NODE {
                     let data = [0xb0 | (n.channel as u8 & 15), cc & 0x7f, (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8];
+                    ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
+                }
+            }
+            Kind::Program => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    let data = [0xc0 | (n.channel as u8 & 15), n.key as u8 & 0x7f, 0];
                     ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
                 }
             }
