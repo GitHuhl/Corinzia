@@ -98,6 +98,11 @@ PipeWire.
   folders. They're saved in `~/.config/corinzia/preferences.json`
   (`%APPDATA%\Corinzia` on Windows). Changing the device, rate or buffer
   restarts the audio, and plugins keep their settings.
+* **Safe plugin scanning:** each plugin bundle is opened by a child process
+  (`corinzia --scan-plugin <bundle>`) with a 30-second limit, so a plugin
+  that crashes or hangs is listed as skipped instead of taking Corinzia
+  down. Results are cached in `plugins.json` beside the preferences and
+  reused until a bundle changes. Rescan plugins starts afresh.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

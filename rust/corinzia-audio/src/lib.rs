@@ -14,6 +14,7 @@ pub mod engine;
 pub mod gui;
 pub mod host;
 pub mod pool;
+pub mod scan;
 pub mod snapshot;
 pub mod vst3;
 #[cfg(all(feature = "pipewire", target_os = "linux"))]

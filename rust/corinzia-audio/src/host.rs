@@ -75,7 +75,7 @@ impl Drop for Library {
 }
 
 /// The plugin formats Corinzia hosts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Format {
     Clap,
     Vst3,
@@ -101,7 +101,7 @@ impl Format {
 /// Bundle path of the built-in instrument.
 pub const BUILTIN: &str = "builtin:corinzia-sine";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PluginInfo {
     /// The CLAP plugin id, or the VST3 class id in hex.
     pub id: String,

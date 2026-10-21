@@ -167,8 +167,25 @@ impl Playback {
         self.is_playing() || !self.previews.is_empty()
     }
 
+    /// Scans again from scratch (the cache forgotten): a plugin that timed
+    /// out or crashed gets another try.
+    pub fn rescan(&mut self) {
+        if let Some(c) = crate::prefs::folder().map(|d| d.join("plugins.json")).filter(|_| !cfg!(test)) {
+            let _ = std::fs::remove_file(c);
+        }
+        self.scan();
+    }
+
     pub fn scan(&mut self) {
-        let (infos, errors) = host::scan(&self.search_paths);
+        // Each bundle is opened by a child process (a crashing plugin takes
+        // only that down), and remembered until it changes.
+        let (infos, errors) = if cfg!(test) {
+            corinzia_audio::scan::scan_with(&self.search_paths, None, |b| host::Library::load(b).map(|l| l.plugins()))
+        } else {
+            let exe = std::env::current_exe().unwrap_or_else(|_| "corinzia".into());
+            let cache = crate::prefs::folder().map(|d| d.join("plugins.json"));
+            corinzia_audio::scan::scan_with(&self.search_paths, cache.as_deref(), |b| corinzia_audio::scan::run_child(&exe, b, std::time::Duration::from_secs(30)))
+        };
         self.plugins = infos;
         self.scan_errors = errors;
     }

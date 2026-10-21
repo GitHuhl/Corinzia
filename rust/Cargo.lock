@@ -793,6 +793,8 @@ dependencies = [
  "libloading",
  "pipewire",
  "rtrb",
+ "serde",
+ "serde_json",
  "vst3",
  "windows-sys 0.59.0",
  "x11rb",

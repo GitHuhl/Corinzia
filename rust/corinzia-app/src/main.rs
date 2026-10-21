@@ -1258,7 +1258,7 @@ impl App {
                     self.editor.set_track_plugin(t, Some((&info.name, &bundle, &info.id)));
                 }
             }
-            Rescan => self.playback.scan(),
+            Rescan => self.playback.rescan(),
         }
     }
 
@@ -2375,6 +2375,21 @@ fn load_text_fonts() -> Vec<Vec<u8>> {
 }
 
 fn main() -> iced::Result {
+    // The plugin scanner's child process: one bundle, its plugins as JSON.
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(String::as_str) == Some("--scan-plugin") {
+        match raw.get(2).map(|b| corinzia_audio::scan::bundle_json(std::path::Path::new(b))) {
+            Some(Ok(json)) => {
+                println!("{json}");
+                std::process::exit(0);
+            }
+            Some(Err(e)) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            None => std::process::exit(2),
+        }
+    }
     let a = args();
     if let Some(out) = a.export.clone() {
         // Headless: open, apply scripted keys, export, exit.
