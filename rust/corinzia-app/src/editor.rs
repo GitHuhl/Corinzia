@@ -1488,6 +1488,31 @@ impl Editor {
         self.edit_selected("Dynamic", |evs, id, _, _| edit::modify_event(evs, id, |e, _| e.dynamic = mark));
     }
 
+    /// Beams by hand on the selected notes: `span::BEAM_BREAK` (a new beam
+    /// starts here), `BEAM_JOIN` (the beam goes on into it), `NO_BEAM`, or
+    /// 0 (automatic).
+    pub fn set_beam(&mut self, mode: u8) {
+        let set = |e: &mut Event| {
+            if !e.is_rest() {
+                e.spans = (e.spans & !span::BEAMS) | mode;
+            }
+        };
+        let label = match mode {
+            span::BEAM_BREAK => "Break beam",
+            span::BEAM_JOIN => "Join beam",
+            span::NO_BEAM => "No beam",
+            _ => "Automatic beams",
+        };
+        if !self.picked.is_empty() {
+            self.modify_picked(label, |e, _| set(e));
+        } else if let Some(r) = self.range {
+            self.edit_range_voices(label, |evs, _, _| edit::apply_to_range(evs, r.from, r.to, set));
+        } else {
+            self.edit_selected(label, |evs, id, _, _| edit::modify_event(evs, id, |e, _| set(e)));
+        }
+        self.status = label.into();
+    }
+
     pub fn toggle_tie(&mut self) {
         if let Some(r) = self.range {
             self.edit_range_voices("Tie", |evs, _, _| {
@@ -2442,11 +2467,11 @@ impl Editor {
                 Box::new(move |m, _| edit::set_pickup(m, len))
             }
             PopoverKind::Time => {
-                let (n, d) = edit::parse_time(&text).ok_or("Time signature not understood: try 3/4, 6/8, C, C| or \"pickup 1/4\"")?;
+                let (n, d, beams) = edit::parse_time_grouped(&text).ok_or("Time signature not understood: try 3/4, 6/8, C, C|, \"7/8 2+2+3\" or \"pickup 1/4\"")?;
                 at = bar;
                 label = "Time signature".into();
                 Box::new(move |m, _| {
-                    edit::set_meter(m, bar, n, d);
+                    edit::set_meter_grouped(m, bar, n, d, beams);
                     // Keep the movement a whole number of bars in the new meter.
                     let last = edit::bar_start_at_or_before(m, m.length);
                     if last != m.length {
@@ -2924,7 +2949,7 @@ impl PopoverKind {
     pub fn placeholder(self) -> &'static str {
         match self {
             PopoverKind::Key => "C, Eb, f#, a minor",
-            PopoverKind::Time => "3/4, 6/8, C, C|, pickup 1/4",
+            PopoverKind::Time => "3/4, 6/8, C, C|, 7/8 2+2+3, pickup 1/4",
             PopoverKind::Clef => "treble, bass, alto, tenor; 8va, 8vb, 15ma, loco",
             PopoverKind::Barline => "||  |.  |:  :|  :|:",
             PopoverKind::Tempo => "Allegro, Andante 84, q=96",

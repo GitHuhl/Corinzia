@@ -158,6 +158,9 @@ pub struct Meter {
     /// An upbeat (anacrusis): this bar is num/den long, written with the
     /// next meter's signature and not counted.
     pub pickup: bool,
+    /// Beam groups in units of 1/den ("2+2+3" in 7/8), zeros after; all
+    /// zero: the meter's default.
+    pub beams: [u8; 8],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -382,5 +385,11 @@ pub mod span {
     pub const CRESC_START: u8 = 1 << 2;
     pub const DIM_START: u8 = 1 << 3;
     pub const HAIRPIN_END: u8 = 1 << 4;
+    /// Beams by hand: a new beam starts at this note; the beam goes on
+    /// from the previous note into this one; no beam (a flag).
+    pub const BEAM_BREAK: u8 = 1 << 5;
+    pub const BEAM_JOIN: u8 = 1 << 6;
+    pub const NO_BEAM: u8 = 1 << 7;
+    pub const BEAMS: u8 = BEAM_BREAK | BEAM_JOIN | NO_BEAM;
 }
 

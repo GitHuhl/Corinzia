@@ -23,7 +23,7 @@ fn project() -> Project {
         length: Frac::int(1),
         revision: 0,
         tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],

@@ -819,6 +819,7 @@ impl App {
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
             Action::SelectAll => ed.select_all(),
+            Action::Beam(mode) => ed.set_beam(mode),
             Action::Explode | Action::Reduce => {
                 let r = if a == Action::Explode { ed.explode() } else { ed.reduce() };
                 if let Err(e) = r {
@@ -2761,6 +2762,33 @@ mod tests {
         ed.undo();
         assert_eq!(top(&ed, 3), ["C4-E4-G4-C5"; 4], "one undo step each");
         assert!(top(&ed, 0).is_empty());
+    }
+
+    #[test]
+    fn beams_by_hand_and_by_the_meter() {
+        use corinzia_score::score::span;
+        let mut a = app(View::Page);
+        // The flute's first bar: four eighths after the opening quarter.
+        let evs = a.editor.project.movements[0].lanes[0].voices[0].events.clone();
+        let eighth = evs.iter().find(|e| e.duration == corinzia_score::Frac::new(1, 8)).unwrap().heads[0].id;
+        a.editor.select(Some(eighth));
+        let _ = a.update(Message::Act(Action::Beam(span::NO_BEAM)));
+        let e = |a: &App| a.editor.project.movements[0].lanes[0].voices[0].events.iter().find(|e| e.heads.first().is_some_and(|h| h.id == eighth)).unwrap().spans;
+        assert_eq!(e(&a) & span::BEAMS, span::NO_BEAM);
+        assert_eq!(a.editor.status, "No beam");
+        let _ = a.update(Message::Act(Action::Beam(span::BEAM_BREAK)));
+        assert_eq!(e(&a) & span::BEAMS, span::BEAM_BREAK, "one mode at a time");
+        let _ = a.update(Message::Act(Action::Beam(0)));
+        assert_eq!(e(&a) & span::BEAMS, 0);
+        // A grouped meter from the Time popover, kept in the movement.
+        a.editor.select(None);
+        a.editor.caret = corinzia_score::Frac::ZERO;
+        a.editor.apply_popover(PopoverKind::Time, "7/8 3+2+2").unwrap();
+        let m = &a.editor.project.movements[0].meter[0];
+        assert_eq!((m.num, m.den, m.beams[..3].to_vec()), (7, 8, vec![3, 2, 2]));
+        assert!(a.editor.apply_popover(PopoverKind::Time, "7/8 3+3").is_err());
+        a.engrave();
+        assert!(!a.pages.is_empty());
     }
 
     #[test]

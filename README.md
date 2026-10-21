@@ -57,6 +57,11 @@ PipeWire.
   stay on the bottom staff), and Reduce combines them into chords on an
   empty staff among them (else the top one), tying notes held across
   others' attacks.
+* **Beams:** the time popover takes a grouping ("7/8 2+2+3", "3+2/8");
+  5/8, 7/8 and 8/8 group as LilyPond does by default. The Notes panel's
+  Beams buttons break a beam before the selected notes, join them to the
+  beam before (across beat groups), leave them flagged, or go back to
+  automatic.
 * **Lyrics and chord symbols:** Ctrl+L types lyrics syllable by syllable
   (Space moves to the next note, `-` hyphenates, `_` draws an extender;
   Ctrl+Shift+L for verse 2). Ctrl+K types chord symbols ("F#m7b5/E" is

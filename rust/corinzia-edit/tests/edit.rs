@@ -166,7 +166,7 @@ fn header() -> Movement {
         length: f(8, 1),
         revision: 0,
         tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false }],
+        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
         rehearsal: vec![],
@@ -221,7 +221,7 @@ fn parse_tempo_cases() {
 #[test]
 fn bar_positions() {
     let mut h = header();
-    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4, pickup: false });
+    h.meter.push(Meter { at: f(2, 1), num: 3, den: 4, pickup: false, beams: [0; 8] });
     assert_eq!(bar_start_at_or_before(&h, f(3, 2)), f(1, 1));
     assert_eq!(bar_start_at_or_before(&h, f(2, 1)), f(2, 1));
     assert_eq!(bar_start_at_or_before(&h, f(23, 8)), f(11, 4));
@@ -748,4 +748,22 @@ fn explode_spreads_chords_and_reduce_combines_staves() {
     assert_eq!(r[1].heads.len(), 1, "G in both staves sounds once");
     assert_eq!(r[3].duration, q, "the closing rest");
     assert_eq!(r.iter().map(|e| e.duration).fold(Frac::ZERO, |a, b| a + b), Frac::int(1));
+}
+
+#[test]
+fn time_signatures_with_beam_groups() {
+    use corinzia_edit::parse_time_grouped;
+    let g = |v: &[u8]| {
+        let mut b = [0u8; 8];
+        b[..v.len()].copy_from_slice(v);
+        b
+    };
+    assert_eq!(parse_time_grouped("7/8 2+2+3"), Some((7, 8, g(&[2, 2, 3]))));
+    assert_eq!(parse_time_grouped("2+2+3/8"), Some((7, 8, g(&[2, 2, 3]))));
+    assert_eq!(parse_time_grouped("(3+2)/8"), Some((5, 8, g(&[3, 2]))));
+    assert_eq!(parse_time_grouped("4/4 3+3+2"), None, "groups in quarters must make 4");
+    assert_eq!(parse_time_grouped("4/4 1+3"), Some((4, 4, g(&[1, 3]))));
+    assert_eq!(parse_time_grouped("6/8"), Some((6, 8, [0; 8])));
+    assert_eq!(parse_time_grouped("C"), Some((4, 4, [0; 8])));
+    assert_eq!(parse_time_grouped("7/8 2+x"), None);
 }

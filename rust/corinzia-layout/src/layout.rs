@@ -8,7 +8,7 @@
 use crate::display::{pt, text_width, Column, DisplayList, Item, StaffGeom};
 use crate::skyline::Skyline;
 use crate::font::{Font, Glyph};
-use corinzia_score::score::{art, ids, BarKind, Key, LineKind, Nav, Part, Pitch, Score};
+use corinzia_score::score::{art, ids, span, BarKind, Key, LineKind, Nav, Part, Pitch, Score};
 use corinzia_score::values::{decompose, decompose_rest, NoteValue};
 use corinzia_score::Frac;
 
@@ -247,6 +247,7 @@ struct Measure {
     phase: Frac,      // a pickup's missing beginning (beats count from it)
     number: usize,    // the bar number (a pickup is bar 0)
     multi: usize,     // bars of rest it stands for (a multi-bar rest when > 1)
+    beams: [u8; 8],   // the meter's beam groups (zeros: its default)
 }
 
 fn measures(s: &Score) -> Vec<Measure> {
@@ -261,11 +262,13 @@ fn measures(s: &Score) -> Vec<Measure> {
         let (mut num, mut den) = m.map(|m| (m.num.max(1), m.den.max(1))).unwrap_or((4, 4));
         let mut len = Frac::new(num, den);
         let mut phase = Frac::ZERO;
+        let mut beams = m.map(|m| m.beams).unwrap_or([0; 8]);
         // A pickup is written with the following meter's signature, its
         // beats counted back from that bar's end.
         if let Some(pm) = m.filter(|m| m.pickup) {
             if let Some(next) = meters.iter().find(|x| x.at > pm.at && !x.pickup) {
                 (num, den) = (next.num.max(1), next.den.max(1));
+                beams = next.beams;
                 let full = Frac::new(num, den);
                 phase = if full > len { full - len } else { Frac::ZERO };
             }
@@ -288,7 +291,7 @@ fn measures(s: &Score) -> Vec<Measure> {
             _ if shift_changes => Some(key.unwrap_or(Key { at: Frac::ZERO, fifths: 0, minor: false })),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0, multi: 1 });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0, multi: 1, beams });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
@@ -299,6 +302,42 @@ fn measures(s: &Score) -> Vec<Measure> {
         m.number = i + first;
     }
     out
+}
+
+/// A bar's beam groups (in 1/den): the meter's own, else LilyPond's for
+/// 5/8 (3+2), 7/8 (2+2+3) and 8/8 (3+3+2); None: by `beam_beat`.
+fn beam_groups_of(m: &Measure) -> Option<Vec<u8>> {
+    let own: Vec<u8> = m.beams.iter().copied().take_while(|b| *b > 0).collect();
+    if !own.is_empty() {
+        return Some(own);
+    }
+    match (m.num, m.den) {
+        (5, 8) => Some(vec![3, 2]),
+        (7, 8) => Some(vec![2, 2, 3]),
+        (8, 8) => Some(vec![3, 3, 2]),
+        _ => None,
+    }
+}
+
+/// Which beam window of its bar a position (from the bar's written start)
+/// falls in: by the bar's groups, or windows of `uniform`.
+fn beam_window(m: &Measure, rel: Frac, uniform: Frac) -> i64 {
+    match beam_groups_of(m) {
+        Some(groups) => {
+            let mut edge = Frac::ZERO;
+            for (k, g) in groups.iter().enumerate() {
+                edge = edge + Frac::new(*g as i64, m.den);
+                if rel < edge {
+                    return k as i64;
+                }
+            }
+            groups.len() as i64
+        }
+        None => {
+            let r = rel * Frac::new(uniform.den, uniform.num);
+            r.num.div_euclid(r.den)
+        }
+    }
 }
 
 /// The beam grouping unit: dotted quarters in compound meters, halves in
@@ -395,6 +434,7 @@ struct Note {
     lyrics: Vec<corinzia_score::score::Lyric>, // on the first piece only
     tuplets: Vec<usize>, // the explicit tuplets around it (`tuplet_list`), outermost first
     graces: Vec<GraceGeom>, // grace notes before it (first piece only)
+    beam: u8,               // `span::BEAMS` bits set by hand (first piece only)
     // layout
     stem_up: bool,
     beamed: bool,
@@ -547,6 +587,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                             lyrics: if first { e.lyrics.clone() } else { vec![] },
                             tuplets: around.clone(),
                             graces,
+                            beam: if first && k == 0 { e.spans & span::BEAMS } else { 0 },
                             stem_up: true,
                             beamed: false,
                             stem_x: 0.0,
@@ -581,6 +622,7 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
                     lyrics: vec![],
                     tuplets: vec![],
                     graces: vec![],
+                    beam: 0,
                     stem_up: true,
                     beamed: false,
                     stem_x: 0.0,
@@ -870,19 +912,29 @@ impl<'a> Engraver<'a> {
             (3, 4) => Some(Frac::new(3, 4)),
             _ => None,
         };
-        // Notes in the same window of `span` (per voice and bar) share a beam.
+        // Notes in the same window of `span` (per voice and bar) share a
+        // beam; beams set by hand break, join or leave notes out.
         let group = |this: &Self, idx: &[usize], span: &dyn Fn(&Measure) -> Frac| -> Vec<Vec<usize>> {
             let mut groups = Vec::new();
             let mut cur: Vec<usize> = Vec::new();
             let mut cur_key = None;
+            // A join merges the note's whole window into the beam before it.
+            let mut joined: Option<((usize, u8, usize, i64, Option<usize>), (usize, u8, usize, i64, Option<usize>))> = None;
             for &i in idx {
                 let n = &this.notes[i];
                 let m = &this.ms[n.measure];
-                let w = span(m);
-                let rel = (n.start - m.start + m.phase) * Frac::new(w.den, w.num);
-                let key = (n.part, n.voice, n.measure, rel.num / rel.den, n.tuplets.last().copied());
-                let beamable = !n.rest && n.value.base >= 8;
-                if !beamable || cur_key != Some(key) {
+                let window = beam_window(m, n.start - m.start + m.phase, span(m));
+                let mut key = (n.part, n.voice, n.measure, window, n.tuplets.last().copied());
+                if n.beam & span::BEAM_JOIN != 0 {
+                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.part, n.voice, n.measure)) {
+                        joined = Some((key, k));
+                        key = k;
+                    }
+                } else if let Some((_, to)) = joined.filter(|(from, _)| *from == key) {
+                    key = to;
+                }
+                let beamable = !n.rest && n.value.base >= 8 && n.beam & span::NO_BEAM == 0;
+                if !beamable || cur_key != Some(key) || n.beam & span::BEAM_BREAK != 0 {
                     if cur.len() >= 2 {
                         groups.push(std::mem::take(&mut cur));
                     }
@@ -1923,7 +1975,6 @@ impl<'a> Engraver<'a> {
     /// Slurs and hairpins of the whole movement, so a system can draw the
     /// part of one that started or ends in another system.
     fn spanners(&self) -> Vec<Spanner> {
-        use corinzia_score::score::span;
         let mut out = Vec::new();
         // Where each note is: (part, voice, start).
         let mut at: std::collections::HashMap<u64, (usize, u8, Frac)> = Default::default();

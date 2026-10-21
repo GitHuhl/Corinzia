@@ -511,11 +511,41 @@ pub fn set_key(m: &mut Movement, at: Frac, key: KeySig) {
 }
 /// A meter at the start of a pickup bar applies from the bar after it.
 pub fn set_meter(m: &mut Movement, at: Frac, num: i64, den: i64) {
+    set_meter_grouped(m, at, num, den, [0; 8]);
+}
+
+/// As [`set_meter`], with its beam groups (in 1/den; zeros: the default).
+pub fn set_meter_grouped(m: &mut Movement, at: Frac, num: i64, den: i64, beams: [u8; 8]) {
     let at = match m.meter.iter().find(|x| x.at == at && x.pickup) {
         Some(p) => at + Frac::new(p.num, p.den),
         None => at,
     };
-    replace_at(&mut m.meter, at, Meter { at, num, den, pickup: false }, |k| k.at);
+    replace_at(&mut m.meter, at, Meter { at, num, den, pickup: false, beams }, |k| k.at);
+}
+
+/// A time signature with its beam groups: "7/8 2+2+3", "2+2+3/8",
+/// "(3+2)/8", or a plain one ("6/8": default groups). The groups must fill
+/// the bar.
+pub fn parse_time_grouped(text: &str) -> Option<(i64, i64, [u8; 8])> {
+    let t = text.trim().replace(['(', ')'], "");
+    let parse_groups = |g: &str| -> Option<Vec<u8>> { g.split('+').map(|x| x.trim().parse::<u8>().ok().filter(|n| (1..=32).contains(n))).collect() };
+    let (num, den, groups) = if let Some((sig, groups)) = t.split_once(char::is_whitespace) {
+        let (n, d) = parse_time(sig)?;
+        (n, d, parse_groups(groups.trim())?)
+    } else if let Some((groups, d)) = t.split_once('/').filter(|(g, _)| g.contains('+')) {
+        let g = parse_groups(groups)?;
+        let d: i64 = d.trim().parse().ok()?;
+        (g.iter().map(|x| *x as i64).sum(), d, g)
+    } else {
+        let (n, d) = parse_time(&t)?;
+        return Some((n, d, [0; 8]));
+    };
+    if groups.len() > 8 || groups.iter().map(|x| *x as i64).sum::<i64>() != num {
+        return None;
+    }
+    let mut b = [0u8; 8];
+    b[..groups.len()].copy_from_slice(&groups);
+    Some((num, den, b))
 }
 
 /// The pickup (upbeat) bar's length, if the movement starts with one.
@@ -552,9 +582,9 @@ pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
         x.at = len;
     }
     if m.meter.iter().all(|x| x.at != len) {
-        m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false });
+        m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
-    m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true });
+    m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true, beams: [0; 8] });
     m.meter.sort_by(|a, b| a.at.cmp(&b.at));
 }
 

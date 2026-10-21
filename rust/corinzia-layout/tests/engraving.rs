@@ -430,8 +430,8 @@ fn pickup_bar_counts_its_beats_from_the_end() {
     // stands alone, the other four share the bar's second half.
     let mut s = score(&[("treble", &["c''8 d'' e'' f'' g'' a''1"])], (4, 4), 0);
     s.meter = vec![
-        corinzia_score::score::Meter { at: corinzia_score::Frac::ZERO, num: 5, den: 8, pickup: true },
-        corinzia_score::score::Meter { at: corinzia_score::Frac::new(5, 8), num: 4, den: 4, pickup: false },
+        corinzia_score::score::Meter { at: corinzia_score::Frac::ZERO, num: 5, den: 8, pickup: true, beams: [0; 8] },
+        corinzia_score::score::Meter { at: corinzia_score::Frac::new(5, 8), num: 4, den: 4, pickup: false, beams: [0; 8] },
     ];
     s.length = corinzia_score::Frac::new(13, 8);
     let l = layout_line(&s, &Options::default());
@@ -709,3 +709,54 @@ fn a_staff_whose_key_shift_changes_shows_its_new_key() {
     assert_eq!(glyphs(&l, Glyph::Natural).len(), 1);
     preview("key-shift-change", &l);
 }
+
+/// The primary beams' horizontal extents, left to right.
+fn beam_spans(list: &corinzia_layout::DisplayList) -> Vec<(f32, f32)> {
+    let mut v: Vec<(f32, f32)> = list
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Quad { p, .. } => Some((p.iter().map(|q| q.x).fold(f32::MAX, f32::min), p.iter().map(|q| q.x).fold(f32::MIN, f32::max))),
+            _ => None,
+        })
+        .collect();
+    v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    v
+}
+
+/// How many noteheads each beam spans.
+fn beam_sizes(list: &corinzia_layout::DisplayList) -> Vec<usize> {
+    let heads: Vec<f32> = glyphs(list, Glyph::NoteheadBlack).iter().map(|h| h.0 + 0.6).collect();
+    // A head's centre is within about 0.6 of its stem, either side.
+    beam_spans(list).iter().map(|(a, b)| heads.iter().filter(|x| **x > a - 0.8 && **x < b + 0.8).count()).collect()
+}
+
+#[test]
+fn beams_follow_the_meter_groups_and_hand_overrides() {
+    use corinzia_score::score::span;
+    let eighths = "c''8 d'' e'' f'' g'' a'' b''";
+    // 7/8: LilyPond's 2+2+3 by default.
+    let s = score(&[("treble", &[eighths])], (7, 8), 0);
+    let l = layout_line(&s, &Options::default());
+    assert_eq!(beam_sizes(&l), [2, 2, 3]);
+    // The meter's own groups: 3+2+2.
+    let mut s = score(&[("treble", &[eighths])], (7, 8), 0);
+    s.meter[0].beams = [3, 2, 2, 0, 0, 0, 0, 0];
+    let l = layout_line(&s, &Options::default());
+    assert_eq!(beam_sizes(&l), [3, 2, 2]);
+    preview("beams-7-8", &l);
+    // 4/4 eighths: half bars; a break before the third, a join into the
+    // fifth (over the half bar), the last two flagged.
+    let mut s = score(&[("treble", &["c''8 d'' e'' f'' g'' a'' b'' c'''"])], (4, 4), 0);
+    assert_eq!(beam_sizes(&layout_line(&s, &Options::default())), [4, 4]);
+    let evs = &mut s.parts[0].voices[0].events;
+    evs[2].spans |= span::BEAM_BREAK;
+    evs[4].spans |= span::BEAM_JOIN;
+    evs[6].spans |= span::NO_BEAM;
+    evs[7].spans |= span::NO_BEAM;
+    let l = layout_line(&s, &Options::default());
+    assert_eq!(beam_sizes(&l), [2, 4]);
+    assert_eq!(glyphs(&l, Glyph::Flag8thDown).len() + glyphs(&l, Glyph::Flag8thUp).len(), 2, "two flagged eighths");
+    preview("beams-by-hand", &l);
+}
+

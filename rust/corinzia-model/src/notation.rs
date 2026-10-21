@@ -250,7 +250,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> sc::Score 
         instrument: String::new(),
         length: m.length,
         tempo: m.tempo.iter().enumerate().map(|(i, t)| sc::Tempo { id: sc::ids::tempo(i), at: t.at, bpm: t.bpm, text: t.text.clone() }).collect(),
-        meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup }).collect(),
+        meter: m.meter.iter().map(|t| sc::Meter { at: t.at, num: t.num, den: t.den, pickup: t.pickup, beams: t.beams }).collect(),
         keys: m.keys.iter().map(|k| sc::Key { at: k.at, fifths: k.fifths, minor: k.minor }).collect(),
         barlines: m
             .barlines

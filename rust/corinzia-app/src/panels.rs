@@ -128,6 +128,13 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         tool("\u{E53F}", true, false, "Diminuendo (Shift+H)", Action::Hairpin { crescendo: false }),
         tool("‿", false, false, "Tie (T)", Action::Tie),
     ];
+    use corinzia_score::score::span;
+    let beams = vec![
+        tool("↺", false, false, "Automatic beams", Action::Beam(0)),
+        tool("⌇", false, false, "A new beam starts at this note", Action::Beam(span::BEAM_BREAK)),
+        tool("⁀", false, false, "Join the beam into this note (across beat groups)", Action::Beam(span::BEAM_JOIN)),
+        tool("♪", false, false, "No beam (flagged)", Action::Beam(span::NO_BEAM)),
+    ];
     let editing = vec![
         tool("▲", false, false, "Transpose up (↑, Ctrl+↑ octave)", Action::Transpose(1)),
         tool("▼", false, false, "Transpose down (↓, Ctrl+↓ octave)", Action::Transpose(-1)),
@@ -156,6 +163,8 @@ pub fn notes(ed: &Editor) -> Element<'_, Action> {
         grid(dynamics, 7),
         heading("Lines"),
         grid(lines, 7),
+        heading("Beams"),
+        grid(beams, 7),
         heading("Edit"),
         grid(editing, 7),
     ]

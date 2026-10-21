@@ -52,6 +52,8 @@ pub enum Action {
     SelectAll,
     /// Pick what is like the selected element.
     SelectSimilar,
+    /// Beams by hand: a `span::BEAMS` bit, or 0 for automatic.
+    Beam(u8),
     /// Chords of one staff spread over the selected staves.
     Explode,
     /// The selected staves combined into chords on one.

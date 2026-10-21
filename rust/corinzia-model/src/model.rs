@@ -257,6 +257,9 @@ pub struct Meter {
     /// An upbeat (anacrusis): this bar is num/den long, written with the
     /// next meter's signature and not counted.
     pub pickup: bool,
+    /// Beam groups in units of 1/den ("2+2+3" in 7/8), zeros after; all
+    /// zero: the meter's default.
+    pub beams: [u8; 8],
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Key {

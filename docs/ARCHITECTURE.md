@@ -187,7 +187,10 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   in columns.
 * Beams are grouped with LilyPond's defaults: one beam per beat (dotted
   quarters in compound meters). Groups of only eighths span half a bar in
-  4/4 and the whole bar in 3/4.
+  4/4 and the whole bar in 3/4; 5/8, 7/8 and 8/8 group 3+2, 2+2+3 and
+  3+3+2. A meter may carry its own groups (`Meter::beams`, in 1/den). By
+  hand (event span bits): a beam breaks before a note, joins into it (its
+  whole beat group with it), or leaves it flagged.
 * Beams are placed as in LilyPond's quanting:
   * ideal stem ends (LilyPond's beamed stem lengths) are fitted by least
     squares;
