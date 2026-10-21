@@ -243,6 +243,7 @@ fn score_for(project: &Project, m: &Movement, transposed: bool, part: bool) -> s
                         (d.position.step as i32 + 7 * d.position.octave as i32, shape)
                     })
                     .collect(),
+                tab: first.map(|i| i.tuning.clone()).unwrap_or_default(),
                 cross: m.cross.iter().filter(|c| lane.voices.iter().any(|v| v.events.iter().any(|e| e.id == c.0))).copied().collect(),
                 key_shift: interval_at(corinzia_score::Frac::ZERO).fifths(),
                 key_shifts: {

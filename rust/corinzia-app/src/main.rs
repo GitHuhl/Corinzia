@@ -1010,6 +1010,7 @@ impl App {
             Action::Cut => ed.cut(),
             Action::Paste => ed.paste(),
             Action::PasteCue => ed.paste_cue(),
+            Action::Tab => ed.toggle_tab(),
             Action::CrossStaff(d) => ed.cross_staff(d),
             Action::SelectAll => ed.select_all(),
             Action::Beam(mode) => ed.set_beam(mode),

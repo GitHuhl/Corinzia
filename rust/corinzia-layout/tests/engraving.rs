@@ -885,3 +885,23 @@ fn cross_staff_notes_and_a_kneed_beam() {
     assert_eq!(quads.len(), 1, "{quads:?}");
     assert!(quads[0] > l.staves[0].top + 4.0 && quads[0] < bass_top, "{quads:?}");
 }
+
+#[test]
+fn guitar_tablature_under_the_staff() {
+    // Sounding pitches on a treble_8 staff: open low E, A on the low E's
+    // fifth fret... as the highest free string: E2 → 0 on string 6;
+    // C4 → 1 on B (string 2); an E minor chord on the top three strings.
+    let mut s = score(&[("treble_8", &["e,4 c' <g b e'>2"]), ("bass", &["c1"])], (4, 4), 0);
+    s.parts[0].tab = vec![40, 45, 50, 55, 59, 64];
+    let l = layout_line(&s, &Options::default());
+    preview("tab", &l);
+    let frets: Vec<(String, f32)> = l.items.iter().filter_map(|i| match i { Item::Text { text, at, anchor: 1, .. } => Some((text.clone(), at.y)), _ => None }).collect();
+    let names: Vec<&str> = frets.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["0", "1", "0", "0", "0"], "{frets:?}");
+    // The low E on the bottom line, five lines (7.5 spaces) under the chord's E.
+    assert!((frets[0].1 - frets[2].1 - 7.5).abs() < 0.01, "{frets:?}");
+    // The tab sits under the guitar staff, and the bass staff moved down below it.
+    assert!(frets[0].1 > l.staves[0].top + 6.0);
+    assert!(l.staves[1].top > frets[0].1 + 1.0, "{} {:?}", l.staves[1].top, frets);
+    assert_eq!(glyphs(&l, Glyph::TabClef6).len(), 1);
+}

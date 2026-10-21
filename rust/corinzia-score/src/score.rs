@@ -240,6 +240,9 @@ pub struct Part {
     pub head_shapes: Vec<(i32, u8)>,
     /// Events written on another staff: (event id, staves down; -1 up).
     pub cross: Vec<(u64, i8)>,
+    /// A tablature staff under this one: open strings (MIDI keys, lowest
+    /// first); empty for none.
+    pub tab: Vec<u8>,
     /// The instrument's transposition as (diatonic steps, semitones),
     /// written minus sounding: (1, 2) for a B♭ clarinet.
     pub transposition: (i32, i32),

@@ -454,7 +454,27 @@ pub struct Instrument {
     /// A percussion instrument's sounds by staff position (a drum set);
     /// empty: notes sound at their pitch.
     pub drums: Vec<DrumSound>,
+    /// A fretted instrument's open strings (MIDI keys, lowest first): a
+    /// tablature staff goes under its staff. Empty: no tablature.
+    pub tuning: Vec<u8>,
 }
+
+/// The usual tuning of a fretted instrument shown with tablature: electric
+/// and bass guitars (others start without, see `GUITAR_TUNING`).
+pub fn default_tuning(name: &str) -> Vec<u8> {
+    let n = name.to_ascii_lowercase();
+    if n.contains("bass guitar") || n.contains("electric bass") {
+        BASS_TUNING.to_vec()
+    } else if n.contains("electric guitar") || n.contains("tab") && n.contains("guitar") {
+        GUITAR_TUNING.to_vec()
+    } else {
+        vec![]
+    }
+}
+
+/// E2 A2 D3 G3 B3 E4 and E1 A1 D2 G2.
+pub const GUITAR_TUNING: [u8; 6] = [40, 45, 50, 55, 59, 64];
+pub const BASS_TUNING: [u8; 4] = [28, 33, 38, 43];
 
 /// One sound of a percussion instrument: written at a staff position (a
 /// pitch on the percussion clef, read as on the treble clef) with a

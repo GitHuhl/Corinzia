@@ -163,7 +163,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 engraver_name: r.get(3)?,
                 transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
                 clef: r.get(6)?,
-                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![],
+                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![], tuning: vec![],
             })
         })?;
         for i in rows {
@@ -185,6 +185,13 @@ pub fn load(path: &Path) -> Result<Project> {
                     head: Notehead::from_code(s["head"].as_str().unwrap_or("normal")),
                 });
             }
+        }
+    }
+
+    // Fretted instruments' tunings, by instrument.
+    if let Some(t) = setting("tunings")? {
+        for i in p.instruments.iter_mut() {
+            i.tuning = t[i.id.to_string()].as_array().into_iter().flatten().filter_map(|k| k.as_u64()).map(|k| k.min(127) as u8).collect();
         }
     }
 
@@ -510,7 +517,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .filter(|i| !i.drums.is_empty())
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums))] {
+    let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings))] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

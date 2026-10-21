@@ -51,6 +51,8 @@ pub enum Action {
     Paste,
     /// The clipboard as a cue (small, silent notes in voice 2).
     PasteCue,
+    /// Tablature on or off for the staff's instrument.
+    Tab,
     /// Selected notes onto the staff above (-1) or below (1).
     CrossStaff(i8),
     SelectAll,

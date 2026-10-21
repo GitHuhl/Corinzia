@@ -81,6 +81,11 @@ PipeWire.
   alike is written once under "a 2", and the second player's resting bars
   disappear. Parts are never condensed; clicks on a shared staff edit the
   first player.
+* **Guitar tablature:** Electric guitar, "Guitar (tab)" and Bass guitar
+  get a tab staff under their staff, with standard tuning (E A D G B E, or
+  E A D G). Structure → Tablature turns it on or off for any staff. Each note
+  goes on the highest string that can play it, and the string line breaks
+  around the fret number.
 * **Layout** (Structure → Page → Layout…): page size (A4, Letter, A3, B4,
   Legal, Tabloid, A5 or custom) and orientation, staff size, margins, note
   spacing, staff and system distances, bars per system and page numbers,

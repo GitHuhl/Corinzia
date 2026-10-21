@@ -14,7 +14,7 @@ static METADATA: &str = include_str!("../../../assets/fonts/bravura/bravura_meta
 #[allow(missing_docs)]
 pub enum Glyph {
     NoteheadBlack, NoteheadHalf, NoteheadWhole,
-    GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef,
+    GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, TabClef6, TabClef4,
     Flat, Natural, Sharp, DoubleSharp, DoubleFlat,
     RestWhole, RestHalf, RestQuarter, Rest8th, Rest16th, Rest32nd, Rest64th,
     Flag8thUp, Flag8thDown, Flag16thUp, Flag16thDown, Flag32ndUp, Flag32ndDown, Flag64thUp, Flag64thDown,
@@ -46,6 +46,8 @@ impl Glyph {
             GClef8vb => ("gClef8vb", 0xE052),
             FClef8vb => ("fClef8vb", 0xE064),
             PercussionClef => ("unpitchedPercussionClef1", 0xE069),
+            TabClef6 => ("6stringTabClef", 0xE06D),
+            TabClef4 => ("4stringTabClef", 0xE06E),
             Flat => ("accidentalFlat", 0xE260),
             Natural => ("accidentalNatural", 0xE261),
             Sharp => ("accidentalSharp", 0xE262),
@@ -149,7 +151,7 @@ impl Glyph {
     pub fn all() -> Vec<Glyph> {
         use Glyph::*;
         let mut v = vec![
-            NoteheadBlack, NoteheadHalf, NoteheadWhole, GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, Flat, Natural,
+            NoteheadBlack, NoteheadHalf, NoteheadWhole, GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, TabClef6, TabClef4, Flat, Natural,
             Sharp, DoubleSharp, DoubleFlat, RestWhole, RestHalf, RestQuarter, Rest8th, Rest16th, Rest32nd, Rest64th, Flag8thUp,
             Flag8thDown, Flag16thUp, Flag16thDown, Flag32ndUp, Flag32ndDown, Flag64thUp, Flag64thDown, Dot, TimeSigCommon,
             TimeSigCut, AccentAbove, AccentBelow, StaccatoAbove, StaccatoBelow, TenutoAbove, TenutoBelow, StaccatissimoAbove,

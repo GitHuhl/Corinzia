@@ -40,6 +40,9 @@ const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
     (&["organ", "org"], "Organ", "Org.", "treble+bass"),
     (&["celesta"], "Celesta", "Cel.", "treble+bass"),
     (&["guitar", "gtr"], "Guitar", "Gtr.", "treble_8"),
+    (&["electric guitar", "e. gtr", "e-guitar"], "Electric guitar", "E. Gtr.", "treble_8"),
+    (&["guitar tab", "guitar with tab", "guitar (tab)"], "Guitar (tab)", "Gtr.", "treble_8"),
+    (&["bass guitar", "electric bass", "e. bass"], "Bass guitar", "B. Gtr.", "bass_8"),
     (&["soprano", "s"], "Soprano", "S.", "treble"),
     (&["alto", "a", "mezzo"], "Alto", "A.", "treble"),
     (&["tenor", "t"], "Tenor", "T.", "treble_8"),
@@ -357,9 +360,10 @@ mod tests {
         assert_eq!(names, ["Flute", "Violin 1", "Violin 2", "Cello"]);
         assert_eq!(l[3].2, "bass");
         // Any other name is taken as typed, with a clef from the name.
-        let k = parse_instruments("Flute, kazoo, bass guitar").unwrap();
+        let k = parse_instruments("Flute, kazoo, bass ocarina").unwrap();
         assert_eq!((k[1].0.as_str(), k[1].2.as_str()), ("Kazoo", "treble"));
         assert_eq!(k[2].2, "bass");
+        assert_eq!(parse_instruments("bass guitar").unwrap()[0], ("Bass guitar".into(), "B. Gtr.".into(), "bass_8".into()));
         assert!(parse_instruments(" , ").is_err());
         let p = new_project("Quartet", "violin, violin, viola, cello", 4).unwrap();
         assert_eq!(p.movements[0].lanes.len(), 4);

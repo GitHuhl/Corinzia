@@ -21,7 +21,7 @@ pub fn project() -> Project {
         let player = 20 + k as u64;
         let inst = 30 + k as u64;
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: k as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track), drums: vec![] });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track), drums: vec![], tuning: vec![] });
         p.players.push(Player { id: player, name: format!("Player {}", k + 1), instruments: vec![inst] });
         let (v, s) = notation::voice_and_slurs(music, 1, &mut id);
         slurs.extend(s);
@@ -106,7 +106,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         // Channel 10 is the drums' (General MIDI): others skip it.
         let midi_channel = if !drums.is_empty() { 9 } else { [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15][k % 15] };
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track), drums });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track), drums, tuning: default_tuning(name) });
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)

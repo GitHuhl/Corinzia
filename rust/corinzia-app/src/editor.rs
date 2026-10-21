@@ -202,7 +202,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
     p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
-    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums });
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
 }
 
@@ -451,6 +451,20 @@ impl Editor {
     /// clicks are staff positions.
     pub fn lane_is_percussion(&self, lane: usize) -> bool {
         self.movement().and_then(|m| m.lanes.get(lane)).and_then(|l| l.changes.first()).and_then(|c| self.project.instrument(c.instrument)).is_some_and(|i| i.clef == "percussion")
+    }
+
+    /// Tablature on or off for the selected staff's instrument (standard
+    /// guitar tuning, or the bass guitar's on a bass staff).
+    pub fn toggle_tab(&mut self) {
+        let Some(m) = self.movement() else { return };
+        let lane = self.selection.and_then(|s| self.event_of(s)).map(|(loc, _)| loc.lane).or(self.range.map(|r| r.lane_from)).unwrap_or(self.caret_lane);
+        let Some(inst) = m.lanes.get(lane).and_then(|l| l.changes.first()).map(|c| c.instrument) else { return };
+        let before = self.snapshot();
+        let Some(i) = self.project.instruments.iter_mut().find(|i| i.id == inst) else { return };
+        let on = i.tuning.is_empty();
+        i.tuning = if !on { vec![] } else if i.clef.starts_with("bass") { BASS_TUNING.to_vec() } else { GUITAR_TUNING.to_vec() };
+        self.status = format!("Tablature {} for {}", if on { "on" } else { "off" }, i.name);
+        self.commit(before, "Tablature");
     }
 
     /// The drum sound of a note on a drum set's staff.
@@ -3897,5 +3911,20 @@ mod tests {
         assert_eq!(e.status, "No staff of this player there");
         e.cross_staff(-1);
         assert!(e.movement().unwrap().cross.is_empty());
+    }
+
+    #[test]
+    fn guitar_tablature() {
+        let mut e = Editor::new(crate::files::new_project("G", "Electric guitar, Guitar, Bass guitar", 1).unwrap());
+        let tunings: Vec<usize> = e.project.instruments.iter().map(|i| i.tuning.len()).collect();
+        assert_eq!(tunings, [6, 0, 4]);
+        e.caret_lane = 1;
+        e.toggle_tab();
+        assert_eq!(e.project.instruments[1].tuning, GUITAR_TUNING);
+        assert_eq!(e.status, "Tablature on for Guitar");
+        let s = corinzia_model::notation::score(&e.project, e.movement().unwrap());
+        assert_eq!(s.parts[1].tab, GUITAR_TUNING);
+        e.undo();
+        assert!(e.project.instruments[1].tuning.is_empty());
     }
 }

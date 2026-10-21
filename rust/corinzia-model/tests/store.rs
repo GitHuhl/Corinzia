@@ -6,7 +6,7 @@ use std::sync::Arc;
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false });
-    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![] });
+    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
         id,
@@ -58,6 +58,7 @@ fn sample() -> Project {
         }], breaks: vec![], cross: vec![],
     });
     p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
+    p.instruments[0].tuning = GUITAR_TUNING.to_vec();
     p.subtitle = "for flute".into();
     p.lyricist = "Words: N.N.".into();
     p.arranger = "arr. X".into();
@@ -89,6 +90,7 @@ fn save_and_load_round_trip() {
     assert_eq!(b.movements[0].cross, [(12, 1)]);
     assert_eq!(b.movements[0].lanes[0].texts[0].shown, Shown::Parts);
     assert_eq!(b.instruments[0].drums, a.instruments[0].drums);
+    assert_eq!(b.instruments[0].tuning, GUITAR_TUNING);
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);
     assert_eq!(mb.lanes[0].voices[0].events[0].lyrics, ma.lanes[0].voices[0].events[0].lyrics);

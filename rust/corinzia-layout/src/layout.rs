@@ -1695,6 +1695,82 @@ impl<'a> Engraver<'a> {
         }
     }
 
+    /// Tablature under the staves of fretted instruments: a line per string
+    /// (1.5 spaces apart, the highest on top), "TAB" at the start, and each
+    /// note's fret on its string, the line broken around the number.
+    fn draw_tabs(&mut self) {
+        const LINE_GAP: f32 = 1.5;
+        const FRET_SIZE: f32 = 1.7;
+        for part in 0..self.score.parts.len() {
+            let tuning = self.score.parts[part].tab.clone();
+            if tuning.is_empty() {
+                continue;
+            }
+            let strings = tuning.len();
+            let top = self.top(part);
+            // Below the staff's lowest note or stem.
+            let deep = self
+                .notes
+                .iter()
+                .filter(|n| n.part == part && !n.rest)
+                .map(|n| {
+                    let low = self.y(part, n.heads[0].pos) + 0.5;
+                    if n.has_stem() && !n.stem_up { low.max(n.stem_end) } else { low }
+                })
+                .fold(top + 4.0, f32::max);
+            let tab_top = (top + 4.0 + 3.0).max(deep + 2.0);
+            let line_y = |k: usize| tab_top + (strings - 1 - k) as f32 * LINE_GAP; // k: string, lowest 0
+            // Frets: each head on the highest free string it can be played on.
+            let mut gaps: Vec<Vec<(f32, f32)>> = vec![Vec::new(); strings];
+            let mut frets = Vec::new();
+            for n in self.notes.iter().filter(|n| n.part == part && !n.rest && n.first) {
+                let mut free: Vec<bool> = vec![true; strings];
+                for h in n.heads.iter().rev() {
+                    if h.tied_in {
+                        continue;
+                    }
+                    const SEMIS: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+                    let key = (h.dia.div_euclid(7) + 1) * 12 + SEMIS[h.dia.rem_euclid(7) as usize] + h.alter as i32;
+                    let Some(k) = (0..strings).rev().find(|&k| free[k] && (0..=24).contains(&(key - tuning[k] as i32))) else { continue };
+                    free[k] = false;
+                    let fret = key - tuning[k] as i32;
+                    let x = n.x + HEAD_W / 2.0;
+                    let half = 0.45 * fret.to_string().len() as f32 * FRET_SIZE / 1.7 + 0.15;
+                    gaps[k].push((x - half, x + half));
+                    frets.push((fret, x, line_y(k), h.id));
+                }
+            }
+            let staves: Vec<(f32, f32)> = self.out.staves.iter().filter(|s| s.part == part).map(|s| (s.left, s.right)).collect();
+            let lw = self.font.defaults.staff_line_thickness;
+            for (left, right) in staves {
+                for (k, g) in gaps.iter_mut().enumerate() {
+                    g.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    let y = line_y(k);
+                    let mut x = left;
+                    for &(a, b) in g.iter() {
+                        if a > x {
+                            self.push(Item::line(x, y, a.min(right), y, lw, 0));
+                        }
+                        x = x.max(b);
+                    }
+                    if x < right {
+                        self.push(Item::line(x, y, right, y, lw, 0));
+                    }
+                }
+                self.push(Item::line(left, tab_top, left, line_y(0), self.font.defaults.thin_barline_thickness, 0));
+                let bars: Vec<f32> = self.ms.iter().map(|m| m.x1).filter(|&x| x > left + 1.0 && x <= right + 0.01).collect();
+                for x in bars {
+                    self.push(Item::line(x, tab_top, x, line_y(0), self.font.defaults.thin_barline_thickness, 0));
+                }
+                let clef = if strings <= 4 { Glyph::TabClef4 } else { Glyph::TabClef6 };
+                self.push(Item::glyph(clef, left + 1.0, (tab_top + line_y(0)) / 2.0, 0));
+            }
+            for (fret, x, y, id) in frets {
+                self.push(Item::Text { text: fret.to_string(), at: pt(x, y + 0.55), size: FRET_SIZE, italic: false, bold: false, anchor: 1, id });
+            }
+        }
+    }
+
     fn dots(&mut self, n: &Note, right: f32, positions: &[i32]) {
         if n.value.dots == 0 {
             return;
@@ -2955,6 +3031,7 @@ impl<'a> Engraver<'a> {
         self.draw_ties();
         self.draw_marks();
         self.draw_slurs();
+        self.draw_tabs();
         self.build_skylines();
         self.draw_tuplets();
         self.draw_fingering();
