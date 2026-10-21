@@ -2,8 +2,8 @@
 # as a GitHub release.
 #
 # A push to main publishes release v<version> (the workspace version in
-# rust/Cargo.toml) if there is none yet: bump the version to make a new
-# release. Pushing a v* tag publishes that tag. "Run workflow" builds
+# rust/Cargo.toml, which flake.nix reads too) if there is none yet: bump
+# the version to make a new release. Pushing a v* tag publishes that tag. "Run workflow" builds
 # without publishing (the files are kept as a workflow artifact).
 name: Release
 

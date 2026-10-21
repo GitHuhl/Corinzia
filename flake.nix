@@ -11,6 +11,9 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
+      # The one version number: the workspace's, in rust/Cargo.toml.
+      version = (builtins.fromTOML (builtins.readFile ./rust/Cargo.toml)).workspace.package.version;
+
       # What the app (winit + wgpu) loads at runtime.
       guiLibs = pkgs: with pkgs; [ libxkbcommon vulkan-loader wayland libx11 libxcursor libxrandr libxi ];
 
@@ -19,7 +22,7 @@
 
       corinzia = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia";
-        version = "0.2.0";
+        inherit version;
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -66,7 +69,7 @@
         target = "x86_64-unknown-linux-gnu";
       in pkgs.rustPlatform.buildRustPackage {
         pname = "corinzia-appimage";
-        version = "0.2.0";
+        inherit version;
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -134,7 +137,7 @@
         fonts = "${pkgs.dejavu_fonts}/share/fonts/truetype";
       in rustPlatform.buildRustPackage {
         pname = "corinzia-windows";
-        version = "0.2.0";
+        inherit version;
         src = self;
         cargoRoot = "rust";
         buildAndTestSubdir = "rust";
@@ -170,7 +173,7 @@
           appimage = appimage pkgs;
           windows = windows pkgs;
           # Both downloads in one ./result: `nix build .#release`.
-          release = pkgs.symlinkJoin { name = "corinzia-release-0.2.0"; paths = [ (appimage pkgs) (windows pkgs) ]; };
+          release = pkgs.symlinkJoin { name = "corinzia-release-${version}"; paths = [ (appimage pkgs) (windows pkgs) ]; };
         });
 
       devShells = forAll (pkgs: {
