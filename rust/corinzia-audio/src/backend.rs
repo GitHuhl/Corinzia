@@ -107,7 +107,10 @@ fn run(engine: Engine, rate: u32, max_frames: u32, device: &str, quit: pw::chann
         Ok(c) => c,
         Err(e) => return Err(format!("PipeWire is not running ({e})")),
     };
-    let latency = format!("{}/{rate}", max_frames.min(256));
+    // Ask for the buffer the preferences set: it is the time every plugin
+    // has to render a block. (Capping it at 256 frames left ~5 ms at 48 kHz,
+    // which a couple of sampled instruments already overrun.)
+    let latency = format!("{max_frames}/{rate}");
     let mut props = pw::properties::properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_ROLE => "Music",
