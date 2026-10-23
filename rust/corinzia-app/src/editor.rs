@@ -2779,6 +2779,28 @@ impl Editor {
         Some((self.caret_lane.min(m.lanes.len().saturating_sub(1)), self.caret.min(m.length)))
     }
 
+    /// Points the popovers at a clef, key or time signature or barline
+    /// right-clicked at `pos` on a lane's staff: the caret moves to the
+    /// change drawn there (or the bar it opens), and nothing stays selected.
+    pub fn target_mark(&mut self, lane: usize, pos: Frac, kind: PopoverKind) {
+        let Some(m) = self.movement() else { return };
+        if lane >= m.lanes.len() {
+            return;
+        }
+        // Signatures are drawn just before the bar they open.
+        let ahead = (pos + Frac::new(1, 16)).min(m.length);
+        let at = match kind {
+            // A clef change stands just before its note; a clef at a
+            // system's start belongs to the bar there.
+            PopoverKind::Clef => m.lanes[lane].clefs.iter().map(|c| c.at).filter(|&at| at >= pos - Frac::new(1, 16) && at <= pos + Frac::new(1, 2)).min().unwrap_or_else(|| edit::bar_start_at_or_before(m, ahead)),
+            PopoverKind::Barline => edit::nearest_barline(m, pos),
+            _ => edit::bar_start_at_or_before(m, ahead),
+        };
+        self.clear_selection();
+        self.caret_lane = lane;
+        self.caret = at;
+    }
+
     /// "Bar 5" for the popover title.
     pub fn popover_position(&self) -> String {
         match (self.structure_target(), self.movement()) {
