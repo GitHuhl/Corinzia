@@ -15,6 +15,7 @@ use clap_sys::process::clap_process;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
+use crate::workers::Workers;
 
 pub const MAX_NODES: usize = 256;
 pub const MAX_BUSES: usize = 64;
@@ -138,6 +139,70 @@ struct NodeState {
     /// Send levels (linear), and the levels reached last block.
     sends: [f32; MAX_SENDS],
     send_applied: [Option<f32>; MAX_SENDS],
+    /// Rendered this block (its plugin is processing).
+    ran: bool,
+}
+
+/// What a render thread needs to run effects: a scratch pair for their
+/// output and their event list. One per thread.
+struct Scratch {
+    tmp: [Vec<f32>; 2],
+    fx_events: Box<InputEvents>,
+}
+
+fn input_events() -> Box<InputEvents> {
+    let mut events = Box::new(InputEvents {
+        list: clap_input_events { ctx: std::ptr::null_mut(), size: Some(in_size), get: Some(in_get) },
+        events: Vec::with_capacity(EVENTS_PER_NODE),
+    });
+    events.list.ctx = &mut *events as *mut InputEvents as *mut c_void;
+    events
+}
+
+/// One block's instrument jobs (see [`render_node`]); pointers into the
+/// engine, valid while [`Workers::run`] runs.
+struct NodeJobs {
+    nodes: *mut NodeState,
+    plan: *const crate::snapshot::Node,
+    scratch: *mut Scratch,
+    transport: *const clap_event_transport,
+    out_events: *const clap_output_events,
+    fx_auto: *const FxAuto,
+    frames: usize,
+    steady: i64,
+}
+
+/// Renders one instrument and its inserts into the node's own buffers.
+/// Jobs touch only their node and their thread's scratch, so they run
+/// concurrently; mixing waits for all of them.
+unsafe fn render_node(ctx: *const (), i: usize, worker: usize) {
+    let j = &*(ctx as *const NodeJobs);
+    let ns = &mut *j.nodes.add(i);
+    let node = &*j.plan.add(i);
+    let frames = j.frames;
+    ns.ran = node.plugin.rt_start();
+    if !ns.ran {
+        return;
+    }
+    ns.ptrs = [ns.left.as_mut_ptr(), ns.right.as_mut_ptr()];
+    let mut out = clap_audio_buffer { data32: ns.ptrs.as_mut_ptr(), data64: std::ptr::null_mut(), channel_count: 2, latency: 0, constant_mask: 0 };
+    let p = clap_process {
+        steady_time: j.steady,
+        frames_count: frames as u32,
+        transport: j.transport,
+        audio_inputs: std::ptr::null(),
+        audio_outputs: &mut out,
+        audio_inputs_count: 0,
+        audio_outputs_count: 1,
+        in_events: &ns.events.list,
+        out_events: j.out_events,
+    };
+    node.plugin.rt_process(&p);
+    // The track's effects, in order.
+    let sc = &mut *j.scratch.add(worker);
+    for fx in &node.inserts {
+        run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut sc.tmp, frames, j.steady, &*j.transport, &mut sc.fx_events, &*j.out_events, &*j.fx_auto);
+    }
 }
 
 /// Effect automation for the block: the plan's effects (as pointers, to
@@ -246,31 +311,29 @@ pub struct Engine {
     buses: Vec<BusState>,
     master_gain: f32,
     master_applied: Option<f32>,
-    /// Scratch for effects (their output before it is copied back).
-    tmp: [Vec<f32>; 2],
-    /// The events effects get.
-    fx_events: Box<InputEvents>,
+    /// Effect scratch per render thread (0: this one, for buses and master too).
+    scratch: Vec<Scratch>,
+    workers: Workers,
     fx_auto: FxAuto,
 }
 unsafe impl Send for Engine {}
 
+/// The engine, rendering instruments on a worker per spare core.
 pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
+    with_workers(sample_rate, max_frames, Workers::for_this_machine())
+}
+
+pub fn with_workers(sample_rate: f64, max_frames: u32, workers: Workers) -> (EngineHandle, Engine) {
     let (ctx, crx) = rtrb::RingBuffer::new(1024);
     let (rtx, rrx) = rtrb::RingBuffer::new(64);
     let shared = Arc::new(Shared::default());
     let nodes = (0..MAX_NODES)
         .map(|_| {
-            let mut events = Box::new(InputEvents {
-                list: clap_input_events { ctx: std::ptr::null_mut(), size: Some(in_size), get: Some(in_get) },
-                events: Vec::with_capacity(EVENTS_PER_NODE),
-            });
-            events.list.ctx = &mut *events as *mut InputEvents as *mut c_void;
-            NodeState { events, left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS] }
+            NodeState { events: input_events(), left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS], ran: false }
         })
         .collect();
     let buses = (0..MAX_BUSES).map(|_| BusState { left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], gain: 1.0, pan: 0.0, audible: true, applied: None }).collect();
-    let mut fx_events = Box::new(InputEvents { list: clap_input_events { ctx: std::ptr::null_mut(), size: Some(in_size), get: Some(in_get) }, events: Vec::with_capacity(EVENTS_PER_NODE) });
-    fx_events.list.ctx = &mut *fx_events as *mut InputEvents as *mut c_void;
+    let scratch = (0..workers.threads()).map(|_| Scratch { tmp: [vec![0.0; max_frames as usize], vec![0.0; max_frames as usize]], fx_events: input_events() }).collect();
     let engine = Engine {
         commands: crx,
         retired: rtx,
@@ -288,8 +351,8 @@ pub fn new(sample_rate: f64, max_frames: u32) -> (EngineHandle, Engine) {
         buses,
         master_gain: 1.0,
         master_applied: None,
-        tmp: [vec![0.0; max_frames as usize], vec![0.0; max_frames as usize]],
-        fx_events,
+        scratch,
+        workers,
         fx_auto: FxAuto { effects: Vec::with_capacity(MAX_NODES * 4), queue: Vec::with_capacity(EVENTS_PER_NODE) },
     };
     (EngineHandle { commands: ctx, retired: rrx, shared, sample_rate, max_frames }, engine)
@@ -653,28 +716,24 @@ impl Engine {
             b.left[..frames].fill(0.0);
             b.right[..frames].fill(0.0);
         }
-        for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
-            if !node.plugin.rt_start() {
-                continue;
-            }
+        // Instruments in parallel, each into its own buffers.
+        let count = snap.nodes.len().min(MAX_NODES);
+        let jobs = NodeJobs {
+            nodes: self.nodes.as_mut_ptr(),
+            plan: snap.nodes.as_ptr(),
+            scratch: self.scratch.as_mut_ptr(),
+            transport: &transport,
+            out_events: &self.out_events,
+            fx_auto: &self.fx_auto,
+            frames,
+            steady: self.steady,
+        };
+        unsafe { self.workers.run(count, render_node, &jobs as *const NodeJobs as *const ()) };
+        // Then the mix, in order.
+        for (i, node) in snap.nodes.iter().enumerate().take(count) {
             let ns = &mut self.nodes[i];
-            ns.ptrs = [ns.left.as_mut_ptr(), ns.right.as_mut_ptr()];
-            let mut out = clap_audio_buffer { data32: ns.ptrs.as_mut_ptr(), data64: std::ptr::null_mut(), channel_count: 2, latency: 0, constant_mask: 0 };
-            let p = clap_process {
-                steady_time: self.steady,
-                frames_count: frames as u32,
-                transport: &transport,
-                audio_inputs: std::ptr::null(),
-                audio_outputs: &mut out,
-                audio_inputs_count: 0,
-                audio_outputs_count: 1,
-                in_events: &ns.events.list,
-                out_events: &self.out_events,
-            };
-            unsafe { node.plugin.rt_process(&p) };
-            // The track's effects, in order.
-            for fx in &node.inserts {
-                unsafe { run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+            if !ns.ran {
+                continue;
             }
             // Equal-power pan; silent when muted (or another track soloed).
             let (gl, gr) = pan_gains(ns.gain, ns.pan, ns.audible);
@@ -705,8 +764,9 @@ impl Engine {
         }
         for (b, strip) in snap.buses.iter().enumerate().take(nb) {
             let bs = &mut self.buses[b];
+            let sc = &mut self.scratch[0];
             for fx in &strip.inserts {
-                unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+                unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut sc.tmp, frames, self.steady, &transport, &mut sc.fx_events, &self.out_events, &self.fx_auto) };
             }
             let (gl, gr) = pan_gains(bs.gain, bs.pan, bs.audible);
             let (l0, r0) = bs.applied.unwrap_or((gl, gr));
@@ -714,8 +774,9 @@ impl Engine {
             mix_into(&mut left[..frames], &bs.left[..frames], l0, gl);
             mix_into(&mut right[..frames], &bs.right[..frames], r0, gr);
         }
+        let sc = &mut self.scratch[0];
         for fx in &snap.master_inserts {
-            unsafe { run_effect(fx, &mut left[..frames], &mut right[..frames], &mut self.tmp, frames, self.steady, &transport, &mut self.fx_events, &self.out_events, &self.fx_auto) };
+            unsafe { run_effect(fx, &mut left[..frames], &mut right[..frames], &mut sc.tmp, frames, self.steady, &transport, &mut sc.fx_events, &self.out_events, &self.fx_auto) };
         }
         let g = self.master_gain;
         let g0 = self.master_applied.unwrap_or(g);
