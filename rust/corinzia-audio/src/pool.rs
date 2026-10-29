@@ -61,10 +61,21 @@ impl PluginPool {
                 return Some(p.clone());
             }
         }
+        // The plugin node another track plays already: one instance for
+        // both (a multi-timbral sampler, each track on its channel).
+        if key.node.is_some() {
+            if let Some(p) = self.tracks.values().find(|(k, _)| *k == key).map(|(_, p)| p.clone()) {
+                self.tracks.insert(track, (key, p.clone()));
+                return Some(p);
+            }
+        }
         // The track changes plugin: the old one's editor goes now (the
-        // instance itself when the audio thread lets go of it).
+        // instance itself when the audio thread lets go of it), unless
+        // another track still plays it.
         if let Some((_, old)) = self.tracks.get(&track) {
-            old.close_editor();
+            if self.tracks.values().filter(|(_, p)| Arc::ptr_eq(p, old)).count() == 1 {
+                old.close_editor();
+            }
         }
         let made = self.instantiate(&key).and_then(|p| {
             if let Some(state) = key.node.and_then(|n| project.plugin_state.get(&n)) {

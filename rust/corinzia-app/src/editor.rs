@@ -807,6 +807,36 @@ impl Editor {
         self.commit_with(before, "Instrument plugin", true, None);
     }
 
+    /// A track plays through another's plugin instance (a multi-timbral
+    /// sampler), on the first MIDI channel no track sharing it uses.
+    pub fn share_instrument(&mut self, track: Id, with: Id) -> bool {
+        let Some(node) = self.project.track(with).and_then(|t| t.instrument_node) else {
+            self.status = "Only a plugin instrument can be shared".into();
+            return false;
+        };
+        let used: Vec<u8> = self.project.tracks.iter().filter(|t| t.id != track && t.instrument_node == Some(node)).map(|t| t.midi_channel & 15).collect();
+        let Some(channel) = (0..16u8).find(|c| !used.contains(c)) else {
+            self.status = "All 16 channels of that instrument are taken".into();
+            return false;
+        };
+        let before = self.snapshot();
+        let Some(ti) = self.project.tracks.iter().position(|t| t.id == track) else { return false };
+        // Its own plugin goes, unless another track still plays it.
+        if let Some(old) = self.project.tracks[ti].instrument_node.filter(|o| *o != node) {
+            if !self.project.tracks.iter().enumerate().any(|(i, t)| i != ti && t.instrument_node == Some(old)) {
+                self.project.nodes.retain(|n| n.id != old);
+                self.project.edges.retain(|e| e.from != old && e.to != old);
+                self.project.plugin_state.remove(&old);
+            }
+        }
+        let t = &mut self.project.tracks[ti];
+        (t.instrument_node, t.midi_channel) = (Some(node), channel);
+        let (name, host) = (t.name.clone(), self.project.track(with).map(|t| t.name.clone()).unwrap_or_default());
+        self.status = format!("{name} plays through {host}'s instrument, on channel {}", channel + 1);
+        self.commit_with(before, "Share instrument", true, None);
+        true
+    }
+
     // -------------------------------------------------------------- mixer --
     /// The effect chain of a strip: a track, a bus, or the master ([`MASTER`]).
     fn inserts_mut(p: &mut Project, owner: Id) -> Option<&mut Vec<Id>> {

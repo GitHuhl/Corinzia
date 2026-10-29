@@ -185,6 +185,10 @@ struct NodeState {
     pan: f32,
     audible: bool,
     direct: bool,
+    /// A guest of another node's instance (see `snapshot::Node::host`),
+    /// and its MIDI channel there.
+    host: Option<u32>,
+    channel: u8,
     midi: bool, // the plugin takes MIDI rather than CLAP notes
     /// The left/right gains applied at the end of the last block: changes
     /// ramp from them across the next one (no zipper noise, no clicks).
@@ -239,6 +243,11 @@ unsafe fn render_node(ctx: *const (), i: usize, worker: usize) {
     let ns = &mut *j.nodes.add(i);
     let node = &*j.plan.add(i);
     let frames = j.frames;
+    if node.host.is_some() {
+        // A guest: its host's instance plays its notes.
+        ns.ran = false;
+        return;
+    }
     let Some(plugin) = &node.plugin else {
         // An audio track: its clips under the block.
         ns.ran = true;
@@ -429,7 +438,7 @@ pub fn with_workers(sample_rate: f64, max_frames: u32, workers: Workers) -> (Eng
     let shared = Arc::new(Shared::default());
     let nodes = (0..MAX_NODES)
         .map(|_| {
-            NodeState { events: input_events(), left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, direct: true, midi: false, applied: None, main_applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS], ran: false }
+            NodeState { events: input_events(), left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, direct: true, host: None, channel: 0, midi: false, applied: None, main_applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS], ran: false }
         })
         .collect();
     let buses = (0..MAX_BUSES).map(|_| BusState { left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], gain: 1.0, pan: 0.0, audible: true, applied: None }).collect();
@@ -535,6 +544,8 @@ impl Engine {
                         self.nodes[i].pan = n.pan;
                         self.nodes[i].audible = n.audible;
                         self.nodes[i].direct = n.direct;
+                        self.nodes[i].host = n.host;
+                        self.nodes[i].channel = n.channel;
                         self.nodes[i].midi = n.plugin.as_ref().is_some_and(|p| p.midi_dialect);
                         for (k, s) in n.sends.iter().enumerate().take(MAX_SENDS) {
                             self.nodes[i].sends[k] = s.1;
@@ -553,11 +564,13 @@ impl Engine {
                     self.snap = Some(next);
                     self.reset_cursor();
                     self.chase();
+                    self.send_guest_mixes();
                 }
                 Command::Play => {
                     self.playing = true;
                     self.reset_cursor();
                     self.send_programs();
+                    self.send_guest_mixes();
                     self.chase();
                 }
                 Command::Stop => {
@@ -577,6 +590,7 @@ impl Engine {
                         n.audible = audible;
                         n.direct = direct;
                     }
+                    self.send_guest_mix(node as usize, 0);
                 }
                 Command::MixBus { bus, gain, pan, audible } => {
                     if let Some(b) = self.buses.get_mut(bus as usize) {
@@ -668,8 +682,14 @@ impl Engine {
                     ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
                 }
             }
-            Kind::Gain => ns.gain = n.velocity,
-            Kind::Pan => ns.pan = n.velocity,
+            Kind::Gain | Kind::Pan => {
+                if n.kind == Kind::Gain {
+                    ns.gain = n.velocity;
+                } else {
+                    ns.pan = n.velocity;
+                }
+                self.send_guest_mix(n.node as usize, time);
+            }
             Kind::Cc(cc) => {
                 if ns.events.events.len() < EVENTS_PER_NODE {
                     let data = [0xb0 | (n.channel as u8 & 15), cc & 0x7f, (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8];
@@ -700,7 +720,9 @@ impl Engine {
         let Some(snap) = self.snap.as_ref() else { return };
         for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
             let Some((ch, program, bank)) = node.program else { continue };
-            let events = &mut self.nodes[i].events.events;
+            // A guest's program goes to its host's instance (on its channel).
+            let to = node.host.map(|h| h as usize).filter(|&h| h < MAX_NODES).unwrap_or(i);
+            let events = &mut self.nodes[to].events.events;
             let mut midi = |data: [u8; 3]| {
                 if events.len() < EVENTS_PER_NODE {
                     events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time: 0, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: 0, data } });
@@ -711,6 +733,33 @@ impl Engine {
                 midi([0xb0 | ch, 32, b as u8 & 0x7f]);
             }
             midi([0xc0 | ch, program & 0x7f, 0]);
+        }
+    }
+
+    /// A guest's fader and pan as MIDI volume (CC7, as General MIDI hears
+    /// it: 40·log10(v/127) dB) and pan (CC10) on its channel of its host's
+    /// instance; muted (or soloed out): volume 0.
+    fn send_guest_mix(&mut self, node: usize, time: u32) {
+        let Some(ns) = self.nodes.get(node) else { return };
+        let Some(host) = ns.host.map(|h| h as usize).filter(|&h| h < MAX_NODES) else { return };
+        let volume = if ns.audible && ns.direct { (127.0 * ns.gain.max(0.0).sqrt()).round().min(127.0) as u8 } else { 0 };
+        let pan = ((ns.pan.clamp(-1.0, 1.0) + 1.0) * 63.5).round().min(127.0) as u8;
+        let ch = ns.channel & 15;
+        let events = &mut self.nodes[host].events.events;
+        for (cc, v) in [(7u8, volume), (10, pan)] {
+            if events.len() < EVENTS_PER_NODE {
+                events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: 0, data: [0xb0 | ch, cc, v] } });
+            }
+        }
+    }
+
+    fn send_guest_mixes(&mut self) {
+        // The plan's nodes only (slots past them hold stale settings).
+        let n = self.snap.as_ref().map_or(0, |s| s.nodes.len().min(MAX_NODES));
+        for i in 0..n {
+            if self.nodes[i].host.is_some() {
+                self.send_guest_mix(i, 0);
+            }
         }
     }
 

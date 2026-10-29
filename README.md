@@ -182,6 +182,12 @@ parallel on every core, that outputs through PipeWire.
   small built-in CLAP instrument (also installed as
   `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
   auditioned.
+* **Shared instruments:** a track can play through another track's plugin
+  instance (Mix tab, the track's panel: "Share an instrument"), each on a
+  MIDI channel of its own: one multi-timbral sampler for a section rather
+  than one copy per track. The first such track's strip carries the
+  instance's sound; the others' faders and pans become MIDI volume (CC7)
+  and pan (CC10) on their channels.
 * **Meters:** every strip (tracks, buses, the master) has a stereo peak
   meter beside its fader, on the fader's scale; a light on top latches
   when it goes over 0 dB (click it to put it out).

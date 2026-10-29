@@ -133,6 +133,11 @@ pub struct Node {
     pub audible: bool,
     /// Its output is heard (false while only its sends feed a soloed bus).
     pub direct: bool,
+    /// A track sharing another's plugin instance (by its plugin node): the
+    /// node (an index) whose instance plays its notes, on its `channel`.
+    /// Its fader and pan become MIDI volume and pan on that channel.
+    pub host: Option<u32>,
+    pub channel: u8,
     /// Effects after the instrument, in order.
     pub inserts: Vec<Arc<Plugin>>,
     /// The bus it goes to (an index into `Snapshot::buses`), else the master.
@@ -398,12 +403,19 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
             let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db), s.pre)).collect()).unwrap_or_default();
             let program = t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank)));
-            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, inserts, out, sends, program });
+            // An instance an earlier track plays already: this one is a guest.
+            let host = plugin.as_ref().and_then(|p| nodes.iter().position(|n| n.host.is_none() && n.plugin.as_ref().is_some_and(|q| Arc::ptr_eq(p, q)))).map(|i| i as u32);
+            let plugin = if host.is_some() { None } else { plugin };
+            let channel = t.map(|t| t.midi_channel & 15).unwrap_or(0);
+            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, host, channel, inserts, out, sends, program });
         }
     }
     let master_inserts = effects(&project.master.inserts, get);
     let master_gain = db_to_gain(project.master.gain_db);
-    let node_of = |track: Id| nodes.iter().position(|n| n.track == track).map(|i| i as u32);
+    // The node a track's own strip is, and the node its notes go to (a
+    // guest's host).
+    let strip_of = |track: Id| nodes.iter().position(|n| n.track == track).map(|i| i as u32);
+    let node_of = |track: Id| strip_of(track).map(|i| nodes[i as usize].host.unwrap_or(i));
     let mut sections = Vec::new();
     let mut notes = Vec::new();
     let mut start = 0i64;
@@ -462,15 +474,15 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             note_id = note_id.wrapping_add(1) & 0x7fff_ffff;
         }
         // Dynamics as a controller, where a track asks for it: at each onset.
-        let mut last_cc: Vec<Option<u8>> = vec![None; nodes.len()];
+        // By track: tracks sharing an instance each have their channel.
+        let mut last_cc: std::collections::HashMap<Id, u8> = Default::default();
         for n in &perf.notes {
             let Some(t) = project.instrument(n.instrument).and_then(|i| i.track).and_then(|t| project.track(t)) else { continue };
             let (Some(cc), Some(node)) = (t.dynamics_cc, node_of(t.id)) else { continue };
             let value = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
-            if last_cc[node as usize] == Some(value) {
+            if last_cc.insert(t.id, value) == Some(value) {
                 continue;
             }
-            last_cc[node as usize] = Some(value);
             let at = start + ((perf.tempo.seconds_at(n.on_q) * sample_rate).round() as i64 - 1).max(0);
             let channel = t.midi_channel as i16 & 15;
             notes.push(ScheduledNote { kind: Kind::Cc(cc), at, node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: value as f32 / 127.0, element: 0 });
@@ -482,12 +494,12 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let mut channel = 0;
             let (node, kind, scale): (Option<u32>, Kind, fn(f64) -> f32) = match lane.target {
                 AutoTarget::Gain(corinzia_model::MASTER) => (Some(0), Kind::MasterGain, |db| db_to_gain(db)),
-                AutoTarget::Gain(t) if node_of(t).is_none() => (bus_index(t), Kind::BusGain, |db| db_to_gain(db)),
-                AutoTarget::Pan(t) if node_of(t).is_none() => (bus_index(t), Kind::BusPan, |p| p.clamp(-1.0, 1.0) as f32),
-                AutoTarget::Gain(t) => (node_of(t), Kind::Gain, |db| db_to_gain(db)),
-                AutoTarget::Pan(t) => (node_of(t), Kind::Pan, |p| p.clamp(-1.0, 1.0) as f32),
+                AutoTarget::Gain(t) if strip_of(t).is_none() => (bus_index(t), Kind::BusGain, |db| db_to_gain(db)),
+                AutoTarget::Pan(t) if strip_of(t).is_none() => (bus_index(t), Kind::BusPan, |p| p.clamp(-1.0, 1.0) as f32),
+                AutoTarget::Gain(t) => (strip_of(t), Kind::Gain, |db| db_to_gain(db)),
+                AutoTarget::Pan(t) => (strip_of(t), Kind::Pan, |p| p.clamp(-1.0, 1.0) as f32),
                 AutoTarget::Send { track, bus } => match project.track(track).and_then(|t| t.sends.iter().position(|s| s.bus == bus)) {
-                    Some(i) => (node_of(track), Kind::Send { index: i as u32 }, |db| db_to_gain(db)),
+                    Some(i) => (strip_of(track), Kind::Send { index: i as u32 }, |db| db_to_gain(db)),
                     None => continue,
                 },
                 AutoTarget::Cc { track, cc } => {

@@ -631,3 +631,36 @@ fn peaks_are_metered_per_track_and_at_the_master() {
     let half = ui.shared.take_peak(Meter::Node(0));
     assert!((half.0 / out - 0.5).abs() < 0.05, "{half:?}");
 }
+
+#[test]
+fn tracks_sharing_a_plugin_node_play_through_one_instance_on_their_channels() {
+    // Two flutes, one Corinzia Sine node between them (channels 0 and 5).
+    let mut p = ensemble(2);
+    p.nodes.push(AudioNode { id: 700, kind: NodeKind::Plugin, name: "Sine".into(), bundle: host::BUILTIN.into(), plugin_id: "org.corinzia.sine".into(), bypassed: false });
+    for (k, t) in p.tracks.iter_mut().enumerate() {
+        (t.instrument_node, t.midi_channel, t.inserts, t.sends) = (Some(700), if k == 0 { 0 } else { 5 }, vec![], vec![]);
+    }
+    p.tracks[1].gain_db = -12.0;
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert_eq!(snap.nodes.len(), 2);
+    assert!(snap.nodes[0].host.is_none() && snap.nodes[0].plugin.is_some());
+    assert_eq!((snap.nodes[1].host, snap.nodes[1].channel), (Some(0), 5));
+    assert_eq!(snap.nodes.iter().filter(|n| n.plugin.is_some()).count(), 1, "one instance");
+    // Every note goes to the host's instance, each on its track's channel.
+    let notes: Vec<_> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Note).collect();
+    assert!(notes.iter().all(|n| n.node == 0));
+    assert!(notes.iter().any(|n| n.channel == 5) && notes.iter().any(|n| n.channel == 0));
+    // It plays; the guest's fader is MIDI volume, its own strip silent.
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snap);
+    ui.play();
+    let (l, _) = eng.render_offline(SR as usize);
+    assert!(rms(&l[1000..20000]) > 0.01);
+    assert_eq!(ui.shared.take_peak(corinzia_audio::engine::Meter::Node(1)), (0.0, 0.0), "the guest has no audio of its own");
+    // One track takes another plugin: the instance is no longer shared.
+    p.nodes.push(AudioNode { id: 701, kind: NodeKind::Plugin, name: "Sine 2".into(), bundle: host::BUILTIN.into(), plugin_id: "org.corinzia.sine".into(), bypassed: false });
+    p.tracks[1].instrument_node = Some(701);
+    let snap = snapshot::build_from_pool(&p, SR, 2, &[0], &mut pool);
+    assert!(snap.nodes[1].host.is_none() && snap.nodes.iter().filter(|n| n.plugin.is_some()).count() == 2);
+}

@@ -1590,6 +1590,9 @@ impl App {
             }
             ClipCueLine => self.edit_selected_clip("Audio cue line", false, |c| c.cue_line = !c.cue_line),
             ClearClip(id) => self.playback.clear_clip(id),
+            Share(t, host) => {
+                self.editor.share_instrument(t, host);
+            }
             ClipRemove => {
                 if let Some((t, c)) = self.selected_clip.take() {
                     self.editor.delete_clip(t, c);
@@ -4559,6 +4562,28 @@ mod tests {
         assert!(a.playback.clipped(master));
         let _ = a.update(Message::Mix(mix::MixMsg::ClearClip(master)));
         assert!(!a.playback.clipped(master));
+    }
+
+    #[test]
+    fn a_track_shares_another_tracks_instrument_on_a_free_channel() {
+        let mut a = app(View::Page);
+        let (t0, t1) = (a.editor.project.tracks[0].id, a.editor.project.tracks[1].id);
+        a.editor.set_track_plugin(t0, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
+        a.editor.set_track_plugin(t1, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
+        let own = a.editor.project.track(t1).unwrap().instrument_node.unwrap();
+        let ch0 = a.editor.project.track(t0).unwrap().midi_channel;
+        let _ = a.update(Message::Mix(mix::MixMsg::Share(t1, t0)));
+        let (n0, n1) = (a.editor.project.track(t0).unwrap().instrument_node, a.editor.project.track(t1).unwrap().instrument_node);
+        assert_eq!(n0, n1, "one plugin node");
+        assert!(a.editor.project.node(own).is_none(), "its own plugin went");
+        assert_ne!(a.editor.project.track(t1).unwrap().midi_channel, ch0, "on another channel");
+        a.sync();
+        assert!(std::sync::Arc::ptr_eq(a.playback.pool.plugin_of_track(t0).unwrap(), a.playback.pool.plugin_of_track(t1).unwrap()), "one instance");
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        assert!(render(&mut a, 24000) > 0.001, "it plays");
+        a.editor.undo();
+        a.sync();
+        assert!(!std::sync::Arc::ptr_eq(a.playback.pool.plugin_of_track(t0).unwrap(), a.playback.pool.plugin_of_track(t1).unwrap()));
     }
 
     #[test]

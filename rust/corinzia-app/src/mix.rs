@@ -27,6 +27,8 @@ pub enum MixMsg {
     ClipRemove,
     /// Puts out a strip's clip light.
     ClearClip(Id),
+    /// A track plays through another's plugin instance (track, host).
+    Share(Id, Id),
     /// A send (track, index) before the fader or after it.
     SendPre(Id, usize),
     /// A bus's output by label ("Master" or a bus name).
@@ -315,6 +317,12 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         color_bar(p, t),
         button(text(&t.name).size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(t.id)),
         text(if t.folder.is_empty() { players.join(", ") } else { format!("{} · {}", t.folder, players.join(", ")) }).size(11).style(crate::theme::dim),
+        text(match guest_of(p, t) {
+            Some(h) => format!("→ {} · ch {}", h.name, t.midi_channel + 1),
+            None => String::new(),
+        })
+        .size(10)
+        .style(crate::theme::accent),
         crate::panels::tip(
             button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(play.pool.editor_is_open(t.id))).on_press(MixMsg::Editor(t.id)),
             "Show the instrument's editor (click again to close it)",
@@ -419,6 +427,12 @@ fn sends_block<'a>(p: &'a Project, t: &'a corinzia_model::Track) -> Element<'a, 
         }
     }
     sends.into()
+}
+
+/// The track whose instrument instance `t` plays through, if any.
+fn guest_of<'a>(p: &'a Project, t: &corinzia_model::Track) -> Option<&'a corinzia_model::Track> {
+    let node = t.instrument_node?;
+    p.tracks.iter().find(|x| x.instrument_node == Some(node)).filter(|h| h.id != t.id)
 }
 
 /// A track's colour as a thin bar over its strip.
@@ -646,6 +660,14 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
             }
             if fx.is_none() {
                 browser = browser.push(techniques_block(t));
+            }
+            // Other tracks' plugin instruments: play through one of them.
+            let hosts: Vec<&corinzia_model::Track> = p.tracks.iter().filter(|h| h.id != t.id && !h.audio && h.instrument_node.is_some() && h.instrument_node != t.instrument_node && p.tracks.iter().find(|x| x.instrument_node == h.instrument_node).map(|x| x.id) == Some(h.id)).collect();
+            if !hosts.is_empty() {
+                browser = browser.push(text("Share an instrument").size(13)).push(text("One instance for several tracks (a multi-timbral sampler), each on its own MIDI channel; this track's fader becomes MIDI volume there.").size(11).style(crate::theme::dim));
+                for h in hosts {
+                    browser = browser.push(button(text(format!("Through {} ({})", h.name, play.plugin_name(h.id))).size(13)).width(Length::Fill).padding([5, 8]).style(crate::theme::tool(false)).on_press(MixMsg::Share(t.id, h.id)));
+                }
             }
             browser = browser.push(Space::new().height(4));
             let current_bundle = play.pool.plugin_of_track(t.id).map(|p| (p.info.bundle.clone(), p.info.id.clone()));
