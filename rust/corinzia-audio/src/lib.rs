@@ -7,6 +7,7 @@
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
 //! * [`engine`]: the realtime core and its UI handle (wait-free queues);
+//! * [`workers`]: the threads instruments render on in parallel;
 //! * [`backend`]: live output: PipeWire on Linux (feature `pipewire`),
 //!   WASAPI on Windows (feature `wasapi`).
 
@@ -17,6 +18,7 @@ pub mod pool;
 pub mod scan;
 pub mod snapshot;
 pub mod vst3;
+pub mod workers;
 #[cfg(all(feature = "pipewire", target_os = "linux"))]
 pub mod backend;
 #[cfg(all(feature = "wasapi", windows))]

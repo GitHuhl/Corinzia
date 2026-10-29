@@ -50,6 +50,9 @@ struct Popover {
     error: Option<String>,
     /// The item on the page being retyped (opened by a double-click).
     target: Option<u64>,
+    /// The point on the canvas it opens by: what was clicked, else the
+    /// selection or the caret.
+    anchor: Option<iced::Point>,
 }
 
 /// The "New score" card.
@@ -792,8 +795,20 @@ impl App {
     }
 
     fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {
-        self.popover = Some(Popover { kind, input: String::new(), error: None, target: None });
+        let anchor = self.popover_anchor();
+        self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor });
         iced::widget::operation::focus(POPOVER_INPUT)
+    }
+
+    /// Where on the canvas the popover target is: the selected element,
+    /// else the passage start or the caret on its staff.
+    fn popover_anchor(&self) -> Option<iced::Point> {
+        let ed = &self.editor;
+        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
+        let at = ed.structure_target().and_then(|(lane, pos)| Some(Caret { part: self.staff_lanes.iter().position(|&l| l == lane)?, quarter: quarters(pos) }));
+        let desk = score_view::anchor(&self.pages, &origins, &self.pages_of(ed.movement), ed.selection, at)?;
+        let px = self.zoom * score_view::BASE_PX;
+        Some(iced::Point::new(desk.x * px + self.pan.x, desk.y * px + self.pan.y))
     }
 
     /// A double-click on the page: a title, tempo mark, text, chord symbol,
@@ -814,8 +829,9 @@ impl App {
             self.editor.select(Some(id));
             Some(id)
         };
-        self.popover = Some(Popover { kind, input: text, error: None, target });
         self.sync();
+        let anchor = self.popover_anchor();
+        self.popover = Some(Popover { kind, input: text, error: None, target, anchor });
         iced::widget::operation::focus(POPOVER_INPUT)
     }
 
@@ -1901,6 +1917,26 @@ impl App {
                 self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));
             }
             Message::Canvas(ViewEvent::SlurDragEnd) => self.editor.end_gesture(),
+            Message::Canvas(ViewEvent::Context { target, at, screen }) => {
+                self.export_menu = false;
+                self.editor.status.clear();
+                let Some(p) = at else { return Task::none() };
+                if let Some(mi) = self.page_movements.get(p.page).copied().filter(|mi| *mi != self.editor.movement) {
+                    self.editor.switch_movement(mi);
+                    self.sync();
+                }
+                let kind = match target {
+                    score_view::ContextTarget::Clef => PopoverKind::Clef,
+                    score_view::ContextTarget::Key => PopoverKind::Key,
+                    score_view::ContextTarget::Time => PopoverKind::Time,
+                    score_view::ContextTarget::Barline => PopoverKind::Barline,
+                };
+                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
+                self.sync();
+                self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
+                return iced::widget::operation::focus(POPOVER_INPUT);
+            }
             Message::Canvas(ViewEvent::DoubleClick { hit }) => {
                 if let Some(id) = hit.filter(|_| !self.editor.input_mode) {
                     return self.edit_on_page(id);
@@ -2175,6 +2211,17 @@ impl App {
             }),
             active: self.pages_of(ed.movement),
             slur: ed.selected_slur(),
+            ghost: ed.input_mode.then(|| {
+                use corinzia_edit::BaseDuration as B;
+                use corinzia_layout::font::Glyph;
+                let glyph = match ed.spec.base {
+                    B::Whole => Glyph::NoteheadWhole,
+                    B::Half => Glyph::NoteheadHalf,
+                    _ => Glyph::NoteheadBlack,
+                };
+                let grid = corinzia_edit::DurationSpec { dots: 0, ..ed.spec }.value();
+                score_view::Ghost { glyph: glyph.codepoint(), dots: ed.spec.dots, grid: quarters(grid) }
+            }),
             cache: &self.cache,
         })
         .width(Length::Fill)
@@ -2198,7 +2245,19 @@ impl App {
             if let Some(e) = &p.error {
                 card = card.push(text(e).size(12).style(theme::danger));
             }
-            desk = desk.push(container(iced::widget::opaque(container(card).padding(12).style(theme::card))).padding(16).width(Length::Fill).align_x(iced::Alignment::Center));
+            let card = iced::widget::opaque(container(card).padding(12).style(theme::card));
+            desk = desk.push(match p.anchor {
+                // Just below what it is about (above it near the bottom),
+                // kept inside the window.
+                Some(a) => {
+                    let (w, h) = (344.0, 130.0);
+                    let room = self.window.height - 46.0 - 60.0;
+                    let x = (a.x - 40.0).clamp(8.0, (self.window.width - w - 8.0).max(8.0));
+                    let y = if a.y + 14.0 + h < room { a.y + 14.0 } else { (a.y - h - 40.0).max(8.0) };
+                    container(card).padding(iced::Padding { top: y.max(8.0), left: x, right: 0.0, bottom: 0.0 }).width(Length::Fill).height(Length::Fill)
+                }
+                None => container(card).padding(16).width(Length::Fill).align_x(iced::Alignment::Center),
+            });
         }
 
         if let Some(n) = &self.new_score {
@@ -2830,6 +2889,95 @@ mod tests {
         let _ = a.update(Message::PopoverSubmit);
         assert!(a.popover.is_none(), "accepted: {:?}", a.popover.as_ref().and_then(|p| p.error.clone()));
         a.sync();
+    }
+
+    /// Right-clicks the desk point `at` (staff spaces).
+    fn right_click(a: &mut App, at: iced::Point) {
+        let origins = score_view::page_origins(&a.pages, a.view == View::Page);
+        let target = score_view::context_target(&a.pages, &origins, at).expect("a clef, signature or barline there");
+        let px = a.zoom * score_view::BASE_PX;
+        let screen = iced::Point::new(at.x * px + a.pan.x, at.y * px + a.pan.y);
+        let _ = a.update(Message::Canvas(ViewEvent::Context { target, at: score_view::locate(&a.pages, &origins, at), screen }));
+        assert_eq!(a.popover.as_ref().and_then(|p| p.anchor), Some(screen), "the popover opens by the click");
+    }
+
+    /// Desk points of the marks without an id matching `pick` on page 1.
+    fn marks(a: &App, pick: impl Fn(&Item) -> bool) -> Vec<iced::Point> {
+        let font = corinzia_layout::font::Font::bravura();
+        a.pages[0].items.iter().filter(|i| i.id() == 0 && pick(i)).map(|i| {
+            let r = i.bounds(font);
+            iced::Point::new((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0)
+        }).collect()
+    }
+
+    #[test]
+    fn clefs_keys_and_barlines_change_by_right_click() {
+        use corinzia_layout::font::Glyph;
+        let mut a = app(View::Page);
+        // A barline inside the first system (not its first bar's start).
+        let left = a.pages[0].staves[0].left;
+        let bar = *marks(&a, |i| matches!(i, Item::Line { from, to, .. } if (from.x - to.x).abs() < 1e-3 && (from.y - to.y).abs() >= 3.9 && from.x > left + 5.0)).first().unwrap();
+        let before = a.editor.movement().unwrap().barlines.len();
+        right_click(&mut a, bar);
+        assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Barline);
+        retype(&mut a, "||");
+        assert_eq!(a.editor.movement().unwrap().barlines.len(), before + 1);
+
+        // The first staff's clef: the clef at the start becomes bass.
+        let clef = *marks(&a, |i| matches!(i, Item::Glyph { glyph, .. } if [Glyph::GClef, Glyph::FClef, Glyph::CClef].iter().any(|g| g.codepoint() == *glyph))).first().unwrap();
+        right_click(&mut a, clef);
+        assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Clef);
+        retype(&mut a, "bass");
+        let m = a.editor.movement().unwrap();
+        assert!(m.lanes.iter().any(|l| l.clefs.iter().any(|c| c.clef == "bass" && c.at == Frac::ZERO)), "{:?}", m.lanes.iter().map(|l| &l.clefs).collect::<Vec<_>>());
+
+        // A key signature's accidental: the key at the start changes.
+        a.editor.clear_selection();
+        a.editor.caret = Frac::ZERO;
+        let _ = a.open_popover(PopoverKind::Key);
+        retype(&mut a, "D");
+        let sharp = *marks(&a, |i| matches!(i, Item::Glyph { glyph, .. } if *glyph == Glyph::Sharp.codepoint())).first().unwrap();
+        right_click(&mut a, sharp);
+        assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Key);
+        retype(&mut a, "Eb");
+        let m = a.editor.movement().unwrap();
+        assert_eq!((m.keys.len(), m.keys[0].fifths), (1, -3));
+    }
+
+    #[test]
+    fn the_note_input_shadow_is_where_a_click_writes() {
+        let mut a = app(View::Page);
+        let _ = a.act(Action::SetInput(true));
+        assert!(a.editor.input_mode);
+        let g = score_view::Ghost { glyph: corinzia_layout::font::Glyph::NoteheadBlack.codepoint(), dots: 0, grid: 1.0 };
+        let origins = score_view::page_origins(&a.pages, true);
+        // Over the first staff, a little into its second bar, a space above the top line.
+        let st = a.pages[0].staves[0].clone();
+        let col = a.pages[0].columns.iter().filter(|c| c.system == st.system && c.quarter >= 4.0).nth(1).unwrap().clone();
+        let desk = iced::Point::new(origins[0].x + col.x + 0.3, origins[0].y + st.top - 1.0);
+        let (spot, ..) = score_view::ghost_spot(&a.pages, &origins, &a.pages_of(a.editor.movement), desk, g).expect("a shadow");
+        let at = score_view::locate(&a.pages, &origins, desk);
+        let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at, shift: false }));
+        a.sync();
+        let id = a.editor.selection.expect("a note written");
+        let head = a.pages.iter().zip(&origins).find_map(|(p, o)| p.items.iter().find_map(|i| match i {
+            Item::Glyph { id: g, at, .. } if *g == id => Some(iced::Point::new(at.x + o.x, at.y + o.y)),
+            _ => None,
+        })).expect("engraved");
+        assert!(head.distance(spot) < 0.05, "shadow {spot:?}, note {head:?}");
+    }
+
+    #[test]
+    fn popovers_open_by_the_caret() {
+        let mut a = app(View::Page);
+        a.editor.clear_selection();
+        a.editor.caret = Frac::int(2);
+        let _ = a.open_popover(PopoverKind::Tempo);
+        let first = a.popover.as_ref().and_then(|p| p.anchor).expect("anchored");
+        a.editor.caret = Frac::int(1);
+        let _ = a.open_popover(PopoverKind::Tempo);
+        let earlier = a.popover.as_ref().and_then(|p| p.anchor).unwrap();
+        assert!(earlier.x < first.x || earlier.y < first.y, "{earlier:?} before {first:?}");
     }
 
     #[test]

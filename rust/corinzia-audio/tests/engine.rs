@@ -359,3 +359,62 @@ fn expression_maps_switch_sounds() {
     assert_eq!(t.programs.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
     assert!(t.notes.iter().any(|n| n.key == 24));
 }
+
+/// `n` copies of the flute, each panned, with a gain insert and a send to
+/// a reverb bus (ids offset per copy).
+fn ensemble(n: u64) -> Project {
+    let one = project();
+    let mut p = one.clone();
+    p.tracks.clear();
+    p.instruments.clear();
+    p.players.clear();
+    p.movements[0].lanes.clear();
+    effect(&mut p, 900, "org.corinzia.reverb", &[1.0, 0.8, 0.3]);
+    p.buses.push(Bus { id: 901, name: "Reverb".into(), inserts: vec![900], gain_db: 0.0, pan: 0.0, mute: false });
+    for i in 0..n {
+        let o = 1000 + i * 100;
+        let mut t = one.tracks[0].clone();
+        (t.id, t.pan, t.inserts, t.sends) = (o + 1, i as f64 / n as f64 * 2.0 - 1.0, vec![o + 50], vec![SendLevel { bus: 901, gain_db: -6.0 }]);
+        effect(&mut p, o + 50, "org.corinzia.gain", &[-(i as f64), 0.0]);
+        let mut ins = one.instruments[0].clone();
+        (ins.id, ins.player, ins.track) = (o + 2, o + 3, Some(o + 1));
+        let mut pl = one.players[0].clone();
+        (pl.id, pl.instruments) = (o + 3, vec![o + 2]);
+        let mut lane = one.movements[0].lanes[0].clone();
+        lane.player = o + 3;
+        lane.changes[0].instrument = o + 2;
+        lane.changes[0].id = o + 4;
+        lane.voices[0].id = o + 5;
+        lane.voices[0].events = Arc::new(lane.voices[0].events.iter().cloned().map(|mut e| {
+            e.id += o;
+            for h in &mut e.heads {
+                h.id += o;
+                h.pitch.octave = 3 + (i % 3) as i8;
+            }
+            e
+        }).collect());
+        p.tracks.push(t);
+        p.instruments.push(ins);
+        p.players.push(pl);
+        p.movements[0].lanes.push(lane);
+    }
+    p
+}
+
+#[test]
+fn rendering_on_worker_threads_matches_one_thread() {
+    let p = ensemble(24);
+    let frames = SR as usize * 2;
+    let run = |workers| {
+        let mut pool = PluginPool::new(SR, 256);
+        let (mut ui, mut eng) = engine::with_workers(SR, 256, corinzia_audio::workers::Workers::new(workers));
+        ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+        ui.play();
+        eng.render_offline(frames)
+    };
+    let one = run(0);
+    assert!(rms(&one.0[1000..20000]) > 0.01);
+    for w in [1, 3, 7] {
+        assert!(run(w) == one, "{w} workers");
+    }
+}

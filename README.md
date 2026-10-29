@@ -12,8 +12,8 @@ Note: Corinzia is under active development and is considered pre-alpha quality s
 
 Corinzia is written in Rust. The score is engraved by its own engraver
 (Bravura/SMuFL) and drawn on the GPU with iced; playback hosts CLAP and
-VST3 instruments in a lock-free realtime engine that outputs through
-PipeWire.
+VST3 instruments in a lock-free realtime engine, rendering instruments in
+parallel on every core, that outputs through PipeWire.
 
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
@@ -24,8 +24,10 @@ PipeWire.
   LilyPond does it; click one and drag an end to another note (or
   Shift/Alt+←→), X flips it; tuplets of any ratio and grace notes; key,
   time (with pickups), clef, tempo, barlines, repeat endings, rehearsal
-  marks and text through popovers and the Structure panel. Double-click a
-  title, tempo mark, text, chord symbol, dynamic or lyric to retype it.
+  marks and text through popovers and the Structure panel; popovers open
+  beside what they act on. Double-click a title, tempo mark, text, chord
+  symbol, dynamic or lyric to retype it; right-click a clef, key or time
+  signature or barline to change it (a right-drag pans).
   Escape or a click on blank paper deselects. Every action is one undo
   step.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
@@ -240,7 +242,8 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 | `scripts/` | headless screenshots, a private PipeWire session for the live audio test |
 
 Press **N** to write notes: A–G enter pitches, 1–7 pick durations
-(5 = quarter), R enters a rest; clicking a staff in input mode places a note.
+(5 = quarter), R enters a rest; clicking a staff in input mode places a note,
+and a shadow of the note under the pointer shows where and at which pitch.
 Outside note input the same keys edit the selection: 1–7 and `.` change
 the selected notes' durations (longer music overwrites what follows;
 shorter leaves rests), A–G change the pitch, `-` `=` `0` set flat, sharp or

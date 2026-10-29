@@ -167,6 +167,11 @@ pub struct StaffPoint {
 /// The staff point under a desk position: the nearest staff of the system
 /// it falls in, with time interpolated between that system's columns.
 pub fn locate(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<StaffPoint> {
+    locate_staff(pages, origins, at).map(|(sp, _)| sp)
+}
+
+/// [`locate`], with the staff found.
+fn locate_staff<'a>(pages: &'a [DisplayList], origins: &[Vector], at: Point) -> Option<(StaffPoint, &'a corinzia_layout::display::StaffGeom)> {
     for (page, (p, o)) in pages.iter().zip(origins).enumerate() {
         let local = Point::new(at.x - o.x, at.y - o.y);
         if local.x < 0.0 || local.y < 0.0 || local.x > p.width || local.y > p.height {
@@ -190,9 +195,68 @@ pub fn locate(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<St
                 a.quarter + (b.quarter - a.quarter) * ((local.x - a.x) / (b.x - a.x).max(1e-6)) as f64
             }
         };
-        return Some(StaffPoint { page, part: st.part, quarter, step_below_top: ((local.y - st.top) * 2.0).round() as i32 });
+        return Some((StaffPoint { page, part: st.part, quarter, step_below_top: ((local.y - st.top) * 2.0).round() as i32 }, st));
     }
     None
+}
+
+/// What a right-click can change on the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTarget {
+    Clef,
+    Key,
+    Time,
+    Barline,
+}
+
+/// The clef, key signature, time signature or barline under a desk point.
+/// Their marks carry no id: they are told apart by glyph (accidentals of
+/// notes carry the note's id, a key signature's do not) and barlines are
+/// the vertical strokes as tall as a staff.
+pub fn context_target(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<ContextTarget> {
+    use corinzia_layout::font::Glyph::*;
+    let font = MusicFont::bravura();
+    let clefs = [GClef, FClef, CClef, GClef8vb, FClef8vb, PercussionClef, TabClef6, TabClef4].map(|g| g.codepoint());
+    let keys = [Sharp, Flat, Natural].map(|g| g.codepoint());
+    let times: Vec<u32> = (0..10).map(TimeSigDigit).chain([TimeSigCommon, TimeSigCut]).map(|g| g.codepoint()).collect();
+    let mut best: Option<(f32, ContextTarget)> = None;
+    for (p, o) in pages.iter().zip(origins) {
+        let local = Point::new(at.x - o.x, at.y - o.y);
+        for item in &p.items {
+            let found = match item {
+                Item::Glyph { glyph, id: 0, .. } => {
+                    let kind = if clefs.contains(glyph) {
+                        ContextTarget::Clef
+                    } else if keys.contains(glyph) {
+                        ContextTarget::Key
+                    } else if times.contains(glyph) {
+                        ContextTarget::Time
+                    } else {
+                        continue;
+                    };
+                    let r = item.bounds(font);
+                    let pad = 0.3;
+                    if local.x < r[0] - pad || local.x > r[2] + pad || local.y < r[1] - pad || local.y > r[3] + pad {
+                        continue;
+                    }
+                    ((local.x - (r[0] + r[2]) / 2.0).abs(), kind)
+                }
+                Item::Line { from, to, id: 0, .. } if (from.x - to.x).abs() < 1e-3 && (from.y - to.y).abs() >= 3.9 => {
+                    let (y0, y1) = (from.y.min(to.y), from.y.max(to.y));
+                    let dx = (local.x - from.x).abs();
+                    if dx > 0.6 || local.y < y0 - 0.5 || local.y > y1 + 0.5 {
+                        continue;
+                    }
+                    (dx, ContextTarget::Barline)
+                }
+                _ => continue,
+            };
+            if best.is_none_or(|b| found.0 < b.0) {
+                best = Some(found);
+            }
+        }
+    }
+    best.map(|b| b.1)
 }
 
 /// x of a written position in one system, interpolated between its columns.
@@ -249,6 +313,19 @@ pub enum ViewEvent {
     SlurDragEnd,
     /// A second click on the same spot: edit what is there.
     DoubleClick { hit: Option<u64> },
+    /// A right-click (no drag) on a clef, key or time signature or barline;
+    /// `screen` is the pointer in the canvas.
+    Context { target: ContextTarget, at: Option<StaffPoint>, screen: Point },
+}
+
+/// The note that note input would write under the pointer, drawn as a
+/// shadow: its notehead and dots, snapped to the duration's grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ghost {
+    pub glyph: u32,
+    pub dots: u8,
+    /// The grid, in quarters (the undotted duration).
+    pub grid: f64,
 }
 
 /// The input caret: a part and a time.
@@ -284,6 +361,8 @@ pub struct ScoreView<'a> {
     pub active: std::ops::Range<usize>,
     /// The slur selected: drawn with drag handles.
     pub slur: Option<u64>,
+    /// In note input: the note a click would write.
+    pub ghost: Option<Ghost>,
     pub cache: &'a Cache,
 }
 
@@ -301,6 +380,10 @@ pub struct Interaction {
     /// When and where the last click was (for double-clicks).
     last_click: Option<(std::time::Instant, Point)>,
     modifiers: iced::keyboard::Modifiers,
+    /// Where a right button went down, until it drags (then it pans).
+    right_press: Option<Point>,
+    /// The pointer over the canvas (for the note-input shadow).
+    hover: Option<Point>,
 }
 
 impl ScoreView<'_> {
@@ -339,11 +422,22 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                 state.marquee = false;
                 Some(canvas::Action::capture())
             }
-            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle | mouse::Button::Right)) => {
-                state.panning = Some(pos?);
+            Event::Mouse(mouse::Event::ButtonPressed(b @ (mouse::Button::Middle | mouse::Button::Right))) => {
+                let p = pos?;
+                state.panning = Some(p);
+                state.right_press = (*b == mouse::Button::Right).then_some(p);
                 Some(canvas::Action::capture())
             }
+            Event::Mouse(mouse::Event::CursorLeft) => {
+                state.hover.take().map(|_| canvas::Action::request_redraw())
+            }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let hover = std::mem::replace(&mut state.hover, pos.filter(|_| self.ghost.is_some()));
+                if let (Some(from), Some(p)) = (state.right_press, pos) {
+                    if p.distance(from) > 4.0 {
+                        state.right_press = None; // a drag: it pans
+                    }
+                }
                 if let (Some(from), Some(p)) = (state.panning, pos) {
                     state.panning = Some(p);
                     return Some(canvas::Action::publish(ViewEvent::Pan(p - from)).and_capture());
@@ -363,9 +457,18 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                     state.current = Some(p);
                     return Some(canvas::Action::request_redraw().and_capture());
                 }
-                None
+                (hover != state.hover).then(canvas::Action::request_redraw)
             }
-            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle | mouse::Button::Right)) => {
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) => {
+                state.panning.take()?;
+                let p = state.right_press.take();
+                let origins = page_origins(self.pages, self.vertical);
+                match p.and_then(|p| context_target(self.pages, &origins, self.to_desk(p)).map(|t| (t, p))) {
+                    Some((target, screen)) => Some(canvas::Action::publish(ViewEvent::Context { target, at: locate(self.pages, &origins, self.to_desk(screen)), screen }).and_capture()),
+                    None => Some(canvas::Action::capture()),
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
                 state.panning.take().map(|_| canvas::Action::capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
@@ -446,6 +549,11 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                     draw_playhead(f, page, *origin, *q, px);
                 }
             }
+            if let (Some(g), Some(h)) = (self.ghost, state.hover) {
+                if state.press.is_none() && state.panning.is_none() {
+                    draw_ghost(f, self.pages, &origins, &self.active, self.to_desk(h), g, px);
+                }
+            }
             if let Some(id) = self.slur {
                 let r = (0.35f32).max(4.0 / px);
                 for (_, at) in slur_handles(self.pages, &origins, id) {
@@ -475,6 +583,52 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
         } else {
             mouse::Interaction::default()
         }
+    }
+}
+
+/// Where the note-input shadow stands for the pointer at `desk`: the
+/// notehead's origin, its staff's top line, the step below it, and the
+/// staff line width.
+pub fn ghost_spot(pages: &[DisplayList], origins: &[Vector], active: &std::ops::Range<usize>, desk: Point, g: Ghost) -> Option<(Point, f32, i32, f32)> {
+    let (sp, st) = locate_staff(pages, origins, desk)?;
+    if !active.contains(&sp.page) || !(-12..=20).contains(&sp.step_below_top) {
+        return None;
+    }
+    let (page, o) = (&pages[sp.page], origins[sp.page]);
+    let k = (sp.quarter / g.grid + 0.35).floor().max(0.0);
+    let x = column_x(page, st.system, k * g.grid)?;
+    let top = o.y + st.top;
+    Some((Point::new(o.x + x, top + sp.step_below_top as f32 * 0.5), top, sp.step_below_top, st.line_width))
+}
+
+/// The note-input shadow: where a click at `desk` would write the note
+/// (the same grid snap as note input), with ledger lines and dots.
+fn draw_ghost(f: &mut Frame, pages: &[DisplayList], origins: &[Vector], active: &std::ops::Range<usize>, desk: Point, g: Ghost, px: f32) {
+    let Some((Point { x, y }, top, step, line_width)) = ghost_spot(pages, origins, active, desk, g) else { return };
+    let color = Color { a: 0.45, ..CARET };
+    let r = Item::Glyph { glyph: g.glyph, at: corinzia_layout::display::Point { x: 0.0, y: 0.0 }, scale: 1.0, id: 0 }.bounds(MusicFont::bravura());
+    let w = r[2] - r[0];
+    // Ledger lines above and below the staff.
+    let ledger = |f: &mut Frame, s: i32| {
+        let y = top + s as f32 * 0.5;
+        f.stroke(&Path::line(Point::new(x - 0.4, y), Point::new(x + w + 0.4, y)), Stroke::default().with_width(line_width * 1.6 * px).with_color(color));
+    };
+    for s in (step..=-2).filter(|s| s % 2 == 0) {
+        ledger(f, s);
+    }
+    for s in (10..=step).filter(|s| s % 2 == 0) {
+        ledger(f, s);
+    }
+    if let Some(p) = glyph_path(g.glyph) {
+        f.with_save(|h| {
+            h.translate(Vector::new(x, y));
+            h.fill(&p, color);
+        });
+    }
+    // Dots sit in a space.
+    let dot_y = if step % 2 == 0 { y - 0.5 } else { y };
+    for d in 0..g.dots {
+        f.fill(&Path::circle(Point::new(x + w + 0.45 + d as f32 * 0.55, dot_y), 0.2), color);
     }
 }
 
@@ -514,7 +668,8 @@ fn draw_highlight(frame: &mut Frame, page: &DisplayList, origin: Vector, h: High
     }
 }
 
-fn draw_caret(frame: &mut Frame, page: &DisplayList, origin: Vector, c: Caret, px: f32) {
+/// Where the caret stands on a page: x and the top line of its staff.
+fn caret_spot(page: &DisplayList, c: Caret) -> Option<(f32, f32)> {
     for st in page.staves.iter().filter(|s| s.part == c.part) {
         let cols: Vec<_> = page.columns.iter().filter(|k| k.system == st.system).collect();
         let (Some(first), Some(last)) = (cols.first(), cols.last()) else { continue };
@@ -524,14 +679,36 @@ fn draw_caret(frame: &mut Frame, page: &DisplayList, origin: Vector, c: Caret, p
             continue;
         }
         let Some(x) = column_x(page, st.system, c.quarter) else { continue };
+        return Some((x, st.top));
+    }
+    None
+}
+
+fn draw_caret(frame: &mut Frame, page: &DisplayList, origin: Vector, c: Caret, px: f32) {
+    if let Some((x, top)) = caret_spot(page, c) {
         let x = origin.x + x - 0.6;
-        let line = Path::line(Point::new(x, origin.y + st.top - 1.5), Point::new(x, origin.y + st.top + 5.5));
+        let line = Path::line(Point::new(x, origin.y + top - 1.5), Point::new(x, origin.y + top + 5.5));
         frame.stroke(&line, Stroke::default().with_width(0.28 * px).with_color(CARET));
         let tick = |y: f32| Path::line(Point::new(x - 0.5, y), Point::new(x + 0.5, y));
-        frame.stroke(&tick(origin.y + st.top - 1.5), Stroke::default().with_width(0.2 * px).with_color(CARET));
-        frame.stroke(&tick(origin.y + st.top + 5.5), Stroke::default().with_width(0.2 * px).with_color(CARET));
-        return;
+        frame.stroke(&tick(origin.y + top - 1.5), Stroke::default().with_width(0.2 * px).with_color(CARET));
+        frame.stroke(&tick(origin.y + top + 5.5), Stroke::default().with_width(0.2 * px).with_color(CARET));
     }
+}
+
+/// Where a popover points, in desk coordinates: under item `id` if it is
+/// on the page, else under the staff at `at` (on the `active` pages).
+pub fn anchor(pages: &[DisplayList], origins: &[Vector], active: &std::ops::Range<usize>, id: Option<u64>, at: Option<Caret>) -> Option<Point> {
+    let font = MusicFont::bravura();
+    if let Some(id) = id.filter(|i| *i != 0) {
+        for (p, o) in pages.iter().zip(origins) {
+            if let Some(item) = p.items.iter().find(|i| i.id() == id) {
+                let r = item.bounds(font);
+                return Some(Point::new(o.x + (r[0] + r[2]) / 2.0, o.y + r[3]));
+            }
+        }
+    }
+    let c = at?;
+    pages.iter().zip(origins).skip(active.start).take(active.len()).find_map(|(p, o)| caret_spot(p, c).map(|(x, top)| Point::new(o.x + x, o.y + top + 5.0)))
 }
 
 /// `px`: pixels per staff space. iced transforms a path's points but not its
