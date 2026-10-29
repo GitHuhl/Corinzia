@@ -2474,6 +2474,25 @@ impl<'a> Engraver<'a> {
                             self.place(pi, Item::glyph(Glyph::PedalUp, release, y, id));
                         }
                     }
+                    LineKind::Cue => {
+                        // The clip's name, then a line to its end, hooked down.
+                        let Some(t) = part.texts.iter().find(|t| t.id == id) else { continue };
+                        let x0 = if starts { self.col_x(l.from) } else { x0 };
+                        let x1 = if ends { self.col_x(l.to.min(r1)).max(x0 + 1.0) } else { x1 };
+                        let w = if starts { text_width(&t.text, TEXT_SIZE, false) } else { 0.0 };
+                        let base = self.sky[pi].top_over(x0, x1) - 0.4 - 0.22 * TEXT_SIZE;
+                        if starts {
+                            self.place(pi, Item::Text { text: t.text.clone(), at: pt(x0, base), size: TEXT_SIZE, italic: false, bold: false, anchor: 0, id });
+                        }
+                        let ly = base - 0.3 * TEXT_SIZE;
+                        let from = x0 + w + if starts { 0.4 } else { 0.0 };
+                        if from < x1 {
+                            self.place(pi, Item::line(from, ly, x1, ly, 0.12, id));
+                        }
+                        if ends {
+                            self.place(pi, Item::line(x1, ly, x1, ly + 0.9, 0.12, id));
+                        }
+                    }
                     LineKind::Octave(k) => {
                         let above = k > 0;
                         let g = match k {
@@ -2508,7 +2527,9 @@ impl<'a> Engraver<'a> {
     /// Technique text above (`above`), expression text below, in italics.
     fn draw_texts(&mut self, above: bool) {
         for (pi, part) in self.score.parts.iter().enumerate() {
-            for t in part.texts.iter().filter(|t| t.technique == above && t.at >= self.range.0 && t.at < self.range.1) {
+            // A cue's text is drawn with its line.
+            let cued = |id: u64| part.lines.iter().any(|l| l.kind == LineKind::Cue && l.id == id);
+            for t in part.texts.iter().filter(|t| t.technique == above && t.at >= self.range.0 && t.at < self.range.1 && !cued(t.id)) {
                 let x = self.col_x(t.at);
                 let w = text_width(&t.text, TEXT_SIZE, false);
                 let y = if above {

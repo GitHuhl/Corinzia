@@ -268,6 +268,9 @@ pub enum LineKind {
     Octave(i8),
     /// The sustain pedal held.
     Pedal,
+    /// An audio clip sounding: its cue text (the part's text with the same
+    /// id) and a line to where the clip ends.
+    Cue,
 }
 
 impl LineKind {
@@ -279,6 +282,7 @@ impl LineKind {
             LineKind::Octave(-2) => "15mb",
             LineKind::Octave(_) => "8va",
             LineKind::Pedal => "ped",
+            LineKind::Cue => "cue",
         }
     }
     pub fn from_code(c: &str) -> Option<LineKind> {
@@ -288,6 +292,7 @@ impl LineKind {
             "15ma" => LineKind::Octave(2),
             "15mb" => LineKind::Octave(-2),
             "ped" => LineKind::Pedal,
+            "cue" => LineKind::Cue,
             _ => return None,
         })
     }

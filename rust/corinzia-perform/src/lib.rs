@@ -582,6 +582,66 @@ pub fn perform(m: &Movement) -> Performance {
     Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes }
 }
 
+/// Audio clips' cues for the score: on the staves of the player each clip
+/// is cued on, its name with "▸" where it starts (seconds after the
+/// movement's start, through the tempo, as written), and with its line, a
+/// line to where it ends: (player, text, line).
+pub fn clip_cues(project: &Project, m: &Movement) -> Vec<(Id, corinzia_score::score::Text, Option<corinzia_score::score::LineSpan>)> {
+    use corinzia_score::score::{LineKind, LineSpan, Text};
+    let clips: Vec<&corinzia_model::AudioClip> = project.tracks.iter().filter(|t| t.audio).flat_map(|t| t.clips.iter()).filter(|c| c.movement == m.id && c.cue.is_some() && !c.mute).collect();
+    if clips.is_empty() {
+        return vec![];
+    }
+    let perf = perform(m);
+    // Seconds -> a written position, to the 1/64 of a quarter, inside the movement.
+    let written = |s: f64| -> Frac {
+        let w = perf.written_quarter(perf.tempo.quarter_at(s.max(0.0))).clamp(0.0, q(m.length));
+        Frac::new((w * 256.0).round() as i64, 1024).min(m.length)
+    };
+    clips
+        .into_iter()
+        .filter_map(|c| {
+            let from = written(c.at);
+            if from >= m.length {
+                return None;
+            }
+            let text = Text { id: c.id, at: from, text: format!("{} ▸", c.name), technique: true };
+            // Without a set length, the line runs to the movement's end.
+            let to = if c.length > 0.0 { written(c.at + c.length) } else { m.length };
+            let line = (c.cue_line && to > from).then_some(LineSpan { id: c.id, from, to, kind: LineKind::Cue });
+            Some((c.cue?, text, line))
+        })
+        .collect()
+}
+
+fn add_cues(project: &Project, m: &Movement, s: &mut corinzia_score::score::Score, players: &[Id]) {
+    for (player, text, line) in clip_cues(project, m) {
+        // On the player's first staff.
+        if let Some(part) = players.iter().position(|p| *p == player).and_then(|i| s.parts.get_mut(i)) {
+            part.texts.push(text);
+            part.lines.extend(line);
+        }
+    }
+}
+
+/// The movement for the engraver (see `corinzia_model::notation::score_as`),
+/// with audio clips' cues.
+pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> corinzia_score::score::Score {
+    let mut s = corinzia_model::notation::score_as(project, m, transposed);
+    let players: Vec<Id> = m.lanes.iter().map(|l| l.player).collect();
+    add_cues(project, m, &mut s, &players);
+    s
+}
+
+/// One player's part (see `corinzia_model::notation::part_score`), with
+/// the audio clips cued on it.
+pub fn part_score(project: &Project, m: &Movement, player: Id) -> corinzia_score::score::Score {
+    let mut s = corinzia_model::notation::part_score(project, m, player);
+    let players: Vec<Id> = m.lanes.iter().map(|l| l.player).filter(|p| *p == player).collect();
+    add_cues(project, m, &mut s, &players);
+    s
+}
+
 /// The export document of one movement (notation + performance): one MIDI
 /// track per DAW track that sounds, in mixer order; gate and roll applied in
 /// time, as in playback.
@@ -652,7 +712,7 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
         title: project.title.clone(),
         composer: project.composer.clone(),
         // Written pitch with <transpose>, as MusicXML expects.
-        score: corinzia_model::notation::score_as(project, m, true),
+        score: score_as(project, m, true),
         performance: doc::Performance {
             tempo: perf.tempo_points.iter().map(|t| doc::PerfTempo { q: t.quarter, bpm: t.bpm, ramp: t.ramp_to_next }).collect(),
             meters: perf.meter_points.iter().map(|x| doc::PerfMeter { q: x.quarter, num: x.num, den: x.den }).collect(),

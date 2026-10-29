@@ -125,7 +125,9 @@ parallel on every core, that outputs through PipeWire.
   changes do not move them). In the arrange view, drag a clip to move it
   (snapping to the beat; Shift for none), its edges to trim, its top
   corners to fade; Ctrl+drag copies, Delete removes. A selected clip has
-  its gain, mute and name beside the strips. Audio tracks have effects,
+  its gain, mute and name beside the strips, and can be cued in the
+  score: its name with ▸ on a chosen player's staff where it starts
+  (through the tempo), optionally with a line to where it ends. Audio tracks have effects,
   sends, an output and a fader like any track. Files are decoded and
   resampled to the engine's rate once and kept in memory.
 * **Automation** (Mix tab): a strip's "Automation lane" shows a curve on

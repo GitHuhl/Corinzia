@@ -634,12 +634,12 @@ impl App {
             let m = &project.movements[mi];
             match part {
                 Some(p) => {
-                    let s = corinzia_model::notation::part_score(project, m, p);
+                    let s = corinzia_perform::part_score(project, m, p);
                     let lanes = (0..m.lanes.len()).filter(|&li| m.lanes[li].player == p).collect();
                     ((s, lanes), files::page_setup(&project.part_layout, true))
                 }
                 None => {
-                    let mut s = corinzia_model::notation::score_as(project, m, self.editor.transposed);
+                    let mut s = corinzia_perform::score_as(project, m, self.editor.transposed);
                     let lanes = if project.layout.condense { corinzia_model::notation::condense(&mut s) } else { (0..s.parts.len()).collect() };
                     ((s, lanes), files::page_setup(&project.layout, false))
                 }
@@ -4279,6 +4279,32 @@ mod tests {
         // The plan plays it: a node with the clip.
         a.sync();
         assert!(a.playback.clip_errors.is_empty(), "{:?}", a.playback.clip_errors);
+    }
+
+    #[test]
+    fn a_clip_cued_on_a_staff_is_engraved_there() {
+        let mut a = app(View::Page);
+        let rate = a.playback.sample_rate;
+        a.playback.pool.media.insert("rain.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.1; (rate * 3.0) as usize]], rate));
+        a.editor.caret = Frac::new(1, 2);
+        let _ = a.update(Message::AudioChosen(0, Some("rain.wav".into())));
+        let (_, clip) = a.selected_clip.unwrap();
+        let drawn = |a: &App| a.pages.iter().flat_map(|p| p.items.iter()).filter(|i| i.id() == clip).cloned().collect::<Vec<Item>>();
+        a.sync();
+        assert!(drawn(&a).is_empty(), "not cued: not in the score");
+        let player = a.editor.project.players[1].name.clone();
+        let _ = a.update(Message::Mix(mix::MixMsg::ClipCue(player)));
+        a.sync();
+        let items = drawn(&a);
+        assert!(items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "rain ▸")), "{items:?}");
+        assert!(!items.iter().any(|i| matches!(i, Item::Line { .. })), "no line yet");
+        let _ = a.update(Message::Mix(mix::MixMsg::ClipCueLine));
+        a.sync();
+        assert!(drawn(&a).iter().filter(|i| matches!(i, Item::Line { .. })).count() >= 2, "a line and its hook");
+        // On the second player's staff: below the first staff's top.
+        let first = a.pages[0].staves.iter().find(|s| s.part == 0).unwrap().top;
+        let y = drawn(&a).iter().find_map(|i| match i { Item::Text { at, .. } => Some(at.y), _ => None }).unwrap();
+        assert!(y > first + 4.0, "{y} under the first staff ({first})");
     }
 
     #[test]

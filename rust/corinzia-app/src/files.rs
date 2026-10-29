@@ -268,7 +268,7 @@ pub fn page_setup(l: &corinzia_model::Layout, part: bool) -> (Options, PageSpec)
 pub fn work_pages(project: &Project, transposed: bool) -> Vec<corinzia_layout::DisplayList> {
     let mut pages = Vec::new();
     for (i, m) in project.movements.iter().enumerate() {
-        let mut score = corinzia_model::notation::score_as(project, m, transposed);
+        let mut score = corinzia_perform::score_as(project, m, transposed);
         if project.layout.condense {
             corinzia_model::notation::condense(&mut score);
         }
@@ -298,7 +298,7 @@ pub fn parts_pages(project: &Project) -> Vec<corinzia_layout::DisplayList> {
             if !m.lanes.iter().any(|l| l.player == player.id) {
                 continue;
             }
-            let mut score = corinzia_model::notation::part_score(project, m, player.id);
+            let mut score = corinzia_perform::part_score(project, m, player.id);
             if i > 0 {
                 score.work_title.clear();
                 score.composer.clear();

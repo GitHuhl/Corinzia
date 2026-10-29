@@ -299,3 +299,41 @@ fn the_pedal_holds_notes_until_it_lifts() {
     assert!(off(74) <= 2.0 && off(74) > 1.5);
     assert!(off(76) < 3.0);
 }
+
+#[test]
+fn audio_clips_are_cued_where_they_start_through_the_tempo() {
+    use corinzia_score::score::LineKind;
+    let mut m = fixture(); // two bars of 4/4 at 120: two quarters a second
+    m.tempo.push(Tempo { at: f(1, 1), bpm: 60.0, ramp: false, text: String::new() }); // bar 2 at 60
+    let clip = |id, at, length, cue: Option<u64>, line| {
+        let mut c = AudioClip::new(id, "Rain", "rain.wav", 1, at);
+        (c.length, c.cue, c.cue_line) = (length, cue, line);
+        c
+    };
+    let mut project = Project {
+        players: vec![Player { id: 2, name: "P".into(), instruments: vec![4] }],
+        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![] }],
+        movements: vec![m.clone()],
+        ..Default::default()
+    };
+    project.tracks.push(Track { id: 7, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![
+        // 1 s: beat 3 of bar 1; to 3 s: one beat into bar 2 (at 60).
+        clip(60, 1.0, 2.0, Some(2), true),
+        // Not cued.
+        clip(61, 0.5, 1.0, None, true),
+    ] });
+    let cues = clip_cues(&project, &m);
+    assert_eq!(cues.len(), 1);
+    let (player, text, line) = &cues[0];
+    assert_eq!((*player, text.id, text.at, text.text.as_str()), (2, 60, f(1, 2), "Rain ▸"));
+    let line = line.expect("a line");
+    assert_eq!((line.from, line.to, line.kind), (f(1, 2), f(5, 4), LineKind::Cue));
+    // In the score and the player's part.
+    let s = score_as(&project, &m, true);
+    assert!(s.parts[0].texts.iter().any(|t| t.id == 60) && s.parts[0].lines.iter().any(|l| l.id == 60));
+    let part = part_score(&project, &m, 2);
+    assert!(part.parts[0].texts.iter().any(|t| t.id == 60));
+    // Muted: no cue.
+    project.tracks[0].clips[0].mute = true;
+    assert!(clip_cues(&project, &m).is_empty());
+}

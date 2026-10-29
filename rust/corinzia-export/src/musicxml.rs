@@ -340,12 +340,13 @@ impl<'a> Writer<'a> {
             for l in &part.lines {
                 let (start, stop) = match l.kind {
                     LineKind::Pedal => ("<pedal type=\"start\" line=\"no\" sign=\"yes\"/>".to_string(), "<pedal type=\"stop\" line=\"no\" sign=\"yes\"/>".to_string()),
+                    LineKind::Cue => ("<bracket type=\"start\" line-end=\"none\" line-type=\"solid\"/>".to_string(), "<bracket type=\"stop\" line-end=\"down\" line-type=\"solid\"/>".to_string()),
                     LineKind::Octave(k) => {
                         let size = if k.abs() >= 2 { 15 } else { 8 };
                         (format!("<octave-shift type=\"{}\" size=\"{size}\"/>", if k > 0 { "down" } else { "up" }), format!("<octave-shift type=\"stop\" size=\"{size}\"/>"))
                     }
                 };
-                let placement = if matches!(l.kind, LineKind::Octave(k) if k > 0) { "above" } else { "below" };
+                let placement = if matches!(l.kind, LineKind::Octave(1..) | LineKind::Cue) { "above" } else { "below" };
                 if l.from >= m.start && l.from < end {
                     directions.push((l.from, format!("      <direction placement=\"{placement}\"><direction-type>{start}</direction-type></direction>")));
                 }
