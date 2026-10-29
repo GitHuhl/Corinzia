@@ -52,7 +52,7 @@ fn builtin_instrument_is_a_clap_plugin() {
     let lib = Library::builtin();
     let infos = lib.plugins();
     let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(ids, ["org.corinzia.sine", "org.corinzia.gain", "org.corinzia.reverb"]);
+    assert_eq!(ids, ["org.corinzia.sine", "org.corinzia.gain", "org.corinzia.reverb", "org.corinzia.eq", "org.corinzia.limiter"]);
     assert!(infos[0].is_instrument() && !infos[1].is_instrument());
     let p = Plugin::create(&lib, "org.corinzia.sine").unwrap();
     assert!(!p.midi_dialect && p.output_channels == 2);

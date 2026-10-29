@@ -106,8 +106,9 @@ parallel on every core, that outputs through PipeWire.
   down. Results are cached in `plugins.json` beside the preferences and
   reused until a bundle changes. Rescan plugins starts afresh.
 * **Effects, buses and the master** (Mix tab): each strip has an effect
-  chain (CLAP or VST3 effects, or the built-in Corinzia Gain and Corinzia
-  Reverb), and effects can be bypassed or reordered. Tracks can also go to
+  chain (CLAP or VST3 effects, or the built-in Corinzia Gain, Reverb, EQ
+  (low and high cut, shelves, two bells) and Limiter (look-ahead, never
+  over its ceiling)), and effects can be bypassed or reordered. Tracks can also go to
   a bus instead of the master, and send to buses post-fader. Buses have
   their own effects, fader, pan and mute; the master strip has effects and
   a fader. A selected effect shows its editor button and a slider per

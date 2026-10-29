@@ -1,7 +1,10 @@
 //! Corinzia's built-in effects, in the same CLAP library as the sine:
-//! Corinzia Gain (level and pan) and Corinzia Reverb (a Schroeder–Moorer
-//! room: parallel damped combs into allpasses, per channel). Both are
-//! stereo in, stereo out, with parameters (automatable) and state.
+//! Corinzia Gain (level and pan), Corinzia Reverb (a Schroeder–Moorer
+//! room: parallel damped combs into allpasses, per channel), Corinzia EQ
+//! (low cut, low shelf, two bells, high shelf, high cut: RBJ biquads) and
+//! Corinzia Limiter (stereo-linked, 1 ms look-ahead: never over its
+//! ceiling). All are stereo in, stereo out, with parameters (automatable)
+//! and state.
 
 use crate::{read_all, write_all, write_name, Sync};
 use clap_sys::events::*;
@@ -20,6 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const GAIN_ID: &CStr = c"org.corinzia.gain";
 pub const REVERB_ID: &CStr = c"org.corinzia.reverb";
+pub const EQ_ID: &CStr = c"org.corinzia.eq";
+pub const LIMITER_ID: &CStr = c"org.corinzia.limiter";
 
 static FX_FEATURES: Sync<[*const c_char; 3]> = Sync([c"audio-effect".as_ptr(), c"stereo".as_ptr(), ptr::null()]);
 
@@ -40,6 +45,8 @@ const fn descriptor(id: &'static CStr, name: &'static CStr, description: &'stati
 
 pub static GAIN_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(GAIN_ID, c"Corinzia Gain", c"Level and pan"));
 pub static REVERB_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(REVERB_ID, c"Corinzia Reverb", c"A small room reverb"));
+pub static EQ_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(EQ_ID, c"Corinzia EQ", c"Low and high cut, shelves and two bells"));
+pub static LIMITER_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(LIMITER_ID, c"Corinzia Limiter", c"A look-ahead peak limiter"));
 
 /// A parameter: (name, min, max, default, unit).
 struct Param {
@@ -57,10 +64,99 @@ const REVERB_PARAMS: [Param; 3] = [
     Param { name: "Damping", min: 0.0, max: 1.0, default: 0.5, unit: "" },
 ];
 
+const EQ_PARAMS: [Param; 12] = [
+    Param { name: "Low cut", min: 20.0, max: 1000.0, default: 20.0, unit: "Hz" },
+    Param { name: "Low gain", min: -18.0, max: 18.0, default: 0.0, unit: "dB" },
+    Param { name: "Low freq", min: 30.0, max: 1000.0, default: 100.0, unit: "Hz" },
+    Param { name: "Mid 1 gain", min: -18.0, max: 18.0, default: 0.0, unit: "dB" },
+    Param { name: "Mid 1 freq", min: 60.0, max: 10000.0, default: 400.0, unit: "Hz" },
+    Param { name: "Mid 1 Q", min: 0.2, max: 10.0, default: 1.0, unit: "" },
+    Param { name: "Mid 2 gain", min: -18.0, max: 18.0, default: 0.0, unit: "dB" },
+    Param { name: "Mid 2 freq", min: 150.0, max: 18000.0, default: 2500.0, unit: "Hz" },
+    Param { name: "Mid 2 Q", min: 0.2, max: 10.0, default: 1.0, unit: "" },
+    Param { name: "High gain", min: -18.0, max: 18.0, default: 0.0, unit: "dB" },
+    Param { name: "High freq", min: 1000.0, max: 18000.0, default: 8000.0, unit: "Hz" },
+    Param { name: "High cut", min: 1000.0, max: 20000.0, default: 20000.0, unit: "Hz" },
+];
+const LIMITER_PARAMS: [Param; 3] = [
+    Param { name: "Input", min: 0.0, max: 24.0, default: 0.0, unit: "dB" },
+    Param { name: "Ceiling", min: -24.0, max: 0.0, default: -0.3, unit: "dB" },
+    Param { name: "Release", min: 1.0, max: 1000.0, default: 80.0, unit: "ms" },
+];
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Gain,
     Reverb,
+    Eq,
+    Limiter,
+}
+
+/// A biquad filter (transposed direct form II), coefficients normalised.
+#[derive(Clone, Copy, Default)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    z: [f32; 2],
+}
+
+/// The RBJ cookbook's filter shapes.
+#[derive(Clone, Copy)]
+enum Shape {
+    HighPass,
+    LowPass,
+    LowShelf,
+    HighShelf,
+    Bell,
+}
+
+impl Biquad {
+    /// Sets the shape; the state carries over (no click on a change).
+    fn set(&mut self, shape: Shape, freq: f64, q: f64, gain_db: f64, sr: f64) {
+        use std::f64::consts::PI;
+        let f = freq.clamp(10.0, sr * 0.49);
+        let w = 2.0 * PI * f / sr;
+        let (s, c) = w.sin_cos();
+        let a = 10f64.powf(gain_db / 40.0);
+        let alpha = s / (2.0 * q.max(0.05));
+        let (b0, b1, b2, a0, a1, a2) = match shape {
+            Shape::HighPass => ((1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha),
+            Shape::LowPass => ((1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha),
+            Shape::Bell => (1.0 + alpha * a, -2.0 * c, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * c, 1.0 - alpha / a),
+            Shape::LowShelf | Shape::HighShelf => {
+                let k = 2.0 * a.sqrt() * alpha;
+                let sign = if matches!(shape, Shape::LowShelf) { 1.0 } else { -1.0 };
+                let (p, m) = (a + 1.0, a - 1.0);
+                if sign > 0.0 {
+                    (a * (p - m * c + k), 2.0 * a * (m - p * c), a * (p - m * c - k), p + m * c + k, -2.0 * (m + p * c), p + m * c - k)
+                } else {
+                    (a * (p + m * c + k), -2.0 * a * (m + p * c), a * (p + m * c - k), p - m * c + k, 2.0 * (m - p * c), p - m * c - k)
+                }
+            }
+        };
+        self.b = [(b0 / a0) as f32, (b1 / a0) as f32, (b2 / a0) as f32];
+        self.a = [(a1 / a0) as f32, (a2 / a0) as f32];
+    }
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+}
+
+/// The limiter's look-ahead: the input delayed, the gains each sample
+/// needs, their minimum over the look-ahead smoothed by a moving average
+/// (so the gain is down by the time a peak comes out, without a click),
+/// then released slowly.
+#[derive(Default)]
+struct Limiter {
+    delay: [Vec<f32>; 2],
+    need: Vec<f32>,
+    mins: Vec<f32>,
+    sum: f64,
+    at: usize,
+    env: f32,
 }
 
 const COMBS: [usize; 4] = [1116, 1188, 1277, 1356];
@@ -106,6 +202,11 @@ pub struct Effect {
     applied: (f32, f32),
     /// The input, copied (it may share memory with the output); sized on activation.
     scratch: [Vec<f32>; 2],
+    sample_rate: f64,
+    /// The EQ's six filters per channel, and the values they were set for.
+    eq: [[Biquad; 6]; 2],
+    eq_for: Vec<f64>,
+    limiter: Limiter,
 }
 
 impl Effect {
@@ -116,7 +217,27 @@ impl Effect {
         match self.kind {
             Kind::Gain => &GAIN_PARAMS,
             Kind::Reverb => &REVERB_PARAMS,
+            Kind::Eq => &EQ_PARAMS,
+            Kind::Limiter => &LIMITER_PARAMS,
         }
+    }
+    /// The EQ's filters for the current values (when they changed).
+    fn tune_eq(&mut self) {
+        let v: Vec<f64> = (0..EQ_PARAMS.len()).map(|i| self.get(i)).collect();
+        if v == self.eq_for {
+            return;
+        }
+        let sr = self.sample_rate;
+        for ch in 0..2 {
+            let f = &mut self.eq[ch];
+            f[0].set(Shape::HighPass, v[0], std::f64::consts::FRAC_1_SQRT_2, 0.0, sr);
+            f[1].set(Shape::LowShelf, v[2], std::f64::consts::FRAC_1_SQRT_2, v[1], sr);
+            f[2].set(Shape::Bell, v[4], v[5], v[3], sr);
+            f[3].set(Shape::Bell, v[7], v[8], v[6], sr);
+            f[4].set(Shape::HighShelf, v[10], std::f64::consts::FRAC_1_SQRT_2, v[9], sr);
+            f[5].set(Shape::LowPass, v[11], std::f64::consts::FRAC_1_SQRT_2, 0.0, sr);
+        }
+        self.eq_for = v;
     }
     fn get(&self, i: usize) -> f64 {
         self.values.get(i).map_or(0.0, |v| f64::from_bits(v.load(Ordering::Relaxed)))
@@ -127,6 +248,11 @@ impl Effect {
         }
     }
     fn build(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
+        self.eq = Default::default();
+        self.eq_for.clear();
+        let look = ((sample_rate * 0.001).round() as usize).max(1);
+        self.limiter = Limiter { delay: [vec![0.0; look], vec![0.0; look]], need: vec![1.0; look], mins: vec![1.0; look], sum: look as f64, at: 0, env: 1.0 };
         let scale = sample_rate / 44100.0;
         for ch in 0..2 {
             let off = ch * SPREAD;
@@ -150,6 +276,55 @@ impl Effect {
                     or[i] = inp[1][i] * (r0 + (gr - r0) * k);
                 }
                 self.applied = (gl, gr);
+            }
+            Kind::Eq => {
+                self.tune_eq();
+                // Off at the ends of their ranges: the cuts.
+                let (low_cut, high_cut) = (self.get(0) > 20.5, self.get(11) < 19999.0);
+                for (ch, (o, x)) in [(&mut *ol, inp[0]), (&mut *or, inp[1])].into_iter().enumerate() {
+                    let f = &mut self.eq[ch];
+                    for (y, &v) in o.iter_mut().zip(x) {
+                        let mut s = v;
+                        if low_cut {
+                            s = f[0].tick(s);
+                        }
+                        for band in &mut f[1..5] {
+                            s = band.tick(s);
+                        }
+                        if high_cut {
+                            s = f[5].tick(s);
+                        }
+                        *y = s;
+                    }
+                }
+            }
+            Kind::Limiter => {
+                let input = 10f32.powf(self.get(0) as f32 / 20.0);
+                let ceiling = 10f32.powf(self.get(1) as f32 / 20.0);
+                let release = (-1.0 / (self.get(2) * 0.001 * self.sample_rate).max(1.0)).exp() as f32;
+                let l = &mut self.limiter;
+                let n = l.need.len();
+                for i in 0..ol.len() {
+                    // The sample leaving the delay now, and the gain it needs.
+                    let (d0, d1, out_need) = (l.delay[0][l.at], l.delay[1][l.at], l.need[l.at]);
+                    let (x0, x1) = (inp[0][i] * input, inp[1][i] * input);
+                    let peak = x0.abs().max(x1.abs());
+                    (l.delay[0][l.at], l.delay[1][l.at]) = (x0, x1);
+                    l.need[l.at] = if peak > ceiling { ceiling / peak } else { 1.0 };
+                    // The least gain any sample in the look-ahead needs,
+                    // averaged over the look-ahead: by the time a peak comes
+                    // out the gain is down to it, having slid there.
+                    let m = l.need.iter().copied().fold(1.0f32, f32::min);
+                    l.sum += (m - l.mins[l.at]) as f64;
+                    l.mins[l.at] = m;
+                    let smooth = (l.sum / n as f64) as f32;
+                    // Released slowly; never above what the outgoing sample needs.
+                    l.env = if smooth < l.env { smooth } else { smooth + (l.env - smooth) * release };
+                    let g = l.env.min(out_need);
+                    ol[i] = (d0 * g).clamp(-ceiling, ceiling);
+                    or[i] = (d1 * g).clamp(-ceiling, ceiling);
+                    l.at = (l.at + 1) % n;
+                }
             }
             Kind::Reverb => {
                 let (mix, size, damp) = (self.get(0) as f32, self.get(1) as f32, self.get(2) as f32 * 0.4);
@@ -209,7 +384,10 @@ unsafe extern "C" fn reset(p: *const clap_plugin) {
     for ch in 0..2 {
         e.combs[ch].iter_mut().for_each(|c| c.buf.fill(0.0));
         e.allpasses[ch].iter_mut().for_each(|a| a.buf.fill(0.0));
+        e.eq[ch].iter_mut().for_each(|f| f.z = [0.0; 2]);
     }
+    let sr = e.sample_rate;
+    e.build(sr);
 }
 
 unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
@@ -376,14 +554,17 @@ unsafe extern "C" fn on_main_thread(_p: *const clap_plugin) {}
 
 /// A new instance of a built-in effect, or null for another id.
 pub unsafe fn create(_host: *const clap_host, id: &CStr) -> *const clap_plugin {
-    let (kind, desc) = if id == GAIN_ID {
-        (Kind::Gain, &GAIN_DESCRIPTOR.0)
+    let (kind, desc, params): (Kind, _, &[Param]) = if id == GAIN_ID {
+        (Kind::Gain, &GAIN_DESCRIPTOR.0, &GAIN_PARAMS)
     } else if id == REVERB_ID {
-        (Kind::Reverb, &REVERB_DESCRIPTOR.0)
+        (Kind::Reverb, &REVERB_DESCRIPTOR.0, &REVERB_PARAMS)
+    } else if id == EQ_ID {
+        (Kind::Eq, &EQ_DESCRIPTOR.0, &EQ_PARAMS)
+    } else if id == LIMITER_ID {
+        (Kind::Limiter, &LIMITER_DESCRIPTOR.0, &LIMITER_PARAMS)
     } else {
         return ptr::null();
     };
-    let params: &[Param] = if kind == Kind::Gain { &GAIN_PARAMS } else { &REVERB_PARAMS };
     let e = Box::into_raw(Box::new(Effect {
         plugin: clap_plugin {
             desc,
@@ -405,6 +586,10 @@ pub unsafe fn create(_host: *const clap_host, id: &CStr) -> *const clap_plugin {
         allpasses: [vec![], vec![]],
         applied: (1.0, 1.0),
         scratch: [vec![], vec![]],
+        sample_rate: 48000.0,
+        eq: Default::default(),
+        eq_for: vec![],
+        limiter: Limiter::default(),
     }));
     (*e).plugin.plugin_data = e as *mut c_void;
     (*e).build(48000.0);
@@ -413,3 +598,100 @@ pub unsafe fn create(_host: *const clap_host, id: &CStr) -> *const clap_plugin {
 
 // The in-place pair id above names the input port (0): unused otherwise.
 const _: clap_id = CLAP_INVALID_ID;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SR: f64 = 48000.0;
+
+    /// A fresh effect, its parameters set.
+    fn effect(id: &CStr, params: &[(usize, f64)]) -> &'static mut Effect {
+        unsafe {
+            let p = create(ptr::null(), id);
+            let e = Effect::from(p);
+            e.build(SR);
+            for &(i, v) in params {
+                e.set(i, v);
+            }
+            e
+        }
+    }
+
+    fn sine(freq: f64, amp: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| (i as f64 * freq / SR * std::f64::consts::TAU).sin() as f32 * amp).collect()
+    }
+
+    /// Runs a signal through (both channels) and gives the left out.
+    fn through(e: &mut Effect, x: &[f32]) -> Vec<f32> {
+        let (mut l, mut r) = (vec![0.0; x.len()], vec![0.0; x.len()]);
+        for (k, chunk) in x.chunks(256).enumerate() {
+            let at = k * 256;
+            e.run([chunk, chunk], [&mut l[at..at + chunk.len()], &mut r[at..at + chunk.len()]]);
+        }
+        assert_eq!(l, r);
+        l
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    /// Gain at a frequency, in dB (steady state).
+    fn gain_db(e: &mut Effect, freq: f64) -> f32 {
+        let x = sine(freq, 0.5, 24000);
+        let y = through(e, &x);
+        20.0 * (rms(&y[12000..]) / rms(&x[12000..])).log10()
+    }
+
+    #[test]
+    fn the_eq_is_flat_until_told_otherwise() {
+        let e = effect(EQ_ID, &[]);
+        for f in [50.0, 400.0, 2500.0, 12000.0] {
+            assert!(gain_db(e, f).abs() < 0.05, "{f} Hz");
+        }
+    }
+
+    #[test]
+    fn the_eq_cuts_shelves_and_bells() {
+        // Low cut at 400 Hz: 100 Hz well down, 5 kHz untouched.
+        let e = effect(EQ_ID, &[(0, 400.0)]);
+        assert!(gain_db(e, 100.0) < -20.0);
+        assert!(gain_db(e, 5000.0).abs() < 0.1);
+        // A bell of +12 dB at 1 kHz: +12 there, little an octave and more away.
+        let e = effect(EQ_ID, &[(3, 12.0), (4, 1000.0), (5, 2.0)]);
+        assert!((gain_db(e, 1000.0) - 12.0).abs() < 0.2);
+        assert!(gain_db(e, 250.0) < 1.5);
+        // A low shelf of -6 dB under 200 Hz.
+        let e = effect(EQ_ID, &[(1, -6.0), (2, 200.0)]);
+        assert!((gain_db(e, 40.0) + 6.0).abs() < 0.3);
+        assert!(gain_db(e, 4000.0).abs() < 0.2);
+        // High cut at 2 kHz.
+        let e = effect(EQ_ID, &[(11, 2000.0)]);
+        assert!(gain_db(e, 10000.0) < -20.0);
+    }
+
+    #[test]
+    fn the_limiter_never_passes_its_ceiling_and_leaves_quiet_sound_alone() {
+        // A loud tone (0 dBFS peaks) under a -6 dB ceiling.
+        let e = effect(LIMITER_ID, &[(1, -6.0)]);
+        let x = sine(440.0, 1.0, 48000);
+        let y = through(e, &x);
+        let ceiling = 10f32.powf(-6.0 / 20.0);
+        assert!(y.iter().all(|v| v.abs() <= ceiling + 1e-6));
+        let peak = y[24000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak > ceiling * 0.95, "close to the ceiling: {peak}");
+        // A sudden burst: still under, from its first sample.
+        let mut burst = vec![0.0; 4800];
+        burst.extend(sine(1000.0, 4.0, 4800));
+        let e = effect(LIMITER_ID, &[(1, -1.0)]);
+        let y = through(e, &burst);
+        assert!(y.iter().all(|v| v.abs() <= 10f32.powf(-1.0 / 20.0) + 1e-6));
+        // Quiet sound comes out as it went in, a millisecond late.
+        let e = effect(LIMITER_ID, &[]);
+        let x = sine(440.0, 0.25, 4800);
+        let y = through(e, &x);
+        let late = (SR * 0.001).round() as usize;
+        assert!(x[..x.len() - late].iter().zip(&y[late..]).all(|(a, b)| (a - b).abs() < 1e-6));
+    }
+}
