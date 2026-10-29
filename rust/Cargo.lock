@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-app"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-audio",
  "corinzia-edit",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-audio"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "clap-sys",
  "corinzia-model",
@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-edit"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-model",
  "corinzia-score",
@@ -840,14 +840,14 @@ dependencies = [
 
 [[package]]
 name = "corinzia-export"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-score",
 ]
 
 [[package]]
 name = "corinzia-import"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-edit",
  "corinzia-layout",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-layout"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-score",
  "pdf-writer",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-model"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-score",
  "rusqlite",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "corinzia-perform"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "corinzia-edit",
  "corinzia-export",
@@ -892,11 +892,11 @@ dependencies = [
 
 [[package]]
 name = "corinzia-score"
-version = "0.2.5"
+version = "0.2.6"
 
 [[package]]
 name = "corinzia-sine"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "clap-sys",
 ]
