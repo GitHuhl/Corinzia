@@ -80,8 +80,8 @@ fn sample() -> Project {
         TechniqueSwitch { technique: "arco".into(), action: SwitchAction::Program(40) },
     ];
     p.movements[0].automation = vec![
-        AutoLane { id: 95, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0 }, AutoPoint { at: Frac::int(1), value: -12.0 }] },
-        AutoLane { id: 96, target: AutoTarget::Param { node: 500, param: 2 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.25 }] },
+        AutoLane { id: 95, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0, hold: false }, AutoPoint { at: Frac::int(1), value: -12.0, hold: false }] },
+        AutoLane { id: 96, target: AutoTarget::Param { node: 500, param: 2 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.25, hold: false }] },
     ];
     p.movements[0].breaks = vec![Break { id: 90, at: Frac::int(2), page: false, part: None }, Break { id: 91, at: Frac::int(4), page: true, part: Some(2) }];
     p
@@ -208,5 +208,27 @@ fn audio_tracks_and_clips_round_trip() {
     assert!(t.audio && (t.gain_db, t.pan) == (-2.0, 0.5));
     assert_eq!(t.clips, a.tracks[1].clips);
     assert!(!b.tracks[0].audio && b.tracks[0].clips.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn automation_targets_and_steps_round_trip() {
+    let dir = std::env::temp_dir().join(format!("corinzia-model-auto-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.project");
+    let _ = std::fs::remove_file(&path);
+    let mut a = sample();
+    let pts = vec![AutoPoint { at: Frac::ZERO, value: 1.0, hold: true }, AutoPoint { at: Frac::new(1, 2), value: 64.0, hold: false }];
+    a.movements[0].automation = [AutoTarget::Gain(MASTER), AutoTarget::Send { track: 1, bus: 60 }, AutoTarget::Cc { track: 1, cc: 21 }, AutoTarget::PitchBend(1)]
+        .into_iter()
+        .enumerate()
+        .map(|(i, target)| AutoLane { id: 80 + i as u64, target, points: pts.clone() })
+        .collect();
+    save(&a, &path).unwrap();
+    let b = load(&path).unwrap();
+    assert_eq!(b.movements[0].automation, a.movements[0].automation);
+    // A held point keeps its value up to the next.
+    let l = &b.movements[0].automation[0];
+    assert_eq!((l.value_at(0.0), l.value_at(1.99), l.value_at(2.0)), (Some(1.0), Some(1.0), Some(64.0)));
     std::fs::remove_dir_all(&dir).ok();
 }

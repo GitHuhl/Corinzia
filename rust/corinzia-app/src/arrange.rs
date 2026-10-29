@@ -21,6 +21,8 @@ pub struct Lane {
     pub audio: bool,
     pub color: Color,
     pub folder: String,
+    /// A bus's or the master's lane (automation only).
+    pub mixer: bool,
     pub min_key: i32,
     pub max_key: i32,
 }
@@ -54,7 +56,7 @@ pub struct Content {
 
 /// The current movement's notes, per track that sounds them.
 pub fn content(project: &Project, movement: usize) -> Content {
-    let mut c = Content { lanes: project.tracks.iter().map(|t| Lane { track: t.id, name: t.name.clone(), audio: t.audio, color: crate::mix::track_color(project, t.id), folder: t.folder.clone(), min_key: i32::MAX, max_key: i32::MIN }).collect(), ..Default::default() };
+    let mut c = Content { lanes: project.tracks.iter().map(|t| Lane { track: t.id, name: t.name.clone(), audio: t.audio, color: crate::mix::track_color(project, t.id), folder: t.folder.clone(), mixer: false, min_key: i32::MAX, max_key: i32::MIN }).collect(), ..Default::default() };
     let Some(m) = project.movements.get(movement) else { return c };
     let q = |f: corinzia_score::Frac| f.num as f64 * 4.0 / f.den as f64;
     for lane in &m.lanes {
@@ -80,21 +82,31 @@ pub fn content(project: &Project, movement: usize) -> Content {
         l.min_key -= pad / 2 + 1;
         l.max_key += pad - pad / 2 + 1;
     }
+    // Buses and the master last, for their automation.
+    let grey = Color::from_rgb(0.55, 0.57, 0.62);
+    for (id, name) in project.buses.iter().map(|b| (b.id, b.name.clone())).chain(std::iter::once((crate::editor::MASTER, "Master".to_string()))) {
+        c.lanes.push(Lane { track: id, name, audio: false, color: grey, folder: BUSES.into(), mixer: true, min_key: 60, max_key: 72 });
+    }
     c.bars = corinzia_edit::bar_starts(m).into_iter().map(q).collect();
     c.length_q = q(m.length);
     c.bars.push(c.length_q);
     c
 }
 
+/// The folder buses' and the master's lanes are shown in.
+pub const BUSES: &str = "Buses";
+
 /// Brings the lanes' names, colours and folders up to date and lays out
 /// the rows: a folder's tracks together under its header (where the first
 /// of them is), folded away when `collapsed` names it.
 pub fn layout_rows(c: &mut Content, project: &Project, collapsed: &std::collections::HashSet<String>) {
     for l in c.lanes.iter_mut() {
-        if let Some(t) = project.track(l.track) {
+        if let Some(t) = project.track(l.track).filter(|_| !l.mixer) {
             l.name = t.name.clone();
             l.folder = t.folder.clone();
             l.color = crate::mix::track_color(project, t.id);
+        } else if let Some(b) = project.bus(l.track) {
+            l.name = b.name.clone();
         }
     }
     c.rows.clear();
@@ -228,6 +240,8 @@ pub enum ArrangeEvent {
     AutoAdd { lane: usize, q: f64, value: f64 },
     AutoMove { lane: usize, index: usize, q: f64, value: f64 },
     AutoDelete { lane: usize, index: usize },
+    /// Shift+click on a point: it holds to the next one (a step), or not.
+    AutoHold { lane: usize, index: usize },
     AutoRelease,
     /// A clip pressed (selected; `copy`: Ctrl held, a copy is dragged),
     /// dragged (`q`: the new start, edge or fade point, in quarters), let go.
@@ -246,6 +260,8 @@ pub struct Curve {
     pub min: f64,
     pub max: f64,
     pub points: Vec<(f64, f64)>,
+    /// Per point: it holds its value to the next (a step).
+    pub holds: Vec<bool>,
 }
 
 /// The canvas's own state: modifiers held, and the point being dragged.
@@ -423,6 +439,9 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 // A lane showing automation: grab a point, or add one.
                 if let Some((lane, c)) = self.lane_at(p.y).filter(|_| p.x > HEADER).and_then(|l| Some((l, self.curves.get(l)?.as_ref()?))) {
                     if let Some(index) = self.point_at(lane, c, p) {
+                        if mods.shift() {
+                            return Some(canvas::Action::publish(ArrangeEvent::AutoHold { lane, index }).and_capture());
+                        }
                         state.drag = Some((lane, index));
                         return Some(canvas::Action::capture());
                     }
@@ -509,6 +528,9 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 let indent = if l.folder.is_empty() { 0.0 } else { 10.0 };
                 f.fill_rectangle(Point::new(indent, y), Size::new(5.0, self.lane_height), l.color);
                 f.fill_text(Text { content: l.name.clone(), position: Point::new(12.0 + indent, y + 8.0), size: iced::Pixels(13.0), ..Text::default() });
+                if l.mixer {
+                    f.fill_text(Text { content: if l.track == crate::editor::MASTER { "Master".into() } else { "Bus".into() }, position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                }
                 if l.audio {
                     f.fill_text(Text { content: "Audio".into(), position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
                 }
@@ -520,20 +542,28 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         for (lane, c) in self.curves.iter().enumerate().filter_map(|(i, c)| Some((i, c.as_ref()?))).filter(|(i, _)| self.content.row_of.get(*i).copied().flatten().is_some()) {
             let (top, h) = self.curve_band(lane);
             overlay.fill_rectangle(Point::new(HEADER, top), Size::new(bounds.width - HEADER, h), Color { a: 0.12, ..crate::theme::palette().accent });
-            let mut pts: Vec<Point> = c.points.iter().map(|&(q, v)| Point::new(self.x(q).max(HEADER), self.curve_y(lane, c, v))).collect();
+            let pts: Vec<Point> = c.points.iter().map(|&(q, v)| Point::new(self.x(q).max(HEADER), self.curve_y(lane, c, v))).collect();
             if let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) {
-                pts.insert(0, Point::new(HEADER, first.y));
-                pts.push(Point::new(bounds.width, last.y));
+                // A held point steps: flat to the next point, then up or down.
                 let path = Path::new(|b| {
-                    b.move_to(pts[0]);
-                    for p in &pts[1..] {
+                    b.move_to(Point::new(HEADER, first.y));
+                    for (i, p) in pts.iter().enumerate() {
+                        if i > 0 && c.holds.get(i - 1).copied().unwrap_or(false) {
+                            b.line_to(Point::new(p.x, pts[i - 1].y));
+                        }
                         b.line_to(*p);
                     }
+                    b.line_to(Point::new(bounds.width, last.y));
                 });
                 overlay.stroke(&path, Stroke::default().with_width(2.0).with_color(crate::theme::palette().accent));
-                for p in &pts[1..pts.len() - 1] {
+                for (i, p) in pts.iter().enumerate() {
                     if p.x > HEADER {
-                        overlay.fill(&Path::circle(*p, 4.0), crate::theme::palette().accent);
+                        // Held points are squares.
+                        if c.holds.get(i).copied().unwrap_or(false) {
+                            overlay.fill(&Path::rectangle(Point::new(p.x - 4.0, p.y - 4.0), Size::new(8.0, 8.0)), crate::theme::palette().accent);
+                        } else {
+                            overlay.fill(&Path::circle(*p, 4.0), crate::theme::palette().accent);
+                        }
                     }
                 }
             }

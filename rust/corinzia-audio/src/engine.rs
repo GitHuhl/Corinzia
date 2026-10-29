@@ -560,6 +560,11 @@ impl Engine {
                 Kind::Gain => (2u64 << 60) | n.node as u64,
                 Kind::Pan => (3u64 << 60) | n.node as u64,
                 Kind::Param { fx, id } => (4u64 << 60) | ((fx as u64) << 32) | id as u64 ^ ((n.node as u64) << 20),
+                Kind::BusGain => (6u64 << 60) | n.node as u64,
+                Kind::BusPan => (7u64 << 60) | n.node as u64,
+                Kind::MasterGain => 8u64 << 60,
+                Kind::Send { index } => (9u64 << 60) | ((n.node as u64) << 8) | index as u64,
+                Kind::PitchBend => (10u64 << 60) | n.node as u64,
             };
             if done[..n_done].contains(&key) {
                 continue;
@@ -576,9 +581,39 @@ impl Engine {
 
     /// An automation or controller event at a frame of the block.
     fn apply(&mut self, n: &ScheduledNote, time: u32) {
+        // Buses and the master.
+        match n.kind {
+            Kind::BusGain | Kind::BusPan => {
+                if let Some(b) = self.buses.get_mut(n.node as usize) {
+                    if n.kind == Kind::BusGain {
+                        b.gain = n.velocity;
+                    } else {
+                        b.pan = n.velocity;
+                    }
+                }
+                return;
+            }
+            Kind::MasterGain => {
+                self.master_gain = n.velocity;
+                return;
+            }
+            _ => {}
+        }
         let Some(ns) = self.nodes.get_mut(n.node as usize) else { return };
         match n.kind {
-            Kind::Note => {}
+            Kind::Note | Kind::BusGain | Kind::BusPan | Kind::MasterGain => {}
+            Kind::Send { index } => {
+                if let Some(s) = ns.sends.get_mut(index as usize) {
+                    *s = n.velocity;
+                }
+            }
+            Kind::PitchBend => {
+                if ns.events.events.len() < EVENTS_PER_NODE {
+                    let v = ((n.velocity.clamp(-1.0, 1.0) + 1.0) * 8191.5).round().min(16383.0) as u16;
+                    let data = [0xe0 | (n.channel as u8 & 15), (v & 0x7f) as u8, (v >> 7) as u8];
+                    ns.events.events.push(EventSlot { midi: clap_event_midi { header: clap_event_header { size: std::mem::size_of::<clap_event_midi>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_MIDI, flags: 0 }, port_index: n.port as u16, data } });
+                }
+            }
             Kind::Gain => ns.gain = n.velocity,
             Kind::Pan => ns.pan = n.velocity,
             Kind::Cc(cc) => {

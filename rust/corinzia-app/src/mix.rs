@@ -147,8 +147,23 @@ fn techniques_block<'a>(t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
 /// What a track's lane can automate: (label, target, min, max); "Off" first.
 pub fn auto_options(p: &Project, play: &Playback, track: Id) -> Vec<(String, Option<corinzia_model::AutoTarget>, f64, f64)> {
     use corinzia_model::AutoTarget;
-    let mut v = vec![("Off".to_string(), None, 0.0, 1.0), ("Gain".into(), Some(AutoTarget::Gain(track)), MIN_DB, 6.0), ("Pan".into(), Some(AutoTarget::Pan(track)), -1.0, 1.0)];
+    let mut v = vec![("Off".to_string(), None, 0.0, 1.0), ("Gain".into(), Some(AutoTarget::Gain(track)), MIN_DB, 6.0)];
+    if track == MASTER {
+        return v;
+    }
+    v.push(("Pan".into(), Some(AutoTarget::Pan(track)), -1.0, 1.0));
     let Some(t) = p.track(track) else { return v };
+    for s in &t.sends {
+        if let Some(b) = p.bus(s.bus) {
+            v.push((format!("Send → {}", b.name), Some(AutoTarget::Send { track, bus: s.bus }), MIN_DB, 6.0));
+        }
+    }
+    if !t.audio {
+        v.push(("Pitch bend".into(), Some(AutoTarget::PitchBend(track)), -1.0, 1.0));
+        for cc in 0..128u8 {
+            v.push((format!("CC{cc}{}", cc_name(cc).map(|n| format!(" ({n})")).unwrap_or_default()), Some(AutoTarget::Cc { track, cc }), 0.0, 127.0));
+        }
+    }
     let mut plugins: Vec<(Id, std::sync::Arc<corinzia_audio::host::Plugin>)> = Vec::new();
     if let (Some(n), Some(pl)) = (t.instrument_node, play.pool.plugin_of_track(track)) {
         plugins.push((n, pl.clone()));
@@ -160,6 +175,31 @@ pub fn auto_options(p: &Project, play: &Playback, track: Id) -> Vec<(String, Opt
         }
     }
     v
+}
+
+/// The common names of MIDI controllers.
+pub fn cc_name(cc: u8) -> Option<&'static str> {
+    Some(match cc {
+        1 => "modulation",
+        2 => "breath",
+        4 => "foot",
+        5 => "portamento time",
+        7 => "volume",
+        8 => "balance",
+        10 => "pan",
+        11 => "expression",
+        21 => "vibrato",
+        64 => "sustain",
+        65 => "portamento",
+        66 => "sostenuto",
+        67 => "soft pedal",
+        68 => "legato",
+        71 => "resonance",
+        72 => "release",
+        73 => "attack",
+        74 => "brightness",
+        _ => return None,
+    })
 }
 
 pub const DYNAMICS_CC: [&str; 3] = ["Velocity only", "CC1 (modulation)", "CC11 (expression)"];
@@ -433,7 +473,19 @@ fn track_look<'a>(t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
     .into()
 }
 
-fn bus_strip<'a>(p: &'a Project, b: &'a corinzia_model::Bus, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+/// A bus's or the master's "Automation lane" picker.
+fn auto_picker<'a>(p: &'a Project, play: &'a Playback, id: Id, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
+    let options = auto_options(p, play, id);
+    let current = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
+    column![
+        text("Automation lane").size(10).style(crate::theme::faint),
+        crate::panels::tip(pick_list(options.into_iter().map(|o| o.0).collect::<Vec<_>>(), current, move |l| MixMsg::AutoShow(id, l)).placeholder("Show…").text_size(11).padding([2, 5]).width(Length::Fill), "Show a curve on its lane in the arrange view (under Buses)"),
+    ]
+    .spacing(2)
+    .into()
+}
+
+fn bus_strip<'a>(p: &'a Project, play: &'a Playback, b: &'a corinzia_model::Bus, selected: bool, fx: Option<Id>, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
     let bus = b.id;
     let body = column![
         row![
@@ -456,6 +508,7 @@ fn bus_strip<'a>(p: &'a Project, b: &'a corinzia_model::Bus, selected: bool, fx:
             .width(Length::Fill)
         ]
         .spacing(2),
+        auto_picker(p, play, b.id, shown),
         fader_block(b.id, b.gain_db, Some(b.pan), Some(b.mute), Some(b.solo)),
     ]
     .spacing(6)
@@ -463,11 +516,12 @@ fn bus_strip<'a>(p: &'a Project, b: &'a corinzia_model::Bus, selected: bool, fx:
     container(body).padding(10).style(crate::theme::strip(selected)).into()
 }
 
-fn master_strip<'a>(p: &'a Project, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+fn master_strip<'a>(p: &'a Project, play: &'a Playback, selected: bool, fx: Option<Id>, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
     let body = column![
         button(text("Master").size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(MASTER)),
         text("Everything").size(11).style(crate::theme::dim),
         inserts(p, MASTER, &p.master.inserts, fx),
+        auto_picker(p, play, MASTER, shown),
         fader_block(MASTER, p.master.gain_db, None, None, None),
     ]
     .spacing(6)
@@ -520,11 +574,11 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
 pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>) -> Element<'a, MixMsg> {
     let mut strips = row(p.tracks.iter().map(|t| if t.audio { audio_strip(p, t, selected == Some(t.id), fx) } else { strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()) })).spacing(8).padding(12);
     for b in &p.buses {
-        strips = strips.push(bus_strip(p, b, selected == Some(b.id), fx));
+        strips = strips.push(bus_strip(p, play, b, selected == Some(b.id), fx, shown.get(&b.id).copied()));
     }
     strips = strips.push(crate::panels::tip(button(text("+ Audio track").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddAudioTrack), "A track for sound files (tape, electronics, a click), placed in time in the arrange view"));
     strips = strips.push(crate::panels::tip(button(text("+ Bus").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddBus), "A bus: send tracks to it for shared effects (a reverb)"));
-    strips = strips.push(master_strip(p, selected == Some(MASTER), fx));
+    strips = strips.push(master_strip(p, play, selected == Some(MASTER), fx, shown.get(&MASTER).copied()));
     let mut browser = column![].spacing(6).padding(12).width(300);
     if let Some(c) = clip.and_then(|(t, c)| p.track(t)?.clips.iter().find(|x| x.id == c)) {
         browser = browser.push(clip_panel(p, c)).push(Space::new().height(12));

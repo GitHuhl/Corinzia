@@ -297,7 +297,7 @@ fn automation_and_dynamics_as_a_controller() {
     let flat = render(&long(), 4 * beat);
     // The fader from 0 dB to -60 dB (silence) over the bar.
     let mut p = long();
-    p.movements[0].automation = vec![AutoLane { id: 90, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0 }, AutoPoint { at: Frac::int(1), value: -60.0 }] }];
+    p.movements[0].automation = vec![AutoLane { id: 90, target: AutoTarget::Gain(1), points: vec![AutoPoint { at: Frac::ZERO, value: 0.0, hold: false }, AutoPoint { at: Frac::int(1), value: -60.0, hold: false }] }];
     let fade = render(&p, 4 * beat);
     let early = rms(&fade[2000..beat / 2]) / rms(&flat[2000..beat / 2]);
     let late = rms(&fade[3 * beat..4 * beat - 1000]) / rms(&flat[3 * beat..4 * beat - 1000]);
@@ -307,7 +307,7 @@ fn automation_and_dynamics_as_a_controller() {
     let mut p = long();
     effect(&mut p, 500, "org.corinzia.gain", &[0.0, 0.0]);
     p.tracks[0].inserts = vec![500];
-    p.movements[0].automation = vec![AutoLane { id: 91, target: AutoTarget::Param { node: 500, param: 0 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.0 }, AutoPoint { at: Frac::new(1, 2), value: -20.0 }] }];
+    p.movements[0].automation = vec![AutoLane { id: 91, target: AutoTarget::Param { node: 500, param: 0 }, points: vec![AutoPoint { at: Frac::new(1, 2), value: 0.0, hold: false }, AutoPoint { at: Frac::new(1, 2), value: -20.0, hold: false }] }];
     let step = render(&p, 4 * beat);
     let before = rms(&step[beat..2 * beat - 500]) / rms(&flat[beat..2 * beat - 500]);
     let after = rms(&step[2 * beat + 2000..3 * beat]) / rms(&flat[2 * beat + 2000..3 * beat]);
@@ -508,4 +508,47 @@ fn pre_fader_sends_buses_into_buses_and_solo_through_buses() {
     p.tracks[0].solo = true;
     assert!(snapshot::bus_mix(&p)[0].3);
     assert!((level(&p) - both).abs() < 1e-4);
+}
+
+#[test]
+fn automation_of_buses_the_master_sends_controllers_and_steps() {
+    let beat = (SR * 0.5) as usize;
+    let lane = |id, target, points: &[(i64, f64, bool)]| AutoLane { id, target, points: points.iter().map(|&(q, value, hold)| AutoPoint { at: Frac::new(q, 4), value, hold }).collect() };
+    let rms_at = |x: &[f32], q: f64| rms(&x[(q * beat as f64) as usize + 500..(q * beat as f64) as usize + 3000]);
+    // The flute holds a long note: c'' for the whole bar.
+    let mut p = project();
+    p.movements[0].lanes[0].voices[0].events = Arc::new(vec![Event { duration: Frac::int(1), ..p.movements[0].lanes[0].voices[0].events[0].clone() }]);
+    let base = render(&p, 4 * beat);
+
+    // The master fader stepping down at beat 2 (held at 0 dB until then).
+    p.movements[0].automation = vec![lane(90, AutoTarget::Gain(corinzia_model::MASTER), &[(0, 0.0, true), (2, -100.0, false)])];
+    let x = render(&p, 4 * beat);
+    assert!((rms_at(&x, 1.5) - rms_at(&base, 1.5)).abs() < 1e-3, "held at 0 dB just before the step");
+    assert!(rms_at(&x, 2.5) < 1e-4, "silent after it");
+
+    // A bus's fader, and a send's level.
+    let mut p2 = p.clone();
+    p2.buses = vec![Bus { id: 60, name: "B".into(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None }];
+    p2.tracks[0].output_bus = Some(60);
+    p2.movements[0].automation = vec![lane(91, AutoTarget::Gain(60), &[(0, 0.0, true), (2, -100.0, false)])];
+    let x = render(&p2, 4 * beat);
+    assert!(rms_at(&x, 1.5) > 0.5 * rms_at(&base, 1.5) && rms_at(&x, 2.5) < 1e-4, "the bus's fader");
+    let mut p3 = p.clone();
+    p3.buses = vec![Bus { id: 61, name: "R".into(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None }];
+    p3.tracks[0].gain_db = -100.0; // only the (pre-fader) send is heard
+    p3.tracks[0].sends = vec![SendLevel { bus: 61, gain_db: 0.0, pre: true }];
+    p3.movements[0].automation = vec![lane(92, AutoTarget::Send { track: 1, bus: 61 }, &[(0, 0.0, true), (2, -100.0, false)])];
+    let x = render(&p3, 4 * beat);
+    assert!(rms_at(&x, 1.5) > 0.5 * rms_at(&base, 1.5) && rms_at(&x, 2.5) < 1e-4, "the send's level");
+
+    // Controllers and pitch bend become MIDI events on the track's channel.
+    let mut p4 = project();
+    p4.tracks[0].midi_channel = 3;
+    p4.movements[0].automation = vec![lane(93, AutoTarget::Cc { track: 1, cc: 21 }, &[(0, 127.0, false)]), lane(94, AutoTarget::PitchBend(1), &[(0, -1.0, false), (4, 1.0, false)])];
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p4, SR, 1, &[0], &mut pool);
+    let cc: Vec<_> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Cc(21)).collect();
+    assert!(cc.len() == 1 && cc[0].channel == 3 && (cc[0].velocity - 1.0).abs() < 1e-6);
+    let bends: Vec<f32> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::PitchBend).map(|n| n.velocity).collect();
+    assert!(bends.len() > 8 && bends[0] == -1.0 && *bends.last().unwrap() == 1.0, "a ramp from -1 to 1: {bends:?}");
 }

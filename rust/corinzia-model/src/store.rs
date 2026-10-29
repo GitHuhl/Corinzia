@@ -364,9 +364,12 @@ pub fn load(path: &Path) -> Result<Project> {
                 let target = match a["t"].as_str() {
                     Some("gain") => AutoTarget::Gain(id("track")),
                     Some("pan") => AutoTarget::Pan(id("track")),
+                    Some("send") => AutoTarget::Send { track: id("track"), bus: id("bus") },
+                    Some("cc") => AutoTarget::Cc { track: id("track"), cc: id("cc").min(127) as u8 },
+                    Some("bend") => AutoTarget::PitchBend(id("track")),
                     _ => AutoTarget::Param { node: id("node"), param: id("param") as u32 },
                 };
-                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()? })).collect();
+                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()?, hold: p[3].as_bool().unwrap_or(false) })).collect();
                 m.automation.push(AutoLane { id: id("id"), target, points });
             }
             for c in n["cross"].as_array().into_iter().flatten() {
@@ -747,11 +750,14 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
             "automation": m.automation.iter().map(|a| {
-                let points: Vec<Value> = a.points.iter().map(|p| json!([p.at.num, p.at.den, p.value])).collect();
+                let points: Vec<Value> = a.points.iter().map(|p| if p.hold { json!([p.at.num, p.at.den, p.value, true]) } else { json!([p.at.num, p.at.den, p.value]) }).collect();
                 match a.target {
                     AutoTarget::Gain(t) => json!({"id": a.id, "t": "gain", "track": t, "points": points}),
                     AutoTarget::Pan(t) => json!({"id": a.id, "t": "pan", "track": t, "points": points}),
                     AutoTarget::Param { node, param } => json!({"id": a.id, "t": "param", "node": node, "param": param, "points": points}),
+                    AutoTarget::Send { track, bus } => json!({"id": a.id, "t": "send", "track": track, "bus": bus, "points": points}),
+                    AutoTarget::Cc { track, cc } => json!({"id": a.id, "t": "cc", "track": track, "cc": cc, "points": points}),
+                    AutoTarget::PitchBend(t) => json!({"id": a.id, "t": "bend", "track": t, "points": points}),
                 }
             }).collect::<Vec<_>>(),
             "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),

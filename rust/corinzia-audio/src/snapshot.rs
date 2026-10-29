@@ -25,6 +25,14 @@ pub enum Kind {
     /// A plugin parameter, value in `velocity`: the node's instrument
     /// (`fx` = `u32::MAX`) or an effect (an index into `Snapshot::effects`).
     Param { fx: u32, id: u32 },
+    /// A bus's fader or pan (`node` is the bus's index), the master's fader.
+    BusGain,
+    BusPan,
+    MasterGain,
+    /// The level (linear) of the node's send `index`.
+    Send { index: u32 },
+    /// Pitch bend to the node's instrument, -1..1 in `velocity`.
+    PitchBend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -468,9 +476,26 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
         // Automation: through the playback order (repeats too), every
         // sixteenth of a quarter where the value changes.
         for lane in &m.automation {
+            let channel_of = |t: Id| project.track(t).map(|t| t.midi_channel as i16 & 15).unwrap_or(0);
+            let mut channel = 0;
             let (node, kind, scale): (Option<u32>, Kind, fn(f64) -> f32) = match lane.target {
+                AutoTarget::Gain(corinzia_model::MASTER) => (Some(0), Kind::MasterGain, |db| db_to_gain(db)),
+                AutoTarget::Gain(t) if node_of(t).is_none() => (bus_index(t), Kind::BusGain, |db| db_to_gain(db)),
+                AutoTarget::Pan(t) if node_of(t).is_none() => (bus_index(t), Kind::BusPan, |p| p.clamp(-1.0, 1.0) as f32),
                 AutoTarget::Gain(t) => (node_of(t), Kind::Gain, |db| db_to_gain(db)),
                 AutoTarget::Pan(t) => (node_of(t), Kind::Pan, |p| p.clamp(-1.0, 1.0) as f32),
+                AutoTarget::Send { track, bus } => match project.track(track).and_then(|t| t.sends.iter().position(|s| s.bus == bus)) {
+                    Some(i) => (node_of(track), Kind::Send { index: i as u32 }, |db| db_to_gain(db)),
+                    None => continue,
+                },
+                AutoTarget::Cc { track, cc } => {
+                    channel = channel_of(track);
+                    (node_of(track), Kind::Cc(cc), |v| (v.clamp(0.0, 127.0) / 127.0) as f32)
+                }
+                AutoTarget::PitchBend(track) => {
+                    channel = channel_of(track);
+                    (node_of(track), Kind::PitchBend, |v| v.clamp(-1.0, 1.0) as f32)
+                }
                 AutoTarget::Param { node: n, param } => match fx_nodes.iter().position(|x| x.0 == n) {
                     Some(k) => (Some(0), Kind::Param { fx: k as u32, id: param }, |v| v as f32),
                     None => (project.tracks.iter().find(|t| t.instrument_node == Some(n)).and_then(|t| node_of(t.id)), Kind::Param { fx: u32::MAX, id: param }, |v| v as f32),
@@ -489,7 +514,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                     }
                     last = Some(v);
                     let at = start + (perf.tempo.seconds_at(sp.performed_q + dq) * sample_rate).round() as i64;
-                    notes.push(ScheduledNote { kind, at, node, note_id: -1, port: 0, channel: 0, key: 0, on: false, velocity: v, element: 0 });
+                    notes.push(ScheduledNote { kind, at, node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: v, element: 0 });
                 }
             }
         }

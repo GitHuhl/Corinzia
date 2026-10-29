@@ -38,7 +38,7 @@ struct Clip {
 const UNDO_LIMIT: usize = 500;
 
 /// The master strip's id in mixer messages and effect chains.
-pub const MASTER: Id = Id::MAX;
+pub const MASTER: Id = corinzia_model::MASTER;
 
 /// Rhythmic grid choices (whole-note fractions) and their labels.
 pub const GRIDS: [(i64, i64, &str); 5] = [(1, 4, "1/4"), (1, 8, "1/8"), (1, 16, "1/16"), (1, 32, "1/32"), (1, 12, "1/8T")];
@@ -901,6 +901,10 @@ impl Editor {
         for x in self.project.buses.iter_mut().filter(|x| x.output == Some(bus)) {
             x.output = None;
         }
+        // Its automation, and its sends'.
+        for m in self.project.movements.iter_mut() {
+            m.automation.retain(|l| !matches!(l.target, AutoTarget::Gain(b) | AutoTarget::Pan(b) | AutoTarget::Send { bus: b, .. } if b == bus));
+        }
         self.status = format!("{} removed", b.name);
         self.commit_with(before, "Remove bus", false, None);
     }
@@ -984,7 +988,7 @@ impl Editor {
             }
         };
         let i = lane.points.partition_point(|p| p.at <= at);
-        lane.points.insert(i, AutoPoint { at, value });
+        lane.points.insert(i, AutoPoint { at, value, hold: false });
         self.commit_with(before, "Automation point", false, None);
         Some(i)
     }
@@ -1004,6 +1008,14 @@ impl Editor {
         (p.at, p.value) = (at, value);
         let key = lane.id;
         self.commit_with(before, "Move automation", false, Some(key));
+    }
+
+    /// A point holds its value up to the next (a step), or slides to it.
+    pub fn toggle_auto_hold(&mut self, target: AutoTarget, index: usize) {
+        let before = self.snapshot();
+        let Some(p) = self.project.movements.get_mut(self.movement).and_then(|m| m.automation.iter_mut().find(|l| l.target == target)).and_then(|l| l.points.get_mut(index)) else { return };
+        p.hold = !p.hold;
+        self.commit_with(before, "Automation step", false, None);
     }
 
     /// Deletes a point; an empty lane goes.

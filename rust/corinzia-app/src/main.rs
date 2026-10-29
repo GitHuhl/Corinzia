@@ -708,8 +708,10 @@ impl App {
         let target = *self.auto_shown.get(&track)?;
         let (label, min, max) = mix::auto_options(&self.editor.project, &self.playback, track).into_iter().find(|o| o.1 == Some(target)).map(|o| (o.0, o.2, o.3))?;
         let q = |f: Frac| f.num as f64 * 4.0 / f.den as f64;
-        let points = self.editor.auto_lane(target).map(|l| l.points.iter().map(|p| (q(p.at), p.value)).collect()).unwrap_or_default();
-        Some(arrange::Curve { label, min, max, points })
+        let lane = self.editor.auto_lane(target);
+        let points = lane.map(|l| l.points.iter().map(|p| (q(p.at), p.value)).collect()).unwrap_or_default();
+        let holds = lane.map(|l| l.points.iter().map(|p| p.hold).collect()).unwrap_or_default();
+        Some(arrange::Curve { label, min, max, points, holds })
     }
 
     /// Brings the engraving and the selection colours up to date.
@@ -2060,6 +2062,11 @@ impl App {
                     }
                 }
                 arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
+                arrange::ArrangeEvent::AutoHold { lane, index } => {
+                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                        self.editor.toggle_auto_hold(t, index);
+                    }
+                }
             },
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
@@ -4366,7 +4373,7 @@ mod tests {
 
     #[test]
     fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
-        let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
+        let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), mixer: false, min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
         let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
         let cache = canvas::Cache::new();
         let sel = HashSet::new();

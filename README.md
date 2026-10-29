@@ -137,7 +137,11 @@ parallel on every core, that outputs through PipeWire.
 * **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
   the track's lane in the arrange view: its gain, its pan, or any parameter
   of its instrument or effects. Click to add a point, drag to move it,
-  right-click to delete it; values run in straight lines between points.
+  right-click to delete it, Shift+click to make it hold until the next
+  point (a step); values otherwise run in straight lines between points.
+  Besides gain, pan and plugin parameters, a lane can drive a send's
+  level, any MIDI controller (CC0–127) or pitch bend; buses and the master
+  have lanes too (under "Buses", from their strips' "Automation lane").
   Automation follows repeats and is picked up when playback starts
   mid-piece. A track's "Dynamics" can also send the performed dynamics and
   hairpins as CC1 or CC11 for sample libraries, during playback and in

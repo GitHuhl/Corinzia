@@ -348,19 +348,29 @@ pub struct Movement {
     pub automation: Vec<AutoLane>,
 }
 
+/// The master channel's id where a track's or bus's would be (automation).
+pub const MASTER: Id = Id::MAX;
+
 /// What an automation lane drives.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AutoTarget {
-    /// A track's fader, in dB.
+    /// A track's, a bus's or the master's (`MASTER`) fader, in dB.
     Gain(Id),
-    /// A track's pan, -1..1.
+    /// A track's or a bus's pan, -1..1.
     Pan(Id),
     /// A plugin parameter (an audio node's), in the plugin's units.
     Param { node: Id, param: u32 },
+    /// A track's send to a bus, in dB.
+    Send { track: Id, bus: Id },
+    /// A MIDI controller to a track's instrument, 0..127.
+    Cc { track: Id, cc: u8 },
+    /// Pitch bend to a track's instrument, -1..1 (the instrument's range).
+    PitchBend(Id),
 }
 
-/// A curve: values at positions, straight lines between them; before the
-/// first point its value holds, and after the last.
+/// A curve: values at positions, straight lines between them (or a step,
+/// after a point that holds); before the first point its value holds, and
+/// after the last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoLane {
     pub id: Id,
@@ -372,6 +382,8 @@ pub struct AutoLane {
 pub struct AutoPoint {
     pub at: Frac,
     pub value: f64,
+    /// The value holds until the next point, which it then jumps to.
+    pub hold: bool,
 }
 
 impl AutoLane {
@@ -384,6 +396,9 @@ impl AutoLane {
         }
         for w in self.points.windows(2) {
             let (a, b) = (q(w[0].at), q(w[1].at));
+            if at < b && w[0].hold {
+                return Some(w[0].value);
+            }
             if at <= b {
                 let k = if b > a { (at - a) / (b - a) } else { 1.0 };
                 return Some(w[0].value + (w[1].value - w[0].value) * k);
