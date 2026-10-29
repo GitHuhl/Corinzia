@@ -145,6 +145,8 @@ pub fn load(path: &Path) -> Result<Project> {
                 program: None,
                 bank: None,
                 techniques: vec![],
+                audio: false,
+                clips: vec![],
             })
         })?;
         for t in rows {
@@ -220,6 +222,8 @@ pub fn load(path: &Path) -> Result<Project> {
             t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
             t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
             t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
+            t.audio = tv["audio"].as_bool().unwrap_or(false);
+            t.clips = tv["clips"].as_array().into_iter().flatten().filter_map(clip_from).collect();
         }
         p.buses = m["buses"]
             .as_array()
@@ -561,6 +565,30 @@ fn layout_json(l: &Layout) -> Value {
 }
 
 /// Writes the whole project. Rows that no longer exist are removed.
+fn clip_from(c: &Value) -> Option<AudioClip> {
+    let f = |k: &str| c[k].as_f64().unwrap_or(0.0);
+    Some(AudioClip {
+        id: c["id"].as_u64()?,
+        name: c["name"].as_str().unwrap_or("").to_string(),
+        file: c["file"].as_str()?.to_string(),
+        movement: c["movement"].as_u64()?,
+        at: f("at"),
+        offset: f("offset"),
+        length: f("length"),
+        fade_in: f("fade_in"),
+        fade_out: f("fade_out"),
+        gain_db: f("db"),
+        mute: c["mute"].as_bool().unwrap_or(false),
+        cue: c["cue"].as_u64(),
+        cue_line: c["cue_line"].as_bool().unwrap_or(false),
+    })
+}
+
+fn clip_json(c: &AudioClip) -> Value {
+    json!({"id": c.id, "name": c.name, "file": c.file, "movement": c.movement, "at": c.at, "offset": c.offset, "length": c.length,
+           "fade_in": c.fade_in, "fade_out": c.fade_out, "db": c.gain_db, "mute": c.mute, "cue": c.cue, "cue_line": c.cue_line})
+}
+
 pub fn save(project: &Project, path: &Path) -> Result<()> {
     let mut db = open_db(path)?;
     let tx = db.transaction()?;
@@ -578,12 +606,12 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
             SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
             SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
             SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
             SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
-        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
+        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank, "audio": t.audio, "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
         "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });

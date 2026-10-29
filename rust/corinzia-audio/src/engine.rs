@@ -170,6 +170,10 @@ struct NodeJobs {
     fx_auto: *const FxAuto,
     frames: usize,
     steady: i64,
+    /// The block's first timeline sample, and whether the transport runs
+    /// (clips sound only then).
+    at: i64,
+    playing: bool,
 }
 
 /// Renders one instrument and its inserts into the node's own buffers.
@@ -180,7 +184,18 @@ unsafe fn render_node(ctx: *const (), i: usize, worker: usize) {
     let ns = &mut *j.nodes.add(i);
     let node = &*j.plan.add(i);
     let frames = j.frames;
-    ns.ran = node.plugin.rt_start();
+    let Some(plugin) = &node.plugin else {
+        // An audio track: its clips under the block.
+        ns.ran = true;
+        ns.left[..frames].fill(0.0);
+        ns.right[..frames].fill(0.0);
+        if j.playing {
+            play_clips(&node.clips, j.at, &mut ns.left[..frames], &mut ns.right[..frames]);
+        }
+        run_inserts(node, ns, j, worker);
+        return;
+    };
+    ns.ran = plugin.rt_start();
     if !ns.ran {
         return;
     }
@@ -197,11 +212,40 @@ unsafe fn render_node(ctx: *const (), i: usize, worker: usize) {
         in_events: &ns.events.list,
         out_events: j.out_events,
     };
-    node.plugin.rt_process(&p);
-    // The track's effects, in order.
+    plugin.rt_process(&p);
+    run_inserts(node, ns, j, worker);
+}
+
+/// The track's effects, in order, on its buffers.
+unsafe fn run_inserts(node: &crate::snapshot::Node, ns: &mut NodeState, j: &NodeJobs, worker: usize) {
+    let frames = j.frames;
     let sc = &mut *j.scratch.add(worker);
     for fx in &node.inserts {
         run_effect(fx, &mut ns.left[..frames], &mut ns.right[..frames], &mut sc.tmp, frames, j.steady, &*j.transport, &mut sc.fx_events, &*j.out_events, &*j.fx_auto);
+    }
+}
+
+/// Adds the clips sounding in the block starting at timeline sample `at`
+/// (mono clips to both sides).
+fn play_clips(clips: &[crate::snapshot::ScheduledClip], at: i64, left: &mut [f32], right: &mut [f32]) {
+    let end = at + left.len() as i64;
+    for c in clips {
+        if c.start >= end {
+            break; // in time order
+        }
+        let (from, to) = (c.start.max(at), c.end().min(end));
+        if from >= to {
+            continue;
+        }
+        let l = &c.data.channels[0];
+        let r = c.data.channels.get(1).unwrap_or(l);
+        for t in from..to {
+            let k = (t - c.start) as usize;
+            let g = c.gain_at(k);
+            let f = (t - at) as usize;
+            left[f] += l[c.offset + k] * g;
+            right[f] += r[c.offset + k] * g;
+        }
     }
 }
 
@@ -433,7 +477,7 @@ impl Engine {
                         self.nodes[i].gain = n.gain;
                         self.nodes[i].pan = n.pan;
                         self.nodes[i].audible = n.audible;
-                        self.nodes[i].midi = n.plugin.midi_dialect;
+                        self.nodes[i].midi = n.plugin.as_ref().is_some_and(|p| p.midi_dialect);
                         for (k, s) in n.sends.iter().enumerate().take(MAX_SENDS) {
                             self.nodes[i].sends[k] = s.1;
                         }
@@ -580,7 +624,8 @@ impl Engine {
     fn flush_releases_to_old_plugins(&mut self) {
         let Some(snap) = self.snap.as_ref() else { return };
         for (i, n) in snap.nodes.iter().enumerate().take(MAX_NODES) {
-            if self.nodes[i].events.events.is_empty() || !n.plugin.rt_start() {
+            let Some(plugin) = &n.plugin else { continue };
+            if self.nodes[i].events.events.is_empty() || !plugin.rt_start() {
                 continue;
             }
             let ns = &mut self.nodes[i];
@@ -598,7 +643,7 @@ impl Engine {
                 in_events: &ns.events.list,
                 out_events: &self.out_events,
             };
-            unsafe { n.plugin.rt_process(&p) };
+            unsafe { plugin.rt_process(&p) };
             ns.events.events.clear();
         }
     }
@@ -616,7 +661,8 @@ impl Engine {
         if let Some(snap) = self.snap.as_ref() {
             for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
                 let events = &mut self.nodes[i].events.events;
-                node.plugin.rt_take_params(|id, v| {
+                let Some(plugin) = &node.plugin else { continue };
+                plugin.rt_take_params(|id, v| {
                     if events.len() < EVENTS_PER_NODE {
                         events.push(EventSlot { param: crate::host::param_event(id, v, 0) });
                     }
@@ -727,6 +773,8 @@ impl Engine {
             fx_auto: &self.fx_auto,
             frames,
             steady: self.steady,
+            at,
+            playing: self.playing,
         };
         unsafe { self.workers.run(count, render_node, &jobs as *const NodeJobs as *const ()) };
         // Then the mix, in order.

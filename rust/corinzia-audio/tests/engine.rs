@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -175,7 +175,7 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
 }
@@ -417,4 +417,52 @@ fn rendering_on_worker_threads_matches_one_thread() {
     for w in [1, 3, 7] {
         assert!(run(w) == one, "{w} workers");
     }
+}
+
+#[test]
+fn audio_clips_play_at_fixed_times_with_trims_fades_and_gain() {
+    use corinzia_audio::media::AudioData;
+    // The flute's movement is 2 seconds long (one bar of 4/4 at 120).
+    let mut p = project();
+    let mut clip = AudioClip::new(70, "Tape", "dc.wav", 9, 1.0);
+    // 1.5 s of the file from 0.25 s in, 6 dB down, 0.1 s fades: it plays
+    // from 1.0 s to 2.5 s, past the score's end.
+    (clip.offset, clip.length, clip.gain_db, clip.fade_in, clip.fade_out) = (0.25, 1.5, -6.0206, 0.1, 0.1);
+    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![clip] });
+    p.tracks[0].mute = true; // just the clip
+    let mut pool = PluginPool::new(SR, 256);
+    // A file of constant 0.8, mono, with 0.5 from 0.25 s on (the trim is seen).
+    let file: Vec<f32> = (0..(SR * 3.0) as usize).map(|i| if i < (SR * 0.25) as usize { 0.8 } else { 0.5 }).collect();
+    pool.media.insert("dc.wav", AudioData::from_channels(vec![file], SR));
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert!(snap.clip_errors.is_empty(), "{:?}", snap.clip_errors);
+    assert_eq!(snap.end(), (SR * 2.5) as i64, "playback runs to the clip's end");
+    ui.swap(snap);
+    ui.play();
+    let (l, r) = eng.render_offline((SR * 3.0) as usize);
+    let at = |s: f64| (SR * s) as usize;
+    assert!(l[..at(0.99)].iter().all(|v| v.abs() < 1e-6), "silent before the clip");
+    // Inside: 0.5 at -6 dB, panned centre (equal power: 0.5 * 0.5 * √2 · cos 45° = 0.25).
+    assert!((l[at(1.5)] - 0.25).abs() < 1e-3, "{}", l[at(1.5)]);
+    assert_eq!(l[at(1.5)], r[at(1.5)], "mono to both sides");
+    // Fades: half way through the fade in, half the level.
+    assert!((l[at(1.05)] - 0.125).abs() < 2e-3, "{}", l[at(1.05)]);
+    assert!((l[at(2.45)] - 0.125).abs() < 2e-3, "{}", l[at(2.45)]);
+    assert!(l[at(2.51)..].iter().all(|v| v.abs() < 1e-6), "silent after");
+    // Seeking into the clip plays from there.
+    ui.seek((SR * 2.0) as i64);
+    ui.play();
+    let (l, _) = eng.render_offline(at(0.1));
+    assert!((l[at(0.05)] - 0.25).abs() < 1e-3);
+}
+
+#[test]
+fn a_missing_clip_file_is_reported() {
+    let mut p = project();
+    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![AudioClip::new(70, "Gone", "/nowhere/gone.wav", 9, 0.0)] });
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert_eq!(snap.clip_errors.len(), 1);
+    assert_eq!(snap.nodes.len(), 2, "the track still has its strip");
 }

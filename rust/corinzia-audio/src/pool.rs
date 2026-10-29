@@ -25,11 +25,13 @@ pub struct PluginPool {
     pub max_frames: u32,
     /// Problems loading plugins (shown in the Mix tab).
     pub errors: Vec<String>,
+    /// Sound files of audio tracks' clips.
+    pub media: crate::media::Media,
 }
 
 impl PluginPool {
     pub fn new(sample_rate: f64, max_frames: u32) -> PluginPool {
-        PluginPool { libs: HashMap::new(), tracks: HashMap::new(), effects: HashMap::new(), sample_rate, max_frames, errors: Vec::new() }
+        PluginPool { libs: HashMap::new(), tracks: HashMap::new(), effects: HashMap::new(), sample_rate, max_frames, errors: Vec::new(), media: crate::media::Media::new(sample_rate) }
     }
 
     fn key(project: &Project, track: Id) -> Key {

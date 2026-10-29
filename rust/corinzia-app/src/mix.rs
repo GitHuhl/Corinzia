@@ -436,7 +436,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     for e in &play.scan_errors {
         browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
-    for e in &play.pool.errors {
+    for e in play.pool.errors.iter().chain(&play.clip_errors) {
         browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
     row![

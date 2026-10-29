@@ -637,6 +637,43 @@ pub struct Track {
     pub bank: Option<u16>,
     /// Its expression map: what each playing technique does to the sound.
     pub techniques: Vec<TechniqueSwitch>,
+    /// An audio track: it plays `clips` (recorded or prepared sound) and
+    /// has no instrument; no instrument of the score points at it.
+    pub audio: bool,
+    pub clips: Vec<AudioClip>,
+}
+
+/// A sound file placed on an audio track. Its place is fixed time: seconds
+/// after the start of its movement as performed (tempo changes and repeats
+/// do not move it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioClip {
+    pub id: Id,
+    pub name: String,
+    /// The file, as chosen (absolute, or relative to the project file).
+    pub file: String,
+    pub movement: Id,
+    /// Seconds from the movement's start to the clip's start.
+    pub at: f64,
+    /// Seconds into the file where it starts playing (trimmed off the front).
+    pub offset: f64,
+    /// Seconds played (the file's length less the trims; 0: to the file's end).
+    pub length: f64,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub gain_db: f64,
+    pub mute: bool,
+    /// The player on whose staff its cue ("Name ▸") is engraved; none: not
+    /// shown in the score.
+    pub cue: Option<Id>,
+    /// The cue continues as a line to the clip's end.
+    pub cue_line: bool,
+}
+
+impl AudioClip {
+    pub fn new(id: Id, name: &str, file: &str, movement: Id, at: f64) -> AudioClip {
+        AudioClip { id, name: name.into(), file: file.into(), movement, at, offset: 0.0, length: 0.0, fade_in: 0.0, fade_out: 0.0, gain_db: 0.0, mute: false, cue: None, cue_line: false }
+    }
 }
 
 /// One line of an expression map: a technique ("pizz.", "staccato"…) and

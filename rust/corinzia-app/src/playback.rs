@@ -31,6 +31,8 @@ pub struct Playback {
     /// Set when PipeWire is unavailable (the details go to stderr).
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
+    /// Clips whose files could not be read (shown in the Mix tab).
+    pub clip_errors: Vec<String>,
     pub scan_errors: Vec<String>,
     pub sample_rate: f64,
     /// Where plugins are looked for (from the preferences).
@@ -77,6 +79,7 @@ impl Playback {
             previews: Vec::new(),
             problem,
             plugins: Vec::new(),
+            clip_errors: Vec::new(),
             scan_errors: Vec::new(),
             sample_rate: rate,
             search_paths: prefs.plugin_search_paths(),
@@ -84,7 +87,12 @@ impl Playback {
     }
 
     /// Keeps the plan in step: rebuild on music changes, else send the mixer.
-    pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64) {
+    /// `folder`: the project file's, where clips' relative paths start.
+    pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64, folder: Option<&std::path::Path>) {
+        if self.pool.media.base.as_deref() != folder {
+            self.pool.media.base = folder.map(Into::into);
+            self.built = None; // the same names may now be other files
+        }
         let routing = snapshot::routing(project);
         if self.built != Some(music_revision) || routing != self.routing {
             self.built = Some(music_revision);
@@ -97,6 +105,7 @@ impl Playback {
             self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
             self.plan_buses = snap.buses.iter().map(|b| b.id).collect();
             self.timeline = snap.timeline();
+            self.clip_errors = snap.clip_errors.clone();
             self.handle.swap(snap);
         } else if self.mixed != Some(revision) {
             self.mixed = Some(revision);

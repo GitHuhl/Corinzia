@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
     p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
@@ -191,3 +191,22 @@ fn audio_graph_round_trip() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+
+#[test]
+fn audio_tracks_and_clips_round_trip() {
+    let dir = std::env::temp_dir().join(format!("corinzia-model-clips-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("c.project");
+    let _ = std::fs::remove_file(&path);
+    let mut a = sample();
+    let mut clip = AudioClip::new(60, "Tape 1", "audio/rain.wav", 4, 12.5);
+    (clip.offset, clip.length, clip.fade_in, clip.fade_out, clip.gain_db, clip.mute, clip.cue, clip.cue_line) = (0.25, 8.0, 0.1, 1.5, -4.0, true, Some(2), true);
+    a.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -2.0, pan: 0.5, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![clip, AudioClip::new(61, "Tape 2", "/abs/b.flac", 4, 30.0)] });
+    save(&a, &path).unwrap();
+    let b = load(&path).unwrap();
+    let t = b.tracks.iter().find(|t| t.id == 50).unwrap();
+    assert!(t.audio && (t.gain_db, t.pan) == (-2.0, 0.5));
+    assert_eq!(t.clips, a.tracks[1].clips);
+    assert!(!b.tracks[0].audio && b.tracks[0].clips.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}

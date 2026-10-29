@@ -705,7 +705,7 @@ impl App {
             self.shown_movement = self.editor.movement;
             self.show_movement_pages();
         }
-        self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+        self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
         if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
             self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
@@ -1660,7 +1660,7 @@ impl App {
                     let plugins = std::mem::take(&mut self.playback.plugins);
                     self.playback = playback::Playback::new(live, &next);
                     self.playback.plugins = plugins;
-                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision);
+                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
                 }
                 if next.midi_input != self.prefs.midi_input || (self.midi.is_none() && !next.midi_input.is_empty()) {
                     self.open_midi(&next.midi_input);
