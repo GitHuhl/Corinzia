@@ -182,6 +182,9 @@ parallel on every core, that outputs through PipeWire.
   small built-in CLAP instrument (also installed as
   `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
   auditioned.
+* **Meters:** every strip (tracks, buses, the master) has a stereo peak
+  meter beside its fader, on the fader's scale; a light on top latches
+  when it goes over 0 dB (click it to put it out).
 * **Mix tab** (Ctrl+2): the arrange view, mixer strips (faders with a dB
   scale, pan, mute, solo; double-click resets, Shift drags finely) and a
   browser of the CLAP and VST3 instruments found in `CLAP_PATH`, `~/.clap`,

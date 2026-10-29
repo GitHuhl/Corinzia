@@ -13,7 +13,7 @@ use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::clap_process;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use crate::workers::Workers;
 
@@ -56,6 +56,54 @@ pub struct Shared {
     pub generation: AtomicU64,
     pub dropped: AtomicU64, // events lost to full queues (diagnostics)
     pub blocks: AtomicU64,
+    /// Peak levels since the UI last took them (f32 bits; positive floats
+    /// order as their bits): per node, then per bus, then the master; left
+    /// and right. See [`Shared::take_peak`].
+    peaks: Peaks,
+}
+
+struct Peaks(Box<[AtomicU32]>);
+impl Default for Peaks {
+    fn default() -> Peaks {
+        Peaks((0..2 * (MAX_NODES + MAX_BUSES + 1)).map(|_| AtomicU32::new(0)).collect())
+    }
+}
+
+/// Whose level a peak is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Meter {
+    Node(usize),
+    Bus(usize),
+    Master,
+}
+
+impl Meter {
+    fn slot(self) -> usize {
+        2 * match self {
+            Meter::Node(i) => i.min(MAX_NODES - 1),
+            Meter::Bus(i) => MAX_NODES + i.min(MAX_BUSES - 1),
+            Meter::Master => MAX_NODES + MAX_BUSES,
+        }
+    }
+}
+
+impl Shared {
+    /// The peak (left, right; linear) since the last call, and resets it.
+    pub fn take_peak(&self, m: Meter) -> (f32, f32) {
+        let s = m.slot();
+        let take = |i: usize| f32::from_bits(self.peaks.0[i].swap(0, Ordering::AcqRel));
+        (take(s), take(s + 1))
+    }
+    fn note_peak(&self, m: Meter, l: f32, r: f32) {
+        let s = m.slot();
+        self.peaks.0[s].fetch_max(l.abs().to_bits(), Ordering::AcqRel);
+        self.peaks.0[s + 1].fetch_max(r.abs().to_bits(), Ordering::AcqRel);
+    }
+}
+
+/// The largest magnitude in a buffer.
+fn peak(x: &[f32]) -> f32 {
+    x.iter().fold(0.0f32, |m, v| m.max(v.abs()))
 }
 
 /// The UI side.
@@ -878,6 +926,8 @@ impl Engine {
             };
             mix_into(dl, &ns.left[..frames], ml0, ml);
             mix_into(dr, &ns.right[..frames], mr0, mr);
+            // Its level after the fader and pan (as heard, solo aside).
+            self.shared.note_peak(Meter::Node(i), peak(&ns.left[..frames]) * l0.max(gl), peak(&ns.right[..frames]) * r0.max(gr));
             for (k, &(bus, _, pre)) in node.sends.iter().enumerate().take(MAX_SENDS) {
                 if (bus as usize) >= nb {
                     continue;
@@ -917,6 +967,7 @@ impl Engine {
             };
             mix_into(dl, &bs.left[..frames], l0, gl);
             mix_into(dr, &bs.right[..frames], r0, gr);
+            self.shared.note_peak(Meter::Bus(b), peak(&bs.left[..frames]) * l0.max(gl), peak(&bs.right[..frames]) * r0.max(gr));
         }
         let sc = &mut self.scratch[0];
         for fx in &snap.master_inserts {
@@ -933,6 +984,7 @@ impl Engine {
                 right[f] *= k;
             }
         }
+        self.shared.note_peak(Meter::Master, peak(&left[..frames]), peak(&right[..frames]));
         self.snap = Some(snap);
     }
 

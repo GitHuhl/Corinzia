@@ -271,6 +271,64 @@ impl canvas::Program<MixMsg> for PanBar {
     }
 }
 
+/// A stereo level meter beside a fader, on the fader's scale (so 0 dB
+/// lines up): peaks held with a decay, green to the fader's −6 dB, amber
+/// to 0 dB, red over; a clip light on top that a click puts out.
+pub struct Meter {
+    pub id: Id,
+    pub level: (f32, f32),
+    pub clipped: bool,
+}
+
+impl canvas::Program<MixMsg> for Meter {
+    type State = ();
+
+    fn update(&self, _: &mut (), event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<MixMsg>> {
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if self.clipped && cursor.position_in(bounds).is_some_and(|p| p.y < MARGIN) => {
+                Some(canvas::Action::publish(MixMsg::ClearClip(self.id)).and_capture())
+            }
+            _ => None,
+        }
+    }
+
+    fn draw(&self, _: &(), renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
+        let mut f = Frame::new(renderer, bounds.size());
+        let (top, bottom) = (MARGIN, bounds.height - MARGIN);
+        let y = |pos: f64| bottom - pos as f32 * (bottom - top);
+        let w = (bounds.width - 1.0) / 2.0;
+        let well = crate::theme::palette().line;
+        let (green, amber, red) = (Color::from_rgb(0.30, 0.72, 0.42), Color::from_rgb(0.92, 0.70, 0.20), Color::from_rgb(0.88, 0.26, 0.24));
+        for (k, &v) in [self.level.0, self.level.1].iter().enumerate() {
+            let x = k as f32 * (w + 1.0);
+            f.fill_rectangle(Point::new(x, top), Size::new(w, bottom - top), Color { a: 0.35, ..well });
+            if v <= 1e-6 {
+                continue;
+            }
+            let db = 20.0 * (v as f64).log10();
+            let at = y(db_to_pos(db.min(MAX_DB)));
+            // Coloured by zone: up to −6 dB, to 0 dB, over.
+            for (from, to, c) in [(MIN_DB, -6.0, green), (-6.0, 0.0, amber), (0.0, MAX_DB, red)] {
+                let (y0, y1) = (y(db_to_pos(from)), y(db_to_pos(to)).max(at));
+                if y1 < y0 {
+                    f.fill_rectangle(Point::new(x, y1), Size::new(w, y0 - y1), c);
+                }
+            }
+        }
+        let light = if self.clipped { red } else { Color { a: 0.35, ..well } };
+        f.fill_rectangle(Point::new(0.0, 0.0), Size::new(bounds.width, MARGIN - 3.0), light);
+        vec![f.into_geometry()]
+    }
+
+    fn mouse_interaction(&self, _: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.clipped && cursor.position_in(bounds).is_some_and(|p| p.y < MARGIN) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

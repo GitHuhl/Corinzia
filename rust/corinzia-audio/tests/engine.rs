@@ -604,3 +604,30 @@ fn a_movement_is_exported_as_a_wav_file_like_it_plays() {
     assert!(err < 1e-5, "{err}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn peaks_are_metered_per_track_and_at_the_master() {
+    use corinzia_audio::engine::Meter;
+    let mut p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.play();
+    let (l, _) = eng.render_offline(4096);
+    let out = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let master = ui.shared.take_peak(Meter::Master);
+    assert!((master.0 - out).abs() < 1e-6 && out > 0.01);
+    let track = ui.shared.take_peak(Meter::Node(0));
+    assert!((track.0 - out).abs() < 1e-3, "the only track is the mix: {track:?} vs {out}");
+    assert_eq!(ui.shared.take_peak(Meter::Master), (0.0, 0.0), "taken: reset");
+    // Its fader down 6 dB: its meter shows it.
+    p.tracks[0].gain_db = -6.0206;
+    ui.swap(snapshot::build_from_pool(&p, SR, 2, &[0], &mut pool));
+    ui.seek(0);
+    ui.play();
+    eng.render_offline(2048);
+    ui.shared.take_peak(Meter::Node(0));
+    eng.render_offline(2048);
+    let half = ui.shared.take_peak(Meter::Node(0));
+    assert!((half.0 / out - 0.5).abs() < 0.05, "{half:?}");
+}

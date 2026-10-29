@@ -1589,6 +1589,7 @@ impl App {
                 self.edit_selected_clip("Audio cue", false, move |c| c.cue = player);
             }
             ClipCueLine => self.edit_selected_clip("Audio cue line", false, |c| c.cue_line = !c.cue_line),
+            ClearClip(id) => self.playback.clear_clip(id),
             ClipRemove => {
                 if let Some((t, c)) = self.selected_clip.take() {
                     self.editor.delete_clip(t, c);
@@ -4526,6 +4527,38 @@ mod tests {
         }));
         assert!(a.bounce.is_none() && !other.exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strips_meter_their_levels_and_latch_a_clip() {
+        let mut a = app(View::Page);
+        a.sync();
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        render(&mut a, 24000);
+        a.playback.tick();
+        let first = a.editor.project.tracks[0].id;
+        let master = corinzia_model::MASTER;
+        assert!(a.playback.level(master).0 > 0.01 && a.playback.level(first).0 > 0.0);
+        assert!(!a.playback.clipped(master));
+        // Stopped: the levels fall away over the frames that follow.
+        a.playback.stop();
+        render(&mut a, 256);
+        for _ in 0..200 {
+            render(&mut a, 256);
+            a.playback.tick();
+        }
+        assert_eq!(a.playback.level(master), (0.0, 0.0));
+        assert!(!a.playback.busy(), "no more frames needed");
+        // Too loud: the master's light latches until clicked.
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(first, 12.0)));
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(master, 12.0)));
+        a.sync();
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        render(&mut a, 24000);
+        a.playback.tick();
+        assert!(a.playback.clipped(master));
+        let _ = a.update(Message::Mix(mix::MixMsg::ClearClip(master)));
+        assert!(!a.playback.clipped(master));
     }
 
     #[test]

@@ -36,6 +36,10 @@ pub struct Playback {
     /// The cycle: a movement's written stretch (quarters), and whether it is on.
     pub cycle: Option<(Id, f64, f64)>,
     pub cycling: bool,
+    /// Peak levels shown (left, right; linear, held with a decay) per
+    /// track, bus and master, and the strips that went over 0 dB.
+    levels: std::collections::HashMap<Id, (f32, f32)>,
+    clips: std::collections::HashSet<Id>,
     pub scan_errors: Vec<String>,
     pub sample_rate: f64,
     /// Where plugins are looked for (from the preferences).
@@ -85,6 +89,8 @@ impl Playback {
             clip_errors: Vec::new(),
             cycle: None,
             cycling: false,
+            levels: Default::default(),
+            clips: Default::default(),
             scan_errors: Vec::new(),
             sample_rate: rate,
             search_paths: prefs.plugin_search_paths(),
@@ -209,8 +215,51 @@ impl Playback {
         }
     }
 
+    /// A strip's level as shown (left, right; linear).
+    pub fn level(&self, id: Id) -> (f32, f32) {
+        self.levels.get(&id).copied().unwrap_or((0.0, 0.0))
+    }
+
+    pub fn clipped(&self, id: Id) -> bool {
+        self.clips.contains(&id)
+    }
+
+    pub fn clear_clip(&mut self, id: Id) {
+        self.clips.remove(&id);
+    }
+
+    /// Takes the engine's peaks into the levels shown: a new peak at once,
+    /// falling back about 40 dB a second.
+    fn meter(&mut self) {
+        use corinzia_audio::engine::Meter;
+        const FALL: f32 = 0.93; // per frame
+        let mut take = |id: Id, m: Meter, levels: &mut std::collections::HashMap<Id, (f32, f32)>, clips: &mut std::collections::HashSet<Id>| {
+            let (l, r) = self.handle.shared.take_peak(m);
+            let old = levels.get(&id).copied().unwrap_or((0.0, 0.0));
+            let shown = (l.max(old.0 * FALL), r.max(old.1 * FALL));
+            if l > 1.0 || r > 1.0 {
+                clips.insert(id);
+            }
+            if shown.0.max(shown.1) < 1e-4 {
+                levels.remove(&id);
+            } else {
+                levels.insert(id, shown);
+            }
+        };
+        let (mut levels, mut clips) = (std::mem::take(&mut self.levels), std::mem::take(&mut self.clips));
+        for (i, &t) in self.node_tracks.iter().enumerate() {
+            take(t, Meter::Node(i), &mut levels, &mut clips);
+        }
+        for (i, &b) in self.plan_buses.iter().enumerate() {
+            take(b, Meter::Bus(i), &mut levels, &mut clips);
+        }
+        take(corinzia_model::MASTER, Meter::Master, &mut levels, &mut clips);
+        (self.levels, self.clips) = (levels, clips);
+    }
+
     /// Per frame (UI thread): end previews, drop retired plans, plugin idle.
     pub fn tick(&mut self) {
+        self.meter();
         let now = Instant::now();
         let mut i = 0;
         while i < self.previews.len() {
@@ -233,7 +282,8 @@ impl Playback {
 
     /// Needs per-frame ticks (playing, or previews pending).
     pub fn busy(&self) -> bool {
-        self.is_playing() || !self.previews.is_empty()
+        // Meters still falling keep the frames coming too.
+        self.is_playing() || !self.previews.is_empty() || !self.levels.is_empty()
     }
 
     /// Scans again from scratch (the cache forgotten): a plugin that timed
