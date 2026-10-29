@@ -703,6 +703,77 @@ impl Editor {
         self.merge = None;
     }
 
+    /// Adds an audio track (after the other tracks); its id.
+    pub fn add_audio_track(&mut self, name: &str) -> Id {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        self.project.tracks.push(Track { id, name: name.into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![] });
+        self.commit_with(before, "Add audio track", true, None);
+        id
+    }
+
+    /// Removes an audio track with its clips (instrument tracks go with
+    /// their players).
+    pub fn remove_audio_track(&mut self, track: Id) {
+        if !self.project.track(track).is_some_and(|t| t.audio) {
+            return;
+        }
+        let before = self.snapshot();
+        self.project.tracks.retain(|t| t.id != track);
+        // Its effects go too.
+        let nodes: Vec<Id> = before.track(track).map(|t| t.inserts.clone()).unwrap_or_default();
+        self.project.nodes.retain(|n| !nodes.contains(&n.id));
+        for m in self.project.movements.iter_mut() {
+            m.automation.retain(|l| !matches!(l.target, AutoTarget::Gain(t) | AutoTarget::Pan(t) if t == track) && !matches!(l.target, AutoTarget::Param { node, .. } if nodes.contains(&node)));
+        }
+        self.commit_with(before, "Remove audio track", true, None);
+    }
+
+    /// Puts a clip on an audio track (a new id is given); its id.
+    pub fn add_clip(&mut self, track: Id, mut clip: AudioClip) -> Option<Id> {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let t = self.project.tracks.iter_mut().find(|t| t.id == track && t.audio)?;
+        clip.id = id;
+        t.clips.push(clip);
+        self.commit_with(before, "Add audio", true, None);
+        Some(id)
+    }
+
+    pub fn clip(&self, track: Id, clip: Id) -> Option<&AudioClip> {
+        self.project.track(track)?.clips.iter().find(|c| c.id == clip)
+    }
+
+    /// Changes a clip. `live`: one step of a drag (merged into one undo
+    /// step; playback catches up at [`Editor::music_changed`]).
+    pub fn edit_clip(&mut self, track: Id, clip: Id, label: &str, live: bool, f: impl FnOnce(&mut AudioClip)) {
+        let before = self.snapshot();
+        let Some(c) = self.project.tracks.iter_mut().find(|t| t.id == track).and_then(|t| t.clips.iter_mut().find(|c| c.id == clip)) else { return };
+        f(c);
+        self.commit_with(before, label, !live, live.then_some(clip));
+    }
+
+    /// A copy of a clip, at the same place; its id.
+    pub fn duplicate_clip(&mut self, track: Id, clip: Id) -> Option<Id> {
+        let c = self.clip(track, clip)?.clone();
+        self.add_clip(track, c)
+    }
+
+    pub fn delete_clip(&mut self, track: Id, clip: Id) {
+        let before = self.snapshot();
+        let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };
+        let n = t.clips.len();
+        t.clips.retain(|c| c.id != clip);
+        if t.clips.len() != n {
+            self.commit_with(before, "Delete audio", true, None);
+        }
+    }
+
+    /// The playback plan is out of date (after live edits).
+    pub fn music_changed(&mut self) {
+        self.changed_with(true);
+    }
+
     pub fn set_track(&mut self, track: Id, label: &str, merge: bool, f: impl FnOnce(&mut Track)) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };

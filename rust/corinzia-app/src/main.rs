@@ -263,6 +263,14 @@ struct App {
     /// and the curves drawn for them.
     auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
     arrange_curves: Vec<Option<arrange::Curve>>,
+    arrange_clips: Vec<arrange::ClipBlock>,
+    /// The clip selected in the arrange view (track, clip), and while it is
+    /// dragged, the clip as it was (its length made explicit).
+    selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
+    clip_origin: Option<corinzia_model::AudioClip>,
+    clip_dragged: bool,
+    /// Ctrl was held at the press: the first drag step makes the copy.
+    clip_copy: bool,
     arrange: arrange::Content,
     arrange_cache: canvas::Cache,
     arrange_ppq: f32,
@@ -351,6 +359,8 @@ enum Message {
     Opened(Option<PathBuf>),
     /// The system file dialog's answer; `failed`: it could not open.
     Picked { purpose: browser::Purpose, path: Option<PathBuf>, failed: bool },
+    /// A sound file chosen for an audio track.
+    AudioChosen(corinzia_model::Id, Option<PathBuf>),
     Browser(browser::BrowserMsg),
     /// A file dropped on the window.
     Dropped(PathBuf),
@@ -525,6 +535,11 @@ impl App {
             preset_name: String::new(),
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
+            arrange_clips: Vec::new(),
+            selected_clip: None,
+            clip_origin: None,
+            clip_dragged: false,
+            clip_copy: false,
             arrange: arrange::Content::default(),
             arrange_cache: canvas::Cache::new(),
             arrange_ppq: 40.0,
@@ -706,6 +721,10 @@ impl App {
             self.show_movement_pages();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
+        self.arrange_clips = arrange::clips(&self.editor.project, self.editor.movement, self.movement_section(), &self.playback.pool.media);
+        if self.selected_clip.is_some_and(|(t, c)| self.editor.clip(t, c).is_none()) {
+            self.selected_clip = None;
+        }
         if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
             self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
@@ -739,6 +758,91 @@ impl App {
         self.arrange_cache.clear();
     }
 
+    /// Places a sound file on an audio track (`None`, or not an audio
+    /// track: a new one named after the file) at the caret of the movement edited. A file in the
+    /// project's folder is kept by its relative path.
+    fn add_audio_file(&mut self, track: Option<corinzia_model::Id>, path: &std::path::Path) {
+        let Some(movement) = self.editor.movement().map(|m| m.id) else { return };
+        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Audio".into());
+        let folder = self.path.as_deref().and_then(|p| p.parent());
+        let file = match folder.and_then(|f| path.strip_prefix(f).ok()) {
+            Some(rel) => rel.to_string_lossy().into_owned(),
+            None => path.to_string_lossy().into_owned(),
+        };
+        // Decoded now, so a file Corinzia cannot read says so at once.
+        if let Err(e) = self.playback.pool.media.get(&self.playback.pool.media.resolve(&file).to_string_lossy()) {
+            self.editor.status = e;
+            return;
+        }
+        let at = arrange::seconds_of(self.movement_section(), quarters(self.editor.caret));
+        let track = match track.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio)) {
+            Some(t) => t,
+            None => self.editor.add_audio_track(&name),
+        };
+        if let Some(id) = self.editor.add_clip(track, corinzia_model::AudioClip::new(0, &name, &file, movement, at)) {
+            self.selected_clip = Some((track, id));
+            self.strip = Some(track);
+        }
+        self.sync();
+    }
+
+    /// Changes the selected clip; `live`: a slider or typing (one undo step
+    /// until let go; playback catches up then).
+    fn edit_selected_clip(&mut self, label: &str, live: bool, f: impl FnOnce(&mut corinzia_model::AudioClip)) {
+        if let Some((t, c)) = self.selected_clip {
+            self.editor.edit_clip(t, c, label, live, f);
+            self.clip_dragged |= live;
+        }
+    }
+
+    /// The playback timeline's section of the movement edited (its tempo:
+    /// seconds to quarters).
+    fn movement_section(&self) -> Option<&corinzia_audio::snapshot::Section> {
+        let id = self.editor.movement()?.id;
+        self.playback.timeline.sections.iter().find(|s| s.movement == id)
+    }
+
+    /// A drag step on the selected clip: `q` (quarters) is its new start,
+    /// edge, or the end of a fade, applied to the clip as it was pressed.
+    fn drag_clip(&mut self, edit: arrange::ClipEdit, q: f64) {
+        use arrange::ClipEdit;
+        const SHORTEST: f64 = 0.01;
+        let (Some((track, mut id)), Some(o)) = (self.selected_clip, self.clip_origin.clone()) else { return };
+        if std::mem::take(&mut self.clip_copy) {
+            // Ctrl+drag: the copy moves, the original stays.
+            let Some(copy) = self.editor.duplicate_clip(track, id) else { return };
+            id = copy;
+            self.selected_clip = Some((track, id));
+            self.editor.end_gesture();
+        }
+        let s = arrange::seconds_of(self.movement_section(), q);
+        let file = self.playback.pool.media.loaded(&o.file).map(|d| d.seconds()).unwrap_or(f64::INFINITY);
+        let label = match edit {
+            ClipEdit::Move => "Move audio",
+            ClipEdit::TrimStart | ClipEdit::TrimEnd => "Trim audio",
+            ClipEdit::FadeIn | ClipEdit::FadeOut => "Fade audio",
+        };
+        self.clip_dragged = true;
+        self.editor.edit_clip(track, id, label, true, |c| match edit {
+            ClipEdit::Move => c.at = s.max(0.0),
+            ClipEdit::TrimStart => {
+                // The start moves; the sound stays where it was.
+                let at = s.clamp((o.at - o.offset).max(0.0), o.at + o.length - SHORTEST);
+                let d = at - o.at;
+                (c.at, c.offset, c.length) = (at, o.offset + d, o.length - d);
+                c.fade_in = o.fade_in.min(c.length);
+                c.fade_out = o.fade_out.min(c.length - c.fade_in);
+            }
+            ClipEdit::TrimEnd => {
+                c.length = (s - o.at).clamp(SHORTEST, (file - o.offset).max(SHORTEST));
+                c.fade_out = o.fade_out.min(c.length);
+                c.fade_in = o.fade_in.min(c.length - c.fade_out);
+            }
+            ClipEdit::FadeIn => c.fade_in = (s - o.at).clamp(0.0, o.length - o.fade_out),
+            ClipEdit::FadeOut => c.fade_out = (o.at + o.length - s).clamp(0.0, o.length - o.fade_in),
+        });
+    }
+
     /// Asks for a file to open (`musicxml`: MusicXML only) with the
     /// system's dialog, else Corinzia's browser.
     fn pick_file(&mut self, musicxml: bool) -> Task<Message> {
@@ -761,6 +865,7 @@ impl App {
                 .add_filter("Scores (project, MusicXML)", &["project", "musicxml", "xml", "mxl"])
                 .add_filter("Corinzia project", &["project"])
                 .add_filter("MusicXML", &["musicxml", "xml", "mxl"]),
+            browser::Purpose::Audio(_) => d.set_title("Add a sound file").add_filter("Sound files", &browser::AUDIO_EXTENSIONS),
             browser::Purpose::Export(format) => {
                 let name = files::sibling(self.path.as_deref(), &self.editor.project.title, format.extension());
                 d.set_title(format!("Export {}", format.label()))
@@ -772,7 +877,7 @@ impl App {
             async move {
                 let started = Instant::now();
                 let path = match purpose {
-                    browser::Purpose::Open => d.pick_file().await,
+                    browser::Purpose::Open | browser::Purpose::Audio(_) => d.pick_file().await,
                     browser::Purpose::Export(_) => d.save_file().await,
                 }
                 .map(|h| h.path().to_path_buf());
@@ -787,7 +892,7 @@ impl App {
     fn open_browser(&mut self, purpose: browser::Purpose) -> Task<Message> {
         let dir = self.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
         let name = match purpose {
-            browser::Purpose::Open => String::new(),
+            browser::Purpose::Open | browser::Purpose::Audio(_) => String::new(),
             browser::Purpose::Export(f) => files::sibling(self.path.as_deref(), &self.editor.project.title, f.extension()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         };
         self.browser = Some(browser::Browser::new(purpose, dir, name));
@@ -837,6 +942,13 @@ impl App {
 
     /// A key press from the score keyboard.
     fn press(&mut self, key: &iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Task<Message>> {
+        use iced::keyboard::{key::Named, Key};
+        // The selected clip in the arrange view: Delete removes it.
+        if let (Tab::Mix, Some((track, clip)), Key::Named(Named::Delete | Named::Backspace)) = (self.tab, self.selected_clip, key) {
+            self.editor.delete_clip(track, clip);
+            self.selected_clip = None;
+            return Some(Task::none());
+        }
         let action = keys::map(key, mods, self.editor.input_mode)?;
         Some(self.act(action))
     }
@@ -1393,6 +1505,31 @@ impl App {
                 let id = self.editor.add_bus("");
                 self.strip = Some(id);
             }
+            AddAudioTrack => {
+                let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
+                let id = self.editor.add_audio_track(&format!("Audio {n}"));
+                self.strip = Some(id);
+            }
+            RemoveTrack(t) => {
+                self.editor.remove_audio_track(t);
+                if self.strip == Some(t) {
+                    self.strip = None;
+                }
+            }
+            AddAudio(_) => {} // a file picker: in `update`
+            ClipName(n) => self.edit_selected_clip("Rename audio", true, move |c| c.name = n),
+            ClipGain(db) => self.edit_selected_clip("Audio gain", true, move |c| c.gain_db = db),
+            ClipMute => self.edit_selected_clip("Mute audio", false, |c| c.mute = !c.mute),
+            ClipCue(label) => {
+                let player = self.editor.project.players.iter().find(|p| p.name == label).map(|p| p.id);
+                self.edit_selected_clip("Audio cue", false, move |c| c.cue = player);
+            }
+            ClipCueLine => self.edit_selected_clip("Audio cue line", false, |c| c.cue_line = !c.cue_line),
+            ClipRemove => {
+                if let Some((t, c)) = self.selected_clip.take() {
+                    self.editor.delete_clip(t, c);
+                }
+            }
             RemoveBus(b) => self.editor.remove_bus(b),
             Output(t, label) => {
                 let bus = self.editor.project.buses.iter().find(|b| b.name == label).map(|b| b.id);
@@ -1501,7 +1638,13 @@ impl App {
                 }
             }
             // The gesture is over: the next one is its own undo step.
-            Released => self.editor.end_gesture(),
+            Released => {
+                self.editor.end_gesture();
+                // A clip's gain or name changed live: playback catches up.
+                if std::mem::take(&mut self.clip_dragged) {
+                    self.editor.music_changed();
+                }
+            }
             Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
             Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
             Assign(t, i) => {
@@ -1841,9 +1984,30 @@ impl App {
                 self.engraved = None;
             }
             Message::SetPanel(p) => self.panel = p,
+            Message::Mix(mix::MixMsg::AddAudio(t)) => return self.pick_file_for(browser::Purpose::Audio(t), false),
             Message::Mix(m) => self.mix(m),
             Message::Arrange(e) => match e {
+                arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
+                    let id = clip;
+                    self.selected_clip = Some((track, id));
+                    self.clip_dragged = false;
+                    self.clip_copy = copy;
+                    // Its length made explicit: trims and fades measure from it.
+                    self.clip_origin = self.editor.clip(track, id).cloned().map(|mut c| {
+                        c.length = arrange::clip_length(&c, self.playback.pool.media.loaded(&c.file).as_deref());
+                        c
+                    });
+                }
+                arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
+                arrange::ArrangeEvent::ClipRelease => {
+                    self.editor.end_gesture();
+                    if std::mem::take(&mut self.clip_dragged) {
+                        self.editor.music_changed();
+                    }
+                    self.clip_origin = None;
+                }
                 arrange::ArrangeEvent::Select(id) => {
+                    self.selected_clip = None;
                     self.editor.select(id);
                     if id.is_some() {
                         self.audition();
@@ -1886,6 +2050,11 @@ impl App {
             Message::SetPart(p) => {
                 self.part = p;
                 self.engraved = None;
+            }
+            Message::Dropped(path) if path.extension().and_then(|e| e.to_str()).is_some_and(|e| browser::AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())) => {
+                // A sound file: onto the selected audio track, else a new one.
+                let track = self.strip.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio));
+                self.add_audio_file(track, &path);
             }
             Message::Dropped(path) => {
                 if path.extension().is_some_and(|e| e == "project") || files::is_musicxml(&path) {
@@ -2062,6 +2231,7 @@ impl App {
                 return Task::done(match purpose {
                     browser::Purpose::Open => Message::Opened(path),
                     browser::Purpose::Export(f) => Message::ExportTo(f, path),
+                    browser::Purpose::Audio(t) => Message::AudioChosen(t, path),
                 });
             }
             Message::Browser(msg) => {
@@ -2075,11 +2245,13 @@ impl App {
                         return Task::done(match purpose {
                             browser::Purpose::Open => Message::Opened(Some(path)),
                             browser::Purpose::Export(f) => Message::ExportTo(f, Some(path)),
+                            browser::Purpose::Audio(t) => Message::AudioChosen(t, Some(path)),
                         });
                     }
                 }
             }
-            Message::Opened(None) | Message::SaveTo(None) | Message::ExportTo(_, None) => return Task::none(),
+            Message::Opened(None) | Message::SaveTo(None) | Message::ExportTo(_, None) | Message::AudioChosen(_, None) => return Task::none(),
+            Message::AudioChosen(track, Some(path)) => self.add_audio_file(Some(track), &path),
             Message::Opened(Some(path)) => self.open(path),
             Message::SaveTo(Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension("project") } else { path };
@@ -2417,13 +2589,15 @@ impl App {
                     playhead,
                     cache: &self.arrange_cache,
                     curves: &self.arrange_curves,
+                    clips: &self.arrange_clips,
+                    selected_clip: self.selected_clip.map(|s| s.1),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill);
                 column![
                     Element::from(arr).map(Message::Arrange),
                     hline(),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
@@ -4015,6 +4189,115 @@ mod tests {
         a.sync();
         let _ = a.update(mx(mix::MixMsg::Program(flute, "None".into())));
         assert_eq!(a.editor.project.tracks[0].program, None);
+    }
+
+    #[test]
+    fn audio_clips_are_added_moved_trimmed_faded_copied_and_deleted() {
+        use arrange::{ArrangeEvent as E, ClipEdit};
+        let mut a = app(View::Page);
+        let _ = a.update(Message::Act(Action::ShowMix));
+        let rate = a.playback.sample_rate;
+        // Ten seconds of sound, already decoded under its name.
+        a.playback.pool.media.insert("tone.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.5; (rate * 10.0) as usize]], rate));
+        a.editor.caret = Frac::int(1); // bar 2 in 4/4: four quarters in
+        let _ = a.update(Message::AudioChosen(0, Some("tone.wav".into()))); // no such track: a new one
+        let (track, clip) = a.selected_clip.expect("a clip, selected");
+        let t = a.editor.project.track(track).unwrap();
+        assert!(t.audio && t.name == "tone" && t.clips.len() == 1);
+        let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
+        let c = |a: &App| a.editor.clip(track, clip).unwrap().clone();
+        assert!((c(&a).at - sec(&a, 4.0)).abs() < 1e-9, "at the caret");
+        // Drawn on its lane, ten seconds long.
+        a.sync();
+        let b = a.arrange_clips.iter().find(|b| b.clip == clip).unwrap();
+        assert!((b.start_q - 4.0).abs() < 1e-6 && (b.length - 10.0).abs() < 1e-9);
+        assert!(a.arrange.lanes[b.lane].audio);
+
+        let ar = |a: &mut App, e: E| {
+            let _ = a.update(Message::Arrange(e));
+        };
+        // Move it to quarter 8: one undo step for the whole drag; playback
+        // rebuilt once, when let go.
+        let music = a.editor.music_revision;
+        ar(&mut a, E::ClipPress { track, clip, copy: false });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::Move, q: 6.0 });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::Move, q: 8.0 });
+        assert_eq!(a.editor.music_revision, music, "not while dragging");
+        ar(&mut a, E::ClipRelease);
+        assert!(a.editor.music_revision > music);
+        assert!((c(&a).at - sec(&a, 8.0)).abs() < 1e-9);
+        a.editor.undo();
+        assert!((c(&a).at - sec(&a, 4.0)).abs() < 1e-9, "one undo puts it back");
+        a.editor.redo();
+
+        // Trim the front by a quarter: the sound stays where it was.
+        let before = c(&a);
+        ar(&mut a, E::ClipPress { track, clip, copy: false });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::TrimStart, q: 9.0 });
+        ar(&mut a, E::ClipRelease);
+        let d = sec(&a, 9.0) - before.at;
+        let now = c(&a);
+        assert!((now.at - sec(&a, 9.0)).abs() < 1e-9 && (now.offset - d).abs() < 1e-9 && (now.length - (10.0 - d)).abs() < 1e-9);
+        // Trimming the end past the file stops at the file's end.
+        ar(&mut a, E::ClipPress { track, clip, copy: false });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::TrimEnd, q: 400.0 });
+        ar(&mut a, E::ClipRelease);
+        assert!((c(&a).length - (10.0 - d)).abs() < 1e-9);
+        // Fades from the corners.
+        ar(&mut a, E::ClipPress { track, clip, copy: false });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::FadeIn, q: 10.0 });
+        ar(&mut a, E::ClipRelease);
+        assert!((c(&a).fade_in - (sec(&a, 10.0) - now.at)).abs() < 1e-9);
+
+        // Ctrl+drag: a copy moves, the original stays.
+        let at = c(&a).at;
+        ar(&mut a, E::ClipPress { track, clip, copy: true });
+        ar(&mut a, E::ClipRelease);
+        assert_eq!(a.editor.project.track(track).unwrap().clips.len(), 1, "a click alone copies nothing");
+        ar(&mut a, E::ClipPress { track, clip, copy: true });
+        ar(&mut a, E::ClipDrag { edit: ClipEdit::Move, q: 20.0 });
+        ar(&mut a, E::ClipRelease);
+        let clips = &a.editor.project.track(track).unwrap().clips;
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().any(|x| x.id == clip && x.at == at));
+        let copy = a.selected_clip.unwrap().1;
+        assert_ne!(copy, clip);
+
+        // Delete removes the selected clip.
+        let _ = a.update(Message::Key(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Delete),
+            physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: None,
+            repeat: false,
+        }));
+        assert_eq!(a.editor.project.track(track).unwrap().clips.len(), 1);
+        assert!(a.selected_clip.is_none());
+
+        // The plan plays it: a node with the clip.
+        a.sync();
+        assert!(a.playback.clip_errors.is_empty(), "{:?}", a.playback.clip_errors);
+    }
+
+    #[test]
+    fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
+        let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, min_key: 60, max_key: 72 }], length_q: 16.0, ..Default::default() };
+        let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
+        let cache = canvas::Cache::new();
+        let sel = HashSet::new();
+        let clips = [block];
+        let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None };
+        let r = v.clip_rect(&clips[0]);
+        let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
+        let mid_y = r.y + r.height / 2.0;
+        assert_eq!(at(r.x + r.width / 2.0, mid_y), Some(arrange::ClipEdit::Move));
+        assert_eq!(at(r.x + 2.0, mid_y), Some(arrange::ClipEdit::TrimStart));
+        assert_eq!(at(r.x + r.width - 2.0, mid_y), Some(arrange::ClipEdit::TrimEnd));
+        assert_eq!(at(r.x + 4.0, r.y + 3.0), Some(arrange::ClipEdit::FadeIn));
+        assert_eq!(at(r.x + r.width - 4.0, r.y + 3.0), Some(arrange::ClipEdit::FadeOut));
+        assert_eq!(at(r.x - 10.0, mid_y), None);
     }
 
     #[test]

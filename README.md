@@ -119,6 +119,15 @@ parallel on every core, that outputs through PipeWire.
   optional bank) is sent to its instrument when playback starts, and is
   written into exported MIDI files. Corinzia Sine has three programs: soft
   organ, pure sine and bright.
+* **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" (or drop
+  a WAV, FLAC, MP3 or Ogg file on the window) puts a clip at the caret.
+  Clips sit at fixed times (seconds after their movement's start: tempo
+  changes do not move them). In the arrange view, drag a clip to move it
+  (snapping to the beat; Shift for none), its edges to trim, its top
+  corners to fade; Ctrl+drag copies, Delete removes. A selected clip has
+  its gain, mute and name beside the strips. Audio tracks have effects,
+  sends, an output and a fader like any track. Files are decoded and
+  resampled to the engine's rate once and kept in memory.
 * **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
   the track's lane in the arrange view: its gain, its pan, or any parameter
   of its instrument or effects. Click to add a point, drag to move it,
