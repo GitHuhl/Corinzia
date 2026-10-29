@@ -28,8 +28,9 @@ pub enum Command {
     Play,
     Stop,
     Seek(i64),
-    /// Live mixer change for a node: gain (linear), pan, audible.
-    Mix { node: u32, gain: f32, pan: f32, audible: bool },
+    /// Live mixer change for a node: gain (linear), pan, audible, and
+    /// whether its own output is heard (see `snapshot::mix`).
+    Mix { node: u32, gain: f32, pan: f32, audible: bool, direct: bool },
     /// Live change of a bus: gain (linear), pan, audible.
     MixBus { bus: u32, gain: f32, pan: f32, audible: bool },
     /// Live change of a node's send (by its index in the node's sends).
@@ -132,10 +133,13 @@ struct NodeState {
     gain: f32,
     pan: f32,
     audible: bool,
+    direct: bool,
     midi: bool, // the plugin takes MIDI rather than CLAP notes
     /// The left/right gains applied at the end of the last block: changes
     /// ramp from them across the next one (no zipper noise, no clicks).
     applied: Option<(f32, f32)>,
+    /// The same for its own output (silent while only its sends are heard).
+    main_applied: Option<(f32, f32)>,
     /// Send levels (linear), and the levels reached last block.
     sends: [f32; MAX_SENDS],
     send_applied: [Option<f32>; MAX_SENDS],
@@ -373,7 +377,7 @@ pub fn with_workers(sample_rate: f64, max_frames: u32, workers: Workers) -> (Eng
     let shared = Arc::new(Shared::default());
     let nodes = (0..MAX_NODES)
         .map(|_| {
-            NodeState { events: input_events(), left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, midi: false, applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS], ran: false }
+            NodeState { events: input_events(), left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], ptrs: [std::ptr::null_mut(); 2], gain: 1.0, pan: 0.0, audible: true, direct: true, midi: false, applied: None, main_applied: None, sends: [0.0; MAX_SENDS], send_applied: [None; MAX_SENDS], ran: false }
         })
         .collect();
     let buses = (0..MAX_BUSES).map(|_| BusState { left: vec![0.0; max_frames as usize], right: vec![0.0; max_frames as usize], gain: 1.0, pan: 0.0, audible: true, applied: None }).collect();
@@ -477,6 +481,7 @@ impl Engine {
                         self.nodes[i].gain = n.gain;
                         self.nodes[i].pan = n.pan;
                         self.nodes[i].audible = n.audible;
+                        self.nodes[i].direct = n.direct;
                         self.nodes[i].midi = n.plugin.as_ref().is_some_and(|p| p.midi_dialect);
                         for (k, s) in n.sends.iter().enumerate().take(MAX_SENDS) {
                             self.nodes[i].sends[k] = s.1;
@@ -512,11 +517,12 @@ impl Engine {
                     self.reset_cursor();
                     self.chase();
                 }
-                Command::Mix { node, gain, pan, audible } => {
+                Command::Mix { node, gain, pan, audible, direct } => {
                     if let Some(n) = self.nodes.get_mut(node as usize) {
                         n.gain = gain;
                         n.pan = pan;
                         n.audible = audible;
+                        n.direct = direct;
                     }
                 }
                 Command::MixBus { bus, gain, pan, audible } => {
@@ -787,7 +793,11 @@ impl Engine {
             let (gl, gr) = pan_gains(ns.gain, ns.pan, ns.audible);
             let (l0, r0) = ns.applied.unwrap_or((gl, gr));
             ns.applied = Some((gl, gr));
-            // Into its bus or the master; post-fader sends to buses.
+            // Its own output: silent while only its sends feed a soloed bus.
+            let (ml, mr) = if ns.direct { (gl, gr) } else { (0.0, 0.0) };
+            let (ml0, mr0) = ns.main_applied.unwrap_or((ml, mr));
+            ns.main_applied = Some((ml, mr));
+            // Into its bus or the master; sends to buses.
             let (dl, dr): (&mut [f32], &mut [f32]) = match node.out.filter(|&b| (b as usize) < nb) {
                 Some(b) => {
                     let bs = &mut self.buses[b as usize];
@@ -795,9 +805,9 @@ impl Engine {
                 }
                 None => (&mut left[..frames], &mut right[..frames]),
             };
-            mix_into(dl, &ns.left[..frames], l0, gl);
-            mix_into(dr, &ns.right[..frames], r0, gr);
-            for (k, &(bus, _)) in node.sends.iter().enumerate().take(MAX_SENDS) {
+            mix_into(dl, &ns.left[..frames], ml0, ml);
+            mix_into(dr, &ns.right[..frames], mr0, mr);
+            for (k, &(bus, _, pre)) in node.sends.iter().enumerate().take(MAX_SENDS) {
                 if (bus as usize) >= nb {
                     continue;
                 }
@@ -805,13 +815,21 @@ impl Engine {
                 let from = ns.send_applied[k].unwrap_or(level);
                 ns.send_applied[k] = Some(level);
                 let bs = &mut self.buses[bus as usize];
-                // The fader applies before the send (post-fader), panned as the track.
-                mix_into(&mut bs.left[..frames], &ns.left[..frames], from * l0, level * gl);
-                mix_into(&mut bs.right[..frames], &ns.right[..frames], from * r0, level * gr);
+                if pre {
+                    // Before the fader and pan.
+                    mix_into(&mut bs.left[..frames], &ns.left[..frames], from, level);
+                    mix_into(&mut bs.right[..frames], &ns.right[..frames], from, level);
+                } else {
+                    // After the fader, panned as the track.
+                    mix_into(&mut bs.left[..frames], &ns.left[..frames], from * l0, level * gl);
+                    mix_into(&mut bs.right[..frames], &ns.right[..frames], from * r0, level * gr);
+                }
             }
         }
+        // Buses in the plan's order: each into a later bus, or the master.
         for (b, strip) in snap.buses.iter().enumerate().take(nb) {
-            let bs = &mut self.buses[b];
+            let (head, rest) = self.buses.split_at_mut(b + 1);
+            let bs = &mut head[b];
             let sc = &mut self.scratch[0];
             for fx in &strip.inserts {
                 unsafe { run_effect(fx, &mut bs.left[..frames], &mut bs.right[..frames], &mut sc.tmp, frames, self.steady, &transport, &mut sc.fx_events, &self.out_events, &self.fx_auto) };
@@ -819,8 +837,15 @@ impl Engine {
             let (gl, gr) = pan_gains(bs.gain, bs.pan, bs.audible);
             let (l0, r0) = bs.applied.unwrap_or((gl, gr));
             bs.applied = Some((gl, gr));
-            mix_into(&mut left[..frames], &bs.left[..frames], l0, gl);
-            mix_into(&mut right[..frames], &bs.right[..frames], r0, gr);
+            let (dl, dr): (&mut [f32], &mut [f32]) = match strip.out.map(|o| o as usize).filter(|&o| o > b && o < nb) {
+                Some(o) => {
+                    let d = &mut rest[o - b - 1];
+                    (&mut d.left[..frames], &mut d.right[..frames])
+                }
+                None => (&mut left[..frames], &mut right[..frames]),
+            };
+            mix_into(dl, &bs.left[..frames], l0, gl);
+            mix_into(dr, &bs.right[..frames], r0, gr);
         }
         let sc = &mut self.scratch[0];
         for fx in &snap.master_inserts {

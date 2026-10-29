@@ -145,6 +145,8 @@ pub fn load(path: &Path) -> Result<Project> {
                 program: None,
                 bank: None,
                 techniques: vec![],
+                color: None,
+                folder: String::new(),
                 audio: false,
                 clips: vec![],
             })
@@ -221,8 +223,10 @@ pub fn load(path: &Path) -> Result<Project> {
             t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
             t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
             t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
-            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
+            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0), pre: s["pre"].as_bool().unwrap_or(false) })).collect();
             t.audio = tv["audio"].as_bool().unwrap_or(false);
+            t.color = tv["color"].as_u64().map(|c| c as u32 & 0xff_ffff);
+            t.folder = tv["folder"].as_str().unwrap_or("").to_string();
             t.clips = tv["clips"].as_array().into_iter().flatten().filter_map(clip_from).collect();
         }
         p.buses = m["buses"]
@@ -237,6 +241,8 @@ pub fn load(path: &Path) -> Result<Project> {
                     gain_db: b["db"].as_f64().unwrap_or(0.0),
                     pan: b["pan"].as_f64().unwrap_or(0.0),
                     mute: b["mute"].as_bool().unwrap_or(false),
+                    solo: b["solo"].as_bool().unwrap_or(false),
+                    output: b["out"].as_u64(),
                 })
             })
             .collect();
@@ -606,13 +612,13 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio || t.color.is_some() || !t.folder.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
             SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
             SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
             SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
             SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
-        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank, "audio": t.audio, "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
-        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
+        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db, "pre": s.pre})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank, "color": t.color, "folder": t.folder, "audio": t.audio, "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
+        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute, "solo": b.solo, "out": b.output})).collect::<Vec<_>>(),
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();

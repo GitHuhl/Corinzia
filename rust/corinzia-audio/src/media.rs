@@ -121,7 +121,7 @@ pub fn resample(channels: Vec<Vec<f32>>, from: f64, to: f64) -> Result<Vec<Vec<f
     let delay = r.output_delay();
     let mut out: Vec<Vec<f32>> = vec![Vec::with_capacity(want + delay + 2048); channels.len()];
     let mut at = 0;
-    let mut push = |o: Vec<Vec<f32>>, out: &mut Vec<Vec<f32>>| {
+    let push = |o: Vec<Vec<f32>>, out: &mut Vec<Vec<f32>>| {
         for (d, s) in out.iter_mut().zip(o) {
             d.extend_from_slice(&s);
         }

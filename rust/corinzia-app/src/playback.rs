@@ -109,9 +109,9 @@ impl Playback {
             self.handle.swap(snap);
         } else if self.mixed != Some(revision) {
             self.mixed = Some(revision);
-            for (track, gain, pan, audible) in snapshot::mix(project) {
+            for (track, gain, pan, audible, direct) in snapshot::mix(project) {
                 if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
-                    let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
+                    let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
                 }
             }
             self.send_levels(project);
@@ -140,8 +140,8 @@ impl Playback {
 
     /// A live mixer value while a slider moves (committed separately).
     pub fn live_mix(&mut self, project: &Project, track: Id) {
-        if let (Some(node), Some((_, gain, pan, audible))) = (self.node_tracks.iter().position(|t| *t == track), snapshot::mix(project).into_iter().find(|m| m.0 == track)) {
-            let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
+        if let (Some(node), Some((_, gain, pan, audible, direct))) = (self.node_tracks.iter().position(|t| *t == track), snapshot::mix(project).into_iter().find(|m| m.0 == track)) {
+            let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
         }
     }
 

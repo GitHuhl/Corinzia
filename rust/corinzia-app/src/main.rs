@@ -264,6 +264,8 @@ struct App {
     auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
     arrange_curves: Vec<Option<arrange::Curve>>,
     arrange_clips: Vec<arrange::ClipBlock>,
+    /// Folders folded away in the arrange view.
+    folded: HashSet<String>,
     /// The clip selected in the arrange view (track, clip), and while it is
     /// dragged, the clip as it was (its length made explicit).
     selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
@@ -536,6 +538,7 @@ impl App {
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
             arrange_clips: Vec::new(),
+            folded: HashSet::new(),
             selected_clip: None,
             clip_origin: None,
             clip_dragged: false,
@@ -721,6 +724,7 @@ impl App {
             self.show_movement_pages();
         }
         self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
+        arrange::layout_rows(&mut self.arrange, &self.editor.project, &self.folded);
         self.arrange_clips = arrange::clips(&self.editor.project, self.editor.movement, self.movement_section(), &self.playback.pool.media);
         if self.selected_clip.is_some_and(|(t, c)| self.editor.clip(t, c).is_none()) {
             self.selected_clip = None;
@@ -1645,8 +1649,16 @@ impl App {
                     self.editor.music_changed();
                 }
             }
+            Solo(t) if self.editor.project.bus(t).is_some() => self.editor.set_bus(t, "Solo", false, |b| b.solo = !b.solo),
             Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
             Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
+            SendPre(t, i) => self.editor.toggle_send_pre(t, i),
+            BusOutput(b, label) => {
+                let to = self.editor.project.buses.iter().find(|x| x.name == label && x.id != b).map(|x| x.id);
+                self.editor.set_bus_output(b, to);
+            }
+            Color(t, c) => self.editor.set_track(t, "Track colour", false, |x| x.color = c),
+            Folder(t, f) => self.editor.set_track(t, "Folder", true, |x| x.folder = f.trim_start().to_string()),
             Assign(t, i) => {
                 let Some(info) = self.playback.plugins.get(i).cloned() else { return };
                 if info.bundle.as_os_str() == corinzia_audio::host::BUILTIN {
@@ -1999,6 +2011,11 @@ impl App {
                     });
                 }
                 arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
+                arrange::ArrangeEvent::ToggleFolder(name) => {
+                    if !self.folded.remove(&name) {
+                        self.folded.insert(name);
+                    }
+                }
                 arrange::ArrangeEvent::ClipRelease => {
                     self.editor.end_gesture();
                     if std::mem::take(&mut self.clip_dragged) {
@@ -4143,7 +4160,7 @@ mod tests {
         let _ = a.update(mx(mix::MixMsg::ToggleSend(flute, bus)));
         let _ = a.update(mx(mix::MixMsg::SendLevel(flute, 0, -3.0)));
         let _ = a.update(mx(mix::MixMsg::Released));
-        assert_eq!(a.editor.project.tracks[0].sends, [corinzia_model::SendLevel { bus, gain_db: -3.0 }]);
+        assert_eq!(a.editor.project.tracks[0].sends, [corinzia_model::SendLevel { bus, gain_db: -3.0, pre: false }]);
         // The cello into the bus; the master down 6 dB.
         let cello = a.editor.project.tracks[1].id;
         let _ = a.update(mx(mix::MixMsg::Output(cello, "Bus 1".into())));
@@ -4308,8 +4325,48 @@ mod tests {
     }
 
     #[test]
+    fn buses_route_into_buses_without_loops_and_folders_fold_in_the_arrange_view() {
+        let mut a = app(View::Page);
+        let mx = |a: &mut App, m: mix::MixMsg| {
+            let _ = a.update(Message::Mix(m));
+        };
+        mx(&mut a, mix::MixMsg::AddBus);
+        mx(&mut a, mix::MixMsg::AddBus);
+        let (b1, b2) = (a.editor.project.buses[0].id, a.editor.project.buses[1].id);
+        let name = |a: &App, b: u64| a.editor.project.bus(b).unwrap().name.clone();
+        let n2 = name(&a, b2);
+        mx(&mut a, mix::MixMsg::BusOutput(b1, n2));
+        assert_eq!(a.editor.project.bus(b1).unwrap().output, Some(b2));
+        let n1 = name(&a, b1);
+        mx(&mut a, mix::MixMsg::BusOutput(b2, n1));
+        assert_eq!(a.editor.project.bus(b2).unwrap().output, None, "a loop is refused");
+        assert!(a.editor.status.contains("cannot"));
+        mx(&mut a, mix::MixMsg::Solo(b1));
+        assert!(a.editor.project.bus(b1).unwrap().solo);
+        // Removing a bus: what went into it goes to the master.
+        mx(&mut a, mix::MixMsg::RemoveBus(b2));
+        assert_eq!(a.editor.project.bus(b1).unwrap().output, None);
+
+        // Folders: the first and third tracks in "Winds", shown together under its header.
+        mx(&mut a, mix::MixMsg::AddAudioTrack);
+        let ids: Vec<u64> = a.editor.project.tracks.iter().map(|t| t.id).collect();
+        assert!(ids.len() >= 3);
+        mx(&mut a, mix::MixMsg::Folder(ids[0], "Winds".into()));
+        mx(&mut a, mix::MixMsg::Folder(ids[2], "Winds".into()));
+        mx(&mut a, mix::MixMsg::Color(ids[1], Some(mix::TRACK_COLORS[6])));
+        a.sync();
+        use arrange::Row;
+        assert_eq!(a.arrange.rows[..4], [Row::Folder { name: "Winds".into(), collapsed: false, tracks: 2 }, Row::Lane(0), Row::Lane(2), Row::Lane(1)]);
+        assert_eq!(a.arrange.lanes[1].color, mix::color_of(mix::TRACK_COLORS[6]));
+        let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ToggleFolder("Winds".into())));
+        a.sync();
+        assert_eq!(a.arrange.rows[..2], [Row::Folder { name: "Winds".into(), collapsed: true, tracks: 2 }, Row::Lane(1)]);
+        assert_eq!((a.arrange.row_of[0], a.arrange.row_of[2], a.arrange.row_of[1]), (None, None, Some(1)));
+    }
+
+    #[test]
     fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
-        let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, min_key: 60, max_key: 72 }], length_q: 16.0, ..Default::default() };
+        let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
         let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
         let cache = canvas::Cache::new();
         let sel = HashSet::new();

@@ -19,6 +19,8 @@ pub struct Lane {
     pub name: String,
     /// An audio track's lane: clips, no notes.
     pub audio: bool,
+    pub color: Color,
+    pub folder: String,
     pub min_key: i32,
     pub max_key: i32,
 }
@@ -32,9 +34,19 @@ pub struct Block {
     pub element: Id,
 }
 
+/// A row of the arrange view: a folder's header, or a track's lane.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Row {
+    Folder { name: String, collapsed: bool, tracks: usize },
+    Lane(usize),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Content {
     pub lanes: Vec<Lane>,
+    /// The rows shown, top to bottom, and each lane's row (none: folded away).
+    pub rows: Vec<Row>,
+    pub row_of: Vec<Option<usize>>,
     pub blocks: Vec<Block>,
     pub bars: Vec<f64>, // bar line quarters, with the final barline
     pub length_q: f64,
@@ -42,7 +54,7 @@ pub struct Content {
 
 /// The current movement's notes, per track that sounds them.
 pub fn content(project: &Project, movement: usize) -> Content {
-    let mut c = Content { lanes: project.tracks.iter().map(|t| Lane { track: t.id, name: t.name.clone(), audio: t.audio, min_key: i32::MAX, max_key: i32::MIN }).collect(), ..Default::default() };
+    let mut c = Content { lanes: project.tracks.iter().map(|t| Lane { track: t.id, name: t.name.clone(), audio: t.audio, color: crate::mix::track_color(project, t.id), folder: t.folder.clone(), min_key: i32::MAX, max_key: i32::MIN }).collect(), ..Default::default() };
     let Some(m) = project.movements.get(movement) else { return c };
     let q = |f: corinzia_score::Frac| f.num as f64 * 4.0 / f.den as f64;
     for lane in &m.lanes {
@@ -72,6 +84,42 @@ pub fn content(project: &Project, movement: usize) -> Content {
     c.length_q = q(m.length);
     c.bars.push(c.length_q);
     c
+}
+
+/// Brings the lanes' names, colours and folders up to date and lays out
+/// the rows: a folder's tracks together under its header (where the first
+/// of them is), folded away when `collapsed` names it.
+pub fn layout_rows(c: &mut Content, project: &Project, collapsed: &std::collections::HashSet<String>) {
+    for l in c.lanes.iter_mut() {
+        if let Some(t) = project.track(l.track) {
+            l.name = t.name.clone();
+            l.folder = t.folder.clone();
+            l.color = crate::mix::track_color(project, t.id);
+        }
+    }
+    c.rows.clear();
+    c.row_of = vec![None; c.lanes.len()];
+    let mut done: Vec<&str> = Vec::new();
+    for (i, l) in c.lanes.iter().enumerate() {
+        if l.folder.is_empty() {
+            c.row_of[i] = Some(c.rows.len());
+            c.rows.push(Row::Lane(i));
+            continue;
+        }
+        if done.contains(&l.folder.as_str()) {
+            continue;
+        }
+        done.push(&l.folder);
+        let members: Vec<usize> = (0..c.lanes.len()).filter(|&j| c.lanes[j].folder == l.folder).collect();
+        let shut = collapsed.contains(&l.folder);
+        c.rows.push(Row::Folder { name: l.folder.clone(), collapsed: shut, tracks: members.len() });
+        if !shut {
+            for j in members {
+                c.row_of[j] = Some(c.rows.len());
+                c.rows.push(Row::Lane(j));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- clips --
@@ -186,6 +234,8 @@ pub enum ArrangeEvent {
     ClipPress { track: Id, clip: Id, copy: bool },
     ClipDrag { edit: ClipEdit, q: f64 },
     ClipRelease,
+    /// A folder's header clicked: fold it away, or open it.
+    ToggleFolder(String),
 }
 
 /// A lane's automation as shown: what it drives, its range, its points
@@ -238,9 +288,23 @@ impl ArrangeView<'_> {
     fn quarter_at(&self, x: f32) -> f64 {
         ((x - HEADER + self.scroll_x) / self.pixels_per_quarter).max(0.0) as f64
     }
+    /// The top of a lane's row; folded away: far above the view.
+    fn lane_y(&self, lane: usize) -> f32 {
+        match self.content.row_of.get(lane).copied().flatten() {
+            Some(r) => RULER + r as f32 * self.lane_height,
+            None => -1.0e6,
+        }
+    }
+    fn row_at(&self, y: f32) -> Option<&Row> {
+        let i = ((y - RULER) / self.lane_height).floor();
+        if i < 0.0 {
+            return None;
+        }
+        self.content.rows.get(i as usize)
+    }
     /// A lane's curve area: (top, height).
     fn curve_band(&self, lane: usize) -> (f32, f32) {
-        (RULER + lane as f32 * self.lane_height + 6.0, self.lane_height - 12.0)
+        (self.lane_y(lane) + 6.0, self.lane_height - 12.0)
     }
     fn curve_y(&self, lane: usize, c: &Curve, v: f64) -> f32 {
         let (top, h) = self.curve_band(lane);
@@ -257,8 +321,10 @@ impl ArrangeView<'_> {
         (self.quarter_at(x) * 16.0).round() / 16.0
     }
     fn lane_at(&self, y: f32) -> Option<usize> {
-        let i = ((y - RULER) / self.lane_height).floor();
-        (i >= 0.0 && (i as usize) < self.content.lanes.len()).then_some(i as usize)
+        match self.row_at(y)? {
+            Row::Lane(l) => Some(*l),
+            Row::Folder { .. } => None,
+        }
     }
     /// The point of a lane's curve under (x, y), if any.
     fn point_at(&self, lane: usize, c: &Curve, p: Point) -> Option<usize> {
@@ -266,7 +332,7 @@ impl ArrangeView<'_> {
     }
 
     pub fn clip_rect(&self, c: &ClipBlock) -> Rectangle {
-        let y = RULER + c.lane as f32 * self.lane_height + 3.0;
+        let y = self.lane_y(c.lane) + 3.0;
         Rectangle::new(Point::new(self.x(c.start_q), y), Size::new(((c.end_q - c.start_q) as f32 * self.pixels_per_quarter).max(4.0), self.lane_height - 6.0))
     }
 
@@ -300,7 +366,7 @@ impl ArrangeView<'_> {
         let lane = &self.content.lanes[b.lane];
         let span = (lane.max_key - lane.min_key).max(1) as f32;
         let h = (self.lane_height - 8.0) / span;
-        let y = RULER + b.lane as f32 * self.lane_height + 4.0 + (lane.max_key - b.key) as f32 * h - h / 2.0;
+        let y = self.lane_y(b.lane) + 4.0 + (lane.max_key - b.key) as f32 * h - h / 2.0;
         Rectangle::new(Point::new(self.x(b.start_q), y), Size::new((b.length_q as f32 * self.pixels_per_quarter - 1.0).max(2.0), h.max(3.0)))
     }
 }
@@ -351,6 +417,9 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if p.y < RULER && p.x > HEADER {
                     return Some(canvas::Action::publish(ArrangeEvent::Locate(self.quarter_at(p.x))).and_capture());
                 }
+                if let Some(Row::Folder { name, .. }) = self.row_at(p.y) {
+                    return Some(canvas::Action::publish(ArrangeEvent::ToggleFolder(name.clone())).and_capture());
+                }
                 // A lane showing automation: grab a point, or add one.
                 if let Some((lane, c)) = self.lane_at(p.y).filter(|_| p.x > HEADER).and_then(|l| Some((l, self.curves.get(l)?.as_ref()?))) {
                     if let Some(index) = self.point_at(lane, c, p) {
@@ -391,10 +460,12 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         let geometry = self.cache.draw(renderer, bounds.size(), |f: &mut Frame| {
             f.fill_rectangle(Point::ORIGIN, bounds.size(), crate::theme::palette().desk);
             f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
-            // Lanes.
-            for (i, _) in c.lanes.iter().enumerate() {
+            // Rows: lanes, and folders' headers.
+            for (i, row) in c.rows.iter().enumerate() {
                 let y = RULER + i as f32 * self.lane_height;
-                if i % 2 == 1 {
+                if matches!(row, Row::Folder { .. }) {
+                    f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::palette().base);
+                } else if i % 2 == 1 {
                     f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::palette().surface);
                 }
                 f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
@@ -405,39 +476,48 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if x < HEADER || x > bounds.width {
                     continue;
                 }
-                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER + c.lanes.len() as f32 * self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
+                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER + c.rows.len() as f32 * self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
                 if n + 1 < c.bars.len() {
                     f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
                 }
             }
             // Note blocks.
-            for b in &c.blocks {
+            for b in c.blocks.iter().filter(|b| c.row_of.get(b.lane).copied().flatten().is_some()) {
                 let r = self.block_rect(b);
                 if r.x + r.width < HEADER || r.x > bounds.width {
                     continue;
                 }
-                let color = if self.selected.contains(&b.element) { crate::theme::palette().accent } else { PALETTE[b.lane % PALETTE.len()] };
+                let color = if self.selected.contains(&b.element) { crate::theme::palette().accent } else { c.lanes[b.lane].color };
                 f.fill_rectangle(Point::new(r.x.max(HEADER), r.y), Size::new(r.width - (HEADER - r.x).max(0.0), r.height), color);
             }
             // Clips, with their waveform and fades.
-            for clip in self.clips {
+            for clip in self.clips.iter().filter(|x| c.row_of.get(x.lane).copied().flatten().is_some()) {
                 draw_clip(f, self, clip, bounds.width);
             }
             // Track headers over everything that scrolled under them.
             f.fill_rectangle(Point::ORIGIN, Size::new(HEADER, bounds.height), crate::theme::palette().surface);
-            for (i, l) in c.lanes.iter().enumerate() {
+            for (i, row) in c.rows.iter().enumerate() {
                 let y = RULER + i as f32 * self.lane_height;
-                f.fill_rectangle(Point::new(0.0, y), Size::new(5.0, self.lane_height), PALETTE[i % PALETTE.len()]);
-                f.fill_text(Text { content: l.name.clone(), position: Point::new(12.0, y + 8.0), size: iced::Pixels(13.0), ..Text::default() });
+                let l = match row {
+                    Row::Folder { name, collapsed, tracks } => {
+                        let label = format!("{} {name}  ({tracks})", if *collapsed { "▸" } else { "▾" });
+                        f.fill_text(Text { content: label, position: Point::new(8.0, y + 8.0), size: iced::Pixels(13.0), font: iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }, ..Text::default() });
+                        continue;
+                    }
+                    Row::Lane(l) => &c.lanes[*l],
+                };
+                let indent = if l.folder.is_empty() { 0.0 } else { 10.0 };
+                f.fill_rectangle(Point::new(indent, y), Size::new(5.0, self.lane_height), l.color);
+                f.fill_text(Text { content: l.name.clone(), position: Point::new(12.0 + indent, y + 8.0), size: iced::Pixels(13.0), ..Text::default() });
                 if l.audio {
-                    f.fill_text(Text { content: "Audio".into(), position: Point::new(12.0, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                    f.fill_text(Text { content: "Audio".into(), position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
                 }
             }
             f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(12.0), color: crate::theme::palette().dim, ..Text::default() });
         });
         let mut overlay = Frame::new(renderer, bounds.size());
         // Automation over the lanes that show it.
-        for (lane, c) in self.curves.iter().enumerate().filter_map(|(i, c)| Some((i, c.as_ref()?))) {
+        for (lane, c) in self.curves.iter().enumerate().filter_map(|(i, c)| Some((i, c.as_ref()?))).filter(|(i, _)| self.content.row_of.get(*i).copied().flatten().is_some()) {
             let (top, h) = self.curve_band(lane);
             overlay.fill_rectangle(Point::new(HEADER, top), Size::new(bounds.width - HEADER, h), Color { a: 0.12, ..crate::theme::palette().accent });
             let mut pts: Vec<Point> = c.points.iter().map(|&(q, v)| Point::new(self.x(q).max(HEADER), self.curve_y(lane, c, v))).collect();
@@ -457,7 +537,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                     }
                 }
             }
-            overlay.fill_text(Text { content: c.label.clone(), position: Point::new(12.0, RULER + lane as f32 * self.lane_height + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().accent, ..Text::default() });
+            overlay.fill_text(Text { content: c.label.clone(), position: Point::new(12.0, self.lane_y(lane) + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().accent, ..Text::default() });
         }
         if let Some(q) = self.playhead {
             let x = self.x(q);
@@ -476,7 +556,7 @@ fn draw_clip(f: &mut Frame, v: &ArrangeView, c: &ClipBlock, width: f32) {
     if r.x + r.width < HEADER || r.x > width {
         return;
     }
-    let base = if c.muted { Color::from_rgb(0.55, 0.55, 0.58) } else { PALETTE[c.lane % PALETTE.len()] };
+    let base = if c.muted { Color::from_rgb(0.55, 0.55, 0.58) } else { v.content.lanes.get(c.lane).map(|l| l.color).unwrap_or(PALETTE[0]) };
     let selected = v.selected_clip == Some(c.clip);
     let (x0, x1) = (r.x.max(HEADER), (r.x + r.width).min(width));
     f.fill_rectangle(Point::new(x0, r.y), Size::new(x1 - x0, r.height), Color { a: 0.35, ..base });

@@ -230,7 +230,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     // A drum set starts with its map, and plays on the drum channel (10).
     let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
-    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
+    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
     p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
@@ -707,7 +707,7 @@ impl Editor {
     pub fn add_audio_track(&mut self, name: &str) -> Id {
         let before = self.snapshot();
         let id = self.project.allocate_id();
-        self.project.tracks.push(Track { id, name: name.into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![] });
+        self.project.tracks.push(Track { id, name: name.into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: true, clips: vec![] });
         self.commit_with(before, "Add audio track", true, None);
         id
     }
@@ -877,7 +877,7 @@ impl Editor {
         let before = self.snapshot();
         let id = self.project.allocate_id();
         let name = if name.is_empty() { format!("Bus {}", self.project.buses.len() + 1) } else { name.to_string() };
-        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false });
+        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None });
         self.status = format!("{name} added");
         self.commit_with(before, "Add bus", false, None);
         id
@@ -898,6 +898,9 @@ impl Editor {
             }
             t.sends.retain(|s| s.bus != bus);
         }
+        for x in self.project.buses.iter_mut().filter(|x| x.output == Some(bus)) {
+            x.output = None;
+        }
         self.status = format!("{} removed", b.name);
         self.commit_with(before, "Remove bus", false, None);
     }
@@ -913,9 +916,32 @@ impl Editor {
             if t.sends.iter().any(|s| s.bus == bus) {
                 t.sends.retain(|s| s.bus != bus);
             } else {
-                t.sends.push(SendLevel { bus, gain_db: -6.0 });
+                t.sends.push(SendLevel { bus, gain_db: -6.0, pre: false });
             }
         });
+    }
+
+    /// A send taken before the fader, or after it.
+    pub fn toggle_send_pre(&mut self, track: Id, index: usize) {
+        self.set_track(track, "Pre-fader send", false, |t| {
+            if let Some(s) = t.sends.get_mut(index) {
+                s.pre = !s.pre;
+            }
+        });
+    }
+
+    /// Where a bus goes: another bus, or the master (`None`). A bus cannot
+    /// go into itself or a bus that comes back to it.
+    pub fn set_bus_output(&mut self, bus: Id, to: Option<Id>) -> bool {
+        if let Some(to) = to {
+            if corinzia_audio::snapshot::bus_chain(&self.project, to).contains(&bus) {
+                let name = self.project.bus(bus).map(|b| b.name.clone()).unwrap_or_default();
+                self.status = format!("{name} cannot go into a bus that goes back into it");
+                return false;
+            }
+        }
+        self.set_bus(bus, "Bus output", false, |b| b.output = to);
+        true
     }
 
     pub fn set_send(&mut self, track: Id, index: usize, db: f64) {

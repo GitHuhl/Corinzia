@@ -637,6 +637,11 @@ pub struct Track {
     pub bank: Option<u16>,
     /// Its expression map: what each playing technique does to the sound.
     pub techniques: Vec<TechniqueSwitch>,
+    /// Its colour in the arrange view and mixer (0xRRGGBB); none: by position.
+    pub color: Option<u32>,
+    /// The folder it is shown in (tracks of one folder together, which the
+    /// arrange view can fold away); empty: none.
+    pub folder: String,
     /// An audio track: it plays `clips` (recorded or prepared sound) and
     /// has no instrument; no instrument of the score points at it.
     pub audio: bool,
@@ -700,6 +705,8 @@ pub enum SwitchAction {
 pub struct SendLevel {
     pub bus: Id,
     pub gain_db: f64,
+    /// Taken before the track's fader and pan (a monitor mix), else after.
+    pub pre: bool,
 }
 
 /// An effects bus (a reverb return): fed by tracks' sends or outputs, its
@@ -712,6 +719,9 @@ pub struct Bus {
     pub gain_db: f64,
     pub pan: f64,
     pub mute: bool,
+    pub solo: bool,
+    /// Another bus it goes into (a section into a group); none: the master.
+    pub output: Option<Id>,
 }
 
 /// The master channel: every track and bus ends here.

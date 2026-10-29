@@ -11,7 +11,7 @@ const SR: f64 = 48000.0;
 /// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -140,13 +140,13 @@ fn transport_mix_and_swaps() {
     assert!(!ui.is_playing());
     // Mute through the mixer: plays, but silently.
     ui.seek(0);
-    ui.send(Command::Mix { node: 0, gain: 1.0, pan: 0.0, audible: false }).ok();
+    ui.send(Command::Mix { node: 0, gain: 1.0, pan: 0.0, audible: false, direct: true }).ok();
     ui.play();
     // (Mixer changes ramp over one 256-frame block: no clicks.)
     let (l, _) = eng.render_offline(beat / 2);
     assert!(rms(&l[256..]) < 1e-6);
     // Hard left pan.
-    ui.send(Command::Mix { node: 0, gain: 1.0, pan: -1.0, audible: true }).ok();
+    ui.send(Command::Mix { node: 0, gain: 1.0, pan: -1.0, audible: true, direct: true }).ok();
     ui.seek(0);
     let (l, r) = eng.render_offline(beat / 4);
     assert!(rms(&l[256..]) > 0.01 && rms(&r[256..]) < 1e-6);
@@ -175,7 +175,7 @@ fn solo_and_gain() {
     p.tracks[0].gain_db = -6.0;
     let m = snapshot::mix(&p);
     assert!((m[0].1 - 0.501).abs() < 0.01 && m[0].3);
-    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: false, clips: vec![] });
+    p.tracks.push(Track { id: 7, name: "Other".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 1, gain_db: 0.0, pan: 0.0, mute: false, solo: true, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     let m = snapshot::mix(&p);
     assert!(!m[0].3 && m[1].3, "solo silences the others");
 }
@@ -217,7 +217,7 @@ fn inserts_buses_sends_and_the_master() {
 
     // Routed to a muted bus: silent; unmuted: heard.
     let mut p = project();
-    p.buses.push(Bus { id: 60, name: "Strings".into(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: true });
+    p.buses.push(Bus { id: 60, name: "Strings".into(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: true, solo: false, output: None });
     p.tracks[0].output_bus = Some(60);
     assert!(rms(&render(&p, 2 * beat)[1000..beat / 2]) < 1e-6);
     p.buses[0].mute = false;
@@ -226,8 +226,8 @@ fn inserts_buses_sends_and_the_master() {
     // A send to a reverb bus: a tail after the note's release.
     let mut p = project();
     effect(&mut p, 501, "org.corinzia.reverb", &[1.0, 0.8, 0.3]);
-    p.buses.push(Bus { id: 61, name: "Reverb".into(), inserts: vec![501], gain_db: 0.0, pan: 0.0, mute: false });
-    p.tracks[0].sends = vec![SendLevel { bus: 61, gain_db: 0.0 }];
+    p.buses.push(Bus { id: 61, name: "Reverb".into(), inserts: vec![501], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None });
+    p.tracks[0].sends = vec![SendLevel { bus: 61, gain_db: 0.0, pre: false }];
     let wet = render(&p, 2 * beat);
     let tail = 3 * beat / 2 - 2000..3 * beat / 2;
     assert!(rms(&dry[tail.clone()]) < 1e-5, "dry is silent there");
@@ -370,11 +370,11 @@ fn ensemble(n: u64) -> Project {
     p.players.clear();
     p.movements[0].lanes.clear();
     effect(&mut p, 900, "org.corinzia.reverb", &[1.0, 0.8, 0.3]);
-    p.buses.push(Bus { id: 901, name: "Reverb".into(), inserts: vec![900], gain_db: 0.0, pan: 0.0, mute: false });
+    p.buses.push(Bus { id: 901, name: "Reverb".into(), inserts: vec![900], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None });
     for i in 0..n {
         let o = 1000 + i * 100;
         let mut t = one.tracks[0].clone();
-        (t.id, t.pan, t.inserts, t.sends) = (o + 1, i as f64 / n as f64 * 2.0 - 1.0, vec![o + 50], vec![SendLevel { bus: 901, gain_db: -6.0 }]);
+        (t.id, t.pan, t.inserts, t.sends) = (o + 1, i as f64 / n as f64 * 2.0 - 1.0, vec![o + 50], vec![SendLevel { bus: 901, gain_db: -6.0, pre: false }]);
         effect(&mut p, o + 50, "org.corinzia.gain", &[-(i as f64), 0.0]);
         let mut ins = one.instruments[0].clone();
         (ins.id, ins.player, ins.track) = (o + 2, o + 3, Some(o + 1));
@@ -428,7 +428,7 @@ fn audio_clips_play_at_fixed_times_with_trims_fades_and_gain() {
     // 1.5 s of the file from 0.25 s in, 6 dB down, 0.1 s fades: it plays
     // from 1.0 s to 2.5 s, past the score's end.
     (clip.offset, clip.length, clip.gain_db, clip.fade_in, clip.fade_out) = (0.25, 1.5, -6.0206, 0.1, 0.1);
-    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![clip] });
+    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: true, clips: vec![clip] });
     p.tracks[0].mute = true; // just the clip
     let mut pool = PluginPool::new(SR, 256);
     // A file of constant 0.8, mono, with 0.5 from 0.25 s on (the trim is seen).
@@ -460,9 +460,52 @@ fn audio_clips_play_at_fixed_times_with_trims_fades_and_gain() {
 #[test]
 fn a_missing_clip_file_is_reported() {
     let mut p = project();
-    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], audio: true, clips: vec![AudioClip::new(70, "Gone", "/nowhere/gone.wav", 9, 0.0)] });
+    p.tracks.push(Track { id: 50, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: true, clips: vec![AudioClip::new(70, "Gone", "/nowhere/gone.wav", 9, 0.0)] });
     let mut pool = PluginPool::new(SR, 256);
     let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
     assert_eq!(snap.clip_errors.len(), 1);
     assert_eq!(snap.nodes.len(), 2, "the track still has its strip");
+}
+
+#[test]
+fn pre_fader_sends_buses_into_buses_and_solo_through_buses() {
+    let beat = (SR * 0.5) as usize;
+    let level = |p: &Project| rms(&render(p, beat)[1000..beat / 2]);
+    let dry = level(&project());
+    let bus = |id, mute| Bus { id, name: format!("B{id}"), inserts: vec![], gain_db: 0.0, pan: 0.0, mute, solo: false, output: None };
+
+    // The fader all the way down: a post-fader send is silent, a pre-fader one is not.
+    let mut p = project();
+    p.buses.push(bus(60, false));
+    p.tracks[0].gain_db = -100.0;
+    p.tracks[0].sends = vec![SendLevel { bus: 60, gain_db: 0.0, pre: false }];
+    assert!(level(&p) < 1e-6);
+    p.tracks[0].sends[0].pre = true;
+    assert!(level(&p) > 0.5 * dry, "a pre-fader send ignores the fader");
+
+    // A bus into another: the second's mute silences both.
+    let mut p = project();
+    p.buses = vec![bus(70, true), bus(71, false)];
+    p.buses[1].output = Some(70); // listed after its destination: the plan reorders
+    p.tracks[0].output_bus = Some(71);
+    assert!(level(&p) < 1e-6);
+    p.buses[0].mute = false;
+    assert!((level(&p) - dry).abs() < 1e-4, "through both buses at unity");
+
+    // Solo a reverb bus: only what the send feeds it is heard.
+    let mut p = project();
+    effect(&mut p, 501, "org.corinzia.gain", &[-6.0, 0.0]);
+    p.buses = vec![Bus { inserts: vec![501], ..bus(80, false) }];
+    p.tracks[0].sends = vec![SendLevel { bus: 80, gain_db: 0.0, pre: false }];
+    let both = level(&p);
+    p.buses[0].solo = true;
+    let m = snapshot::mix(&p);
+    assert!(m[0].3 && !m[0].4, "the track is heard, through the bus only");
+    let solo = level(&p);
+    assert!(solo > 0.1 * dry && solo < both - 0.1 * dry, "{solo} of {both}");
+    // Solo the track instead: its bus stays heard.
+    p.buses[0].solo = false;
+    p.tracks[0].solo = true;
+    assert!(snapshot::bus_mix(&p)[0].3);
+    assert!((level(&p) - both).abs() < 1e-4);
 }

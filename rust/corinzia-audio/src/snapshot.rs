@@ -121,20 +121,27 @@ pub struct Node {
     pub clips: Vec<ScheduledClip>,
     pub gain: f32, // linear
     pub pan: f32,  // -1..1
+    /// Sound leaves the track (not muted, not silenced by a solo).
     pub audible: bool,
+    /// Its output is heard (false while only its sends feed a soloed bus).
+    pub direct: bool,
     /// Effects after the instrument, in order.
     pub inserts: Vec<Arc<Plugin>>,
     /// The bus it goes to (an index into `Snapshot::buses`), else the master.
     pub out: Option<u32>,
-    /// Post-fader sends: (bus index, linear gain).
-    pub sends: Vec<(u32, f32)>,
+    /// Sends: (bus index, linear gain, before the fader).
+    pub sends: Vec<(u32, f32, bool)>,
     /// The MIDI program change (channel, program, bank) sent when playback starts.
     pub program: Option<(u8, u8, Option<u16>)>,
 }
 
-/// An effects bus: what tracks send it, through its effects and fader, to the master.
+/// A bus: what tracks send or route to it, through its effects and fader,
+/// to another bus or the master. In the plan, every bus comes before the
+/// bus it goes into.
 pub struct BusStrip {
     pub id: Id,
+    /// The bus it goes into (a later index), else the master.
+    pub out: Option<u32>,
     pub inserts: Vec<Arc<Plugin>>,
     pub gain: f32,
     pub pan: f32,
@@ -217,9 +224,62 @@ pub fn db_to_gain(db: f64) -> f32 {
     }
 }
 
+/// A bus and the buses it goes into, in order (a loop is cut).
+pub fn bus_chain(project: &Project, bus: Id) -> Vec<Id> {
+    let mut chain = vec![];
+    let mut at = Some(bus);
+    while let Some(b) = at.and_then(|b| project.bus(b)) {
+        if chain.contains(&b.id) {
+            break;
+        }
+        chain.push(b.id);
+        at = b.output;
+    }
+    chain
+}
+
+/// What solo leaves heard. Soloing a track keeps the buses it reaches
+/// (through its output or sends) heard; soloing a bus keeps what feeds it
+/// and the buses after it heard. A track that only reaches a soloed bus
+/// through a send is heard there and not on its own output.
+/// (track, audible, direct) per track and (bus, heard) per bus.
+fn solo(project: &Project) -> (Vec<(Id, bool, bool)>, Vec<(Id, bool)>) {
+    let soloed: Vec<Id> = project.buses.iter().filter(|b| b.solo).map(|b| b.id).collect();
+    let any = !soloed.is_empty() || project.tracks.iter().any(|t| t.solo);
+    let out_chain = |t: &corinzia_model::Track| t.output_bus.map(|b| bus_chain(project, b)).unwrap_or_default();
+    let send_chains = |t: &corinzia_model::Track| t.sends.iter().flat_map(|s| bus_chain(project, s.bus)).collect::<Vec<_>>();
+    let meets = |chain: &[Id]| chain.iter().any(|b| soloed.contains(b));
+    let tracks = project
+        .tracks
+        .iter()
+        .map(|t| {
+            if !any {
+                return (t.id, !t.mute, true);
+            }
+            let direct = t.solo || meets(&out_chain(t));
+            let via_send = meets(&send_chains(t));
+            (t.id, !t.mute && (direct || via_send), direct)
+        })
+        .collect();
+    let buses = project
+        .buses
+        .iter()
+        .map(|b| {
+            if !any {
+                return (b.id, !b.mute);
+            }
+            let fed_by_solo = project.tracks.iter().filter(|t| t.solo).any(|t| out_chain(t).contains(&b.id) || send_chains(t).contains(&b.id))
+                || soloed.iter().any(|s| bus_chain(project, *s).contains(&b.id));
+            (b.id, !b.mute && (meets(&bus_chain(project, b.id)) || fed_by_solo))
+        })
+        .collect();
+    (tracks, buses)
+}
+
 /// Buses' levels: (bus, linear gain, pan, audible).
 pub fn bus_mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
-    project.buses.iter().map(|b| (b.id, db_to_gain(b.gain_db), b.pan.clamp(-1.0, 1.0) as f32, !b.mute)).collect()
+    let (_, heard) = solo(project);
+    project.buses.iter().zip(heard).map(|(b, (_, h))| (b.id, db_to_gain(b.gain_db), b.pan.clamp(-1.0, 1.0) as f32, h)).collect()
 }
 
 /// Sends' levels by track: (track, send index, linear gain).
@@ -233,10 +293,10 @@ pub fn routing(project: &Project) -> String {
     let fx = |ids: &[Id]| ids.iter().map(|n| format!("{n}{}", if project.node(*n).is_some_and(|x| x.bypassed) { "b" } else { "" })).collect::<Vec<_>>().join(",");
     let mut s = String::new();
     for t in &project.tracks {
-        s += &format!("t{}[{}]>{:?}{:?}p{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| x.bus).collect::<Vec<_>>(), t.program, t.bank);
+        s += &format!("t{}[{}]>{:?}{:?}p{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| (x.bus, x.pre)).collect::<Vec<_>>(), t.program, t.bank);
     }
     for b in &project.buses {
-        s += &format!("b{}[{}];", b.id, fx(&b.inserts));
+        s += &format!("b{}[{}]>{:?};", b.id, fx(&b.inserts), b.output);
     }
     // Automation and dynamics controllers are in the plan too.
     use std::hash::{Hash, Hasher};
@@ -271,13 +331,15 @@ pub fn build_from_pool(project: &Project, sample_rate: f64, generation: u64, mov
     snap
 }
 
-pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
-    let any_solo = project.tracks.iter().any(|t| t.solo);
+/// Tracks' levels: (track, linear gain, pan, audible, direct) (see `solo`).
+pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool, bool)> {
+    let (heard, _) = solo(project);
     project
         .tracks
         .iter()
+        .zip(heard)
         // The fader's bottom is silence (−∞ dB).
-        .map(|t| (t.id, if t.gain_db <= MIN_DB { 0.0 } else { 10f32.powf(t.gain_db as f32 / 20.0) }, t.pan.clamp(-1.0, 1.0) as f32, !t.mute && (!any_solo || t.solo)))
+        .map(|(t, (_, audible, direct))| (t.id, if t.gain_db <= MIN_DB { 0.0 } else { 10f32.powf(t.gain_db as f32 / 20.0) }, t.pan.clamp(-1.0, 1.0) as f32, audible, direct))
         .collect()
 }
 
@@ -302,13 +364,21 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             })
             .collect()
     };
-    let buses: Vec<BusStrip> = bus_mix(project)
+    // Buses into others come before them: deepest chains first.
+    let mut levels = bus_mix(project);
+    levels.sort_by_key(|l| std::cmp::Reverse(bus_chain(project, l.0).len()));
+    let order: Vec<Id> = levels.iter().map(|l| l.0).collect();
+    let buses: Vec<BusStrip> = levels
         .into_iter()
-        .map(|(id, gain, pan, audible)| BusStrip { id, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible })
+        .enumerate()
+        .map(|(i, (id, gain, pan, audible))| {
+            let out = project.bus(id).and_then(|b| b.output).and_then(|o| order.iter().position(|x| *x == o)).filter(|&o| o > i).map(|o| o as u32);
+            BusStrip { id, out, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible }
+        })
         .collect();
     let bus_index = |id: Id| buses.iter().position(|b| b.id == id).map(|i| i as u32);
     let mut nodes: Vec<Node> = Vec::new();
-    for (track, gain, pan, audible) in mix(project) {
+    for (track, gain, pan, audible, direct) in mix(project) {
         let audio = project.track(track).is_some_and(|t| t.audio);
         let plugin = if audio { None } else { get(Want::Instrument(track)) };
         if audio || plugin.is_some() {
@@ -316,9 +386,9 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let inserts = effects(&t.map(|t| t.inserts.clone()).unwrap_or_default(), get);
             let out = t.and_then(|t| t.output_bus).and_then(bus_index);
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
-            let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db))).collect()).unwrap_or_default();
+            let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db), s.pre)).collect()).unwrap_or_default();
             let program = t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank)));
-            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, inserts, out, sends, program });
+            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, inserts, out, sends, program });
         }
     }
     let master_inserts = effects(&project.master.inserts, get);

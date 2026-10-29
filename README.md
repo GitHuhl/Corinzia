@@ -111,7 +111,11 @@ parallel on every core, that outputs through PipeWire.
   a bus instead of the master, and send to buses post-fader. Buses have
   their own effects, fader, pan and mute; the master strip has effects and
   a fader. A selected effect shows its editor button and a slider per
-  parameter.
+  parameter. Sends can be pre-fader (a monitor mix); buses can go into
+  other buses (sections into a group), and solo works through them (a
+  soloed bus keeps what feeds it heard, a soloed track the buses it
+  reaches). Tracks have a colour and a folder; the arrange view shows a
+  folder's tracks together and folds them away with a click on its header.
 * **Presets and programs:** any plugin's sound (an instrument's or an
   effect's) can be saved as a named preset and loaded into any project.
   Presets live in `presets/<plugin>/` beside the preferences. VST3 plugins
