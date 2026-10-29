@@ -196,7 +196,10 @@ parallel on every core, that outputs through PipeWire.
   Open) reads MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Where the
   desktop has no file-dialog portal, Corinzia's own file browser opens
   instead (`CORINZIA_FILE_DIALOG=builtin` always uses it). Export writes
-  a vector PDF straight from the engraver, MIDI and MusicXML 4.0.
+  a vector PDF straight from the engraver, MIDI and MusicXML 4.0, and
+  audio: the movement as it plays, mixed to a 24-bit WAV (rendered offline
+  by its own plugin instances, with the reverb tail; Escape stops it;
+  `--export out.wav` works headless too).
   `corinzia score.project --export score.pdf` works headless.
 
 **Read the design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)

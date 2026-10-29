@@ -578,3 +578,29 @@ fn a_cycle_plays_round_until_it_is_turned_off() {
     eng.render_offline(3 * s);
     assert!(!ui.is_playing());
 }
+
+#[test]
+fn a_movement_is_exported_as_a_wav_file_like_it_plays() {
+    let dir = std::env::temp_dir().join(format!("corinzia-bounce-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("out.wav");
+    let p = project();
+    let mut b = corinzia_audio::bounce::Bounce::new(&p, 0, SR, 256, None, path.clone()).unwrap();
+    assert!(b.warnings.is_empty());
+    let mut steps = 0;
+    while !b.step(0.5) {
+        steps += 1;
+        assert!(b.progress() < 1.0);
+    }
+    assert!(steps >= 8, "two seconds and the tail, half a second at a time");
+    let summary = b.finish().unwrap();
+    assert!((summary.seconds - (2.0 + corinzia_audio::bounce::TAIL_SECONDS)).abs() < 0.01);
+    assert!(summary.peak_db < 0.0 && summary.peak_db > -30.0 && summary.clipped == 0, "{summary:?}");
+    // The file reads back as what playback renders (to 24 bits).
+    let (ch, rate) = corinzia_audio::media::decode(&path).unwrap();
+    assert_eq!((ch.len(), rate), (2, SR as u32));
+    let live = render(&p, SR as usize);
+    let err = live.iter().zip(&ch[0]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(err < 1e-5, "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}

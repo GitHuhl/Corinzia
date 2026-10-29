@@ -172,6 +172,11 @@ impl Playback {
         let _ = self.handle.send(Command::Loop(samples));
     }
 
+    /// The largest block the engine renders.
+    pub fn max_frames(&self) -> u32 {
+        self.pool.max_frames
+    }
+
     pub fn is_playing(&self) -> bool {
         self.handle.is_playing()
     }

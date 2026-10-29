@@ -264,6 +264,8 @@ struct App {
     auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
     arrange_curves: Vec<Option<arrange::Curve>>,
     arrange_clips: Vec<arrange::ClipBlock>,
+    /// An audio export under way.
+    bounce: Option<corinzia_audio::bounce::Bounce>,
     /// Folders folded away in the arrange view.
     folded: HashSet<String>,
     /// The clip selected in the arrange view (track, clip), and while it is
@@ -538,6 +540,7 @@ impl App {
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
             arrange_clips: Vec::new(),
+            bounce: None,
             folded: HashSet::new(),
             selected_clip: None,
             clip_origin: None,
@@ -762,6 +765,50 @@ impl App {
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
         self.arrange_cache.clear();
+    }
+
+    /// Starts an audio export of the movement edited: its own plugins,
+    /// restored from the live ones' current settings.
+    fn start_bounce(&mut self, path: PathBuf) {
+        let mut project = self.editor.project.clone();
+        self.playback.pool.store_states(&mut project);
+        let folder = self.path.as_deref().and_then(|p| p.parent());
+        match corinzia_audio::bounce::Bounce::new(&project, self.editor.movement, self.playback.sample_rate, self.playback.max_frames(), folder, path) {
+            Ok(b) => {
+                self.editor.status = "Exporting audio… (Escape stops)".into();
+                self.bounce = Some(b);
+            }
+            Err(e) => self.editor.status = format!("Export failed: {e}"),
+        }
+    }
+
+    /// Renders some of the audio export (about 30 ms' work a frame).
+    fn bounce_step(&mut self) {
+        let Some(b) = self.bounce.as_mut() else { return };
+        let started = Instant::now();
+        let mut done = false;
+        while !done && started.elapsed() < std::time::Duration::from_millis(30) {
+            done = b.step(0.1);
+        }
+        if !done {
+            self.editor.status = format!("Exporting audio… {:.0}% (Escape stops)", b.progress() * 100.0);
+            return;
+        }
+        let b = self.bounce.take().unwrap();
+        let (path, warnings) = (b.path.clone(), b.warnings.clone());
+        self.editor.status = match b.finish() {
+            Ok(s) => {
+                let mut msg = format!("Exported {} ({:.1} s, peak {:.1} dBFS)", path.display(), s.seconds, s.peak_db);
+                if s.clipped > 0 {
+                    msg += &format!(" — {} samples clipped: lower the master or add a limiter", s.clipped);
+                }
+                if let Some(w) = warnings.first() {
+                    msg += &format!(" — {w}");
+                }
+                msg
+            }
+            Err(e) => format!("Export failed: {e}"),
+        };
     }
 
     /// Places a sound file on an audio track (`None`, or not an audio
@@ -2151,6 +2198,10 @@ impl App {
                     return self.edit_on_page(id);
                 }
             }
+            Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.bounce.is_some() => {
+                self.bounce = None;
+                self.editor.status = "Audio export stopped".into();
+            }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
@@ -2301,6 +2352,10 @@ impl App {
                 self.export_menu = false;
                 return self.pick_file_for(browser::Purpose::Export(format), false);
             }
+            Message::ExportTo(files::Format::Audio, Some(path)) => {
+                let path = if path.extension().is_none() { path.with_extension("wav") } else { path };
+                self.start_bounce(path);
+            }
             Message::ExportTo(format, Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
                 self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
@@ -2314,6 +2369,7 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                self.bounce_step();
                 if let Some(t) = self.autosave() {
                     return t;
                 }
@@ -2565,6 +2621,7 @@ impl App {
                     item("Parts (PDF)…", "each player's part, as written", files::Format::Parts),
                     item("MIDI…", "the performance, track by track", files::Format::Midi),
                     item("MusicXML…", "for other notation programs", files::Format::MusicXml),
+                    item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
                 ]
                 .spacing(2)
                 .width(250),
@@ -2660,7 +2717,7 @@ impl App {
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
         let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
-        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
+        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() || self.bounce.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
@@ -3003,11 +3060,30 @@ fn main() -> iced::Result {
             Some("pdf") => files::Format::Pdf,
             Some("mid" | "midi") => files::Format::Midi,
             Some("musicxml" | "xml") => files::Format::MusicXml,
+            Some("wav") => files::Format::Audio,
             _ => {
-                eprintln!("--export: use a .pdf, .mid or .musicxml file name");
+                eprintln!("--export: use a .pdf, .mid, .musicxml or .wav file name");
                 std::process::exit(2);
             }
         };
+        if format == files::Format::Audio {
+            let folder = app.path.as_deref().and_then(|p| p.parent());
+            let done = corinzia_audio::bounce::Bounce::new(&app.editor.project, app.editor.movement, app.playback.sample_rate, 1024, folder, out.clone()).and_then(|mut b| {
+                for w in &b.warnings {
+                    eprintln!("corinzia: {w}");
+                }
+                while !b.step(10.0) {}
+                b.finish()
+            });
+            match done {
+                Ok(s) => println!("exported {} ({:.1} s, peak {:.1} dBFS)", out.display(), s.seconds, s.peak_db),
+                Err(e) => {
+                    eprintln!("export failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
         match files::export_to(&app.editor.project, app.editor.movement, format, app.editor.transposed, &out) {
             Ok(()) => println!("exported {}", out.display()),
             Err(e) => {
@@ -4416,6 +4492,40 @@ mod tests {
         // Shift+drag on the arrange view's ruler sets it anew.
         let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Cycle { from: 2.0, to: 6.0 }));
         assert_eq!(a.playback.cycle, Some((m, 2.0, 6.0)));
+    }
+
+    #[test]
+    fn audio_is_exported_over_several_frames_and_can_be_stopped() {
+        let dir = std::env::temp_dir().join(format!("corinzia-app-bounce-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = app(View::Page);
+        let path = dir.join("mix");
+        let _ = a.update(Message::ExportTo(files::Format::Audio, Some(path.clone())));
+        assert!(a.bounce.is_some() && a.editor.status.starts_with("Exporting audio"));
+        let mut frames = 0;
+        while a.bounce.is_some() {
+            let _ = a.update(Message::Frame);
+            frames += 1;
+            assert!(frames < 10_000);
+        }
+        assert!(a.editor.status.starts_with("Exported"), "{}", a.editor.status);
+        let wav = path.with_extension("wav");
+        assert!(std::fs::metadata(&wav).unwrap().len() > 44);
+        // Stopped half way: no file.
+        let other = dir.join("stopped.wav");
+        let _ = a.update(Message::ExportTo(files::Format::Audio, Some(other.clone())));
+        let _ = a.update(Message::Frame);
+        let _ = a.update(Message::Key(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: None,
+            repeat: false,
+        }));
+        assert!(a.bounce.is_none() && !other.exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
