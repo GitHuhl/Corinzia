@@ -552,3 +552,29 @@ fn automation_of_buses_the_master_sends_controllers_and_steps() {
     let bends: Vec<f32> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::PitchBend).map(|n| n.velocity).collect();
     assert!(bends.len() > 8 && bends[0] == -1.0 && *bends.last().unwrap() == 1.0, "a ramp from -1 to 1: {bends:?}");
 }
+
+#[test]
+fn a_cycle_plays_round_until_it_is_turned_off() {
+    // The flute: c'' on beat 1, a'' on beat 4 (1.5 s); a cycle over the first second.
+    let p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.send(Command::Loop(Some((0, SR as i64)))).ok();
+    ui.play();
+    let s = SR as usize;
+    let (l, _) = eng.render_offline(3 * s);
+    assert!(ui.is_playing(), "still going past the score's end (2 s)");
+    assert!(ui.position() < SR as i64);
+    // Each pass sounds like the first: the c'' again, never the a''.
+    let first = rms(&l[1000..s / 4]);
+    for pass in 1..3 {
+        let x = rms(&l[pass * s + 1000..pass * s + s / 4]);
+        assert!((x - first).abs() < 0.1 * first, "pass {pass}: {x} vs {first}");
+        assert!(rms(&l[pass * s - s / 4..pass * s - 1000]) < 0.2 * first, "the rest before the cycle's end");
+    }
+    // Off: it plays on to the end and stops.
+    ui.send(Command::Loop(None)).ok();
+    eng.render_offline(3 * s);
+    assert!(!ui.is_playing());
+}

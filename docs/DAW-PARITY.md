@@ -24,8 +24,8 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 | `Transport/Tempo`, `Arrangement/TempoAutomation` (hold or linear points) | `Movement.tempo` (marks, with `ramp`) | yes | Tempo follows the score; ramps are linear |
 | `TimeSignature`, `TimeSignatureAutomation` | `Movement.meter` | yes | |
 | `Markers` / `Marker` (time, name, color) | rehearsal marks, navigation marks | partly | Only marks that are engraved; no DAW-only cue markers |
-| `timeUnit` beats / seconds | written and performed quarters, samples | partly | Everything is in musical time; nothing anchored to clock time (needed for audio, below) |
-| Loop range (`loopStart`/`loopEnd` on clips) | — | no | No transport loop either; a cycle region is standard fare |
+| `timeUnit` beats / seconds | written and performed quarters, samples; seconds for clips | yes | Audio clips sit at fixed times (seconds after their movement's start) |
+| Loop range (`loopStart`/`loopEnd` on clips) | transport cycle | partly | A cycle (Alt+L, the ruler); no looped clips |
 | `Scenes`, `ClipSlot` (clip launching) | — | n/a | A session/launcher view does not fit a notation program |
 
 ## Tracks and channels (`Structure`)
@@ -33,21 +33,21 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 | DAWproject | Corinzia | Status | Notes |
 |---|---|---|---|
 | `Track` contentType `notes` | `Track` (an instrument played by the score) | yes | Notes come from the score, not from clips |
-| `Track` contentType `audio` | — | **no** | The main gap: see "Audio tracks" below |
+| `Track` contentType `audio` | audio tracks | yes | See "Audio tracks" below |
 | `Track` contentType `automation` | `AutoLane` on a track | yes | |
-| Nested `Track` (folders, groups) | — | no | Worth having for orchestral templates (strings/winds/brass folders) |
-| `Track` / `Channel` `color`, `comment` | — | no | Colors help a lot in the arrange view at 60+ tracks |
+| Nested `Track` (folders, groups) | `Track.folder` | partly | One level of folders, folding in the arrange view; group buses are buses into buses |
+| `Track` / `Channel` `color`, `comment` | `Track.color` | partly | Colours; no comments |
 | `Channel` `role` `regular` | track strip | yes | |
 | `role` `effect` (return) | `Bus` fed by sends | yes | |
-| `role` `submix` (group bus) | `Bus` as a track's output | yes | A bus cannot output to another bus yet |
+| `role` `submix` (group bus) | `Bus` as a track's or a bus's output | yes | Buses into buses, loops refused |
 | `role` `vca` | — | no | Useful for sections; low priority |
 | `role` `master` | `Master` | yes | Master has no pan (DAWs usually don't either) |
 | `Volume`, `Pan`, `Mute` | `gain_db`, `pan`, `mute` (tracks; buses) | yes | |
-| `solo` | `Track.solo` | partly | Buses have no solo |
+| `solo` | `Track.solo`, `Bus.solo` | yes | Solo follows routing and sends |
 | `destination` (any channel) | `output_bus` or the master | partly | Only one level of buses |
 | `audioChannels` | stereo everywhere | partly | No mono or surround; mono audio files will need it (play mono as centred stereo at first) |
 | `Send` volume | `SendLevel.gain_db` | yes | |
-| `Send` `type` pre / post | post-fader only | partly | Pre-fader sends are needed for monitor/headphone mixes; easy to add |
+| `Send` `type` pre / post | `SendLevel.pre` | yes | |
 | `Send` `Pan`, `Enable` | — | no | Small |
 
 ## Devices
@@ -64,37 +64,35 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 | `Enabled` | `AudioNode.bypassed` | yes | |
 | `State` (preset file) | `Project.plugin_state`, presets | yes | |
 | `Parameters` (real, bool, integer, enum) | plugin parameters, automatable | yes | |
-| Built-in `Equalizer`, `Compressor`, `NoiseGate`, `Limiter` | Corinzia Gain, Corinzia Reverb | no | An EQ and a limiter on the master are the ones users expect from a DAW |
+| Built-in `Equalizer`, `Compressor`, `NoiseGate`, `Limiter` | Corinzia Gain, Reverb, EQ, Limiter | partly | No compressor or gate |
 
 ## Automation and expression (`Points`, `automationTarget`)
 
 | DAWproject | Corinzia | Status | Notes |
 |---|---|---|---|
 | Target `parameter` (any device parameter) | `AutoTarget::Param` | yes | |
-| Volume and pan automation | `AutoTarget::Gain`, `Pan` (tracks) | partly | Not on buses, the master or sends; no mute automation |
-| `interpolation` hold / linear | linear only | partly | Hold (steps) is needed for switches and enum parameters |
-| `channelController` (CC) | dynamics as CC1/CC11; expression-map CCs | partly | No free CC lanes (CC21 vibrato, CC2…) |
+| Volume and pan automation | `AutoTarget::Gain`, `Pan`, `Send` | partly | Tracks, buses, the master and sends; no mute automation |
+| `interpolation` hold / linear | `AutoPoint.hold` | yes | |
+| `channelController` (CC) | `AutoTarget::Cc`; dynamics as CC1/CC11; expression maps | yes | Any controller, on the track's channel |
 | `programChange` | track program and bank; expression maps | yes | |
-| `pitchBend` | — | no | |
+| `pitchBend` | `AutoTarget::PitchBend` | yes | |
 | `channelPressure`, `polyPressure` | — | no | |
 | Per-note expression (`Note` with nested `Points`: gain, pan, transpose, timbre, pressure) | — | no | CLAP note expressions; could follow from articulations later |
 | `Note` `vel`, `rel` (release velocity) | velocity from dynamics | partly | No release velocity |
 
 ## Clips and media (`Clips`, `Clip`, `Audio`, `Warps`)
 
-These describe audio tracks, which Corinzia does not have yet.
-
-| DAWproject | Status | For Corinzia's audio tracks |
-|---|---|---|
-| `Clip` `time`, `duration` | no | Required: position and length on the timeline |
-| `playStart` / `playStop` (trim) | no | Required: trimming either edge |
-| `fadeInTime` / `fadeOutTime`, `fadeTimeUnit` | no | Required: fades, to avoid clicks |
-| `enable` (mute a clip), `name`, `color`, `comment` | no | Name and mute required; the name is what the score shows |
-| `loopStart` / `loopEnd` (looped clips) | no | Later |
-| `Audio`: file reference (embedded or external), `channels`, `sampleRate` | no | Required: external files, any sample rate, resampled on load |
-| `Warps` / `Warp` (time-stretch to the tempo), `algorithm` | no | Later; first version plays audio at its own speed |
-| `Video` | no | Later (film scoring); same timeline model as audio |
-| Clips on note tracks (MIDI clips) | n/a | Notes come from the score |
+| DAWproject | Corinzia | Status | Notes |
+|---|---|---|---|
+| `Clip` `time`, `duration` | `AudioClip.at`, `length` | yes | Seconds after the movement's start |
+| `playStart` / `playStop` (trim) | `offset`, `length` | yes | Trimmed by dragging an edge |
+| `fadeInTime` / `fadeOutTime` | `fade_in`, `fade_out` | yes | Linear; dragged from the top corners |
+| `enable`, `name`, `color`, `comment` | `mute`, `name` | partly | Clips take their track's colour |
+| `loopStart` / `loopEnd` (looped clips) | — | no | |
+| `Audio`: file, `channels`, `sampleRate` | `file`; decoded mono or stereo, resampled | yes | WAV, FLAC, MP3, Ogg Vorbis; held in memory, not streamed from disk |
+| `Warps` / `Warp`, `algorithm` | — | no | Clips play at their own speed |
+| `Video` | — | no | |
+| Clips on note tracks (MIDI clips) | — | n/a | Notes come from the score |
 
 ## Audio tracks: decisions so far
 
@@ -109,22 +107,13 @@ These describe audio tracks, which Corinzia does not have yet.
   Click selects; Delete removes; Ctrl+drag duplicates.
 * **In the mixer:** an audio track is a strip like an instrument track
   (inserts, sends, output bus, fader, pan, mute, solo, automation).
-* **Open: what a clip's position is anchored to.** Musical time (bar and
-  beat: follows inserted bars and tempo changes) or clock time (fixed
-  seconds: for picture and fixed media). Proposed: musical time by
-  default, clock time per clip as an option. Repeats: a musically
-  anchored clip plays on each pass of a repeat.
+* **Anchoring:** fixed (clock) time: seconds after the movement's start
+  as performed. Tempo changes and repeats do not move a clip; its place
+  in the arrange view and its cue in the score follow the tempo.
 
-## Suggested order
+## Next
 
-1. Audio tracks: model, file loading and playback in the engine, arrange
-   view with drag/trim/fade, mixer strip.
-2. Cue marks for clips on the page.
-3. Mixer gaps: pre-fader sends, bus solo, buses into buses, folder tracks,
-   track colors.
-4. Automation gaps: hold interpolation, bus/master/send automation, free
-   CC lanes, pitch bend.
-5. Built-in EQ and limiter.
-6. Transport cycle (loop) region.
-7. Later: clock-time anchoring, warping, video, per-note expression,
-   VCAs, analyzers.
+Done so far: audio tracks and cues, the mixer and automation gaps, the
+EQ and limiter, the cycle. Still open from the map: streaming long files
+from disk, warping, looped clips, video, per-note expression, release
+velocity, VCAs, a compressor and gate, analyzers (level meters), comments.

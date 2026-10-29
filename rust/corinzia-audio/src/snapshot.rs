@@ -251,7 +251,9 @@ pub fn bus_chain(project: &Project, bus: Id) -> Vec<Id> {
 /// and the buses after it heard. A track that only reaches a soloed bus
 /// through a send is heard there and not on its own output.
 /// (track, audible, direct) per track and (bus, heard) per bus.
-fn solo(project: &Project) -> (Vec<(Id, bool, bool)>, Vec<(Id, bool)>) {
+type Heard = (Vec<(Id, bool, bool)>, Vec<(Id, bool)>);
+
+fn solo(project: &Project) -> Heard {
     let soloed: Vec<Id> = project.buses.iter().filter(|b| b.solo).map(|b| b.id).collect();
     let any = !soloed.is_empty() || project.tracks.iter().any(|t| t.solo);
     let out_chain = |t: &corinzia_model::Track| t.output_bus.map(|b| bus_chain(project, b)).unwrap_or_default();

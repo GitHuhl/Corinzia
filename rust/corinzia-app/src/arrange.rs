@@ -248,6 +248,8 @@ pub enum ArrangeEvent {
     ClipPress { track: Id, clip: Id, copy: bool },
     ClipDrag { edit: ClipEdit, q: f64 },
     ClipRelease,
+    /// Shift+drag along the ruler: the cycle over [from, to) (quarters).
+    Cycle { from: f64, to: f64 },
     /// A folder's header clicked: fold it away, or open it.
     ToggleFolder(String),
 }
@@ -272,6 +274,8 @@ pub struct State {
     /// A clip being dragged: what changes, and the pointer's distance in
     /// quarters from the clip's start when pressed (for moves).
     clip_drag: Option<(ClipEdit, f64)>,
+    /// Shift+drag along the ruler: where it started (quarters).
+    cycle_from: Option<f64>,
 }
 
 pub struct ArrangeView<'a> {
@@ -286,6 +290,8 @@ pub struct ArrangeView<'a> {
     pub curves: &'a [Option<Curve>],
     pub clips: &'a [ClipBlock],
     pub selected_clip: Option<Id>,
+    /// The cycle on this movement (quarters) and whether it is on.
+    pub cycle: Option<(f64, f64, bool)>,
 }
 
 const PALETTE: [Color; 6] = [
@@ -401,6 +407,15 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 let ev = ArrangeEvent::AutoMove { lane, index, q: self.snapped(p.x.max(HEADER)), value: self.curve_value(lane, c, p.y) };
                 Some(canvas::Action::publish(ev).and_capture())
             }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.cycle_from.is_some() => {
+                let (a, p) = (state.cycle_from?, pos?);
+                let b = self.beat(self.quarter_at(p.x.max(HEADER)), mods.alt());
+                (a != b).then(|| canvas::Action::publish(ArrangeEvent::Cycle { from: a.min(b), to: a.max(b) }).and_capture())
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.cycle_from.is_some() => {
+                state.cycle_from = None;
+                Some(canvas::Action::capture())
+            }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.clip_drag.is_some() => {
                 let (edit, grab) = state.clip_drag?;
                 let p = pos?;
@@ -430,6 +445,10 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = pos?;
+                if p.y < RULER && p.x > HEADER && mods.shift() {
+                    state.cycle_from = Some(self.beat(self.quarter_at(p.x), false));
+                    return Some(canvas::Action::capture());
+                }
                 if p.y < RULER && p.x > HEADER {
                     return Some(canvas::Action::publish(ArrangeEvent::Locate(self.quarter_at(p.x))).and_capture());
                 }
@@ -568,6 +587,15 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 }
             }
             overlay.fill_text(Text { content: c.label.clone(), position: Point::new(12.0, self.lane_y(lane) + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().accent, ..Text::default() });
+        }
+        // The cycle along the ruler (dim when off).
+        if let Some((a, b, on)) = self.cycle {
+            let (x0, x1) = (self.x(a).max(HEADER), self.x(b).min(bounds.width));
+            if x1 > x0 {
+                let c = if on { crate::theme::palette().accent } else { crate::theme::palette().dim };
+                overlay.fill_rectangle(Point::new(x0, 2.0), Size::new(x1 - x0, RULER - 6.0), Color { a: 0.35, ..c });
+                overlay.stroke(&Path::rectangle(Point::new(x0, 2.0), Size::new(x1 - x0, RULER - 6.0)), Stroke::default().with_width(1.0).with_color(c));
+            }
         }
         if let Some(q) = self.playhead {
             let x = self.x(q);

@@ -124,6 +124,9 @@ parallel on every core, that outputs through PipeWire.
   optional bank) is sent to its instrument when playback starts, and is
   written into exported MIDI files. Corinzia Sine has three programs: soft
   organ, pure sine and bright.
+* **Cycle:** ⟲ in the toolbar (Alt+L) cycles the selected passage, or
+  turns the cycle on and off; Shift+drag along the arrange view's ruler
+  sets it. Playback goes round it, notes released at each turn.
 * **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" (or drop
   a WAV, FLAC, MP3 or Ogg file on the window) puts a clip at the caret.
   Clips sit at fixed times (seconds after their movement's start: tempo

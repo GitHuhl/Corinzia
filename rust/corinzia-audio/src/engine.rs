@@ -37,6 +37,9 @@ pub enum Command {
     Send { node: u32, index: u32, gain: f32 },
     /// Live change of the master fader (linear).
     Master { gain: f32 },
+    /// The cycle: playback reaching its end goes back to its start
+    /// (timeline samples, start before end); none: no cycle.
+    Loop(Option<(i64, i64)>),
     /// Audition: velocity in 0..1; a negative velocity ends the note.
     Preview { node: u32, key: i16, channel: i16, velocity: f32 },
 }
@@ -354,6 +357,7 @@ pub struct Engine {
     pos: i64,
     cursor: usize,
     playing: bool,
+    cycle: Option<(i64, i64)>,
     steady: i64,
     out_events: clap_output_events,
     buses: Vec<BusState>,
@@ -394,6 +398,7 @@ pub fn with_workers(sample_rate: f64, max_frames: u32, workers: Workers) -> (Eng
         pos: 0,
         cursor: 0,
         playing: false,
+        cycle: None,
         steady: 0,
         out_events: clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_push) },
         buses,
@@ -536,6 +541,7 @@ impl Engine {
                     }
                 }
                 Command::Master { gain } => self.master_gain = gain,
+                Command::Loop(c) => self.cycle = c.filter(|(a, b)| a < b),
                 Command::Preview { node, key, channel, velocity } => {
                     let a = Active { node, note_id: -1, port: 0, channel, key };
                     self.push_event(node, a, velocity >= 0.0, velocity.max(0.0), 0);
@@ -692,12 +698,36 @@ impl Engine {
     /// Fills `left`/`right` (same length, at most `max_frames`).
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let frames = left.len().min(right.len()).min(self.max_frames as usize);
+        // In parts where the cycle's end falls inside the block: after each,
+        // back to the cycle's start (notes released, automation caught up).
+        let mut at = 0;
+        let mut first = true;
+        while at < frames || first {
+            let ahead = self.cycle.filter(|&(_, end)| self.playing && self.pos < end);
+            let n = match ahead {
+                Some((_, end)) => ((end - self.pos) as usize).min(frames - at),
+                None => frames - at,
+            };
+            self.process_part(&mut left[at..at + n], &mut right[at..at + n], first);
+            first = false;
+            at += n;
+            if let Some((start, _)) = ahead.filter(|&(_, end)| self.playing && self.pos >= end) {
+                self.release_all(0);
+                self.pos = start;
+                self.reset_cursor();
+                self.chase();
+            }
+        }
+        self.shared.position.store(self.pos, Ordering::Release);
+        self.shared.playing.store(self.playing, Ordering::Release);
+        self.shared.blocks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Renders a stretch of the block (the commands go with the first).
+    fn process_part(&mut self, left: &mut [f32], right: &mut [f32], first: bool) {
+        let frames = left.len().min(right.len());
         left.fill(0.0);
         right.fill(0.0);
-        for n in self.nodes.iter_mut() {
-            n.events.events.clear();
-        }
-        self.fx_auto.queue.clear();
         // Parameter changes from the main thread lead the block.
         if let Some(snap) = self.snap.as_ref() {
             for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
@@ -710,7 +740,9 @@ impl Engine {
                 });
             }
         }
-        self.handle_commands();
+        if first {
+            self.handle_commands();
+        }
         let block_start = self.pos;
         let block_end = self.pos + frames as i64;
         // Schedule the plan's notes inside this block, sample-accurately.
@@ -728,7 +760,8 @@ impl Engine {
                 }
                 let end = snap.end();
                 self.snap = Some(snap);
-                if block_end >= end && self.active.is_empty() {
+                let cycling = self.cycle.is_some_and(|(_, e)| block_start < e);
+                if block_end >= end && self.active.is_empty() && !cycling {
                     // The end: the playhead rests on it.
                     self.playing = false;
                     self.pos = end.max(block_start);
@@ -740,9 +773,12 @@ impl Engine {
             self.pos = block_end;
         }
         self.steady += frames as i64;
-        self.shared.position.store(self.pos, Ordering::Release);
-        self.shared.playing.store(self.playing, Ordering::Release);
-        self.shared.blocks.fetch_add(1, Ordering::Relaxed);
+        // The events were delivered: the next part's (a cycle's note-offs,
+        // say) are added from here.
+        for n in self.nodes.iter_mut() {
+            n.events.events.clear();
+        }
+        self.fx_auto.queue.clear();
     }
 
     fn schedule(&mut self, n: &ScheduledNote, time: u32) {

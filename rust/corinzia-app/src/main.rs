@@ -1126,6 +1126,17 @@ impl App {
         ed.status.clear(); // the action reports its own outcome
         match a {
             Action::PlayStop => self.play_stop(),
+            Action::Cycle => {
+                // A passage selected: cycle it; else the cycle on or off.
+                match (ed.range, ed.movement().map(|m| m.id)) {
+                    (Some(r), Some(m)) => {
+                        self.playback.set_cycle(Some((m, quarters(r.from), quarters(r.to))));
+                        ed.status = format!("Cycling bars {}–{}", corinzia_edit::bar_number(ed.movement().unwrap(), r.from).0, corinzia_edit::bar_number(ed.movement().unwrap(), r.to - Frac::new(1, 64)).0);
+                    }
+                    _ if self.playback.cycle.is_none() => ed.status = "Select a passage to cycle (or Shift+drag along the arrange view's ruler)".into(),
+                    _ => self.playback.toggle_cycle(),
+                }
+            }
             Action::Lyrics(v) => {
                 ed.lyric_verse = v;
                 let t = self.open_popover(PopoverKind::Lyrics);
@@ -2013,6 +2024,11 @@ impl App {
                     });
                 }
                 arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
+                arrange::ArrangeEvent::Cycle { from, to } => {
+                    if let Some(m) = self.editor.movement().map(|m| m.id) {
+                        self.playback.set_cycle(Some((m, from, to)));
+                    }
+                }
                 arrange::ArrangeEvent::ToggleFolder(name) => {
                     if !self.folded.remove(&name) {
                         self.folded.insert(name);
@@ -2350,6 +2366,10 @@ impl App {
                 button(text(if self.playback.is_playing() { "■  Stop" } else { "▶  Play" }).size(13)).padding([5, 14]).style(theme::primary).on_press(Message::Act(Action::PlayStop)),
                 "Play from the selection (Space)",
             ),
+            panels::tip(
+                button(text("⟲").size(14)).padding([4, 8]).style(theme::tool(self.playback.cycling)).on_press(Message::Act(Action::Cycle)),
+                "Cycle: the selected passage, or the cycle on or off (Alt+L; Shift+drag along the arrange view's ruler to set it)",
+            ),
             panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
             panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
         ]
@@ -2615,6 +2635,7 @@ impl App {
                     curves: &self.arrange_curves,
                     clips: &self.arrange_clips,
                     selected_clip: self.selected_clip.map(|s| s.1),
+                    cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill);
@@ -4372,13 +4393,39 @@ mod tests {
     }
 
     #[test]
+    fn the_cycle_is_set_from_a_passage_or_the_ruler_and_toggled() {
+        let mut a = app(View::Page);
+        let _ = a.act(Action::Cycle);
+        assert!(a.playback.cycle.is_none() && a.editor.status.contains("Select a passage"));
+        // Bars 2 and 3 (4/4): quarters 4 to 12.
+        let lane = 0;
+        a.editor.select_bar(lane, Frac::int(1), false);
+        a.editor.select_bar(lane, Frac::int(2), true);
+        let _ = a.act(Action::Cycle);
+        let m = a.editor.movement().unwrap().id;
+        assert_eq!(a.playback.cycle, Some((m, 4.0, 12.0)));
+        assert!(a.playback.cycling && a.editor.status.contains("bars 2–3"), "{}", a.editor.status);
+        // Alt+L with nothing selected: off, and on again.
+        a.editor.clear_selection();
+        let alt_l = keys::map(&iced::keyboard::Key::Character("l".into()), iced::keyboard::Modifiers::ALT, false);
+        assert_eq!(alt_l, Some(Action::Cycle));
+        let _ = a.act(Action::Cycle);
+        assert!(!a.playback.cycling);
+        let _ = a.act(Action::Cycle);
+        assert!(a.playback.cycling);
+        // Shift+drag on the arrange view's ruler sets it anew.
+        let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Cycle { from: 2.0, to: 6.0 }));
+        assert_eq!(a.playback.cycle, Some((m, 2.0, 6.0)));
+    }
+
+    #[test]
     fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
         let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), mixer: false, min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
         let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
         let cache = canvas::Cache::new();
         let sel = HashSet::new();
         let clips = [block];
-        let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None };
+        let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
         let r = v.clip_rect(&clips[0]);
         let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
         let mid_y = r.y + r.height / 2.0;
