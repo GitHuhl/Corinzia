@@ -55,7 +55,7 @@ fn sample() -> Project {
             chords: vec![],
             lines: vec![LineSpan { id: 43, from: Frac::ZERO, to: Frac::int(2), kind: LineKind::Pedal }],
             voices: vec![Voice { id: 44, index: 1, events: Arc::new(vec![]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![], automation: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     });
     p.instruments[0].drums = vec![DrumSound { name: "Snare drum".into(), position: Pitch { step: 0, alter: 0, octave: 5 }, key: 38, head: Notehead::X }];
     p.instruments[0].tuning = GUITAR_TUNING.to_vec();
@@ -230,5 +230,18 @@ fn automation_targets_and_steps_round_trip() {
     // A held point keeps its value up to the next.
     let l = &b.movements[0].automation[0];
     assert_eq!((l.value_at(0.0), l.value_at(1.99), l.value_at(2.0)), (Some(1.0), Some(1.0), Some(64.0)));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn tweaks_round_trip() {
+    let dir = std::env::temp_dir().join(format!("corinzia-model-tweaks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("t.project");
+    let _ = std::fs::remove_file(&path);
+    let mut a = sample();
+    a.movements[0].tweaks = vec![Tweak { head: 11, velocity: Some(0.3), shift: -0.0625, length: None }, Tweak { head: 13, velocity: None, shift: 0.0, length: Some(1.5) }];
+    save(&a, &path).unwrap();
+    assert_eq!(load(&path).unwrap().movements[0].tweaks, a.movements[0].tweaks);
     std::fs::remove_dir_all(&dir).ok();
 }

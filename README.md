@@ -182,6 +182,22 @@ parallel on every core, that outputs through PipeWire.
   small built-in CLAP instrument (also installed as
   `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
   auditioned.
+* **Shared instruments:** a track can play through another track's plugin
+  instance (Mix tab, the track's panel: "Share an instrument"), each on a
+  MIDI channel of its own: one multi-timbral sampler for a section rather
+  than one copy per track. The first such track's strip carries the
+  instance's sound; the others' faders and pans become MIDI volume (CC7)
+  and pan (CC10) on their channels.
+* **Piano roll** (Mix tab: double-click a track's lane): the track's notes
+  as they play, over the movement. Drag a note to play it earlier or later
+  (Shift: by sixteenths), its right edge to hold it longer or shorter, and
+  the velocity lane underneath for how hard it is played; a tweaked note
+  is outlined, R (or "Reset") plays the selection as written again. These
+  are kept apart from the notation: pitch and rhythm stay the score's, and
+  the changes apply on every pass through repeats.
+* **Meters:** every strip (tracks, buses, the master) has a stereo peak
+  meter beside its fader, on the fader's scale; a light on top latches
+  when it goes over 0 dB (click it to put it out).
 * **Mix tab** (Ctrl+2): the arrange view, mixer strips (faders with a dB
   scale, pan, mute, solo; double-click resets, Shift drags finely) and a
   browser of the CLAP and VST3 instruments found in `CLAP_PATH`, `~/.clap`,
@@ -196,7 +212,10 @@ parallel on every core, that outputs through PipeWire.
   Open) reads MusicXML (`.musicxml`, `.xml`, compressed `.mxl`). Where the
   desktop has no file-dialog portal, Corinzia's own file browser opens
   instead (`CORINZIA_FILE_DIALOG=builtin` always uses it). Export writes
-  a vector PDF straight from the engraver, MIDI and MusicXML 4.0.
+  a vector PDF straight from the engraver, MIDI and MusicXML 4.0, and
+  audio: the movement as it plays, mixed to a 24-bit WAV (rendered offline
+  by its own plugin instances, with the reverb tail; Escape stops it;
+  `--export out.wav` works headless too).
   `corinzia score.project --export score.pdf` works headless.
 
 **Read the design:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)

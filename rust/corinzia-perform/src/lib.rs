@@ -579,6 +579,7 @@ pub fn perform(m: &Movement) -> Performance {
             }
         }
     }
+    let notes = apply_tweaks(m, notes);
     Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes }
 }
 
@@ -640,6 +641,30 @@ pub fn part_score(project: &Project, m: &Movement, player: Id) -> corinzia_score
     let players: Vec<Id> = m.lanes.iter().map(|l| l.player).filter(|p| *p == player).collect();
     add_cues(project, m, &mut s, &players);
     s
+}
+
+/// Hand-made changes to how notes are played (the piano roll), on every
+/// pass: velocity, timing, and length (which then ignores the gate).
+fn apply_tweaks(m: &Movement, mut notes: Vec<PerformedNote>) -> Vec<PerformedNote> {
+    if m.tweaks.is_empty() {
+        return notes;
+    }
+    let by_head: std::collections::HashMap<Id, &Tweak> = m.tweaks.iter().map(|t| (t.head, t)).collect();
+    for n in notes.iter_mut() {
+        let Some(t) = by_head.get(&n.element) else { continue };
+        if let Some(v) = t.velocity {
+            n.velocity = v.clamp(0.0, 1.0) as f32;
+        }
+        let shift = t.shift.max(-n.on_q);
+        n.on_q += shift;
+        n.full_off_q += shift;
+        if let Some(len) = t.length {
+            n.full_off_q = n.on_q + len.max(1.0 / 64.0);
+            n.gate = 1.0;
+        }
+    }
+    notes.sort_by(|a, b| a.on_q.total_cmp(&b.on_q));
+    notes
 }
 
 /// The export document of one movement (notation + performance): one MIDI

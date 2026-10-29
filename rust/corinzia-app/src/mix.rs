@@ -4,7 +4,7 @@
 //! effect's parameters. A click on a strip's instrument shows its editor.
 
 use crate::editor::MASTER;
-use crate::fader::{Fader, PanBar, MIN_DB};
+use crate::fader::{Fader, Meter, PanBar, MIN_DB};
 use crate::playback::Playback;
 use corinzia_model::{Id, Project};
 use iced::widget::{button, canvas, column, container, pick_list, row, scrollable, slider, text, Space};
@@ -25,6 +25,10 @@ pub enum MixMsg {
     ClipCue(String),
     ClipCueLine,
     ClipRemove,
+    /// Puts out a strip's clip light.
+    ClearClip(Id),
+    /// A track plays through another's plugin instance (track, host).
+    Share(Id, Id),
     /// A send (track, index) before the fader or after it.
     SendPre(Id, usize),
     /// A bus's output by label ("Master" or a bus name).
@@ -272,7 +276,7 @@ fn inserts<'a>(p: &'a Project, owner: Id, list: &'a [Id], fx: Option<Id>) -> Ele
         .into()
 }
 
-fn fader_block<'a>(id: Id, db: f64, pan: Option<f64>, mute: Option<bool>, solo: Option<bool>) -> Element<'a, MixMsg> {
+fn fader_block<'a>(play: &Playback, id: Id, db: f64, pan: Option<f64>, mute: Option<bool>, solo: Option<bool>) -> Element<'a, MixMsg> {
     let toggle = |label: &'a str, on: bool, m: MixMsg| button(text(label).size(12)).padding([3, 8]).style(crate::theme::tool(on)).on_press(m);
     let mut levels = row![text(db_label(db)).size(12).width(Length::Fill)].spacing(4).align_y(Alignment::Center);
     if let Some(m) = mute {
@@ -282,7 +286,11 @@ fn fader_block<'a>(id: Id, db: f64, pan: Option<f64>, mute: Option<bool>, solo: 
         levels = levels.push(toggle("S", s, MixMsg::Solo(id)));
     }
     let mut col = column![
-        crate::panels::tip(canvas(Fader { track: id, db }).width(Length::Fill).height(160), "Drag (Shift: fine), click to jump, double-click: 0 dB, wheel: ±0.5 dB"),
+        row![
+            crate::panels::tip(canvas(Fader { track: id, db }).width(Length::Fill).height(160), "Drag (Shift: fine), click to jump, double-click: 0 dB, wheel: ±0.5 dB"),
+            crate::panels::tip(canvas(Meter { id, level: play.level(id), clipped: play.clipped(id) }).width(11).height(160), "Peak level (the light on top: it went over 0 dB; click to put it out)"),
+        ]
+        .spacing(4),
         levels,
     ]
     .spacing(8);
@@ -309,6 +317,12 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         color_bar(p, t),
         button(text(&t.name).size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(t.id)),
         text(if t.folder.is_empty() { players.join(", ") } else { format!("{} · {}", t.folder, players.join(", ")) }).size(11).style(crate::theme::dim),
+        text(match guest_of(p, t) {
+            Some(h) => format!("→ {} · ch {}", h.name, t.midi_channel + 1),
+            None => String::new(),
+        })
+        .size(10)
+        .style(crate::theme::accent),
         crate::panels::tip(
             button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(play.pool.editor_is_open(t.id))).on_press(MixMsg::Editor(t.id)),
             "Show the instrument's editor (click again to close it)",
@@ -338,13 +352,13 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
         ]
         .spacing(2),
     );
-    body = body.push(fader_block(t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
+    body = body.push(fader_block(play, t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
 
 /// An audio track's strip: no instrument; its clips' count, effects,
 /// output, sends and fader.
-fn audio_strip<'a>(p: &'a Project, t: &'a corinzia_model::Track, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+fn audio_strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
     let mut outputs: Vec<String> = vec!["Master".into()];
     outputs.extend(p.buses.iter().map(|b| b.name.clone()));
     let out = t.output_bus.and_then(|b| p.bus(b)).map(|b| b.name.clone()).unwrap_or_else(|| "Master".into());
@@ -367,7 +381,7 @@ fn audio_strip<'a>(p: &'a Project, t: &'a corinzia_model::Track, selected: bool,
     if !p.buses.is_empty() {
         body = body.push(sends_block(p, t));
     }
-    body = body.push(fader_block(t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
+    body = body.push(fader_block(play, t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
 
@@ -413,6 +427,12 @@ fn sends_block<'a>(p: &'a Project, t: &'a corinzia_model::Track) -> Element<'a, 
         }
     }
     sends.into()
+}
+
+/// The track whose instrument instance `t` plays through, if any.
+fn guest_of<'a>(p: &'a Project, t: &corinzia_model::Track) -> Option<&'a corinzia_model::Track> {
+    let node = t.instrument_node?;
+    p.tracks.iter().find(|x| x.instrument_node == Some(node)).filter(|h| h.id != t.id)
 }
 
 /// A track's colour as a thin bar over its strip.
@@ -509,7 +529,7 @@ fn bus_strip<'a>(p: &'a Project, play: &'a Playback, b: &'a corinzia_model::Bus,
         ]
         .spacing(2),
         auto_picker(p, play, b.id, shown),
-        fader_block(b.id, b.gain_db, Some(b.pan), Some(b.mute), Some(b.solo)),
+        fader_block(play, b.id, b.gain_db, Some(b.pan), Some(b.mute), Some(b.solo)),
     ]
     .spacing(6)
     .width(130);
@@ -522,7 +542,7 @@ fn master_strip<'a>(p: &'a Project, play: &'a Playback, selected: bool, fx: Opti
         text("Everything").size(11).style(crate::theme::dim),
         inserts(p, MASTER, &p.master.inserts, fx),
         auto_picker(p, play, MASTER, shown),
-        fader_block(MASTER, p.master.gain_db, None, None, None),
+        fader_block(play, MASTER, p.master.gain_db, None, None, None),
     ]
     .spacing(6)
     .width(130);
@@ -572,7 +592,7 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
 }
 
 pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>) -> Element<'a, MixMsg> {
-    let mut strips = row(p.tracks.iter().map(|t| if t.audio { audio_strip(p, t, selected == Some(t.id), fx) } else { strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()) })).spacing(8).padding(12);
+    let mut strips = row(p.tracks.iter().map(|t| if t.audio { audio_strip(p, play, t, selected == Some(t.id), fx) } else { strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()) })).spacing(8).padding(12);
     for b in &p.buses {
         strips = strips.push(bus_strip(p, play, b, selected == Some(b.id), fx, shown.get(&b.id).copied()));
     }
@@ -640,6 +660,14 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
             }
             if fx.is_none() {
                 browser = browser.push(techniques_block(t));
+            }
+            // Other tracks' plugin instruments: play through one of them.
+            let hosts: Vec<&corinzia_model::Track> = p.tracks.iter().filter(|h| h.id != t.id && !h.audio && h.instrument_node.is_some() && h.instrument_node != t.instrument_node && p.tracks.iter().find(|x| x.instrument_node == h.instrument_node).map(|x| x.id) == Some(h.id)).collect();
+            if !hosts.is_empty() {
+                browser = browser.push(text("Share an instrument").size(13)).push(text("One instance for several tracks (a multi-timbral sampler), each on its own MIDI channel; this track's fader becomes MIDI volume there.").size(11).style(crate::theme::dim));
+                for h in hosts {
+                    browser = browser.push(button(text(format!("Through {} ({})", h.name, play.plugin_name(h.id))).size(13)).width(Length::Fill).padding([5, 8]).style(crate::theme::tool(false)).on_press(MixMsg::Share(t.id, h.id)));
+                }
             }
             browser = browser.push(Space::new().height(4));
             let current_bundle = play.pool.plugin_of_track(t.id).map(|p| (p.info.bundle.clone(), p.info.id.clone()));

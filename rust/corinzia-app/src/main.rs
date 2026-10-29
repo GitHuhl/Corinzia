@@ -22,6 +22,7 @@ mod playback;
 mod prefs;
 mod presets;
 mod panels;
+mod roll;
 mod score_view;
 mod theme;
 
@@ -53,6 +54,20 @@ struct Popover {
     /// The point on the canvas it opens by: what was clicked, else the
     /// selection or the caret.
     anchor: Option<iced::Point>,
+}
+
+/// The piano roll's track, notes (as built for a music revision), selection,
+/// view, and while a drag is under way the tweaks as they were.
+struct RollState {
+    content: roll::Roll,
+    built: u64,
+    movement: usize,
+    selected: Vec<corinzia_model::Id>,
+    ppq: f32,
+    scroll_x: f32,
+    top_key: i32,
+    origin: Vec<corinzia_model::Tweak>,
+    dragged: bool,
 }
 
 /// The "New score" card.
@@ -264,6 +279,10 @@ struct App {
     auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
     arrange_curves: Vec<Option<arrange::Curve>>,
     arrange_clips: Vec<arrange::ClipBlock>,
+    /// The piano roll open in the Mix tab.
+    roll: Option<RollState>,
+    /// An audio export under way.
+    bounce: Option<corinzia_audio::bounce::Bounce>,
     /// Folders folded away in the arrange view.
     folded: HashSet<String>,
     /// The clip selected in the arrange view (track, clip), and while it is
@@ -378,6 +397,10 @@ enum Message {
     PluginTick,
     Autosaved(u64, Result<(), String>),
     Shot(iced::window::Screenshot),
+    Roll(roll::RollEvent),
+    /// Close the piano roll; reset the selected notes' tweaks.
+    RollClose,
+    RollReset,
 }
 
 const POPOVER_INPUT: &str = "popover-input";
@@ -538,6 +561,8 @@ impl App {
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
             arrange_clips: Vec::new(),
+            bounce: None,
+            roll: None,
             folded: HashSet::new(),
             selected_clip: None,
             clip_origin: None,
@@ -734,6 +759,7 @@ impl App {
         if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
             self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
+        self.sync_roll();
         let mut sel = HashSet::new();
         if let Some(id) = self.editor.selection {
             sel.insert(id);
@@ -762,6 +788,126 @@ impl App {
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
         self.cache.clear();
         self.arrange_cache.clear();
+    }
+
+    /// Opens a track's piano roll on the movement edited.
+    fn open_roll(&mut self, track: corinzia_model::Id) {
+        let content = roll::content(&self.editor.project, self.editor.movement, track);
+        let top_key = (content.high + 2).min(127);
+        self.roll = Some(RollState { content, built: self.editor.music_revision, movement: self.editor.movement, selected: vec![], ppq: self.arrange_ppq.max(24.0), scroll_x: self.arrange_scroll, top_key, origin: vec![], dragged: false });
+    }
+
+    /// The piano roll's notes rebuilt after the music changed.
+    fn sync_roll(&mut self) {
+        let (rev, movement) = (self.editor.music_revision, self.editor.movement);
+        let Some(r) = self.roll.as_mut() else { return };
+        if r.built == rev && r.movement == movement {
+            return;
+        }
+        if self.editor.project.track(r.content.track).is_none() {
+            self.roll = None;
+            return;
+        }
+        r.content = roll::content(&self.editor.project, movement, r.content.track);
+        (r.built, r.movement) = (rev, movement);
+        r.selected.retain(|h| r.content.notes.iter().any(|n| n.head == *h));
+    }
+
+    fn roll_event(&mut self, e: roll::RollEvent) {
+        let Some(r) = self.roll.as_mut() else { return };
+        match e {
+            roll::RollEvent::Select { head: None, .. } => r.selected.clear(),
+            roll::RollEvent::Select { head: Some(h), add } => {
+                if !add {
+                    r.selected.clear();
+                }
+                if !r.selected.contains(&h) {
+                    r.selected.push(h);
+                }
+                // The note on its instrument, as when clicked in the score.
+                self.editor.select(Some(h));
+                self.audition();
+            }
+            roll::RollEvent::Drag { drag, dq } => {
+                if r.origin.is_empty() {
+                    r.origin = r.selected.iter().map(|&h| self.editor.tweak_of(h).unwrap_or(corinzia_model::Tweak::new(h))).collect();
+                }
+                r.dragged = true;
+                let (origin, notes) = (r.origin.clone(), r.content.notes.clone());
+                let heads: Vec<_> = origin.iter().map(|t| t.head).collect();
+                let label = if drag == roll::Drag::Shift { "Note timing" } else { "Note length" };
+                self.editor.tweak(&heads, label, true, |t| {
+                    let Some(o) = origin.iter().find(|o| o.head == t.head) else { return };
+                    match drag {
+                        roll::Drag::Shift => t.shift = o.shift + dq,
+                        roll::Drag::Length => {
+                            let base = o.length.or_else(|| notes.iter().find(|n| n.head == t.head).map(|n| n.length)).unwrap_or(1.0);
+                            t.length = Some((base + dq).max(1.0 / 64.0));
+                        }
+                    }
+                });
+            }
+            roll::RollEvent::Velocity { head, velocity } => {
+                r.dragged = true;
+                self.editor.tweak(&[head], "Note velocity", true, |t| t.velocity = Some((velocity * 127.0).round() / 127.0));
+            }
+            roll::RollEvent::Release => {
+                r.origin.clear();
+                self.editor.end_gesture();
+                if std::mem::take(&mut r.dragged) {
+                    self.editor.music_changed();
+                }
+            }
+            roll::RollEvent::Scroll { dx, dy } => {
+                r.scroll_x = (r.scroll_x + dx).clamp(0.0, (r.content.length_q as f32 * r.ppq - 100.0).max(0.0));
+                r.top_key = (r.top_key + (dy / roll::ROW).round() as i32).clamp(20, 127);
+            }
+            roll::RollEvent::Zoom(k) => r.ppq = (r.ppq * k).clamp(8.0, 400.0),
+        }
+    }
+
+    /// Starts an audio export of the movement edited: its own plugins,
+    /// restored from the live ones' current settings.
+    fn start_bounce(&mut self, path: PathBuf) {
+        let mut project = self.editor.project.clone();
+        self.playback.pool.store_states(&mut project);
+        let folder = self.path.as_deref().and_then(|p| p.parent());
+        match corinzia_audio::bounce::Bounce::new(&project, self.editor.movement, self.playback.sample_rate, self.playback.max_frames(), folder, path) {
+            Ok(b) => {
+                self.editor.status = "Exporting audio… (Escape stops)".into();
+                self.bounce = Some(b);
+            }
+            Err(e) => self.editor.status = format!("Export failed: {e}"),
+        }
+    }
+
+    /// Renders some of the audio export (about 30 ms' work a frame).
+    fn bounce_step(&mut self) {
+        let Some(b) = self.bounce.as_mut() else { return };
+        let started = Instant::now();
+        let mut done = false;
+        while !done && started.elapsed() < std::time::Duration::from_millis(30) {
+            done = b.step(0.1);
+        }
+        if !done {
+            self.editor.status = format!("Exporting audio… {:.0}% (Escape stops)", b.progress() * 100.0);
+            return;
+        }
+        let b = self.bounce.take().unwrap();
+        let (path, warnings) = (b.path.clone(), b.warnings.clone());
+        self.editor.status = match b.finish() {
+            Ok(s) => {
+                let mut msg = format!("Exported {} ({:.1} s, peak {:.1} dBFS)", path.display(), s.seconds, s.peak_db);
+                if s.clipped > 0 {
+                    msg += &format!(" — {} samples clipped: lower the master or add a limiter", s.clipped);
+                }
+                if let Some(w) = warnings.first() {
+                    msg += &format!(" — {w}");
+                }
+                msg
+            }
+            Err(e) => format!("Export failed: {e}"),
+        };
     }
 
     /// Places a sound file on an audio track (`None`, or not an audio
@@ -949,6 +1095,14 @@ impl App {
     /// A key press from the score keyboard.
     fn press(&mut self, key: &iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Task<Message>> {
         use iced::keyboard::{key::Named, Key};
+        // The piano roll: Escape closes it, R resets the selected notes.
+        if let (Tab::Mix, true) = (self.tab, self.roll.is_some()) {
+            match key {
+                Key::Named(Named::Escape) => return Some(Task::done(Message::RollClose)),
+                Key::Character(c) if c.as_str() == "r" && !mods.control() => return Some(Task::done(Message::RollReset)),
+                _ => {}
+            }
+        }
         // The selected clip in the arrange view: Delete removes it.
         if let (Tab::Mix, Some((track, clip)), Key::Named(Named::Delete | Named::Backspace)) = (self.tab, self.selected_clip, key) {
             self.editor.delete_clip(track, clip);
@@ -1542,6 +1696,10 @@ impl App {
                 self.edit_selected_clip("Audio cue", false, move |c| c.cue = player);
             }
             ClipCueLine => self.edit_selected_clip("Audio cue line", false, |c| c.cue_line = !c.cue_line),
+            ClearClip(id) => self.playback.clear_clip(id),
+            Share(t, host) => {
+                self.editor.share_instrument(t, host);
+            }
             ClipRemove => {
                 if let Some((t, c)) = self.selected_clip.take() {
                     self.editor.delete_clip(t, c);
@@ -2011,6 +2169,15 @@ impl App {
             Message::SetPanel(p) => self.panel = p,
             Message::Mix(mix::MixMsg::AddAudio(t)) => return self.pick_file_for(browser::Purpose::Audio(t), false),
             Message::Mix(m) => self.mix(m),
+            Message::Roll(e) => self.roll_event(e),
+            Message::RollClose => self.roll = None,
+            Message::RollReset => {
+                if let Some(r) = &self.roll {
+                    let heads = r.selected.clone();
+                    let all = if heads.is_empty() { r.content.notes.iter().map(|n| n.head).collect() } else { heads };
+                    self.editor.tweak(&all, "Reset playing", false, |t| *t = corinzia_model::Tweak::new(t.head));
+                }
+            }
             Message::Arrange(e) => match e {
                 arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
                     let id = clip;
@@ -2029,6 +2196,7 @@ impl App {
                         self.playback.set_cycle(Some((m, from, to)));
                     }
                 }
+                arrange::ArrangeEvent::OpenRoll(track) => self.open_roll(track),
                 arrange::ArrangeEvent::ToggleFolder(name) => {
                     if !self.folded.remove(&name) {
                         self.folded.insert(name);
@@ -2150,6 +2318,10 @@ impl App {
                 if let Some(id) = hit.filter(|_| !self.editor.input_mode) {
                     return self.edit_on_page(id);
                 }
+            }
+            Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.bounce.is_some() => {
+                self.bounce = None;
+                self.editor.status = "Audio export stopped".into();
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
@@ -2301,6 +2473,10 @@ impl App {
                 self.export_menu = false;
                 return self.pick_file_for(browser::Purpose::Export(format), false);
             }
+            Message::ExportTo(files::Format::Audio, Some(path)) => {
+                let path = if path.extension().is_none() { path.with_extension("wav") } else { path };
+                self.start_bounce(path);
+            }
             Message::ExportTo(format, Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
                 self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
@@ -2314,6 +2490,7 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                self.bounce_step();
                 if let Some(t) = self.autosave() {
                     return t;
                 }
@@ -2565,6 +2742,7 @@ impl App {
                     item("Parts (PDF)…", "each player's part, as written", files::Format::Parts),
                     item("MIDI…", "the performance, track by track", files::Format::Midi),
                     item("MusicXML…", "for other notation programs", files::Format::MusicXml),
+                    item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
                 ]
                 .spacing(2)
                 .width(250),
@@ -2624,7 +2802,28 @@ impl App {
             Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
             Tab::Mix => {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
-                let arr = canvas(arrange::ArrangeView {
+                let top: Element<'_, Message> = match &self.roll {
+                    Some(r) => {
+                        let tweaks = ed.movement().map(|m| m.tweaks.as_slice()).unwrap_or(&[]);
+                        let view = canvas(roll::RollView { roll: &r.content, tweaks, selected: &r.selected, ppq: r.ppq, scroll_x: r.scroll_x, top_key: r.top_key, playhead }).width(Length::Fill).height(Length::Fill);
+                        let what = if r.selected.is_empty() { "all notes".to_string() } else { format!("{} selected", r.selected.len()) };
+                        column![
+                            row![
+                                text(format!("Piano roll · {}", r.content.name)).size(13).font(bold),
+                                text("drag a note: earlier or later (Shift: by sixteenths) · its right edge: longer or shorter · the lane below: velocity · pitch and rhythm stay the score's").size(11).style(theme::dim),
+                                panels::spacer(),
+                                panels::tip(button(text(format!("Reset {what}")).size(12)).padding([3, 8]).style(theme::tool(false)).on_press(Message::RollReset), "Play as written again (R)"),
+                                panels::tip(button(text("✕").size(12)).padding([3, 8]).style(theme::flat(false)).on_press(Message::RollClose), "Back to the arrange view (Escape)"),
+                            ]
+                            .spacing(10)
+                            .padding([4, 10])
+                            .align_y(iced::Alignment::Center),
+                            Element::from(view).map(Message::Roll),
+                        ]
+                        .height(Length::Fill)
+                        .into()
+                    }
+                    None => Element::from(canvas(arrange::ArrangeView {
                     content: &self.arrange,
                     pixels_per_quarter: self.arrange_ppq,
                     scroll_x: self.arrange_scroll,
@@ -2638,9 +2837,11 @@ impl App {
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                 })
                 .width(Length::Fill)
-                .height(Length::Fill);
+                .height(Length::Fill))
+                    .map(Message::Arrange),
+                };
                 column![
-                    Element::from(arr).map(Message::Arrange),
+                    top,
                     hline(),
                     container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
                 ]
@@ -2660,7 +2861,7 @@ impl App {
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
         let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
-        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() {
+        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() || self.bounce.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys
@@ -3003,11 +3204,30 @@ fn main() -> iced::Result {
             Some("pdf") => files::Format::Pdf,
             Some("mid" | "midi") => files::Format::Midi,
             Some("musicxml" | "xml") => files::Format::MusicXml,
+            Some("wav") => files::Format::Audio,
             _ => {
-                eprintln!("--export: use a .pdf, .mid or .musicxml file name");
+                eprintln!("--export: use a .pdf, .mid, .musicxml or .wav file name");
                 std::process::exit(2);
             }
         };
+        if format == files::Format::Audio {
+            let folder = app.path.as_deref().and_then(|p| p.parent());
+            let done = corinzia_audio::bounce::Bounce::new(&app.editor.project, app.editor.movement, app.playback.sample_rate, 1024, folder, out.clone()).and_then(|mut b| {
+                for w in &b.warnings {
+                    eprintln!("corinzia: {w}");
+                }
+                while !b.step(10.0) {}
+                b.finish()
+            });
+            match done {
+                Ok(s) => println!("exported {} ({:.1} s, peak {:.1} dBFS)", out.display(), s.seconds, s.peak_db),
+                Err(e) => {
+                    eprintln!("export failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            return Ok(());
+        }
         match files::export_to(&app.editor.project, app.editor.movement, format, app.editor.transposed, &out) {
             Ok(()) => println!("exported {}", out.display()),
             Err(e) => {
@@ -4416,6 +4636,158 @@ mod tests {
         // Shift+drag on the arrange view's ruler sets it anew.
         let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Cycle { from: 2.0, to: 6.0 }));
         assert_eq!(a.playback.cycle, Some((m, 2.0, 6.0)));
+    }
+
+    #[test]
+    fn audio_is_exported_over_several_frames_and_can_be_stopped() {
+        let dir = std::env::temp_dir().join(format!("corinzia-app-bounce-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = app(View::Page);
+        let path = dir.join("mix");
+        let _ = a.update(Message::ExportTo(files::Format::Audio, Some(path.clone())));
+        assert!(a.bounce.is_some() && a.editor.status.starts_with("Exporting audio"));
+        let mut frames = 0;
+        while a.bounce.is_some() {
+            let _ = a.update(Message::Frame);
+            frames += 1;
+            assert!(frames < 10_000);
+        }
+        assert!(a.editor.status.starts_with("Exported"), "{}", a.editor.status);
+        let wav = path.with_extension("wav");
+        assert!(std::fs::metadata(&wav).unwrap().len() > 44);
+        // Stopped half way: no file.
+        let other = dir.join("stopped.wav");
+        let _ = a.update(Message::ExportTo(files::Format::Audio, Some(other.clone())));
+        let _ = a.update(Message::Frame);
+        let _ = a.update(Message::Key(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: iced::keyboard::Location::Standard,
+            modifiers: Default::default(),
+            text: None,
+            repeat: false,
+        }));
+        assert!(a.bounce.is_none() && !other.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn strips_meter_their_levels_and_latch_a_clip() {
+        let mut a = app(View::Page);
+        a.sync();
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        render(&mut a, 24000);
+        a.playback.tick();
+        let first = a.editor.project.tracks[0].id;
+        let master = corinzia_model::MASTER;
+        assert!(a.playback.level(master).0 > 0.01 && a.playback.level(first).0 > 0.0);
+        assert!(!a.playback.clipped(master));
+        // Stopped: the levels fall away over the frames that follow.
+        a.playback.stop();
+        render(&mut a, 256);
+        for _ in 0..200 {
+            render(&mut a, 256);
+            a.playback.tick();
+        }
+        assert_eq!(a.playback.level(master), (0.0, 0.0));
+        assert!(!a.playback.busy(), "no more frames needed");
+        // Too loud: the master's light latches until clicked.
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(first, 12.0)));
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(master, 12.0)));
+        a.sync();
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        render(&mut a, 24000);
+        a.playback.tick();
+        assert!(a.playback.clipped(master));
+        let _ = a.update(Message::Mix(mix::MixMsg::ClearClip(master)));
+        assert!(!a.playback.clipped(master));
+    }
+
+    #[test]
+    fn a_track_shares_another_tracks_instrument_on_a_free_channel() {
+        let mut a = app(View::Page);
+        let (t0, t1) = (a.editor.project.tracks[0].id, a.editor.project.tracks[1].id);
+        a.editor.set_track_plugin(t0, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
+        a.editor.set_track_plugin(t1, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
+        let own = a.editor.project.track(t1).unwrap().instrument_node.unwrap();
+        let ch0 = a.editor.project.track(t0).unwrap().midi_channel;
+        let _ = a.update(Message::Mix(mix::MixMsg::Share(t1, t0)));
+        let (n0, n1) = (a.editor.project.track(t0).unwrap().instrument_node, a.editor.project.track(t1).unwrap().instrument_node);
+        assert_eq!(n0, n1, "one plugin node");
+        assert!(a.editor.project.node(own).is_none(), "its own plugin went");
+        assert_ne!(a.editor.project.track(t1).unwrap().midi_channel, ch0, "on another channel");
+        a.sync();
+        assert!(std::sync::Arc::ptr_eq(a.playback.pool.plugin_of_track(t0).unwrap(), a.playback.pool.plugin_of_track(t1).unwrap()), "one instance");
+        a.playback.play_from(a.editor.project.movements[0].id, 0.0);
+        assert!(render(&mut a, 24000) > 0.001, "it plays");
+        a.editor.undo();
+        a.sync();
+        assert!(!std::sync::Arc::ptr_eq(a.playback.pool.plugin_of_track(t0).unwrap(), a.playback.pool.plugin_of_track(t1).unwrap()));
+    }
+
+    #[test]
+    fn the_piano_roll_tweaks_how_notes_play_and_leaves_the_score_alone() {
+        use roll::{Drag, RollEvent as R};
+        let mut a = app(View::Page);
+        let _ = a.act(Action::ShowMix);
+        let track = a.editor.project.tracks[0].id;
+        let _ = a.update(Message::Arrange(arrange::ArrangeEvent::OpenRoll(track)));
+        let notes = a.roll.as_ref().unwrap().content.notes.clone();
+        assert!(notes.len() > 4, "the track's notes");
+        let score_before = format!("{:?}", a.editor.project.movements[0].lanes);
+        let (h0, h1) = (notes[0].head, notes[1].head);
+        let ev = |a: &mut App, e: R| {
+            let _ = a.update(Message::Roll(e));
+        };
+        // Two notes selected, dragged a sixteenth later: one undo step.
+        ev(&mut a, R::Select { head: Some(h0), add: false });
+        ev(&mut a, R::Select { head: Some(h1), add: true });
+        let music = a.editor.music_revision;
+        ev(&mut a, R::Drag { drag: Drag::Shift, dq: 0.125 });
+        ev(&mut a, R::Drag { drag: Drag::Shift, dq: 0.25 });
+        assert_eq!(a.editor.music_revision, music, "playback catches up on release");
+        ev(&mut a, R::Release);
+        assert!(a.editor.music_revision > music);
+        assert_eq!(a.editor.tweak_of(h0).unwrap().shift, 0.25);
+        assert_eq!(a.editor.tweak_of(h1).unwrap().shift, 0.25);
+        a.editor.undo();
+        assert!(a.editor.tweak_of(h0).is_none(), "one undo puts both back");
+        a.editor.redo();
+        // Longer, from the right edge; softer, from the velocity lane.
+        ev(&mut a, R::Select { head: Some(h0), add: false });
+        ev(&mut a, R::Drag { drag: Drag::Length, dq: 1.0 });
+        ev(&mut a, R::Release);
+        assert!((a.editor.tweak_of(h0).unwrap().length.unwrap() - (notes[0].length + 1.0)).abs() < 1e-9);
+        ev(&mut a, R::Velocity { head: h0, velocity: 0.2 });
+        ev(&mut a, R::Release);
+        assert!((a.editor.tweak_of(h0).unwrap().velocity.unwrap() - 0.2).abs() < 0.01);
+        // The score is as it was; the performance is not.
+        assert_eq!(format!("{:?}", a.editor.project.movements[0].lanes), score_before);
+        let perf = corinzia_perform::perform(&a.editor.project.movements[0]);
+        let n0 = perf.notes.iter().find(|n| n.element == h0).unwrap();
+        assert!((n0.velocity - 0.2).abs() < 0.01);
+        a.sync();
+        let r = a.roll.as_ref().unwrap();
+        assert_eq!(r.content.notes[0].start, notes[0].start, "the roll keeps the written place; the tweak moves it");
+        // R resets the selection: played as written again.
+        let _ = a.update(Message::RollReset);
+        assert!(a.editor.tweak_of(h0).is_none() && a.editor.tweak_of(h1).is_some());
+        let _ = a.update(Message::RollClose);
+        assert!(a.roll.is_none());
+    }
+
+    #[test]
+    fn a_roll_note_is_grabbed_by_its_body_or_its_right_edge() {
+        let r = roll::Roll { track: 1, name: "F".into(), notes: vec![roll::RollNote { head: 9, key: 60, start: 2.0, length: 1.0, velocity: 0.5 }], bars: vec![0.0, 4.0], length_q: 4.0, high: 72 };
+        let tweaks = [corinzia_model::Tweak { head: 9, velocity: None, shift: 0.5, length: Some(2.0) }];
+        let v = roll::RollView { roll: &r, tweaks: &tweaks, selected: &[], ppq: 40.0, scroll_x: 0.0, top_key: 72, playhead: None };
+        let rect = v.note_rect(&r.notes[0]);
+        assert_eq!((rect.x, rect.width), (v.x(2.5), 80.0), "where and how long it plays");
+        let mid = rect.y + rect.height / 2.0;
+        assert_eq!(v.note_at(iced::Point::new(rect.x + 20.0, mid)).map(|x| x.1), Some(false));
+        assert_eq!(v.note_at(iced::Point::new(rect.x + rect.width - 2.0, mid)).map(|x| x.1), Some(true));
+        assert!(v.note_at(iced::Point::new(rect.x - 10.0, mid)).is_none());
     }
 
     #[test]

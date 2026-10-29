@@ -38,7 +38,7 @@ fn project() -> Project {
             chords: vec![],
             lines: vec![],
             voices: vec![Voice { id: 5, index: 1, events: Arc::new(vec![note(10, Frac::ZERO, 0), rest(20, Frac::new(1, 4)), note(30, Frac::new(3, 4), 5)]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![], automation: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     });
     p
 }
@@ -577,4 +577,90 @@ fn a_cycle_plays_round_until_it_is_turned_off() {
     ui.send(Command::Loop(None)).ok();
     eng.render_offline(3 * s);
     assert!(!ui.is_playing());
+}
+
+#[test]
+fn a_movement_is_exported_as_a_wav_file_like_it_plays() {
+    let dir = std::env::temp_dir().join(format!("corinzia-bounce-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("out.wav");
+    let p = project();
+    let mut b = corinzia_audio::bounce::Bounce::new(&p, 0, SR, 256, None, path.clone()).unwrap();
+    assert!(b.warnings.is_empty());
+    let mut steps = 0;
+    while !b.step(0.5) {
+        steps += 1;
+        assert!(b.progress() < 1.0);
+    }
+    assert!(steps >= 8, "two seconds and the tail, half a second at a time");
+    let summary = b.finish().unwrap();
+    assert!((summary.seconds - (2.0 + corinzia_audio::bounce::TAIL_SECONDS)).abs() < 0.01);
+    assert!(summary.peak_db < 0.0 && summary.peak_db > -30.0 && summary.clipped == 0, "{summary:?}");
+    // The file reads back as what playback renders (to 24 bits).
+    let (ch, rate) = corinzia_audio::media::decode(&path).unwrap();
+    assert_eq!((ch.len(), rate), (2, SR as u32));
+    let live = render(&p, SR as usize);
+    let err = live.iter().zip(&ch[0]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(err < 1e-5, "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn peaks_are_metered_per_track_and_at_the_master() {
+    use corinzia_audio::engine::Meter;
+    let mut p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.play();
+    let (l, _) = eng.render_offline(4096);
+    let out = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let master = ui.shared.take_peak(Meter::Master);
+    assert!((master.0 - out).abs() < 1e-6 && out > 0.01);
+    let track = ui.shared.take_peak(Meter::Node(0));
+    assert!((track.0 - out).abs() < 1e-3, "the only track is the mix: {track:?} vs {out}");
+    assert_eq!(ui.shared.take_peak(Meter::Master), (0.0, 0.0), "taken: reset");
+    // Its fader down 6 dB: its meter shows it.
+    p.tracks[0].gain_db = -6.0206;
+    ui.swap(snapshot::build_from_pool(&p, SR, 2, &[0], &mut pool));
+    ui.seek(0);
+    ui.play();
+    eng.render_offline(2048);
+    ui.shared.take_peak(Meter::Node(0));
+    eng.render_offline(2048);
+    let half = ui.shared.take_peak(Meter::Node(0));
+    assert!((half.0 / out - 0.5).abs() < 0.05, "{half:?}");
+}
+
+#[test]
+fn tracks_sharing_a_plugin_node_play_through_one_instance_on_their_channels() {
+    // Two flutes, one Corinzia Sine node between them (channels 0 and 5).
+    let mut p = ensemble(2);
+    p.nodes.push(AudioNode { id: 700, kind: NodeKind::Plugin, name: "Sine".into(), bundle: host::BUILTIN.into(), plugin_id: "org.corinzia.sine".into(), bypassed: false });
+    for (k, t) in p.tracks.iter_mut().enumerate() {
+        (t.instrument_node, t.midi_channel, t.inserts, t.sends) = (Some(700), if k == 0 { 0 } else { 5 }, vec![], vec![]);
+    }
+    p.tracks[1].gain_db = -12.0;
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    assert_eq!(snap.nodes.len(), 2);
+    assert!(snap.nodes[0].host.is_none() && snap.nodes[0].plugin.is_some());
+    assert_eq!((snap.nodes[1].host, snap.nodes[1].channel), (Some(0), 5));
+    assert_eq!(snap.nodes.iter().filter(|n| n.plugin.is_some()).count(), 1, "one instance");
+    // Every note goes to the host's instance, each on its track's channel.
+    let notes: Vec<_> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Note).collect();
+    assert!(notes.iter().all(|n| n.node == 0));
+    assert!(notes.iter().any(|n| n.channel == 5) && notes.iter().any(|n| n.channel == 0));
+    // It plays; the guest's fader is MIDI volume, its own strip silent.
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snap);
+    ui.play();
+    let (l, _) = eng.render_offline(SR as usize);
+    assert!(rms(&l[1000..20000]) > 0.01);
+    assert_eq!(ui.shared.take_peak(corinzia_audio::engine::Meter::Node(1)), (0.0, 0.0), "the guest has no audio of its own");
+    // One track takes another plugin: the instance is no longer shared.
+    p.nodes.push(AudioNode { id: 701, kind: NodeKind::Plugin, name: "Sine 2".into(), bundle: host::BUILTIN.into(), plugin_id: "org.corinzia.sine".into(), bypassed: false });
+    p.tracks[1].instrument_node = Some(701);
+    let snap = snapshot::build_from_pool(&p, SR, 2, &[0], &mut pool);
+    assert!(snap.nodes[1].host.is_none() && snap.nodes.iter().filter(|n| n.plugin.is_some()).count() == 2);
 }

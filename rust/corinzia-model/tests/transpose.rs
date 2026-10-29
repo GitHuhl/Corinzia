@@ -55,7 +55,7 @@ fn transposed_view_writes_pitches_and_keys() {
             chords: vec![ChordSymbol { id: 5, at: Frac::ZERO, text: "Bb".into() }],
             lines: vec![],
             voices: vec![Voice { id: 6, index: 1, events: Arc::new(vec![note]), tuplets: vec![] }],
-        }], breaks: vec![], cross: vec![], automation: vec![],
+        }], breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     };
     let concert = score_as(&proj, &m, false);
     let written = score_as(&proj, &m, true);

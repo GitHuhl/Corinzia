@@ -199,6 +199,9 @@ pub enum Format {
     Parts,
     Midi,
     MusicXml,
+    /// The movement as it plays: a stereo WAV file (rendered offline, by
+    /// the app, not `export`).
+    Audio,
 }
 impl Format {
     pub fn extension(self) -> &'static str {
@@ -206,6 +209,7 @@ impl Format {
             Format::Pdf | Format::Parts => "pdf",
             Format::Midi => "mid",
             Format::MusicXml => "musicxml",
+            Format::Audio => "wav",
         }
     }
     pub fn label(self) -> &'static str {
@@ -214,6 +218,7 @@ impl Format {
             Format::Parts => "Parts (PDF)",
             Format::Midi => "MIDI file",
             Format::MusicXml => "MusicXML",
+            Format::Audio => "Audio (WAV)",
         }
     }
 }
@@ -239,6 +244,7 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
         }
         Format::Midi => corinzia_perform::midi(project, m),
         Format::MusicXml => corinzia_perform::musicxml(project, m).map(String::into_bytes),
+        Format::Audio => Err("Audio is rendered by the app's bounce".into()),
     }
 }
 
