@@ -13,6 +13,25 @@ use iced::{Alignment, Element, Length};
 #[derive(Debug, Clone)]
 pub enum MixMsg {
     Select(Id),
+    AddAudioTrack,
+    RemoveTrack(Id),
+    /// Choose a sound file for an audio track.
+    AddAudio(Id),
+    /// The selected clip: its name, gain (dB), mute, the staff its cue is
+    /// on (by player name, or "None"), the cue's line, removal.
+    ClipName(String),
+    ClipGain(f64),
+    ClipMute,
+    ClipCue(String),
+    ClipCueLine,
+    ClipRemove,
+    /// A send (track, index) before the fader or after it.
+    SendPre(Id, usize),
+    /// A bus's output by label ("Master" or a bus name).
+    BusOutput(Id, String),
+    /// A track's colour (none: by position) and folder (typed).
+    Color(Id, Option<u32>),
+    Folder(Id, String),
     /// Shows the track plugin's editor, or closes it when open.
     Editor(Id),
     /// Gain, pan and mute of a track, a bus or the master (`MASTER`).
@@ -128,8 +147,23 @@ fn techniques_block<'a>(t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
 /// What a track's lane can automate: (label, target, min, max); "Off" first.
 pub fn auto_options(p: &Project, play: &Playback, track: Id) -> Vec<(String, Option<corinzia_model::AutoTarget>, f64, f64)> {
     use corinzia_model::AutoTarget;
-    let mut v = vec![("Off".to_string(), None, 0.0, 1.0), ("Gain".into(), Some(AutoTarget::Gain(track)), MIN_DB, 6.0), ("Pan".into(), Some(AutoTarget::Pan(track)), -1.0, 1.0)];
+    let mut v = vec![("Off".to_string(), None, 0.0, 1.0), ("Gain".into(), Some(AutoTarget::Gain(track)), MIN_DB, 6.0)];
+    if track == MASTER {
+        return v;
+    }
+    v.push(("Pan".into(), Some(AutoTarget::Pan(track)), -1.0, 1.0));
     let Some(t) = p.track(track) else { return v };
+    for s in &t.sends {
+        if let Some(b) = p.bus(s.bus) {
+            v.push((format!("Send → {}", b.name), Some(AutoTarget::Send { track, bus: s.bus }), MIN_DB, 6.0));
+        }
+    }
+    if !t.audio {
+        v.push(("Pitch bend".into(), Some(AutoTarget::PitchBend(track)), -1.0, 1.0));
+        for cc in 0..128u8 {
+            v.push((format!("CC{cc}{}", cc_name(cc).map(|n| format!(" ({n})")).unwrap_or_default()), Some(AutoTarget::Cc { track, cc }), 0.0, 127.0));
+        }
+    }
     let mut plugins: Vec<(Id, std::sync::Arc<corinzia_audio::host::Plugin>)> = Vec::new();
     if let (Some(n), Some(pl)) = (t.instrument_node, play.pool.plugin_of_track(track)) {
         plugins.push((n, pl.clone()));
@@ -141,6 +175,31 @@ pub fn auto_options(p: &Project, play: &Playback, track: Id) -> Vec<(String, Opt
         }
     }
     v
+}
+
+/// The common names of MIDI controllers.
+pub fn cc_name(cc: u8) -> Option<&'static str> {
+    Some(match cc {
+        1 => "modulation",
+        2 => "breath",
+        4 => "foot",
+        5 => "portamento time",
+        7 => "volume",
+        8 => "balance",
+        10 => "pan",
+        11 => "expression",
+        21 => "vibrato",
+        64 => "sustain",
+        65 => "portamento",
+        66 => "sostenuto",
+        67 => "soft pedal",
+        68 => "legato",
+        71 => "resonance",
+        72 => "release",
+        73 => "attack",
+        74 => "brightness",
+        _ => return None,
+    })
 }
 
 pub const DYNAMICS_CC: [&str; 3] = ["Velocity only", "CC1 (modulation)", "CC11 (expression)"];
@@ -247,8 +306,9 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
     let out = t.output_bus.and_then(|b| p.bus(b)).map(|b| b.name.clone()).unwrap_or_else(|| "Master".into());
     let track = t.id;
     let mut body = column![
+        color_bar(p, t),
         button(text(&t.name).size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(t.id)),
-        text(players.join(", ")).size(11).style(crate::theme::dim),
+        text(if t.folder.is_empty() { players.join(", ") } else { format!("{} · {}", t.folder, players.join(", ")) }).size(11).style(crate::theme::dim),
         crate::panels::tip(
             button(text(plugin).size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(play.pool.editor_is_open(t.id))).on_press(MixMsg::Editor(t.id)),
             "Show the instrument's editor (click again to close it)",
@@ -259,16 +319,7 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
     .spacing(6)
     .width(130);
     if !p.buses.is_empty() {
-        let mut sends = column![text("Sends").size(10).style(crate::theme::faint)].spacing(2);
-        for b in &p.buses {
-            let at = t.sends.iter().position(|s| s.bus == b.id);
-            sends = sends.push(crate::panels::tip(button(text(format!("→ {}", b.name)).size(11)).width(Length::Fill).padding([2, 5]).style(crate::theme::tool(at.is_some())).on_press(MixMsg::ToggleSend(t.id, b.id)), "A send to this bus (click again to remove it)"));
-            if let Some(i) = at {
-                let db = t.sends[i].gain_db;
-                sends = sends.push(row![slider(MIN_DB..=6.0, db, move |v| MixMsg::SendLevel(track, i, (v * 2.0).round() / 2.0)).step(0.5).on_release(MixMsg::Released), text(db_label(db)).size(10).width(52)].spacing(4).align_y(Alignment::Center));
-            }
-        }
-        body = body.push(sends);
+        body = body.push(sends_block(p, t));
     }
     let options = auto_options(p, play, t.id);
     let shown = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
@@ -291,7 +342,151 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
 
-fn bus_strip<'a>(p: &'a Project, b: &'a corinzia_model::Bus, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+/// An audio track's strip: no instrument; its clips' count, effects,
+/// output, sends and fader.
+fn audio_strip<'a>(p: &'a Project, t: &'a corinzia_model::Track, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+    let mut outputs: Vec<String> = vec!["Master".into()];
+    outputs.extend(p.buses.iter().map(|b| b.name.clone()));
+    let out = t.output_bus.and_then(|b| p.bus(b)).map(|b| b.name.clone()).unwrap_or_else(|| "Master".into());
+    let track = t.id;
+    let mut body = column![
+        color_bar(p, t),
+        row![
+            button(text(&t.name).size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(t.id)),
+            crate::panels::spacer(),
+            crate::panels::tip(button(text("×").size(12)).padding([0, 5]).style(crate::theme::flat(false)).on_press(MixMsg::RemoveTrack(t.id)), "Remove the audio track and its clips"),
+        ]
+        .align_y(Alignment::Center),
+        text(match t.clips.len() { 1 => "Audio · 1 clip".to_string(), n => format!("Audio · {n} clips") }).size(11).style(crate::theme::dim),
+        crate::panels::tip(button(text("Add sound…").size(12)).width(Length::Fill).padding([4, 6]).style(crate::theme::tool(false)).on_press(MixMsg::AddAudio(t.id)), "A sound file, placed at the caret"),
+        inserts(p, t.id, &t.inserts, fx),
+        column![text("Output").size(10).style(crate::theme::faint), pick_list(outputs, Some(out), move |o| MixMsg::Output(track, o)).text_size(11).padding([2, 5]).width(Length::Fill)].spacing(2),
+    ]
+    .spacing(6)
+    .width(130);
+    if !p.buses.is_empty() {
+        body = body.push(sends_block(p, t));
+    }
+    body = body.push(fader_block(t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
+    container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
+}
+
+/// The selected clip's settings: name, gain, mute, and its cue in the score.
+fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip) -> Element<'a, MixMsg> {
+    let mut staves: Vec<String> = vec!["None".into()];
+    staves.extend(p.players.iter().map(|pl| pl.name.clone()));
+    let cue = c.cue.and_then(|id| p.players.iter().find(|pl| pl.id == id)).map(|pl| pl.name.clone()).unwrap_or_else(|| "None".into());
+    let mut col = column![
+        text("Clip").size(16),
+        iced::widget::text_input("Name", &c.name).on_input(MixMsg::ClipName).on_submit(MixMsg::Released).padding(5).size(13),
+        text(&c.file).size(11).style(crate::theme::dim),
+        text(format!("At {:.2} s after the movement's start", c.at)).size(11).style(crate::theme::dim),
+        row![text("Gain").size(12).width(40), slider(MIN_DB..=12.0, c.gain_db, |v| MixMsg::ClipGain((v * 2.0).round() / 2.0)).step(0.5).on_release(MixMsg::Released), text(db_label(c.gain_db)).size(11).width(52)].spacing(6).align_y(Alignment::Center),
+        row![
+            button(text(if c.mute { "Muted" } else { "Mute" }).size(12)).padding([4, 10]).style(crate::theme::tool(c.mute)).on_press(MixMsg::ClipMute),
+            crate::panels::spacer(),
+            button(text("Remove").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::ClipRemove),
+        ]
+        .spacing(6),
+        text("Cue in the score").size(12).style(crate::theme::dim),
+        crate::panels::tip(pick_list(staves, Some(cue), MixMsg::ClipCue).text_size(12).padding([3, 6]).width(Length::Fill), "Show the clip's name where it starts, on this player's staff"),
+    ]
+    .spacing(6);
+    if c.cue.is_some() {
+        col = col.push(button(text(if c.cue_line { "Line to its end: on" } else { "Line to its end: off" }).size(12)).padding([4, 10]).style(crate::theme::tool(c.cue_line)).on_press(MixMsg::ClipCueLine));
+    }
+    col.into()
+}
+
+/// A track's sends: a button per bus (on: it sends there), and for each
+/// send its level and whether it is taken before the fader.
+fn sends_block<'a>(p: &'a Project, t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
+    let track = t.id;
+    let mut sends = column![text("Sends").size(10).style(crate::theme::faint)].spacing(2);
+    for b in &p.buses {
+        let at = t.sends.iter().position(|s| s.bus == b.id);
+        sends = sends.push(crate::panels::tip(button(text(format!("→ {}", b.name)).size(11)).width(Length::Fill).padding([2, 5]).style(crate::theme::tool(at.is_some())).on_press(MixMsg::ToggleSend(t.id, b.id)), "A send to this bus (click again to remove it)"));
+        if let Some(i) = at {
+            let s = &t.sends[i];
+            sends = sends.push(row![slider(MIN_DB..=6.0, s.gain_db, move |v| MixMsg::SendLevel(track, i, (v * 2.0).round() / 2.0)).step(0.5).on_release(MixMsg::Released), text(db_label(s.gain_db)).size(10).width(40)].spacing(4).align_y(Alignment::Center));
+            sends = sends.push(crate::panels::tip(button(text(if s.pre { "Pre-fader" } else { "Post-fader" }).size(10)).padding([1, 5]).style(crate::theme::tool(s.pre)).on_press(MixMsg::SendPre(track, i)), "Pre-fader: the send ignores the track's fader and pan (a monitor mix)"));
+        }
+    }
+    sends.into()
+}
+
+/// A track's colour as a thin bar over its strip.
+fn color_bar<'a>(p: &'a Project, t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
+    let c = track_color(p, t.id);
+    container(Space::new().height(4).width(Length::Fill)).style(move |_| container::Style { background: Some(c.into()), ..Default::default() }).into()
+}
+
+/// The colour a track is drawn in: its own, else by its place.
+pub fn track_color(p: &Project, track: Id) -> iced::Color {
+    let i = p.tracks.iter().position(|t| t.id == track).unwrap_or(0);
+    match p.track(track).and_then(|t| t.color) {
+        Some(c) => color_of(c),
+        None => color_of(TRACK_COLORS[i % 6]),
+    }
+}
+
+/// Colours a track can take (0xRRGGBB).
+pub const TRACK_COLORS: [u32; 8] = [0x4078d9, 0xd9733a, 0x4da666, 0xa659bf, 0xcc4d66, 0x33a6b3, 0xc9a227, 0x7a7f8a];
+
+pub fn color_of(rgb: u32) -> iced::Color {
+    iced::Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+}
+
+/// A track's colour swatches and folder, in the panel beside the strips.
+fn track_look<'a>(t: &'a corinzia_model::Track) -> Element<'a, MixMsg> {
+    let track = t.id;
+    let swatch = |c: Option<u32>| {
+        let on = t.color == c;
+        let fill = c.map(color_of);
+        button(text(if c.is_none() { "Auto" } else { "" }).size(10))
+            .width(if c.is_none() { Length::Shrink } else { Length::Fixed(20.0) })
+            .height(20)
+            .padding([2, 4])
+            .style(move |th: &iced::Theme, st| {
+                let mut s = crate::theme::tool(on)(th, st);
+                if let Some(f) = fill {
+                    s.background = Some(f.into());
+                }
+                if on {
+                    s.border = iced::Border { color: crate::theme::palette().accent, width: 2.0, radius: 3.0.into() };
+                }
+                s
+            })
+            .on_press(MixMsg::Color(track, c))
+    };
+    let mut swatches = row![swatch(None)].spacing(4).align_y(Alignment::Center);
+    for c in TRACK_COLORS {
+        swatches = swatches.push(swatch(Some(c)));
+    }
+    column![
+        text("Colour").size(12).style(crate::theme::dim),
+        swatches,
+        text("Folder").size(12).style(crate::theme::dim),
+        crate::panels::tip(iced::widget::text_input("None", &t.folder).on_input(move |f| MixMsg::Folder(track, f)).on_submit(MixMsg::Released).padding(5).size(13), "Tracks in one folder are shown together; the arrange view can fold them away"),
+    ]
+    .spacing(4)
+    .into()
+}
+
+/// A bus's or the master's "Automation lane" picker.
+fn auto_picker<'a>(p: &'a Project, play: &'a Playback, id: Id, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
+    let options = auto_options(p, play, id);
+    let current = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
+    column![
+        text("Automation lane").size(10).style(crate::theme::faint),
+        crate::panels::tip(pick_list(options.into_iter().map(|o| o.0).collect::<Vec<_>>(), current, move |l| MixMsg::AutoShow(id, l)).placeholder("Show…").text_size(11).padding([2, 5]).width(Length::Fill), "Show a curve on its lane in the arrange view (under Buses)"),
+    ]
+    .spacing(2)
+    .into()
+}
+
+fn bus_strip<'a>(p: &'a Project, play: &'a Playback, b: &'a corinzia_model::Bus, selected: bool, fx: Option<Id>, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
+    let bus = b.id;
     let body = column![
         row![
             button(text(&b.name).size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(b.id)),
@@ -301,18 +496,32 @@ fn bus_strip<'a>(p: &'a Project, b: &'a corinzia_model::Bus, selected: bool, fx:
         .align_y(Alignment::Center),
         text("Bus").size(11).style(crate::theme::dim),
         inserts(p, b.id, &b.inserts, fx),
-        fader_block(b.id, b.gain_db, Some(b.pan), Some(b.mute), None),
+        column![
+            text("Output").size(10).style(crate::theme::faint),
+            pick_list(
+                std::iter::once("Master".to_string()).chain(p.buses.iter().filter(|x| x.id != b.id).map(|x| x.name.clone())).collect::<Vec<_>>(),
+                Some(b.output.and_then(|o| p.bus(o)).map(|x| x.name.clone()).unwrap_or_else(|| "Master".into())),
+                move |o| MixMsg::BusOutput(bus, o)
+            )
+            .text_size(11)
+            .padding([2, 5])
+            .width(Length::Fill)
+        ]
+        .spacing(2),
+        auto_picker(p, play, b.id, shown),
+        fader_block(b.id, b.gain_db, Some(b.pan), Some(b.mute), Some(b.solo)),
     ]
     .spacing(6)
     .width(130);
     container(body).padding(10).style(crate::theme::strip(selected)).into()
 }
 
-fn master_strip<'a>(p: &'a Project, selected: bool, fx: Option<Id>) -> Element<'a, MixMsg> {
+fn master_strip<'a>(p: &'a Project, play: &'a Playback, selected: bool, fx: Option<Id>, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
     let body = column![
         button(text("Master").size(14)).padding([0, 4]).style(crate::theme::flat(selected)).on_press(MixMsg::Select(MASTER)),
         text("Everything").size(11).style(crate::theme::dim),
         inserts(p, MASTER, &p.master.inserts, fx),
+        auto_picker(p, play, MASTER, shown),
         fader_block(MASTER, p.master.gain_db, None, None, None),
     ]
     .spacing(6)
@@ -362,14 +571,18 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
     col.into()
 }
 
-pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
-    let mut strips = row(p.tracks.iter().map(|t| strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()))).spacing(8).padding(12);
+pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>) -> Element<'a, MixMsg> {
+    let mut strips = row(p.tracks.iter().map(|t| if t.audio { audio_strip(p, t, selected == Some(t.id), fx) } else { strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()) })).spacing(8).padding(12);
     for b in &p.buses {
-        strips = strips.push(bus_strip(p, b, selected == Some(b.id), fx));
+        strips = strips.push(bus_strip(p, play, b, selected == Some(b.id), fx, shown.get(&b.id).copied()));
     }
+    strips = strips.push(crate::panels::tip(button(text("+ Audio track").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddAudioTrack), "A track for sound files (tape, electronics, a click), placed in time in the arrange view"));
     strips = strips.push(crate::panels::tip(button(text("+ Bus").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddBus), "A bus: send tracks to it for shared effects (a reverb)"));
-    strips = strips.push(master_strip(p, selected == Some(MASTER), fx));
+    strips = strips.push(master_strip(p, play, selected == Some(MASTER), fx, shown.get(&MASTER).copied()));
     let mut browser = column![].spacing(6).padding(12).width(300);
+    if let Some(c) = clip.and_then(|(t, c)| p.track(t)?.clips.iter().find(|x| x.id == c)) {
+        browser = browser.push(clip_panel(p, c)).push(Space::new().height(12));
+    }
     if let Some(node) = fx.filter(|n| p.node(*n).is_some()) {
         browser = browser.push(effect_panel(p, play, node, &ps)).push(Space::new().height(12));
     }
@@ -387,8 +600,18 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     match selected {
         None => browser = browser.push(text("Instruments and effects").size(16)).push(text("Select a strip to choose its instrument or add effects.").size(13).style(crate::theme::dim)),
         Some(owner) if p.track(owner).is_none() => browser = effect_list(browser, owner),
+        Some(id) if p.track(id).is_some_and(|t| t.audio) => {
+            let t = p.track(id).unwrap();
+            browser = browser
+                .push(text(format!("{}: audio", t.name)).size(16))
+                .push(button(text("Add a sound file…").size(13)).padding([5, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddAudio(id)))
+                .push(text("It goes at the caret. Drag clips along the arrange view to move them (Shift: off the beat), their edges to trim, their top corners to fade; Ctrl+drag copies; Delete removes.").size(11).style(crate::theme::dim))
+                .push(track_look(t));
+            browser = effect_list(browser.push(Space::new().height(8)), id);
+        }
         Some(id) => {
             let t = p.track(id).unwrap();
+            browser = browser.push(track_look(t)).push(Space::new().height(8));
             browser = browser.push(text("Instruments").size(16));
             let current = play.plugin_name(t.id);
             let open = play.pool.editor_is_open(t.id);
@@ -436,7 +659,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     for e in &play.scan_errors {
         browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
-    for e in &play.pool.errors {
+    for e in play.pool.errors.iter().chain(&play.clip_errors) {
         browser = browser.push(text(e).size(11).style(crate::theme::danger));
     }
     row![

@@ -145,6 +145,10 @@ pub fn load(path: &Path) -> Result<Project> {
                 program: None,
                 bank: None,
                 techniques: vec![],
+                color: None,
+                folder: String::new(),
+                audio: false,
+                clips: vec![],
             })
         })?;
         for t in rows {
@@ -219,7 +223,11 @@ pub fn load(path: &Path) -> Result<Project> {
             t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
             t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
             t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
-            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0) })).collect();
+            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0), pre: s["pre"].as_bool().unwrap_or(false) })).collect();
+            t.audio = tv["audio"].as_bool().unwrap_or(false);
+            t.color = tv["color"].as_u64().map(|c| c as u32 & 0xff_ffff);
+            t.folder = tv["folder"].as_str().unwrap_or("").to_string();
+            t.clips = tv["clips"].as_array().into_iter().flatten().filter_map(clip_from).collect();
         }
         p.buses = m["buses"]
             .as_array()
@@ -233,6 +241,8 @@ pub fn load(path: &Path) -> Result<Project> {
                     gain_db: b["db"].as_f64().unwrap_or(0.0),
                     pan: b["pan"].as_f64().unwrap_or(0.0),
                     mute: b["mute"].as_bool().unwrap_or(false),
+                    solo: b["solo"].as_bool().unwrap_or(false),
+                    output: b["out"].as_u64(),
                 })
             })
             .collect();
@@ -354,9 +364,12 @@ pub fn load(path: &Path) -> Result<Project> {
                 let target = match a["t"].as_str() {
                     Some("gain") => AutoTarget::Gain(id("track")),
                     Some("pan") => AutoTarget::Pan(id("track")),
+                    Some("send") => AutoTarget::Send { track: id("track"), bus: id("bus") },
+                    Some("cc") => AutoTarget::Cc { track: id("track"), cc: id("cc").min(127) as u8 },
+                    Some("bend") => AutoTarget::PitchBend(id("track")),
                     _ => AutoTarget::Param { node: id("node"), param: id("param") as u32 },
                 };
-                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()? })).collect();
+                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()?, hold: p[3].as_bool().unwrap_or(false) })).collect();
                 m.automation.push(AutoLane { id: id("id"), target, points });
             }
             for c in n["cross"].as_array().into_iter().flatten() {
@@ -561,6 +574,30 @@ fn layout_json(l: &Layout) -> Value {
 }
 
 /// Writes the whole project. Rows that no longer exist are removed.
+fn clip_from(c: &Value) -> Option<AudioClip> {
+    let f = |k: &str| c[k].as_f64().unwrap_or(0.0);
+    Some(AudioClip {
+        id: c["id"].as_u64()?,
+        name: c["name"].as_str().unwrap_or("").to_string(),
+        file: c["file"].as_str()?.to_string(),
+        movement: c["movement"].as_u64()?,
+        at: f("at"),
+        offset: f("offset"),
+        length: f("length"),
+        fade_in: f("fade_in"),
+        fade_out: f("fade_out"),
+        gain_db: f("db"),
+        mute: c["mute"].as_bool().unwrap_or(false),
+        cue: c["cue"].as_u64(),
+        cue_line: c["cue_line"].as_bool().unwrap_or(false),
+    })
+}
+
+fn clip_json(c: &AudioClip) -> Value {
+    json!({"id": c.id, "name": c.name, "file": c.file, "movement": c.movement, "at": c.at, "offset": c.offset, "length": c.length,
+           "fade_in": c.fade_in, "fade_out": c.fade_out, "db": c.gain_db, "mute": c.mute, "cue": c.cue, "cue_line": c.cue_line})
+}
+
 pub fn save(project: &Project, path: &Path) -> Result<()> {
     let mut db = open_db(path)?;
     let tx = db.transaction()?;
@@ -578,13 +615,13 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
+        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio || t.color.is_some() || !t.folder.is_empty()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
             SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
             SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
             SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
             SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
-        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank}))).collect::<serde_json::Map<String, Value>>(),
-        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute})).collect::<Vec<_>>(),
+        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db, "pre": s.pre})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank, "color": t.color, "folder": t.folder, "audio": t.audio, "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
+        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute, "solo": b.solo, "out": b.output})).collect::<Vec<_>>(),
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
@@ -713,11 +750,14 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
             "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
             "automation": m.automation.iter().map(|a| {
-                let points: Vec<Value> = a.points.iter().map(|p| json!([p.at.num, p.at.den, p.value])).collect();
+                let points: Vec<Value> = a.points.iter().map(|p| if p.hold { json!([p.at.num, p.at.den, p.value, true]) } else { json!([p.at.num, p.at.den, p.value]) }).collect();
                 match a.target {
                     AutoTarget::Gain(t) => json!({"id": a.id, "t": "gain", "track": t, "points": points}),
                     AutoTarget::Pan(t) => json!({"id": a.id, "t": "pan", "track": t, "points": points}),
                     AutoTarget::Param { node, param } => json!({"id": a.id, "t": "param", "node": node, "param": param, "points": points}),
+                    AutoTarget::Send { track, bus } => json!({"id": a.id, "t": "send", "track": track, "bus": bus, "points": points}),
+                    AutoTarget::Cc { track, cc } => json!({"id": a.id, "t": "cc", "track": track, "cc": cc, "points": points}),
+                    AutoTarget::PitchBend(t) => json!({"id": a.id, "t": "bend", "track": t, "points": points}),
                 }
             }).collect::<Vec<_>>(),
             "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),

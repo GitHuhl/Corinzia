@@ -348,19 +348,29 @@ pub struct Movement {
     pub automation: Vec<AutoLane>,
 }
 
+/// The master channel's id where a track's or bus's would be (automation).
+pub const MASTER: Id = Id::MAX;
+
 /// What an automation lane drives.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AutoTarget {
-    /// A track's fader, in dB.
+    /// A track's, a bus's or the master's (`MASTER`) fader, in dB.
     Gain(Id),
-    /// A track's pan, -1..1.
+    /// A track's or a bus's pan, -1..1.
     Pan(Id),
     /// A plugin parameter (an audio node's), in the plugin's units.
     Param { node: Id, param: u32 },
+    /// A track's send to a bus, in dB.
+    Send { track: Id, bus: Id },
+    /// A MIDI controller to a track's instrument, 0..127.
+    Cc { track: Id, cc: u8 },
+    /// Pitch bend to a track's instrument, -1..1 (the instrument's range).
+    PitchBend(Id),
 }
 
-/// A curve: values at positions, straight lines between them; before the
-/// first point its value holds, and after the last.
+/// A curve: values at positions, straight lines between them (or a step,
+/// after a point that holds); before the first point its value holds, and
+/// after the last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AutoLane {
     pub id: Id,
@@ -372,6 +382,8 @@ pub struct AutoLane {
 pub struct AutoPoint {
     pub at: Frac,
     pub value: f64,
+    /// The value holds until the next point, which it then jumps to.
+    pub hold: bool,
 }
 
 impl AutoLane {
@@ -384,6 +396,9 @@ impl AutoLane {
         }
         for w in self.points.windows(2) {
             let (a, b) = (q(w[0].at), q(w[1].at));
+            if at < b && w[0].hold {
+                return Some(w[0].value);
+            }
             if at <= b {
                 let k = if b > a { (at - a) / (b - a) } else { 1.0 };
                 return Some(w[0].value + (w[1].value - w[0].value) * k);
@@ -637,6 +652,48 @@ pub struct Track {
     pub bank: Option<u16>,
     /// Its expression map: what each playing technique does to the sound.
     pub techniques: Vec<TechniqueSwitch>,
+    /// Its colour in the arrange view and mixer (0xRRGGBB); none: by position.
+    pub color: Option<u32>,
+    /// The folder it is shown in (tracks of one folder together, which the
+    /// arrange view can fold away); empty: none.
+    pub folder: String,
+    /// An audio track: it plays `clips` (recorded or prepared sound) and
+    /// has no instrument; no instrument of the score points at it.
+    pub audio: bool,
+    pub clips: Vec<AudioClip>,
+}
+
+/// A sound file placed on an audio track. Its place is fixed time: seconds
+/// after the start of its movement as performed (tempo changes and repeats
+/// do not move it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioClip {
+    pub id: Id,
+    pub name: String,
+    /// The file, as chosen (absolute, or relative to the project file).
+    pub file: String,
+    pub movement: Id,
+    /// Seconds from the movement's start to the clip's start.
+    pub at: f64,
+    /// Seconds into the file where it starts playing (trimmed off the front).
+    pub offset: f64,
+    /// Seconds played (the file's length less the trims; 0: to the file's end).
+    pub length: f64,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub gain_db: f64,
+    pub mute: bool,
+    /// The player on whose staff its cue ("Name ▸") is engraved; none: not
+    /// shown in the score.
+    pub cue: Option<Id>,
+    /// The cue continues as a line to the clip's end.
+    pub cue_line: bool,
+}
+
+impl AudioClip {
+    pub fn new(id: Id, name: &str, file: &str, movement: Id, at: f64) -> AudioClip {
+        AudioClip { id, name: name.into(), file: file.into(), movement, at, offset: 0.0, length: 0.0, fade_in: 0.0, fade_out: 0.0, gain_db: 0.0, mute: false, cue: None, cue_line: false }
+    }
 }
 
 /// One line of an expression map: a technique ("pizz.", "staccato"…) and
@@ -663,6 +720,8 @@ pub enum SwitchAction {
 pub struct SendLevel {
     pub bus: Id,
     pub gain_db: f64,
+    /// Taken before the track's fader and pan (a monitor mix), else after.
+    pub pre: bool,
 }
 
 /// An effects bus (a reverb return): fed by tracks' sends or outputs, its
@@ -675,6 +734,9 @@ pub struct Bus {
     pub gain_db: f64,
     pub pan: f64,
     pub mute: bool,
+    pub solo: bool,
+    /// Another bus it goes into (a section into a group); none: the master.
+    pub output: Option<Id>,
 }
 
 /// The master channel: every track and bus ends here.

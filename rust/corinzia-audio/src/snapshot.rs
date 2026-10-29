@@ -5,6 +5,7 @@
 //! the node (track) that sounds them.
 
 use crate::host::Plugin;
+use crate::media::AudioData;
 use corinzia_model::{AutoTarget, Id, Project};
 use corinzia_perform::tempo::{MeterPoint, TempoMap};
 use corinzia_perform::Span;
@@ -24,6 +25,14 @@ pub enum Kind {
     /// A plugin parameter, value in `velocity`: the node's instrument
     /// (`fx` = `u32::MAX`) or an effect (an index into `Snapshot::effects`).
     Param { fx: u32, id: u32 },
+    /// A bus's fader or pan (`node` is the bus's index), the master's fader.
+    BusGain,
+    BusPan,
+    MasterGain,
+    /// The level (linear) of the node's send `index`.
+    Send { index: u32 },
+    /// Pitch bend to the node's instrument, -1..1 in `velocity`.
+    PitchBend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,26 +89,67 @@ impl Section {
     }
 }
 
-/// A track's sound: its plugin and mixer settings.
+/// A clip of an audio track on the timeline: `len` frames of `data` from
+/// frame `offset`, starting at timeline sample `start`.
+#[derive(Clone, Debug)]
+pub struct ScheduledClip {
+    pub start: i64,
+    pub offset: usize,
+    pub len: usize,
+    pub fade_in: usize,
+    pub fade_out: usize,
+    pub gain: f32,
+    pub data: Arc<AudioData>,
+}
+
+impl ScheduledClip {
+    pub fn end(&self) -> i64 {
+        self.start + self.len as i64
+    }
+    /// The gain at frame `k` of the clip, fades included.
+    pub fn gain_at(&self, k: usize) -> f32 {
+        let mut g = self.gain;
+        if k < self.fade_in {
+            g *= k as f32 / self.fade_in as f32;
+        }
+        let left = self.len - k;
+        if left < self.fade_out {
+            g *= left as f32 / self.fade_out as f32;
+        }
+        g
+    }
+}
+
+/// A track's sound: its plugin (an instrument track) or its clips (an
+/// audio track), and mixer settings.
 pub struct Node {
     pub track: Id,
-    pub plugin: Arc<Plugin>,
+    pub plugin: Option<Arc<Plugin>>,
+    /// An audio track's clips, in time order.
+    pub clips: Vec<ScheduledClip>,
     pub gain: f32, // linear
     pub pan: f32,  // -1..1
+    /// Sound leaves the track (not muted, not silenced by a solo).
     pub audible: bool,
+    /// Its output is heard (false while only its sends feed a soloed bus).
+    pub direct: bool,
     /// Effects after the instrument, in order.
     pub inserts: Vec<Arc<Plugin>>,
     /// The bus it goes to (an index into `Snapshot::buses`), else the master.
     pub out: Option<u32>,
-    /// Post-fader sends: (bus index, linear gain).
-    pub sends: Vec<(u32, f32)>,
+    /// Sends: (bus index, linear gain, before the fader).
+    pub sends: Vec<(u32, f32, bool)>,
     /// The MIDI program change (channel, program, bank) sent when playback starts.
     pub program: Option<(u8, u8, Option<u16>)>,
 }
 
-/// An effects bus: what tracks send it, through its effects and fader, to the master.
+/// A bus: what tracks send or route to it, through its effects and fader,
+/// to another bus or the master. In the plan, every bus comes before the
+/// bus it goes into.
 pub struct BusStrip {
     pub id: Id,
+    /// The bus it goes into (a later index), else the master.
+    pub out: Option<u32>,
     pub inserts: Vec<Arc<Plugin>>,
     pub gain: f32,
     pub pan: f32,
@@ -117,17 +167,22 @@ pub struct Snapshot {
     pub master_gain: f32,
     /// Every effect of the plan (automation names them by index).
     pub effects: Vec<Arc<Plugin>>,
+    /// Problems with clips' files (missing, unreadable).
+    pub clip_errors: Vec<String>,
 }
 
 impl Snapshot {
+    /// Where playback ends: the last movement's end, or the end of the
+    /// last clip sounding after it.
     pub fn end(&self) -> i64 {
-        self.sections.last().map(|s| s.end).unwrap_or(0)
+        let clips = self.nodes.iter().flat_map(|n| n.clips.iter().map(|c| c.end())).max().unwrap_or(0);
+        self.sections.last().map(|s| s.end).unwrap_or(0).max(clips)
     }
     /// Every plugin the plan runs: instruments, then effects.
     pub fn plugins(&self) -> impl Iterator<Item = &Arc<Plugin>> {
         self.nodes
             .iter()
-            .flat_map(|n| std::iter::once(&n.plugin).chain(n.inserts.iter()))
+            .flat_map(|n| n.plugin.iter().chain(n.inserts.iter()))
             .chain(self.buses.iter().flat_map(|b| b.inserts.iter()))
             .chain(self.master_inserts.iter())
     }
@@ -177,9 +232,64 @@ pub fn db_to_gain(db: f64) -> f32 {
     }
 }
 
+/// A bus and the buses it goes into, in order (a loop is cut).
+pub fn bus_chain(project: &Project, bus: Id) -> Vec<Id> {
+    let mut chain = vec![];
+    let mut at = Some(bus);
+    while let Some(b) = at.and_then(|b| project.bus(b)) {
+        if chain.contains(&b.id) {
+            break;
+        }
+        chain.push(b.id);
+        at = b.output;
+    }
+    chain
+}
+
+/// What solo leaves heard. Soloing a track keeps the buses it reaches
+/// (through its output or sends) heard; soloing a bus keeps what feeds it
+/// and the buses after it heard. A track that only reaches a soloed bus
+/// through a send is heard there and not on its own output.
+/// (track, audible, direct) per track and (bus, heard) per bus.
+type Heard = (Vec<(Id, bool, bool)>, Vec<(Id, bool)>);
+
+fn solo(project: &Project) -> Heard {
+    let soloed: Vec<Id> = project.buses.iter().filter(|b| b.solo).map(|b| b.id).collect();
+    let any = !soloed.is_empty() || project.tracks.iter().any(|t| t.solo);
+    let out_chain = |t: &corinzia_model::Track| t.output_bus.map(|b| bus_chain(project, b)).unwrap_or_default();
+    let send_chains = |t: &corinzia_model::Track| t.sends.iter().flat_map(|s| bus_chain(project, s.bus)).collect::<Vec<_>>();
+    let meets = |chain: &[Id]| chain.iter().any(|b| soloed.contains(b));
+    let tracks = project
+        .tracks
+        .iter()
+        .map(|t| {
+            if !any {
+                return (t.id, !t.mute, true);
+            }
+            let direct = t.solo || meets(&out_chain(t));
+            let via_send = meets(&send_chains(t));
+            (t.id, !t.mute && (direct || via_send), direct)
+        })
+        .collect();
+    let buses = project
+        .buses
+        .iter()
+        .map(|b| {
+            if !any {
+                return (b.id, !b.mute);
+            }
+            let fed_by_solo = project.tracks.iter().filter(|t| t.solo).any(|t| out_chain(t).contains(&b.id) || send_chains(t).contains(&b.id))
+                || soloed.iter().any(|s| bus_chain(project, *s).contains(&b.id));
+            (b.id, !b.mute && (meets(&bus_chain(project, b.id)) || fed_by_solo))
+        })
+        .collect();
+    (tracks, buses)
+}
+
 /// Buses' levels: (bus, linear gain, pan, audible).
 pub fn bus_mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
-    project.buses.iter().map(|b| (b.id, db_to_gain(b.gain_db), b.pan.clamp(-1.0, 1.0) as f32, !b.mute)).collect()
+    let (_, heard) = solo(project);
+    project.buses.iter().zip(heard).map(|(b, (_, h))| (b.id, db_to_gain(b.gain_db), b.pan.clamp(-1.0, 1.0) as f32, h)).collect()
 }
 
 /// Sends' levels by track: (track, send index, linear gain).
@@ -193,10 +303,10 @@ pub fn routing(project: &Project) -> String {
     let fx = |ids: &[Id]| ids.iter().map(|n| format!("{n}{}", if project.node(*n).is_some_and(|x| x.bypassed) { "b" } else { "" })).collect::<Vec<_>>().join(",");
     let mut s = String::new();
     for t in &project.tracks {
-        s += &format!("t{}[{}]>{:?}{:?}p{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| x.bus).collect::<Vec<_>>(), t.program, t.bank);
+        s += &format!("t{}[{}]>{:?}{:?}p{:?}{:?};", t.id, fx(&t.inserts), t.output_bus, t.sends.iter().map(|x| (x.bus, x.pre)).collect::<Vec<_>>(), t.program, t.bank);
     }
     for b in &project.buses {
-        s += &format!("b{}[{}];", b.id, fx(&b.inserts));
+        s += &format!("b{}[{}]>{:?};", b.id, fx(&b.inserts), b.output);
     }
     // Automation and dynamics controllers are in the plan too.
     use std::hash::{Hash, Hasher};
@@ -219,19 +329,27 @@ pub enum Want {
 
 /// Builds the plan with instruments and effects from the pool.
 pub fn build_from_pool(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], pool: &mut crate::pool::PluginPool) -> Snapshot {
-    build_with(project, sample_rate, generation, movements, &mut |w| match w {
+    let used: Vec<String> = project.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.file.clone())).collect();
+    // The media leaves the pool while the plugins are fetched from it.
+    let mut media = std::mem::replace(&mut pool.media, crate::media::Media::new(sample_rate));
+    media.retain(&used);
+    let snap = build_with(project, sample_rate, generation, movements, &mut |w| match w {
         Want::Instrument(t) => pool.plugin_for(project, t),
         Want::Effect(n) => pool.effect_for(project, n),
-    })
+    }, &mut |file| media.get(file));
+    pool.media = media;
+    snap
 }
 
-pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool)> {
-    let any_solo = project.tracks.iter().any(|t| t.solo);
+/// Tracks' levels: (track, linear gain, pan, audible, direct) (see `solo`).
+pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool, bool)> {
+    let (heard, _) = solo(project);
     project
         .tracks
         .iter()
+        .zip(heard)
         // The fader's bottom is silence (−∞ dB).
-        .map(|t| (t.id, if t.gain_db <= MIN_DB { 0.0 } else { 10f32.powf(t.gain_db as f32 / 20.0) }, t.pan.clamp(-1.0, 1.0) as f32, !t.mute && (!any_solo || t.solo)))
+        .map(|(t, (_, audible, direct))| (t.id, if t.gain_db <= MIN_DB { 0.0 } else { 10f32.powf(t.gain_db as f32 / 20.0) }, t.pan.clamp(-1.0, 1.0) as f32, audible, direct))
         .collect()
 }
 
@@ -240,10 +358,10 @@ pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[
     build_with(project, sample_rate, generation, movements, &mut |w| match w {
         Want::Instrument(t) => plugins(t),
         Want::Effect(_) => None,
-    })
+    }, &mut |_| Err("no media".into()))
 }
 
-fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>) -> Snapshot {
+fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>, sound: &mut dyn FnMut(&str) -> Result<Arc<AudioData>, String>) -> Snapshot {
     const GAP_SECONDS: f64 = 2.0;
     let mut fx_nodes: Vec<(Id, Arc<Plugin>)> = Vec::new();
     let mut effects = |ids: &[Id], get: &mut dyn FnMut(Want) -> Option<Arc<Plugin>>| -> Vec<Arc<Plugin>> {
@@ -256,21 +374,31 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             })
             .collect()
     };
-    let buses: Vec<BusStrip> = bus_mix(project)
+    // Buses into others come before them: deepest chains first.
+    let mut levels = bus_mix(project);
+    levels.sort_by_key(|l| std::cmp::Reverse(bus_chain(project, l.0).len()));
+    let order: Vec<Id> = levels.iter().map(|l| l.0).collect();
+    let buses: Vec<BusStrip> = levels
         .into_iter()
-        .map(|(id, gain, pan, audible)| BusStrip { id, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible })
+        .enumerate()
+        .map(|(i, (id, gain, pan, audible))| {
+            let out = project.bus(id).and_then(|b| b.output).and_then(|o| order.iter().position(|x| *x == o)).filter(|&o| o > i).map(|o| o as u32);
+            BusStrip { id, out, inserts: effects(&project.bus(id).map(|b| b.inserts.clone()).unwrap_or_default(), get), gain, pan, audible }
+        })
         .collect();
     let bus_index = |id: Id| buses.iter().position(|b| b.id == id).map(|i| i as u32);
     let mut nodes: Vec<Node> = Vec::new();
-    for (track, gain, pan, audible) in mix(project) {
-        if let Some(plugin) = get(Want::Instrument(track)) {
+    for (track, gain, pan, audible, direct) in mix(project) {
+        let audio = project.track(track).is_some_and(|t| t.audio);
+        let plugin = if audio { None } else { get(Want::Instrument(track)) };
+        if audio || plugin.is_some() {
             let t = project.track(track);
             let inserts = effects(&t.map(|t| t.inserts.clone()).unwrap_or_default(), get);
             let out = t.and_then(|t| t.output_bus).and_then(bus_index);
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
-            let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db))).collect()).unwrap_or_default();
+            let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db), s.pre)).collect()).unwrap_or_default();
             let program = t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank)));
-            nodes.push(Node { track, plugin, gain, pan, audible, inserts, out, sends, program });
+            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, inserts, out, sends, program });
         }
     }
     let master_inserts = effects(&project.master.inserts, get);
@@ -350,9 +478,26 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
         // Automation: through the playback order (repeats too), every
         // sixteenth of a quarter where the value changes.
         for lane in &m.automation {
+            let channel_of = |t: Id| project.track(t).map(|t| t.midi_channel as i16 & 15).unwrap_or(0);
+            let mut channel = 0;
             let (node, kind, scale): (Option<u32>, Kind, fn(f64) -> f32) = match lane.target {
+                AutoTarget::Gain(corinzia_model::MASTER) => (Some(0), Kind::MasterGain, |db| db_to_gain(db)),
+                AutoTarget::Gain(t) if node_of(t).is_none() => (bus_index(t), Kind::BusGain, |db| db_to_gain(db)),
+                AutoTarget::Pan(t) if node_of(t).is_none() => (bus_index(t), Kind::BusPan, |p| p.clamp(-1.0, 1.0) as f32),
                 AutoTarget::Gain(t) => (node_of(t), Kind::Gain, |db| db_to_gain(db)),
                 AutoTarget::Pan(t) => (node_of(t), Kind::Pan, |p| p.clamp(-1.0, 1.0) as f32),
+                AutoTarget::Send { track, bus } => match project.track(track).and_then(|t| t.sends.iter().position(|s| s.bus == bus)) {
+                    Some(i) => (node_of(track), Kind::Send { index: i as u32 }, |db| db_to_gain(db)),
+                    None => continue,
+                },
+                AutoTarget::Cc { track, cc } => {
+                    channel = channel_of(track);
+                    (node_of(track), Kind::Cc(cc), |v| (v.clamp(0.0, 127.0) / 127.0) as f32)
+                }
+                AutoTarget::PitchBend(track) => {
+                    channel = channel_of(track);
+                    (node_of(track), Kind::PitchBend, |v| v.clamp(-1.0, 1.0) as f32)
+                }
                 AutoTarget::Param { node: n, param } => match fx_nodes.iter().position(|x| x.0 == n) {
                     Some(k) => (Some(0), Kind::Param { fx: k as u32, id: param }, |v| v as f32),
                     None => (project.tracks.iter().find(|t| t.instrument_node == Some(n)).and_then(|t| node_of(t.id)), Kind::Param { fx: u32::MAX, id: param }, |v| v as f32),
@@ -371,7 +516,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                     }
                     last = Some(v);
                     let at = start + (perf.tempo.seconds_at(sp.performed_q + dq) * sample_rate).round() as i64;
-                    notes.push(ScheduledNote { kind, at, node, note_id: -1, port: 0, channel: 0, key: 0, on: false, velocity: v, element: 0 });
+                    notes.push(ScheduledNote { kind, at, node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: v, element: 0 });
                 }
             }
         }
@@ -379,8 +524,34 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
         sections.push(Section { movement: m.id, start, end, sample_rate, tempo: perf.tempo.clone(), meters: perf.meter_points.clone(), spans: perf.spans.clone() });
         start = end + (GAP_SECONDS * sample_rate) as i64;
     }
+    // Audio tracks' clips, at fixed times after their movements' starts.
+    let mut clip_errors = Vec::new();
+    for node in nodes.iter_mut().filter(|n| n.plugin.is_none()) {
+        let Some(t) = project.track(node.track) else { continue };
+        for c in t.clips.iter().filter(|c| !c.mute) {
+            let Some(sec) = sections.iter().find(|s| s.movement == c.movement) else { continue };
+            let data = match sound(&c.file) {
+                Ok(d) => d,
+                Err(e) => {
+                    if !clip_errors.contains(&e) {
+                        clip_errors.push(e);
+                    }
+                    continue;
+                }
+            };
+            let frames = |s: f64| (s.max(0.0) * sample_rate).round() as usize;
+            let offset = frames(c.offset).min(data.frames());
+            let len = (data.frames() - offset).min(if c.length > 0.0 { frames(c.length) } else { usize::MAX });
+            if len == 0 {
+                continue;
+            }
+            let (fade_in, fade_out) = (frames(c.fade_in).min(len), frames(c.fade_out).min(len));
+            node.clips.push(ScheduledClip { start: sec.start + frames(c.at) as i64, offset, len, fade_in, fade_out, gain: db_to_gain(c.gain_db), data });
+        }
+        node.clips.sort_by_key(|c| c.start);
+    }
     // Offs before ons at the same sample: a repeated key restarts cleanly.
     notes.sort_by_key(|n| (n.at, n.on));
     let effects = fx_nodes.into_iter().map(|x| x.1).collect();
-    Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain, effects }
+    Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain, effects, clip_errors }
 }

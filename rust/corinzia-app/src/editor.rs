@@ -38,7 +38,7 @@ struct Clip {
 const UNDO_LIMIT: usize = 500;
 
 /// The master strip's id in mixer messages and effect chains.
-pub const MASTER: Id = Id::MAX;
+pub const MASTER: Id = corinzia_model::MASTER;
 
 /// Rhythmic grid choices (whole-note fractions) and their labels.
 pub const GRIDS: [(i64, i64, &str); 5] = [(1, 4, "1/4"), (1, 8, "1/8"), (1, 16, "1/16"), (1, 32, "1/32"), (1, 12, "1/8T")];
@@ -230,7 +230,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     // A drum set starts with its map, and plays on the drum channel (10).
     let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
-    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![] });
+    p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
     p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
     inst
@@ -703,6 +703,77 @@ impl Editor {
         self.merge = None;
     }
 
+    /// Adds an audio track (after the other tracks); its id.
+    pub fn add_audio_track(&mut self, name: &str) -> Id {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        self.project.tracks.push(Track { id, name: name.into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: true, clips: vec![] });
+        self.commit_with(before, "Add audio track", true, None);
+        id
+    }
+
+    /// Removes an audio track with its clips (instrument tracks go with
+    /// their players).
+    pub fn remove_audio_track(&mut self, track: Id) {
+        if !self.project.track(track).is_some_and(|t| t.audio) {
+            return;
+        }
+        let before = self.snapshot();
+        self.project.tracks.retain(|t| t.id != track);
+        // Its effects go too.
+        let nodes: Vec<Id> = before.track(track).map(|t| t.inserts.clone()).unwrap_or_default();
+        self.project.nodes.retain(|n| !nodes.contains(&n.id));
+        for m in self.project.movements.iter_mut() {
+            m.automation.retain(|l| !matches!(l.target, AutoTarget::Gain(t) | AutoTarget::Pan(t) if t == track) && !matches!(l.target, AutoTarget::Param { node, .. } if nodes.contains(&node)));
+        }
+        self.commit_with(before, "Remove audio track", true, None);
+    }
+
+    /// Puts a clip on an audio track (a new id is given); its id.
+    pub fn add_clip(&mut self, track: Id, mut clip: AudioClip) -> Option<Id> {
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let t = self.project.tracks.iter_mut().find(|t| t.id == track && t.audio)?;
+        clip.id = id;
+        t.clips.push(clip);
+        self.commit_with(before, "Add audio", true, None);
+        Some(id)
+    }
+
+    pub fn clip(&self, track: Id, clip: Id) -> Option<&AudioClip> {
+        self.project.track(track)?.clips.iter().find(|c| c.id == clip)
+    }
+
+    /// Changes a clip. `live`: one step of a drag (merged into one undo
+    /// step; playback catches up at [`Editor::music_changed`]).
+    pub fn edit_clip(&mut self, track: Id, clip: Id, label: &str, live: bool, f: impl FnOnce(&mut AudioClip)) {
+        let before = self.snapshot();
+        let Some(c) = self.project.tracks.iter_mut().find(|t| t.id == track).and_then(|t| t.clips.iter_mut().find(|c| c.id == clip)) else { return };
+        f(c);
+        self.commit_with(before, label, !live, live.then_some(clip));
+    }
+
+    /// A copy of a clip, at the same place; its id.
+    pub fn duplicate_clip(&mut self, track: Id, clip: Id) -> Option<Id> {
+        let c = self.clip(track, clip)?.clone();
+        self.add_clip(track, c)
+    }
+
+    pub fn delete_clip(&mut self, track: Id, clip: Id) {
+        let before = self.snapshot();
+        let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };
+        let n = t.clips.len();
+        t.clips.retain(|c| c.id != clip);
+        if t.clips.len() != n {
+            self.commit_with(before, "Delete audio", true, None);
+        }
+    }
+
+    /// The playback plan is out of date (after live edits).
+    pub fn music_changed(&mut self) {
+        self.changed_with(true);
+    }
+
     pub fn set_track(&mut self, track: Id, label: &str, merge: bool, f: impl FnOnce(&mut Track)) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };
@@ -806,7 +877,7 @@ impl Editor {
         let before = self.snapshot();
         let id = self.project.allocate_id();
         let name = if name.is_empty() { format!("Bus {}", self.project.buses.len() + 1) } else { name.to_string() };
-        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false });
+        self.project.buses.push(Bus { id, name: name.clone(), inserts: vec![], gain_db: 0.0, pan: 0.0, mute: false, solo: false, output: None });
         self.status = format!("{name} added");
         self.commit_with(before, "Add bus", false, None);
         id
@@ -827,6 +898,13 @@ impl Editor {
             }
             t.sends.retain(|s| s.bus != bus);
         }
+        for x in self.project.buses.iter_mut().filter(|x| x.output == Some(bus)) {
+            x.output = None;
+        }
+        // Its automation, and its sends'.
+        for m in self.project.movements.iter_mut() {
+            m.automation.retain(|l| !matches!(l.target, AutoTarget::Gain(b) | AutoTarget::Pan(b) | AutoTarget::Send { bus: b, .. } if b == bus));
+        }
         self.status = format!("{} removed", b.name);
         self.commit_with(before, "Remove bus", false, None);
     }
@@ -842,9 +920,32 @@ impl Editor {
             if t.sends.iter().any(|s| s.bus == bus) {
                 t.sends.retain(|s| s.bus != bus);
             } else {
-                t.sends.push(SendLevel { bus, gain_db: -6.0 });
+                t.sends.push(SendLevel { bus, gain_db: -6.0, pre: false });
             }
         });
+    }
+
+    /// A send taken before the fader, or after it.
+    pub fn toggle_send_pre(&mut self, track: Id, index: usize) {
+        self.set_track(track, "Pre-fader send", false, |t| {
+            if let Some(s) = t.sends.get_mut(index) {
+                s.pre = !s.pre;
+            }
+        });
+    }
+
+    /// Where a bus goes: another bus, or the master (`None`). A bus cannot
+    /// go into itself or a bus that comes back to it.
+    pub fn set_bus_output(&mut self, bus: Id, to: Option<Id>) -> bool {
+        if let Some(to) = to {
+            if corinzia_audio::snapshot::bus_chain(&self.project, to).contains(&bus) {
+                let name = self.project.bus(bus).map(|b| b.name.clone()).unwrap_or_default();
+                self.status = format!("{name} cannot go into a bus that goes back into it");
+                return false;
+            }
+        }
+        self.set_bus(bus, "Bus output", false, |b| b.output = to);
+        true
     }
 
     pub fn set_send(&mut self, track: Id, index: usize, db: f64) {
@@ -887,7 +988,7 @@ impl Editor {
             }
         };
         let i = lane.points.partition_point(|p| p.at <= at);
-        lane.points.insert(i, AutoPoint { at, value });
+        lane.points.insert(i, AutoPoint { at, value, hold: false });
         self.commit_with(before, "Automation point", false, None);
         Some(i)
     }
@@ -907,6 +1008,14 @@ impl Editor {
         (p.at, p.value) = (at, value);
         let key = lane.id;
         self.commit_with(before, "Move automation", false, Some(key));
+    }
+
+    /// A point holds its value up to the next (a step), or slides to it.
+    pub fn toggle_auto_hold(&mut self, target: AutoTarget, index: usize) {
+        let before = self.snapshot();
+        let Some(p) = self.project.movements.get_mut(self.movement).and_then(|m| m.automation.iter_mut().find(|l| l.target == target)).and_then(|l| l.points.get_mut(index)) else { return };
+        p.hold = !p.hold;
+        self.commit_with(before, "Automation step", false, None);
     }
 
     /// Deletes a point; an empty lane goes.

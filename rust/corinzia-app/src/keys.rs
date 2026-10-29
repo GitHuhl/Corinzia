@@ -85,6 +85,8 @@ pub enum Action {
     ZoomIn,
     ZoomOut,
     PlayStop,
+    /// Cycle the selected passage, or turn the cycle on or off.
+    Cycle,
     /// Lyrics popover for a verse.
     Lyrics(u8),
     ShowScore,
@@ -160,6 +162,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     let c = ch?;
     if alt && !ctrl && (c == '[' || c == ']') {
         return Some(GridStep(if c == '[' { -1 } else { 1 }));
+    }
+    if alt && !ctrl && c == 'l' {
+        return Some(Cycle);
     }
     if ctrl {
         return Some(match (c, shift) {

@@ -106,12 +106,17 @@ parallel on every core, that outputs through PipeWire.
   down. Results are cached in `plugins.json` beside the preferences and
   reused until a bundle changes. Rescan plugins starts afresh.
 * **Effects, buses and the master** (Mix tab): each strip has an effect
-  chain (CLAP or VST3 effects, or the built-in Corinzia Gain and Corinzia
-  Reverb), and effects can be bypassed or reordered. Tracks can also go to
+  chain (CLAP or VST3 effects, or the built-in Corinzia Gain, Reverb, EQ
+  (low and high cut, shelves, two bells) and Limiter (look-ahead, never
+  over its ceiling)), and effects can be bypassed or reordered. Tracks can also go to
   a bus instead of the master, and send to buses post-fader. Buses have
   their own effects, fader, pan and mute; the master strip has effects and
   a fader. A selected effect shows its editor button and a slider per
-  parameter.
+  parameter. Sends can be pre-fader (a monitor mix); buses can go into
+  other buses (sections into a group), and solo works through them (a
+  soloed bus keeps what feeds it heard, a soloed track the buses it
+  reaches). Tracks have a colour and a folder; the arrange view shows a
+  folder's tracks together and folds them away with a click on its header.
 * **Presets and programs:** any plugin's sound (an instrument's or an
   effect's) can be saved as a named preset and loaded into any project.
   Presets live in `presets/<plugin>/` beside the preferences. VST3 plugins
@@ -119,10 +124,28 @@ parallel on every core, that outputs through PipeWire.
   optional bank) is sent to its instrument when playback starts, and is
   written into exported MIDI files. Corinzia Sine has three programs: soft
   organ, pure sine and bright.
+* **Cycle:** ⟲ in the toolbar (Alt+L) cycles the selected passage, or
+  turns the cycle on and off; Shift+drag along the arrange view's ruler
+  sets it. Playback goes round it, notes released at each turn.
+* **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" (or drop
+  a WAV, FLAC, MP3 or Ogg file on the window) puts a clip at the caret.
+  Clips sit at fixed times (seconds after their movement's start: tempo
+  changes do not move them). In the arrange view, drag a clip to move it
+  (snapping to the beat; Shift for none), its edges to trim, its top
+  corners to fade; Ctrl+drag copies, Delete removes. A selected clip has
+  its gain, mute and name beside the strips, and can be cued in the
+  score: its name with ▸ on a chosen player's staff where it starts
+  (through the tempo), optionally with a line to where it ends. Audio tracks have effects,
+  sends, an output and a fader like any track. Files are decoded and
+  resampled to the engine's rate once and kept in memory.
 * **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
   the track's lane in the arrange view: its gain, its pan, or any parameter
   of its instrument or effects. Click to add a point, drag to move it,
-  right-click to delete it; values run in straight lines between points.
+  right-click to delete it, Shift+click to make it hold until the next
+  point (a step); values otherwise run in straight lines between points.
+  Besides gain, pan and plugin parameters, a lane can drive a send's
+  level, any MIDI controller (CC0–127) or pitch bend; buses and the master
+  have lanes too (under "Buses", from their strips' "Automation lane").
   Automation follows repeats and is picked up when playback starts
   mid-piece. A track's "Dynamics" can also send the performed dynamics and
   hairpins as CC1 or CC11 for sample libraries, during playback and in

@@ -4,6 +4,7 @@
 //!   and the built-in Corinzia Sine);
 //! * [`gui`]: plugin editor windows and the run loop their GUIs need;
 //! * [`pool`]: plugin instances per track, on the main thread;
+//! * [`media`]: sound files for audio tracks, decoded and resampled;
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
 //! * [`engine`]: the realtime core and its UI handle (wait-free queues);
@@ -14,6 +15,7 @@
 pub mod engine;
 pub mod gui;
 pub mod host;
+pub mod media;
 pub mod pool;
 pub mod scan;
 pub mod snapshot;

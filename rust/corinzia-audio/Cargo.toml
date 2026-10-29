@@ -16,6 +16,8 @@ corinzia-score.workspace = true
 corinzia-model.workspace = true
 corinzia-perform.workspace = true
 corinzia-sine.workspace = true
+rubato = "0.16"
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "vorbis", "ogg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.8", optional = true }

@@ -16,6 +16,18 @@ pub const NAME_INPUT: &str = "browser-name";
 pub enum Purpose {
     Open,
     Export(Format),
+    /// A sound file for an audio track.
+    Audio(corinzia_model::Id),
+}
+
+/// Sound files audio tracks take.
+pub const AUDIO_EXTENSIONS: [&str; 6] = ["wav", "wave", "flac", "mp3", "ogg", "oga"];
+
+impl Purpose {
+    /// Chooses an existing file (else names one to write).
+    pub fn opens(self) -> bool {
+        !matches!(self, Purpose::Export(_))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +83,7 @@ impl Browser {
             Purpose::Export(Format::Pdf | Format::Parts) => &["pdf"],
             Purpose::Export(Format::Midi) => &["mid", "midi"],
             Purpose::Export(Format::MusicXml) => &["musicxml", "xml"],
+            Purpose::Audio(_) => &AUDIO_EXTENSIONS,
         }
     }
 
@@ -103,7 +116,7 @@ impl Browser {
     fn go(&mut self, dir: PathBuf) {
         self.dir = dir;
         self.error = None;
-        if self.purpose == Purpose::Open {
+        if self.purpose.opens() {
             self.name.clear();
         }
         self.refresh();
@@ -150,7 +163,7 @@ impl Browser {
                     return Outcome::Stay;
                 }
                 match self.purpose {
-                    Purpose::Open if !p.is_file() => self.error = Some(format!("No file {}", p.display())),
+                    Purpose::Open | Purpose::Audio(_) if !p.is_file() => self.error = Some(format!("No file {}", p.display())),
                     Purpose::Export(_) if !p.parent().is_some_and(|d| d.is_dir()) => self.error = Some(format!("No folder {}", p.parent().unwrap_or(&p).display())),
                     _ => return Outcome::Chosen(p),
                 }
@@ -164,6 +177,7 @@ impl Browser {
         let (title, verb) = match self.purpose {
             Purpose::Open => ("Open a score".to_string(), "Open"),
             Purpose::Export(f) => (format!("Export {}", f.label()), "Export"),
+            Purpose::Audio(_) => ("Add a sound file (WAV, FLAC, MP3, Ogg)".to_string(), "Add"),
         };
         let mut list = column![].spacing(1);
         if self.dir.parent().is_some() {
@@ -174,13 +188,13 @@ impl Browser {
             list = list.push(button(text(label).size(13)).width(Length::Fill).padding([3, 8]).style(theme::flat(!e.folder && e.name == self.name)).on_press(msg));
         }
         if self.entries.is_empty() {
-            list = list.push(text("No folders or scores here").size(12).style(theme::faint));
+            list = list.push(text(if matches!(self.purpose, Purpose::Audio(_)) { "No folders or sound files here" } else { "No folders or scores here" }).size(12).style(theme::faint));
         }
         let mut card = column![
             text(title).size(18).font(bold),
             text(self.dir.display().to_string()).size(12).style(theme::dim),
             container(scrollable(list).height(300)).padding(4).style(theme::trough),
-            text_input(if self.purpose == Purpose::Open { "a file name, or a path" } else { "file name" }, &self.name)
+            text_input(if self.purpose.opens() { "a file name, or a path" } else { "file name" }, &self.name)
                 .id(NAME_INPUT)
                 .on_input(BrowserMsg::Name)
                 .on_submit(BrowserMsg::Accept)

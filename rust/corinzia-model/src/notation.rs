@@ -408,6 +408,8 @@ pub fn condense(s: &mut sc::Score) -> Vec<usize> {
                 p.texts.push(t.clone());
             }
         }
+        // Audio cues go along (octave lines and pedals belong to the notes).
+        p.lines.extend(b.lines.iter().filter(|l| l.kind == sc::LineKind::Cue).copied());
         parts.push(p);
         map.push(i);
         i += 2;

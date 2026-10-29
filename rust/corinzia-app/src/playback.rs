@@ -31,6 +31,11 @@ pub struct Playback {
     /// Set when PipeWire is unavailable (the details go to stderr).
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
+    /// Clips whose files could not be read (shown in the Mix tab).
+    pub clip_errors: Vec<String>,
+    /// The cycle: a movement's written stretch (quarters), and whether it is on.
+    pub cycle: Option<(Id, f64, f64)>,
+    pub cycling: bool,
     pub scan_errors: Vec<String>,
     pub sample_rate: f64,
     /// Where plugins are looked for (from the preferences).
@@ -77,6 +82,9 @@ impl Playback {
             previews: Vec::new(),
             problem,
             plugins: Vec::new(),
+            clip_errors: Vec::new(),
+            cycle: None,
+            cycling: false,
             scan_errors: Vec::new(),
             sample_rate: rate,
             search_paths: prefs.plugin_search_paths(),
@@ -84,7 +92,12 @@ impl Playback {
     }
 
     /// Keeps the plan in step: rebuild on music changes, else send the mixer.
-    pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64) {
+    /// `folder`: the project file's, where clips' relative paths start.
+    pub fn sync(&mut self, project: &Project, music_revision: u64, revision: u64, folder: Option<&std::path::Path>) {
+        if self.pool.media.base.as_deref() != folder {
+            self.pool.media.base = folder.map(Into::into);
+            self.built = None; // the same names may now be other files
+        }
         let routing = snapshot::routing(project);
         if self.built != Some(music_revision) || routing != self.routing {
             self.built = Some(music_revision);
@@ -97,12 +110,15 @@ impl Playback {
             self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
             self.plan_buses = snap.buses.iter().map(|b| b.id).collect();
             self.timeline = snap.timeline();
+            self.clip_errors = snap.clip_errors.clone();
             self.handle.swap(snap);
+            // Its samples move with the plan.
+            self.send_cycle();
         } else if self.mixed != Some(revision) {
             self.mixed = Some(revision);
-            for (track, gain, pan, audible) in snapshot::mix(project) {
+            for (track, gain, pan, audible, direct) in snapshot::mix(project) {
                 if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
-                    let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
+                    let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
                 }
             }
             self.send_levels(project);
@@ -131,9 +147,29 @@ impl Playback {
 
     /// A live mixer value while a slider moves (committed separately).
     pub fn live_mix(&mut self, project: &Project, track: Id) {
-        if let (Some(node), Some((_, gain, pan, audible))) = (self.node_tracks.iter().position(|t| *t == track), snapshot::mix(project).into_iter().find(|m| m.0 == track)) {
-            let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible });
+        if let (Some(node), Some((_, gain, pan, audible, direct))) = (self.node_tracks.iter().position(|t| *t == track), snapshot::mix(project).into_iter().find(|m| m.0 == track)) {
+            let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
         }
+    }
+
+    /// Sets the cycle (and turns it on), or turns it off (`None`).
+    pub fn set_cycle(&mut self, cycle: Option<(Id, f64, f64)>) {
+        if let Some((m, a, b)) = cycle {
+            self.cycle = Some((m, a.min(b), a.max(b)));
+        }
+        self.cycling = cycle.is_some();
+        self.send_cycle();
+    }
+
+    /// The cycle on or off (on: the one set last).
+    pub fn toggle_cycle(&mut self) {
+        self.cycling = !self.cycling && self.cycle.is_some();
+        self.send_cycle();
+    }
+
+    fn send_cycle(&mut self) {
+        let samples = self.cycle.filter(|_| self.cycling).and_then(|(m, a, b)| Some((self.timeline.sample_of(m, a)?, self.timeline.sample_of(m, b)?)));
+        let _ = self.handle.send(Command::Loop(samples));
     }
 
     pub fn is_playing(&self) -> bool {
