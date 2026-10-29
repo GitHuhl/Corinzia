@@ -188,6 +188,13 @@ parallel on every core, that outputs through PipeWire.
   than one copy per track. The first such track's strip carries the
   instance's sound; the others' faders and pans become MIDI volume (CC7)
   and pan (CC10) on their channels.
+* **Piano roll** (Mix tab: double-click a track's lane): the track's notes
+  as they play, over the movement. Drag a note to play it earlier or later
+  (Shift: by sixteenths), its right edge to hold it longer or shorter, and
+  the velocity lane underneath for how hard it is played; a tweaked note
+  is outlined, R (or "Reset") plays the selection as written again. These
+  are kept apart from the notation: pitch and rhythm stay the score's, and
+  the changes apply on every pass through repeats.
 * **Meters:** every strip (tracks, buses, the master) has a stereo peak
   meter beside its fader, on the fader's scale; a light on top latches
   when it goes over 0 dB (click it to put it out).

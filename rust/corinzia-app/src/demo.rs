@@ -79,7 +79,7 @@ pub fn project() -> Project {
         navigation: vec![],
         slurs,
         endings: vec![],
-        lanes, breaks: vec![], cross: vec![], automation: vec![],
+        lanes, breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     });
     p.next_id = id + 1;
     p
@@ -140,7 +140,7 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         navigation: vec![],
         slurs: vec![],
         endings: vec![],
-        lanes, breaks: vec![], cross: vec![], automation: vec![],
+        lanes, breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     });
     p
 }

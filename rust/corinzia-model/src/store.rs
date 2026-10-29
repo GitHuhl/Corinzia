@@ -279,7 +279,7 @@ pub fn load(path: &Path) -> Result<Project> {
             navigation: vec![],
             slurs: vec![],
             endings: vec![],
-            lanes: vec![], breaks: vec![], cross: vec![], automation: vec![],
+            lanes: vec![], breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
         };
         for t in serde_json::from_str::<Vec<Value>>(&tempo)? {
             m.tempo.push(Tempo {
@@ -372,6 +372,11 @@ pub fn load(path: &Path) -> Result<Project> {
                 let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()?, hold: p[3].as_bool().unwrap_or(false) })).collect();
                 m.automation.push(AutoLane { id: id("id"), target, points });
             }
+            for t in n["tweaks"].as_array().into_iter().flatten() {
+                let Some(head) = t["h"].as_u64() else { continue };
+                m.tweaks.push(Tweak { head, velocity: t["v"].as_f64(), shift: t["s"].as_f64().unwrap_or(0.0), length: t["l"].as_f64() });
+            }
+            m.tweaks.sort_by_key(|t| t.head);
             for c in n["cross"].as_array().into_iter().flatten() {
                 m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
             }
@@ -761,6 +766,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
                 }
             }).collect::<Vec<_>>(),
             "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
+            "tweaks": m.tweaks.iter().filter(|t| !t.is_empty()).map(|t| json!({"h": t.head, "v": t.velocity, "s": t.shift, "l": t.length})).collect::<Vec<_>>(),
             "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
             "clefs": clefs,
             "texts": texts,

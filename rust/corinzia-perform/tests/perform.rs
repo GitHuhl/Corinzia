@@ -31,7 +31,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         navigation: vec![],
         slurs: vec![],
         endings: vec![],
-        breaks: vec![], cross: vec![], automation: vec![],
+        breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
         lanes: vec![Lane {
             player: 2,
             changes: vec![InstrumentChange { id: 3, at: F::ZERO, instrument: 4 }],
@@ -336,4 +336,26 @@ fn audio_clips_are_cued_where_they_start_through_the_tempo() {
     // Muted: no cue.
     project.tracks[0].clips[0].mute = true;
     assert!(clip_cues(&project, &m).is_empty());
+}
+
+#[test]
+fn tweaks_change_how_notes_play_not_how_they_are_written() {
+    let mut m = fixture(); // c'4 d'4 <e' g'>2 | b''4 a''4-. r2
+    let plain = perform(&m);
+    let head = |i: usize| m.lanes[0].voices[0].events[i].heads[0].id;
+    let (c, d) = (head(0), head(1));
+    let get = |p: &Performance, h: u64| p.notes.iter().find(|n| n.element == h).unwrap().clone();
+    m.tweaks = vec![
+        Tweak { head: c, velocity: Some(0.25), shift: 0.0, length: None },
+        Tweak { head: d, velocity: None, shift: 0.125, length: Some(2.0) },
+    ];
+    m.tweaks.sort_by_key(|t| t.head);
+    let p = perform(&m);
+    assert_eq!(get(&p, c).velocity, 0.25);
+    assert_eq!(get(&p, c).on_q, get(&plain, c).on_q);
+    let (d0, d1) = (get(&plain, d), get(&p, d));
+    assert!((d1.on_q - (d0.on_q + 0.125)).abs() < 1e-9 && (d1.full_off_q - d1.on_q - 2.0).abs() < 1e-9 && d1.gate == 1.0);
+    assert_eq!(d1.velocity, d0.velocity);
+    // The score is untouched.
+    assert_eq!(m.lanes[0].voices[0].events[1].duration, f(1, 4));
 }

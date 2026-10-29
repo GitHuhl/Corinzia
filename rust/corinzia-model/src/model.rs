@@ -346,6 +346,33 @@ pub struct Movement {
     pub cross: Vec<(Id, i8)>,
     /// Mixer and plugin automation over the movement.
     pub automation: Vec<AutoLane>,
+    /// How notes are played apart from how they are written (the piano
+    /// roll): per notehead, sorted by head.
+    pub tweaks: Vec<Tweak>,
+}
+
+/// A note's performance, changed by hand: kept apart from the notation
+/// (pitch and rhythm stay the score's), applied on every pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tweak {
+    /// The notehead.
+    pub head: Id,
+    /// Its velocity, 0..1, instead of the one its dynamics give.
+    pub velocity: Option<f64>,
+    /// Played this many quarters later (earlier when negative).
+    pub shift: f64,
+    /// Held this many quarters, instead of its written length and gate.
+    pub length: Option<f64>,
+}
+
+impl Tweak {
+    pub fn new(head: Id) -> Tweak {
+        Tweak { head, velocity: None, shift: 0.0, length: None }
+    }
+    /// Changes nothing (and can go).
+    pub fn is_empty(&self) -> bool {
+        self.velocity.is_none() && self.shift == 0.0 && self.length.is_none()
+    }
 }
 
 /// The master channel's id where a track's or bus's would be (automation).

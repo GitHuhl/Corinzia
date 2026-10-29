@@ -233,7 +233,7 @@ impl Playback {
     fn meter(&mut self) {
         use corinzia_audio::engine::Meter;
         const FALL: f32 = 0.93; // per frame
-        let mut take = |id: Id, m: Meter, levels: &mut std::collections::HashMap<Id, (f32, f32)>, clips: &mut std::collections::HashSet<Id>| {
+        let take = |id: Id, m: Meter, levels: &mut std::collections::HashMap<Id, (f32, f32)>, clips: &mut std::collections::HashSet<Id>| {
             let (l, r) = self.handle.shared.take_peak(m);
             let old = levels.get(&id).copied().unwrap_or((0.0, 0.0));
             let shown = (l.max(old.0 * FALL), r.max(old.1 * FALL));

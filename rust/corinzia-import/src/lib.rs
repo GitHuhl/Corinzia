@@ -349,7 +349,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         navigation: vec![],
         slurs: vec![],
         endings: vec![],
-        lanes: vec![], breaks: vec![], cross: vec![], automation: vec![],
+        lanes: vec![], breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     };
 
     for (pi, part) in parts.iter().enumerate() {

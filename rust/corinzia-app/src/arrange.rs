@@ -248,6 +248,8 @@ pub enum ArrangeEvent {
     ClipPress { track: Id, clip: Id, copy: bool },
     ClipDrag { edit: ClipEdit, q: f64 },
     ClipRelease,
+    /// A double-click on a track's lane: its piano roll.
+    OpenRoll(Id),
     /// Shift+drag along the ruler: the cycle over [from, to) (quarters).
     Cycle { from: f64, to: f64 },
     /// A folder's header clicked: fold it away, or open it.
@@ -276,6 +278,8 @@ pub struct State {
     clip_drag: Option<(ClipEdit, f64)>,
     /// Shift+drag along the ruler: where it started (quarters).
     cycle_from: Option<f64>,
+    /// The last click on a lane (for double-clicks).
+    last_click: Option<(std::time::Instant, usize)>,
 }
 
 pub struct ArrangeView<'a> {
@@ -472,6 +476,16 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if let Some((c, edit)) = self.clip_at(p) {
                     state.clip_drag = Some((edit, self.quarter_at(p.x) - c.start_q));
                     return Some(canvas::Action::publish(ArrangeEvent::ClipPress { track: c.track, clip: c.clip, copy: mods.control() && edit == ClipEdit::Move }).and_capture());
+                }
+                // A second click on the same instrument track's lane: its piano roll.
+                if let Some(lane) = self.lane_at(p.y) {
+                    let now = std::time::Instant::now();
+                    let double = state.last_click.is_some_and(|(t, l)| l == lane && now.duration_since(t) < std::time::Duration::from_millis(450));
+                    state.last_click = if double { None } else { Some((now, lane)) };
+                    let l = &self.content.lanes[lane];
+                    if double && !l.audio && !l.mixer {
+                        return Some(canvas::Action::publish(ArrangeEvent::OpenRoll(l.track)).and_capture());
+                    }
                 }
                 let hit = self.content.blocks.iter().rev().find(|b| self.block_rect(b).expand(1.5).contains(p)).map(|b| b.element);
                 Some(canvas::Action::publish(ArrangeEvent::Select(hit)).and_capture())

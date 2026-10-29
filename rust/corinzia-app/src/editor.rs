@@ -465,7 +465,7 @@ impl Editor {
             endings: vec![],
             navigation: vec![],
             slurs: vec![],
-            breaks: vec![], cross: vec![], automation: vec![],
+            breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
             lanes,
         };
         let at = self.movement + 1;
@@ -767,6 +767,33 @@ impl Editor {
         if t.clips.len() != n {
             self.commit_with(before, "Delete audio", true, None);
         }
+    }
+
+    /// A note's tweak in the movement edited (none: played as written).
+    pub fn tweak_of(&self, head: Id) -> Option<Tweak> {
+        self.movement()?.tweaks.iter().find(|t| t.head == head).copied()
+    }
+
+    /// Changes how notes play (the piano roll): `f` on each head's tweak
+    /// (made if need be; dropped when it no longer changes anything).
+    /// `live`: a drag step (one undo step; playback catches up at
+    /// [`Editor::music_changed`]).
+    pub fn tweak(&mut self, heads: &[Id], label: &str, live: bool, mut f: impl FnMut(&mut Tweak)) {
+        let before = self.snapshot();
+        let Some(m) = self.project.movements.get_mut(self.movement) else { return };
+        for &h in heads {
+            match m.tweaks.binary_search_by_key(&h, |t| t.head) {
+                Ok(i) => f(&mut m.tweaks[i]),
+                Err(i) => {
+                    let mut t = Tweak::new(h);
+                    f(&mut t);
+                    m.tweaks.insert(i, t);
+                }
+            }
+        }
+        m.tweaks.retain(|t| !t.is_empty());
+        let key = heads.first().copied().unwrap_or(0) ^ 0x7ee4;
+        self.commit_with(before, label, !live, live.then_some(key));
     }
 
     /// The playback plan is out of date (after live edits).
