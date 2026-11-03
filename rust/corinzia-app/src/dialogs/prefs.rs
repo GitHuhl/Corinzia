@@ -1,7 +1,10 @@
 //! The Preferences card: theme, audio, MIDI keyboard and plugin folders.
 
-use crate::*;
-use iced::widget::column;
+use crate::app::*;
+use crate::LIVE_AUDIO;
+use crate::{midi_in, panels, playback, prefs, theme};
+use iced::widget::{button, column, row, text, text_input};
+use iced::{Element, Length};
 
 /// The Preferences card: a copy being edited, the plugin folders as typed,
 /// the output devices found.

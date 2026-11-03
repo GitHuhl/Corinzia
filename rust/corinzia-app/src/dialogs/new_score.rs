@@ -1,7 +1,10 @@
 //! The New score card: its fields and creating the score.
 
-use crate::*;
-use iced::widget::column;
+use crate::app::*;
+use crate::{files, panels, playback, prefs, theme};
+use corinzia_score::Frac;
+use iced::widget::{button, column, row, text, text_input};
+use iced::{Element, Length};
 
 /// The "New score" card.
 #[derive(Default)]

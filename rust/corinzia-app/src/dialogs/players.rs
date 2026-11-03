@@ -1,7 +1,9 @@
 //! The Players card: the instrumentation being edited, applied as one undo step.
 
-use crate::*;
-use iced::widget::column;
+use crate::app::*;
+use crate::{editor, files, panels, theme};
+use iced::widget::{button, column, row, text, text_input};
+use iced::{Element, Length};
 
 /// The Players card: the instrumentation being edited, applied as a whole.
 pub(crate) struct PlayersDialog {

@@ -1,7 +1,10 @@
 //! The keyboard shortcut overview (F1).
 
-use crate::*;
-use iced::widget::column;
+use crate::app::*;
+use crate::keys::Action;
+use crate::{panels, theme};
+use iced::widget::{button, column, container, row, text};
+use iced::Element;
 
 /// The keyboard shortcut overview (F1).
 pub(crate) fn help_card() -> Element<'static, Message> {

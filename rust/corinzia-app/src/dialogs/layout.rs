@@ -1,7 +1,9 @@
 //! The Layout card: the score's and the parts' page layouts, and the page texts.
 
-use crate::*;
-use iced::widget::column;
+use crate::app::*;
+use crate::{panels, theme};
+use iced::widget::{button, column, row, text, text_input};
+use iced::{Element, Length};
 
 /// The Layout card: the score's and the parts' page layouts as typed,
 /// and the page texts.
