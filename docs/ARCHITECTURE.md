@@ -415,6 +415,7 @@ output), automation, VST3 state in the project.
 | Module | Holds |
 |---|---|
 | `main.rs` | the iced application: messages, toolbar, Score and Mix tabs, popovers, status bar, autosave, `--keys` / `--screenshot` / `--export` |
+| `dialogs/` | the modal cards, each with its state, messages, handler and view: New score, Players, Layout, Preferences, the shortcut help |
 | `editor/` | the editing controller (§3): `mod.rs` holds the state, undo/redo and movements; one file per area (input, selection, spanners, structure, page items, clipboard, filters, players, tracks, mixer, automation) |
 | `keys.rs` | the keyboard map |
 | `score_view.rs` | the score canvas |
