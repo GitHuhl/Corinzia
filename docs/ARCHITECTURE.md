@@ -8,7 +8,7 @@ One process, one window (iced on wgpu), one project file (SQLite).
 ```
 rust/
   corinzia-app       the application: UI, editor, playback glue, files
-  corinzia-edit      pure editing operations (note input, ranges, structure)
+  corinzia-edit      pure editing operations (note input, ranges, structure, names)
   corinzia-model     project model + .project storage
   corinzia-layout    the engraver: display lists, pages, PDF
   corinzia-perform   the performance of a movement; tempo maps; export documents
@@ -416,7 +416,7 @@ output), automation, VST3 state in the project.
 |---|---|
 | `main.rs` | startup: the module list, fonts, `main()` (headless `--export`, `--scan-plugin`, the window) |
 | `cli.rs` | command-line arguments, `--keys` parsing, saving screenshots |
-| `app/` | the iced application: `mod.rs` holds `App`, `Message` and the shared work (engraving, syncing playback, scrolling); `update.rs` and `view.rs`; `actions.rs` (keys and menus), `document.rs` (open, save, export), `mixing.rs` (the Mix tab), `piano_roll.rs`, `midi_keys.rs`; the app's tests in `tests.rs` |
+| `app/` | the iced application: `mod.rs` holds `App`, `Message` and the shared work (engraving, syncing playback, scrolling); `update.rs` and `view.rs`; `actions.rs` (keys and menus), `document.rs` (open, save, export), `mixing.rs` (the Mix tab), `piano_roll.rs`, `midi_keys.rs`; the app's tests in `tests/` (score, dialogs, document, playback, mixing; shared helpers in `tests/mod.rs`) |
 | `dialogs/` | the modal cards, each with its state, messages, handler and view: New score, Players, Layout, Preferences, the shortcut help |
 | `editor/` | the editing controller (§3): `mod.rs` holds the state, undo/redo and movements; one file per area (input, selection, spanners, structure, page items, clipboard, filters, players, tracks, mixer, automation) |
 | `keys.rs` | the keyboard map |

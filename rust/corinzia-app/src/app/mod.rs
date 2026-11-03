@@ -6,8 +6,9 @@ use crate::cli::*;
 use crate::dialogs::*;
 use crate::LIVE_AUDIO;
 use corinzia_layout::{layout_line, layout_pages, DisplayList};
-use corinzia_model::{Movement, Project};
+use corinzia_model::Project;
 use corinzia_score::Frac;
+use corinzia_edit::names::{clef_at, top_line};
 use editor::{Editor, PopoverKind};
 use iced::widget::{button, canvas, container, row, stack, text, text_input, Space};
 use iced::{Element, Length, Size, Subscription, Task, Theme, Vector};
@@ -211,26 +212,6 @@ pub(crate) enum Message {
 pub(crate) const POPOVER_INPUT: &str = "popover-input";
 pub(crate) const NEW_TITLE: &str = "new-score-title";
 pub(crate) const PLAYERS_ADD: &str = "players-add";
-
-/// The diatonic number (C4 = 28) of a staff's top line for a clef.
-pub(crate) fn top_line(clef: &str) -> i32 {
-    match clef {
-        "bass" => 26,      // A3
-        "alto" => 32,      // G4
-        "tenor" => 30,     // E4
-        "treble_8" => 31,  // F4
-        "bass_8" => 19,    // A2
-        _ => 38,           // treble, percussion: F5
-    }
-}
-
-pub(crate) fn clef_at(project: &Project, m: &Movement, lane: usize, at: Frac) -> String {
-    let l = &m.lanes[lane];
-    if let Some(c) = l.clefs.iter().filter(|c| c.at <= at).last() {
-        return c.clef.clone();
-    }
-    l.instrument_at(at).and_then(|i| project.instrument(i)).map(|i| i.clef.clone()).unwrap_or_else(|| "treble".into())
-}
 
 pub(crate) fn quarters(f: Frac) -> f64 {
     f.num as f64 * 4.0 / f.den as f64
