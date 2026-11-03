@@ -145,9 +145,9 @@ impl App {
                     })
                     .size(13)
                     .style(theme::dim),
-                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::PopoverClose)]
+                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::Popover(PopoverMsg::Close))]
                     .align_y(iced::Alignment::Center),
-                text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(Message::PopoverInput).on_submit(Message::PopoverSubmit).padding(6).size(15),
+                text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(|v| Message::Popover(PopoverMsg::Input(v))).on_submit(Message::Popover(PopoverMsg::Submit)).padding(6).size(15),
             ]
             .spacing(6)
             .width(320);
@@ -286,13 +286,13 @@ impl App {
                                 text(format!("Piano roll · {}", r.content.name)).size(13).font(bold),
                                 text("drag a note: earlier or later (Shift: by sixteenths) · its right edge: longer or shorter · the lane below: velocity · pitch and rhythm stay the score's").size(11).style(theme::dim),
                                 panels::spacer(),
-                                panels::tip(button(text(format!("Reset {what}")).size(12)).padding([3, 8]).style(theme::tool(false)).on_press(Message::RollReset), "Play as written again (R)"),
-                                panels::tip(button(text("✕").size(12)).padding([3, 8]).style(theme::flat(false)).on_press(Message::RollClose), "Back to the arrange view (Escape)"),
+                                panels::tip(button(text(format!("Reset {what}")).size(12)).padding([3, 8]).style(theme::tool(false)).on_press(Message::Roll(RollMsg::Reset)), "Play as written again (R)"),
+                                panels::tip(button(text("✕").size(12)).padding([3, 8]).style(theme::flat(false)).on_press(Message::Roll(RollMsg::Close)), "Back to the arrange view (Escape)"),
                             ]
                             .spacing(10)
                             .padding([4, 10])
                             .align_y(iced::Alignment::Center),
-                            Element::from(view).map(Message::Roll),
+                            Element::from(view).map(|v| Message::Roll(RollMsg::Event(v))),
                         ]
                         .height(Length::Fill)
                         .into()

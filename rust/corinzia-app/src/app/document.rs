@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// What to do with a file chosen for a purpose (in the system dialog or
+/// Corinzia's browser).
+pub(crate) fn chosen(purpose: browser::Purpose, path: Option<PathBuf>) -> Message {
+    match purpose {
+        browser::Purpose::Open => Message::Opened(path),
+        browser::Purpose::Export(f) => Message::ExportTo(f, path),
+        browser::Purpose::Audio(t) => Message::AudioChosen(t, path),
+    }
+}
+
 impl App {
     /// Asks for a file to open (`musicxml`: MusicXML only) with the
     /// system's dialog, else Corinzia's browser.
@@ -150,6 +160,16 @@ impl App {
                 }
                 msg
             }
+            Err(e) => format!("Export failed: {e}"),
+        };
+    }
+
+    /// Exports the movement or the work to a file (audio goes through
+    /// `start_bounce`).
+    pub(crate) fn export_to(&mut self, format: files::Format, path: PathBuf) {
+        let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
+        self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
+            Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
             Err(e) => format!("Export failed: {e}"),
         };
     }

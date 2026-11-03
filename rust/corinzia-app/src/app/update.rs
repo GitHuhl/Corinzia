@@ -13,89 +13,10 @@ impl App {
             Message::SetPanel(p) => self.panel = p,
             Message::Mix(mix::MixMsg::AddAudio(t)) => return self.pick_file_for(browser::Purpose::Audio(t), false),
             Message::Mix(m) => self.mix(m),
-            Message::Roll(e) => self.roll_event(e),
-            Message::RollClose => self.roll = None,
-            Message::RollReset => {
-                if let Some(r) = &self.roll {
-                    let heads = r.selected.clone();
-                    let all = if heads.is_empty() { r.content.notes.iter().map(|n| n.head).collect() } else { heads };
-                    self.editor.tweak(&all, "Reset playing", false, |t| *t = corinzia_model::Tweak::new(t.head));
-                }
-            }
-            Message::Arrange(e) => match e {
-                arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
-                    let id = clip;
-                    self.selected_clip = Some((track, id));
-                    self.clip_dragged = false;
-                    self.clip_copy = copy;
-                    // Its length made explicit: trims and fades measure from it.
-                    self.clip_origin = self.editor.clip(track, id).cloned().map(|mut c| {
-                        c.length = arrange::clip_length(&c, self.playback.pool.media.loaded(&c.file).as_deref());
-                        c
-                    });
-                }
-                arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
-                arrange::ArrangeEvent::Cycle { from, to } => {
-                    if let Some(m) = self.editor.movement().map(|m| m.id) {
-                        self.playback.set_cycle(Some((m, from, to)));
-                    }
-                }
-                arrange::ArrangeEvent::OpenRoll(track) => self.open_roll(track),
-                arrange::ArrangeEvent::ToggleFolder(name) => {
-                    if !self.folded.remove(&name) {
-                        self.folded.insert(name);
-                    }
-                }
-                arrange::ArrangeEvent::ClipRelease => {
-                    self.editor.end_gesture();
-                    if std::mem::take(&mut self.clip_dragged) {
-                        self.editor.music_changed();
-                    }
-                    self.clip_origin = None;
-                }
-                arrange::ArrangeEvent::Select(id) => {
-                    self.selected_clip = None;
-                    self.editor.select(id);
-                    if id.is_some() {
-                        self.audition();
-                    }
-                }
-                arrange::ArrangeEvent::Locate(q) => {
-                    let at = Frac::new((q * 1024.0).round() as i64, 4096);
-                    self.editor.clear_selection();
-                    self.editor.caret = at.min(self.editor.movement().map(|m| m.length).unwrap_or(at));
-                    if self.playback.is_playing() {
-                        if let Some(m) = self.editor.movement().map(|m| m.id) {
-                            self.playback.play_from(m, q);
-                        }
-                    }
-                }
-                arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
-                arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
-                arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
-                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
-                        let at = Frac::new((q * 16.0).round() as i64, 64);
-                        self.editor.add_auto_point(t, at, value);
-                    }
-                }
-                arrange::ArrangeEvent::AutoMove { lane, index, q, value } => {
-                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
-                        let at = Frac::new((q * 16.0).round() as i64, 64);
-                        self.editor.move_auto_point(t, index, at, value);
-                    }
-                }
-                arrange::ArrangeEvent::AutoDelete { lane, index } => {
-                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
-                        self.editor.delete_auto_point(t, index);
-                    }
-                }
-                arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
-                arrange::ArrangeEvent::AutoHold { lane, index } => {
-                    if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
-                        self.editor.toggle_auto_hold(t, index);
-                    }
-                }
-            },
+            Message::Roll(RollMsg::Event(e)) => self.roll_event(e),
+            Message::Roll(RollMsg::Close) => self.roll = None,
+            Message::Roll(RollMsg::Reset) => self.roll_reset(),
+            Message::Arrange(e) => self.arrange_event(e),
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
             Message::ExportMenu(open) => self.export_menu = open,
@@ -114,53 +35,9 @@ impl App {
                 }
                 self.editor.status = format!("Cannot open {}: drop a .project or MusicXML file", path.display());
             }
-            Message::Canvas(ViewEvent::Pan(d)) => self.pan = self.pan + d,
-            Message::Canvas(ViewEvent::Zoom { factor, around }) => {
-                let z = (self.zoom * factor).clamp(0.25, 8.0);
-                let k = z / self.zoom;
-                // Keep the point under the cursor fixed.
-                self.pan = Vector::new(around.x - (around.x - self.pan.x) * k, around.y - (around.y - self.pan.y) * k);
-                self.zoom = z;
-            }
-            Message::Canvas(ViewEvent::Click { hit, at, shift }) => {
-                self.export_menu = false;
-                self.editor.status.clear();
-                // Another movement's page: it becomes the one edited.
-                let clicked = at.map(|p| self.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
-                if let Some(mi) = clicked.filter(|mi| *mi != self.editor.movement) {
-                    self.editor.switch_movement(mi);
-                    self.sync();
-                }
-                self.click(hit, at, shift)
-            }
-            Message::Canvas(ViewEvent::Marquee { ids, shift }) => self.editor.select_elements(&ids, shift),
-            Message::Canvas(ViewEvent::SlurDrag { handle, at }) => {
-                self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));
-            }
-            Message::Canvas(ViewEvent::SlurDragEnd) => self.editor.end_gesture(),
-            Message::Canvas(ViewEvent::Context { target, at, screen }) => {
-                self.export_menu = false;
-                self.editor.status.clear();
-                let Some(p) = at else { return Task::none() };
-                if let Some(mi) = self.page_movements.get(p.page).copied().filter(|mi| *mi != self.editor.movement) {
-                    self.editor.switch_movement(mi);
-                    self.sync();
-                }
-                let kind = match target {
-                    score_view::ContextTarget::Clef => PopoverKind::Clef,
-                    score_view::ContextTarget::Key => PopoverKind::Key,
-                    score_view::ContextTarget::Time => PopoverKind::Time,
-                    score_view::ContextTarget::Barline => PopoverKind::Barline,
-                };
-                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
-                self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
-                self.sync();
-                self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
-                return iced::widget::operation::focus(POPOVER_INPUT);
-            }
-            Message::Canvas(ViewEvent::DoubleClick { hit }) => {
-                if let Some(id) = hit.filter(|_| !self.editor.input_mode) {
-                    return self.edit_on_page(id);
+            Message::Canvas(e) => {
+                if let Some(t) = self.canvas_event(e) {
+                    return t;
                 }
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.bounce.is_some() => {
@@ -184,80 +61,24 @@ impl App {
             }
             Message::Key(_) => return Task::none(),
             Message::Act(a) => return self.act(a),
-            Message::PopoverInput(s) => {
-                let Some(p) = self.popover.as_mut() else { return Task::none() };
-                p.error = None;
-                // Lyrics and chord symbols are entered as a stream: space (or,
-                // for lyrics, a hyphen or an extender) commits and moves on.
-                let last = s.chars().last();
-                let commits = p.target.is_none()
-                    && match p.kind {
-                        PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
-                        PopoverKind::Chord => last == Some(' '),
-                        _ => false,
-                    };
-                if !commits {
-                    p.input = s;
-                    return Task::none();
-                }
-                let word = s[..s.len() - 1].trim().to_string();
-                let kind = p.kind;
-                let result = match kind {
-                    PopoverKind::Lyrics => self.editor.enter_lyric(self.editor.lyric_verse, &word, last == Some('-'), last == Some('_')).map(|_| ()),
-                    _ if word.is_empty() => {
-                        self.editor.advance_target();
-                        Ok(())
-                    }
-                    _ => self.editor.apply_popover(kind, &word).map(|_| self.editor.advance_target()),
-                };
-                let p = self.popover.as_mut().unwrap();
-                match result {
-                    Ok(()) => p.input.clear(),
-                    Err(e) => {
-                        p.input = word;
-                        p.error = Some(e);
-                    }
-                }
-                self.sync();
-                if self.playback.problem.is_none() && !self.playback.is_playing() {
-                    self.audition();
-                }
+            Message::Popover(PopoverMsg::Input(s)) => {
+                self.popover_input(s);
                 return Task::none();
             }
-            Message::PopoverSubmit => {
-                if let Some(p) = self.popover.as_mut() {
-                    let done = match p.target {
-                        Some(id) => self.editor.edit_item(id, &p.input),
-                        None => self.editor.apply_popover(p.kind, &p.input),
-                    };
-                    match done {
-                        Ok(()) => self.popover = None,
-                        Err(e) => p.error = Some(e),
-                    }
-                }
-            }
-            Message::PopoverClose => self.popover = None,
-            Message::NewInput(field, v) => {
+            Message::Popover(PopoverMsg::Submit) => self.popover_submit(),
+            Message::Popover(PopoverMsg::Close) => self.popover = None,
+            Message::New(NewMsg::Input(field, v)) => {
                 if let Some(n) = self.new_score.as_mut() {
-                    match field {
-                        NewField::Title => n.title = v,
-                        NewField::Composer => n.composer = v,
-                        NewField::Instruments => n.instruments = v,
-                        NewField::Key => n.key = v,
-                        NewField::Time => n.time = v,
-                        NewField::Tempo => n.tempo = v,
-                        NewField::Bars => n.bars = v,
-                    }
-                    n.error = None;
+                    n.set(field, v);
                 }
                 return Task::none();
             }
-            Message::NewCancel => self.new_score = None,
+            Message::New(NewMsg::Cancel) => self.new_score = None,
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
             Message::Prefs(m) => self.prefs_msg(m),
             Message::MidiPoll => self.midi_poll(),
-            Message::NewCreate => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
+            Message::New(NewMsg::Create) => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::New(NewMsg::Create)))))),
             Message::Guarded(next) => {
                 if !self.editor.modified {
                     return Task::done(Message::Proceed(next));
@@ -273,7 +94,7 @@ impl App {
             Message::Proceed(next) => match *next {
                 Message::Open => return self.pick_file(false),
                 Message::Import => return self.pick_file(true),
-                Message::NewCreate => self.create_new(),
+                Message::New(NewMsg::Create) => self.create_new(),
                 other => return Task::done(other),
             },
             Message::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
@@ -284,11 +105,7 @@ impl App {
                     // chooser): Corinzia's own browser instead.
                     return self.open_browser(purpose);
                 }
-                return Task::done(match purpose {
-                    browser::Purpose::Open => Message::Opened(path),
-                    browser::Purpose::Export(f) => Message::ExportTo(f, path),
-                    browser::Purpose::Audio(t) => Message::AudioChosen(t, path),
-                });
+                return Task::done(chosen(purpose, path));
             }
             Message::Browser(msg) => {
                 let Some(b) = self.browser.as_mut() else { return Task::none() };
@@ -298,11 +115,7 @@ impl App {
                     browser::Outcome::Cancel => self.browser = None,
                     browser::Outcome::Chosen(path) => {
                         self.browser = None;
-                        return Task::done(match purpose {
-                            browser::Purpose::Open => Message::Opened(Some(path)),
-                            browser::Purpose::Export(f) => Message::ExportTo(f, Some(path)),
-                            browser::Purpose::Audio(t) => Message::AudioChosen(t, Some(path)),
-                        });
+                        return Task::done(chosen(purpose, Some(path)));
                     }
                 }
             }
@@ -321,13 +134,7 @@ impl App {
                 let path = if path.extension().is_none() { path.with_extension("wav") } else { path };
                 self.start_bounce(path);
             }
-            Message::ExportTo(format, Some(path)) => {
-                let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
-                self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
-                    Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
-                    Err(e) => format!("Export failed: {e}"),
-                };
-            }
+            Message::ExportTo(format, Some(path)) => self.export_to(format, path),
             Message::PluginTick => {
                 self.playback.tick();
                 return Task::none();
@@ -417,8 +224,8 @@ impl App {
         // The piano roll: Escape closes it, R resets the selected notes.
         if let (Tab::Mix, true) = (self.tab, self.roll.is_some()) {
             match key {
-                Key::Named(Named::Escape) => return Some(Task::done(Message::RollClose)),
-                Key::Character(c) if c.as_str() == "r" && !mods.control() => return Some(Task::done(Message::RollReset)),
+                Key::Named(Named::Escape) => return Some(Task::done(Message::Roll(RollMsg::Close))),
+                Key::Character(c) if c.as_str() == "r" && !mods.control() => return Some(Task::done(Message::Roll(RollMsg::Reset))),
                 _ => {}
             }
         }
@@ -430,5 +237,62 @@ impl App {
         }
         let action = keys::map(key, mods, self.editor.input_mode)?;
         Some(self.act(action))
+    }
+
+    /// Events on the score canvas. A task to return ends the update there
+    /// (without the usual sync).
+    pub(crate) fn canvas_event(&mut self, e: ViewEvent) -> Option<Task<Message>> {
+        match e {
+            ViewEvent::Pan(d) => self.pan = self.pan + d,
+            ViewEvent::Zoom { factor, around } => {
+                let z = (self.zoom * factor).clamp(0.25, 8.0);
+                let k = z / self.zoom;
+                // Keep the point under the cursor fixed.
+                self.pan = Vector::new(around.x - (around.x - self.pan.x) * k, around.y - (around.y - self.pan.y) * k);
+                self.zoom = z;
+            }
+            ViewEvent::Click { hit, at, shift } => {
+                self.export_menu = false;
+                self.editor.status.clear();
+                // Another movement's page: it becomes the one edited.
+                let clicked = at.map(|p| self.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
+                if let Some(mi) = clicked.filter(|mi| *mi != self.editor.movement) {
+                    self.editor.switch_movement(mi);
+                    self.sync();
+                }
+                self.click(hit, at, shift);
+            }
+            ViewEvent::Marquee { ids, shift } => self.editor.select_elements(&ids, shift),
+            ViewEvent::SlurDrag { handle, at } => {
+                self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));
+            }
+            ViewEvent::SlurDragEnd => self.editor.end_gesture(),
+            ViewEvent::Context { target, at, screen } => {
+                self.export_menu = false;
+                self.editor.status.clear();
+                let Some(p) = at else { return Some(Task::none()) };
+                if let Some(mi) = self.page_movements.get(p.page).copied().filter(|mi| *mi != self.editor.movement) {
+                    self.editor.switch_movement(mi);
+                    self.sync();
+                }
+                let kind = match target {
+                    score_view::ContextTarget::Clef => PopoverKind::Clef,
+                    score_view::ContextTarget::Key => PopoverKind::Key,
+                    score_view::ContextTarget::Time => PopoverKind::Time,
+                    score_view::ContextTarget::Barline => PopoverKind::Barline,
+                };
+                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
+                self.sync();
+                self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
+                return Some(iced::widget::operation::focus(POPOVER_INPUT));
+            }
+            ViewEvent::DoubleClick { hit } => {
+                if let Some(id) = hit.filter(|_| !self.editor.input_mode) {
+                    return Some(self.edit_on_page(id));
+                }
+            }
+        }
+        None
     }
 }

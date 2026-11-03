@@ -395,4 +395,83 @@ impl App {
             ClipEdit::FadeOut => c.fade_out = (o.at + o.length - s).clamp(0.0, o.length - o.fade_in),
         });
     }
+
+    /// The arrange view: clips, the cycle, folders, the caret, scrolling,
+    /// zoom and automation points.
+    pub(crate) fn arrange_event(&mut self, e: arrange::ArrangeEvent) {
+        match e {
+        arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
+            let id = clip;
+            self.selected_clip = Some((track, id));
+            self.clip_dragged = false;
+            self.clip_copy = copy;
+            // Its length made explicit: trims and fades measure from it.
+            self.clip_origin = self.editor.clip(track, id).cloned().map(|mut c| {
+                c.length = arrange::clip_length(&c, self.playback.pool.media.loaded(&c.file).as_deref());
+                c
+            });
+        }
+        arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
+        arrange::ArrangeEvent::Cycle { from, to } => {
+            if let Some(m) = self.editor.movement().map(|m| m.id) {
+                self.playback.set_cycle(Some((m, from, to)));
+            }
+        }
+        arrange::ArrangeEvent::OpenRoll(track) => self.open_roll(track),
+        arrange::ArrangeEvent::ToggleFolder(name) => {
+            if !self.folded.remove(&name) {
+                self.folded.insert(name);
+            }
+        }
+        arrange::ArrangeEvent::ClipRelease => {
+            self.editor.end_gesture();
+            if std::mem::take(&mut self.clip_dragged) {
+                self.editor.music_changed();
+            }
+            self.clip_origin = None;
+        }
+        arrange::ArrangeEvent::Select(id) => {
+            self.selected_clip = None;
+            self.editor.select(id);
+            if id.is_some() {
+                self.audition();
+            }
+        }
+        arrange::ArrangeEvent::Locate(q) => {
+            let at = Frac::new((q * 1024.0).round() as i64, 4096);
+            self.editor.clear_selection();
+            self.editor.caret = at.min(self.editor.movement().map(|m| m.length).unwrap_or(at));
+            if self.playback.is_playing() {
+                if let Some(m) = self.editor.movement().map(|m| m.id) {
+                    self.playback.play_from(m, q);
+                }
+            }
+        }
+        arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
+        arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+        arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
+            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                let at = Frac::new((q * 16.0).round() as i64, 64);
+                self.editor.add_auto_point(t, at, value);
+            }
+        }
+        arrange::ArrangeEvent::AutoMove { lane, index, q, value } => {
+            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                let at = Frac::new((q * 16.0).round() as i64, 64);
+                self.editor.move_auto_point(t, index, at, value);
+            }
+        }
+        arrange::ArrangeEvent::AutoDelete { lane, index } => {
+            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                self.editor.delete_auto_point(t, index);
+            }
+        }
+        arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
+        arrange::ArrangeEvent::AutoHold { lane, index } => {
+            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+                self.editor.toggle_auto_hold(t, index);
+            }
+        }
+        }
+    }
 }

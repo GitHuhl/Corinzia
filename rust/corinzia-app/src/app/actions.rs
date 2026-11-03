@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// The popover's messages.
+#[derive(Debug, Clone)]
+pub(crate) enum PopoverMsg {
+    Input(String),
+    Submit,
+    Close,
+}
+
 impl App {
     pub(crate) fn act(&mut self, a: Action) -> Task<Message> {
         if self.slur_action(&a) {
@@ -291,5 +299,62 @@ impl App {
         let anchor = self.popover_anchor();
         self.popover = Some(Popover { kind, input: text, error: None, target, anchor });
         iced::widget::operation::focus(POPOVER_INPUT)
+    }
+
+    /// Typing in the popover. Lyrics and chord symbols are entered as a
+    /// stream: space (or, for lyrics, a hyphen or an extender) commits and
+    /// moves on.
+    pub(crate) fn popover_input(&mut self, s: String) {
+        let Some(p) = self.popover.as_mut() else { return };
+        p.error = None;
+        // Lyrics and chord symbols are entered as a stream: space (or,
+        // for lyrics, a hyphen or an extender) commits and moves on.
+        let last = s.chars().last();
+        let commits = p.target.is_none()
+            && match p.kind {
+                PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
+                PopoverKind::Chord => last == Some(' '),
+                _ => false,
+            };
+        if !commits {
+            p.input = s;
+            return;
+        }
+        let word = s[..s.len() - 1].trim().to_string();
+        let kind = p.kind;
+        let result = match kind {
+            PopoverKind::Lyrics => self.editor.enter_lyric(self.editor.lyric_verse, &word, last == Some('-'), last == Some('_')).map(|_| ()),
+            _ if word.is_empty() => {
+                self.editor.advance_target();
+                Ok(())
+            }
+            _ => self.editor.apply_popover(kind, &word).map(|_| self.editor.advance_target()),
+        };
+        let p = self.popover.as_mut().unwrap();
+        match result {
+            Ok(()) => p.input.clear(),
+            Err(e) => {
+                p.input = word;
+                p.error = Some(e);
+            }
+        }
+        self.sync();
+        if self.playback.problem.is_none() && !self.playback.is_playing() {
+            self.audition();
+        }
+    }
+
+    /// Enter in the popover: applies it, closing it unless it was refused.
+    pub(crate) fn popover_submit(&mut self) {
+        if let Some(p) = self.popover.as_mut() {
+            let done = match p.target {
+                Some(id) => self.editor.edit_item(id, &p.input),
+                None => self.editor.apply_popover(p.kind, &p.input),
+            };
+            match done {
+                Ok(()) => self.popover = None,
+                Err(e) => p.error = Some(e),
+            }
+        }
     }
 }

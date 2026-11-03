@@ -30,6 +30,30 @@ pub(crate) enum NewField {
     Bars,
 }
 
+/// The New score card's messages.
+#[derive(Debug, Clone)]
+pub(crate) enum NewMsg {
+    Input(NewField, String),
+    Create,
+    Cancel,
+}
+
+impl NewScore {
+    /// A field typed into.
+    pub(crate) fn set(&mut self, field: NewField, v: String) {
+        match field {
+            NewField::Title => self.title = v,
+            NewField::Composer => self.composer = v,
+            NewField::Instruments => self.instruments = v,
+            NewField::Key => self.key = v,
+            NewField::Time => self.time = v,
+            NewField::Tempo => self.tempo = v,
+            NewField::Bars => self.bars = v,
+        }
+        self.error = None;
+    }
+}
+
 impl App {
     pub(crate) fn create_new(&mut self) {
         let Some(n) = self.new_score.as_mut() else { return };
@@ -97,17 +121,17 @@ impl App {
 pub(crate) fn new_score_card(n: &NewScore) -> Element<'_, Message> {
     let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
     let field = |label: &'static str, hint: &'static str, value: &str, f: NewField| {
-        column![text(label).size(12).style(theme::dim), text_input(hint, value).on_input(move |v| Message::NewInput(f, v)).on_submit(Message::NewCreate).padding(6).size(14)].spacing(3)
+        column![text(label).size(12).style(theme::dim), text_input(hint, value).on_input(move |v| Message::New(NewMsg::Input(f, v))).on_submit(Message::New(NewMsg::Create)).padding(6).size(14)].spacing(3)
     };
     let title = column![
         text("Title").size(12).style(theme::dim),
-        text_input("Untitled", &n.title).id(NEW_TITLE).on_input(|v| Message::NewInput(NewField::Title, v)).on_submit(Message::NewCreate).padding(6).size(14)
+        text_input("Untitled", &n.title).id(NEW_TITLE).on_input(|v| Message::New(NewMsg::Input(NewField::Title, v))).on_submit(Message::New(NewMsg::Create)).padding(6).size(14)
     ]
     .spacing(3);
     // Ready-made ensembles fill in the instruments.
     let templates = iced::widget::Row::with_children(files::TEMPLATES.iter().map(|(label, list)| {
         let on = n.instruments == *list;
-        button(text(*label).size(12)).padding([3, 8]).style(theme::segment(on)).on_press(Message::NewInput(NewField::Instruments, list.to_string())).into()
+        button(text(*label).size(12)).padding([3, 8]).style(theme::segment(on)).on_press(Message::New(NewMsg::Input(NewField::Instruments, list.to_string()))).into()
     }))
     .spacing(4)
     .wrap();
@@ -133,8 +157,8 @@ pub(crate) fn new_score_card(n: &NewScore) -> Element<'_, Message> {
     card = card.push(
         row![
             panels::spacer(),
-            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::NewCancel),
-            button(text("Create").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::NewCreate)
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::New(NewMsg::Cancel)),
+            button(text("Create").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::New(NewMsg::Create))
         ]
         .spacing(8),
     );

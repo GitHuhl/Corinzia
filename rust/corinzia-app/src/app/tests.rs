@@ -59,8 +59,8 @@ fn click_item(a: &mut App, id: u64, n: usize) {
 }
 
 fn retype(a: &mut App, text: &str) {
-    let _ = a.update(Message::PopoverInput(text.into()));
-    let _ = a.update(Message::PopoverSubmit);
+    let _ = a.update(Message::Popover(PopoverMsg::Input(text.into())));
+    let _ = a.update(Message::Popover(PopoverMsg::Submit));
     assert!(a.popover.is_none(), "accepted: {:?}", a.popover.as_ref().and_then(|p| p.error.clone()));
     a.sync();
 }
@@ -544,11 +544,11 @@ fn marquee_selects_a_passage_and_popovers_apply() {
     assert!(a.selected.len() > 20);
     let _ = a.update(Message::Act(Action::Popover(PopoverKind::Key)));
     assert!(a.popover.is_some());
-    let _ = a.update(Message::PopoverInput("x".into()));
-    let _ = a.update(Message::PopoverSubmit);
+    let _ = a.update(Message::Popover(PopoverMsg::Input("x".into())));
+    let _ = a.update(Message::Popover(PopoverMsg::Submit));
     assert!(a.popover.as_ref().unwrap().error.is_some(), "bad input keeps the popover open with a hint");
-    let _ = a.update(Message::PopoverInput("D".into()));
-    let _ = a.update(Message::PopoverSubmit);
+    let _ = a.update(Message::Popover(PopoverMsg::Input("D".into())));
+    let _ = a.update(Message::Popover(PopoverMsg::Submit));
     assert!(a.popover.is_none());
     assert_eq!(a.editor.project.movements[0].keys[0].fifths, 2);
     key(&mut a, "esc");
@@ -562,22 +562,22 @@ fn new_score_with_key_time_pickup_tempo_any_instrument_and_an_in_app_confirmatio
     a.editor.set_input_mode(true);
     a.editor.enter_note(0, false);
     let _ = a.update(Message::Act(Action::New));
-    let _ = a.update(Message::NewInput(NewField::Instruments, files::TEMPLATES[2].1.to_string() + ", Kazoo"));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, files::TEMPLATES[2].1.to_string() + ", Kazoo")));
     for (f, v) in [(NewField::Title, "Suite"), (NewField::Composer, "J. Doe"), (NewField::Key, "Eb"), (NewField::Time, "3/4 pickup 1/4"), (NewField::Tempo, "Allegro 132"), (NewField::Bars, "8")] {
-        let _ = a.update(Message::NewInput(f, v.into()));
+        let _ = a.update(Message::New(NewMsg::Input(f, v.into())));
     }
     // Create -> Guarded -> the confirmation card (no system dialog).
-    let mut msg = Some(Message::NewCreate);
+    let mut msg = Some(Message::New(NewMsg::Create));
     while let Some(m) = msg.take() {
         let _ = a.update(m.clone());
         msg = match m {
-            Message::NewCreate => Some(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::NewCreate))))),
+            Message::New(NewMsg::Create) => Some(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::New(NewMsg::Create)))))),
             _ => None,
         };
     }
     assert!(a.confirm.is_some() && a.new_score.is_some(), "asked first");
     let _ = a.update(Message::ConfirmDiscard(true));
-    let _ = a.update(Message::Proceed(Box::new(Message::NewCreate)));
+    let _ = a.update(Message::Proceed(Box::new(Message::New(NewMsg::Create))));
     assert!(a.new_score.is_none());
     let p = &a.editor.project;
     assert_eq!((p.title.as_str(), p.composer.as_str()), ("Suite", "J. Doe"));
@@ -617,17 +617,17 @@ fn a_click_in_empty_bar_space_selects_the_bar() {
 fn new_score_from_an_instrument_list() {
     let mut a = app(View::Page);
     let _ = a.update(Message::Act(Action::New));
-    let _ = a.update(Message::NewInput(NewField::Instruments, "".into()));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "".into())));
     a.create_new();
     assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Name at least one instrument"));
-    let _ = a.update(Message::NewInput(NewField::Time, "7/5".into()));
-    let _ = a.update(Message::NewInput(NewField::Instruments, "Flute".into()));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Time, "7/5".into())));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "Flute".into())));
     a.create_new();
     assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Time not understood"));
-    let _ = a.update(Message::NewInput(NewField::Time, "4/4".into()));
-    let _ = a.update(Message::NewInput(NewField::Instruments, "2 Violin, Viola, Cello".into()));
-    let _ = a.update(Message::NewInput(NewField::Title, "Quartet".into()));
-    let _ = a.update(Message::NewInput(NewField::Bars, "12".into()));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Time, "4/4".into())));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "2 Violin, Viola, Cello".into())));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Title, "Quartet".into())));
+    let _ = a.update(Message::New(NewMsg::Input(NewField::Bars, "12".into())));
     a.create_new();
     assert!(a.new_score.is_none());
     assert_eq!(a.editor.project.title, "Quartet");
@@ -881,8 +881,8 @@ fn filters_and_select_similar_pick_elements_to_edit() {
     assert!(high.len() > 3);
     // Ctrl+F "above C5": the flute's high notes, highlighted.
     let _ = a.update(Message::Act(Action::Popover(PopoverKind::Filter)));
-    let _ = a.update(Message::PopoverInput("above C5".into()));
-    let _ = a.update(Message::PopoverSubmit);
+    let _ = a.update(Message::Popover(PopoverMsg::Input("above C5".into())));
+    let _ = a.update(Message::Popover(PopoverMsg::Submit));
     assert_eq!(a.editor.picked, high);
     assert_eq!(a.editor.status, format!("{} notes picked in the movement", high.len()));
     assert!(high.iter().all(|id| a.selected.contains(id)));
@@ -1473,7 +1473,7 @@ fn the_piano_roll_tweaks_how_notes_play_and_leaves_the_score_alone() {
     let score_before = format!("{:?}", a.editor.project.movements[0].lanes);
     let (h0, h1) = (notes[0].head, notes[1].head);
     let ev = |a: &mut App, e: R| {
-        let _ = a.update(Message::Roll(e));
+        let _ = a.update(Message::Roll(RollMsg::Event(e)));
     };
     // Two notes selected, dragged a sixteenth later: one undo step.
     ev(&mut a, R::Select { head: Some(h0), add: false });
@@ -1506,9 +1506,9 @@ fn the_piano_roll_tweaks_how_notes_play_and_leaves_the_score_alone() {
     let r = a.roll.as_ref().unwrap();
     assert_eq!(r.content.notes[0].start, notes[0].start, "the roll keeps the written place; the tweak moves it");
     // R resets the selection: played as written again.
-    let _ = a.update(Message::RollReset);
+    let _ = a.update(Message::Roll(RollMsg::Reset));
     assert!(a.editor.tweak_of(h0).is_none() && a.editor.tweak_of(h1).is_some());
-    let _ = a.update(Message::RollClose);
+    let _ = a.update(Message::Roll(RollMsg::Close));
     assert!(a.roll.is_none());
 }
 
@@ -1732,7 +1732,7 @@ fn type_into_popover(a: &mut App, text: &str) {
     let mut buf = String::new();
     for c in text.chars() {
         buf.push(c);
-        let _ = a.update(Message::PopoverInput(buf.clone()));
+        let _ = a.update(Message::Popover(PopoverMsg::Input(buf.clone())));
         buf = a.popover.as_ref().map(|p| p.input.clone()).unwrap_or_default();
     }
 }
@@ -1749,7 +1749,7 @@ fn lyrics_and_chords_are_typed_as_a_stream() {
     let syl: Vec<(String, bool)> = ev.iter().take(4).map(|e| e.lyrics.first().map(|l| (l.text.clone(), l.hyphen)).unwrap_or_default()).collect();
     assert_eq!(syl, vec![("Glo".into(), true), ("ri".into(), true), ("a".into(), false), ("in".into(), false)]);
     assert_eq!(a.editor.selection, Some(ev[4].heads[0].id), "the popover moved on to the fifth note");
-    let _ = a.update(Message::PopoverClose);
+    let _ = a.update(Message::Popover(PopoverMsg::Close));
     // Chord symbols on the cello from its first note, moving on with space.
     let cello = a.editor.project.movements[0].lanes[1].voices[0].events.clone();
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(cello[0].heads[0].id), at: None, shift: false }));
@@ -1760,7 +1760,7 @@ fn lyrics_and_chords_are_typed_as_a_stream() {
     assert_eq!(a.popover.as_ref().unwrap().input, "Hm", "the bad input stays for correction");
     let chords: Vec<String> = a.editor.movement().unwrap().lanes[1].chords.iter().map(|c| c.text.clone()).collect();
     assert_eq!(chords, vec!["C", "G7/B"]);
-    let _ = a.update(Message::PopoverClose);
+    let _ = a.update(Message::Popover(PopoverMsg::Close));
     // A chord symbol is clickable: select it and delete it.
     let id = a.editor.movement().unwrap().lanes[1].chords[1].id;
     let origins = score_view::page_origins(&a.pages, true);

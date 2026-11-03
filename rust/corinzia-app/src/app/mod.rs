@@ -26,7 +26,10 @@ mod piano_roll;
 mod update;
 mod view;
 
+use actions::*;
+use document::*;
 use midi_keys::*;
+use piano_roll::*;
 
 #[cfg(test)]
 mod tests;
@@ -167,12 +170,8 @@ pub(crate) enum Message {
     Canvas(ViewEvent),
     Key(iced::keyboard::Event),
     Act(Action),
-    PopoverInput(String),
-    PopoverSubmit,
-    PopoverClose,
-    NewInput(NewField, String),
-    NewCreate,
-    NewCancel,
+    Popover(PopoverMsg),
+    New(NewMsg),
     Players(PlayersMsg),
     Layout(LayoutMsg),
     Prefs(PrefsMsg),
@@ -206,10 +205,7 @@ pub(crate) enum Message {
     PluginTick,
     Autosaved(u64, Result<(), String>),
     Shot(iced::window::Screenshot),
-    Roll(roll::RollEvent),
-    /// Close the piano roll; reset the selected notes' tweaks.
-    RollClose,
-    RollReset,
+    Roll(RollMsg),
 }
 
 pub(crate) const POPOVER_INPUT: &str = "popover-input";
@@ -263,11 +259,11 @@ impl App {
             // An open popover takes typed text ("type:5:4") and Enter.
             if app.popover.is_some() {
                 if let Some(text) = t.strip_prefix("type:") {
-                    let _ = app.update(Message::PopoverInput(text.to_string()));
+                    let _ = app.update(Message::Popover(PopoverMsg::Input(text.to_string())));
                     continue;
                 }
                 if t == "enter" {
-                    let _ = app.update(Message::PopoverSubmit);
+                    let _ = app.update(Message::Popover(PopoverMsg::Submit));
                     continue;
                 }
             }

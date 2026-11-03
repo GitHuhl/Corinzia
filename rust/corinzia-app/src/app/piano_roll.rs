@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// The piano roll's messages.
+#[derive(Debug, Clone)]
+pub(crate) enum RollMsg {
+    Event(roll::RollEvent),
+    /// Back to the arrange view.
+    Close,
+    /// Play the selected notes as written again.
+    Reset,
+}
+
 impl App {
     /// Opens a track's piano roll on the movement edited.
     pub(crate) fn open_roll(&mut self, track: corinzia_model::Id) {
@@ -76,6 +86,15 @@ impl App {
                 r.top_key = (r.top_key + (dy / roll::ROW).round() as i32).clamp(20, 127);
             }
             roll::RollEvent::Zoom(k) => r.ppq = (r.ppq * k).clamp(8.0, 400.0),
+        }
+    }
+
+    /// Plays the selected notes (or all of them) as written again.
+    pub(crate) fn roll_reset(&mut self) {
+        if let Some(r) = &self.roll {
+            let heads = r.selected.clone();
+            let all = if heads.is_empty() { r.content.notes.iter().map(|n| n.head).collect() } else { heads };
+            self.editor.tweak(&all, "Reset playing", false, |t| *t = corinzia_model::Tweak::new(t.head));
         }
     }
 }
