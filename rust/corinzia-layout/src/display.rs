@@ -138,7 +138,7 @@ impl Item {
         };
         match self {
             Item::Glyph { glyph, at, scale, .. } => {
-                let b = font.bbox_of(*glyph);
+                let b = if glyph & crate::byz_font::BYZ != 0 { crate::byz_font::ByzFont::get().bbox_of(*glyph) } else { font.bbox_of(*glyph) };
                 [at.x + b.sw.0 * scale, at.y - b.ne.1 * scale, at.x + b.ne.0 * scale, at.y - b.sw.1 * scale]
             }
             Item::Text { text, at, size, bold, anchor, .. } => {

@@ -219,3 +219,40 @@ fn lengthen(out: &mut [Sung], beats: i64) {
         s.length = s.length + Frac::int(beats);
     }
 }
+
+/// A short chant that shows the notation at work: "Κύριε ἐλέησον" three
+/// times in the first mode, with time signs, a gorgon, a melisma, a fthora
+/// to the hard chromatic and back, and martyriae.
+pub fn demo() -> Chant {
+    use Quantity::*;
+    let mut c = Chant::new("Κύριε ἐλέησον", Echos::First);
+    let n = Neume::new;
+    let kyrie = |c: &mut Chant, last: Quantity| {
+        c.push(n(Ison).lyric("Κύ-"));
+        c.push(n(Oligon).lyric("ρι-"));
+        c.push(n(Apostrofos).lyric("ε").time(TimeSign::Klasma));
+        c.push(n(Ison).lyric("ἐ-"));
+        c.push(n(Oligon).lyric("λέ-"));
+        c.push(n(Kentimata).time(TimeSign::Gorgon));
+        c.push(n(Apostrofos).lyric("η-"));
+        c.push(n(Yporroi).lyric("σον"));
+        c.push(n(last).time(TimeSign::Dipli));
+    };
+    kyrie(&mut c, Oligon);
+    c.elements.push(Element::Martyria(Degree::Pa));
+    c.push(n(Ison).lyric("Κύ-"));
+    c.push(n(OligonKentimaAbove).lyric("ρι-").fthora(Genus::HardChromatic, Degree::Di));
+    c.push(n(Apostrofos).lyric("ε").time(TimeSign::Klasma));
+    c.push(n(Apostrofos).lyric("ἐ-"));
+    c.push(n(Apostrofos).lyric("λέ-").fthora(Genus::Diatonic, Degree::Pa));
+    c.push(n(Ison).lyric("η-"));
+    c.push(n(Petasti).lyric("σον").time(TimeSign::Klasma));
+    c.push(n(Apostrofos));
+    c.push(n(Apostrofos).time(TimeSign::Gorgon));
+    c.push(n(Oligon).time(TimeSign::Dipli));
+    c.elements.push(Element::Martyria(Degree::Pa));
+    c.elements.push(Element::Break);
+    kyrie(&mut c, Oligon);
+    c.elements.push(Element::Martyria(Degree::Pa));
+    c
+}

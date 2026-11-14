@@ -282,6 +282,7 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 | `rust/corinzia-export` | MIDI and MusicXML writers |
 | `rust/corinzia-score` | exact fractions, note values, the engraver's input types |
 | `assets/fonts/bravura` | Bravura (SIL OFL) and its SMuFL metadata |
+| `assets/fonts/neanes` | Neanes (SIL OFL), a Byzantine notation font, and its SBMuFL metadata |
 | `scripts/` | headless screenshots, a private PipeWire session for the live audio test |
 
 Press **N** to write notes: A–G enter pitches, 1–7 pick durations

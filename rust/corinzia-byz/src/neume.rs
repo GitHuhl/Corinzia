@@ -40,8 +40,9 @@ pub enum Quantity {
     Yporroi,
     /// Two notes, each one step up: kentimata under oligon.
     OligonKentimataBelow,
-    /// Two notes: the same note, then one step up (ison, then kentimata).
-    IsonKentimata,
+    /// Two notes: the same note, then one step up (oligon with ison and
+    /// kentimata).
+    OligonIsonKentimata,
 }
 
 impl Quantity {
@@ -61,7 +62,7 @@ impl Quantity {
             Chamili => &[-4],
             Yporroi => &[-1, -1],
             OligonKentimataBelow => &[1, 1],
-            IsonKentimata => &[0, 1],
+            OligonIsonKentimata => &[0, 1],
         }
     }
 }

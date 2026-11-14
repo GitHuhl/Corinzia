@@ -2,7 +2,7 @@
 //! previews. Glyphs are drawn from the font's outlines, so any scale is sharp.
 
 use crate::display::{DisplayList, Item, Point};
-use crate::font::{Font, FONT_DATA};
+use crate::font::FONT_DATA;
 use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 struct Outline<'a>(&'a mut PathBuilder);
@@ -36,7 +36,7 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     // Staff space -> pixels, leaving room above the first staff for marks.
     let base = Transform::from_scale(scale, scale).pre_translate(pad, pad + 6.0);
     let face = ttf_parser::Face::parse(FONT_DATA, 0).expect("font");
-    let ups = Font::bravura().units_per_space;
+    let byz = ttf_parser::Face::parse(crate::byz_font::BYZ_FONT_DATA, 0).expect("Byzantine font");
     let text_font: Option<Vec<u8>> = std::env::var("CORINZIA_TEXT_FONT").ok().and_then(|p| std::fs::read(p).ok());
     let p = |q: &Point| (q.x, q.y);
     let staff_lines = list.staves.iter().flat_map(|st| {
@@ -66,7 +66,9 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
                 }
             }
             Item::Glyph { glyph, at, scale, .. } => {
-                let Some(ch) = char::from_u32(*glyph) else { continue };
+                let face = if glyph & crate::byz_font::BYZ != 0 { &byz } else { &face };
+                let ups = face.units_per_em() as f32 / 4.0;
+                let Some(ch) = crate::byz_font::glyph_source(*glyph).1 else { continue };
                 let Some(gid) = face.glyph_index(ch) else { continue };
                 let mut pb = PathBuilder::new();
                 if face.outline_glyph(gid, &mut Outline(&mut pb)).is_none() {

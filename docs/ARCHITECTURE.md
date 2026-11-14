@@ -10,7 +10,8 @@ rust/
   corinzia-app       the application: UI, editor, playback glue, files
   corinzia-edit      pure editing operations (note input, ranges, structure, names)
   corinzia-model     project model + .project storage
-  corinzia-layout    the engraver: display lists, pages, PDF
+  corinzia-byz       Byzantine chant: neumes, modes, scales in moria, the melody
+  corinzia-layout    the engraver: display lists, pages, PDF (Western and Byzantine)
   corinzia-perform   the performance of a movement; tempo maps; export documents
   corinzia-audio     CLAP and VST3 host, plugin editors, realtime engine, PipeWire output
   corinzia-sine      Corinzia Sine, the built-in CLAP instrument
@@ -292,6 +293,26 @@ Items that join staves (barlines) belong to no staff's skyline.
 **Text** is measured with the font that draws it (`set_text_font`; the app
 uses DejaVu Serif). The test notation (`notation.rs`, LilyPond-like) builds
 scores for the engraving tests.
+
+## 4a. Byzantine chant (`corinzia-byz`, `corinzia-layout::byz`)
+
+Chrysanthine notation is a second notation, not a staff. `corinzia-byz`
+holds the model: a `Chant` is a mode signature (`ModeKey`: the mode, its
+base note and genus) and a line of elements (neumes, martyriae, breaks).
+A neume is a quantity sign (steps from the note before; some sing two
+notes), with an optional time sign, fthora and syllable. Scales are in the
+72 moria of the 1881 Patriarchal Commission; `Chant::sing` reads the chant
+as a singer does and returns each note's time, register and pitch, and
+anything that does not add up (a martyria naming another note, a gorgon too
+early). Neume values follow Neanes.
+
+`corinzia-layout::byz` engraves a chant with Neanes, an SBMuFL font
+(`assets/fonts/neanes`): marks go on neumes by the font's anchors (the base
+glyph's anchor minus the mark's), martyriae pair a note with its root sign
+for the genus and register, and lines are filled greedily and justified,
+with syllables centred under their neumes, hyphens and extenders.
+Display-list glyphs with the `BYZ` bit are drawn from Neanes by every
+renderer; at scale 1 an em is 4 staff spaces in both fonts.
 
 ## 4b. Import (`corinzia-import`)
 

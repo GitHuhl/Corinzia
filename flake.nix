@@ -101,6 +101,8 @@
           install -m755 rust/libpipewire-0.3.so.0 $app/usr/lib/no-pipewire/
           install -m644 ${textFont pkgs} $app/usr/share/corinzia/DejaVuSerif.ttf
           install -m644 ${pkgs.dejavu_fonts}/share/fonts/truetype/LICENSE $app/usr/share/corinzia/DejaVu-LICENSE 2>/dev/null || true
+          install -m644 assets/fonts/bravura/OFL.txt $app/usr/share/corinzia/Bravura-OFL.txt
+          install -m644 assets/fonts/neanes/OFL.txt $app/usr/share/corinzia/Neanes-OFL.txt
           install -m755 packaging/AppRun $app/AppRun
           install -m644 packaging/corinzia.desktop $app/corinzia.desktop
           install -m644 packaging/corinzia.desktop $app/usr/share/applications/
@@ -163,6 +165,8 @@
           x86_64-w64-mingw32-strip -o $dir/corinzia.exe rust/target/${target}/release/corinzia.exe
           for f in DejaVuSerif DejaVuSerif-Bold DejaVuSans DejaVuSans-Bold; do cp ${fonts}/$f.ttf $dir/fonts/; done
           cp packaging/windows/README.txt $dir/README.txt
+          cp assets/fonts/bravura/OFL.txt $dir/fonts/Bravura-OFL.txt
+          cp assets/fonts/neanes/OFL.txt $dir/fonts/Neanes-OFL.txt
           (cd $TMPDIR && zip -qr9 $out/Corinzia-x86_64-windows.zip Corinzia)
           runHook postInstall
         '';
