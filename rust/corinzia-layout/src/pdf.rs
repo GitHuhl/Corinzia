@@ -4,7 +4,7 @@
 //! them text is left out (as in the raster previews).
 
 use crate::display::{text_fonts, DisplayList, Item};
-use crate::font::{Font, FONT_DATA};
+use crate::font::FONT_DATA;
 use pdf_writer::types::LineCapStyle;
 use pdf_writer::{Content, Finish, Pdf, Rect, Ref, TextStr};
 
@@ -61,8 +61,8 @@ fn page_content(page: &DisplayList) -> Vec<u8> {
     c.set_line_cap(LineCapStyle::ButtCap);
     c.set_fill_gray(0.0);
     c.set_stroke_gray(0.0);
-    let music = ttf_parser::Face::parse(FONT_DATA, 0).expect("Bravura");
-    let ups = Font::bravura().units_per_space;
+    let bravura = ttf_parser::Face::parse(FONT_DATA, 0).expect("Bravura");
+    let byz = ttf_parser::Face::parse(crate::byz_font::BYZ_FONT_DATA, 0).expect("Byzantine font");
     let (regular, bold) = text_fonts();
     let regular = regular.and_then(|b| ttf_parser::Face::parse(b, 0).ok());
     let bold = bold.and_then(|b| ttf_parser::Face::parse(b, 0).ok());
@@ -81,7 +81,9 @@ fn page_content(page: &DisplayList) -> Vec<u8> {
     for item in &page.items {
         match item {
             Item::Glyph { glyph, at, scale, .. } => {
-                let Some(gid) = char::from_u32(*glyph).and_then(|ch| music.glyph_index(ch)) else { continue };
+                let music = if glyph & crate::byz_font::BYZ != 0 { &byz } else { &bravura };
+                let ups = music.units_per_em() as f32 / 4.0;
+                let Some(gid) = crate::byz_font::glyph_source(*glyph).1.and_then(|ch| music.glyph_index(ch)) else { continue };
                 let s = scale / ups;
                 let (ax, ay) = (at.x, at.y);
                 let mut o = Outline { c: &mut c, map: |x: f32, y: f32| to(ax + x * s, ay - y * s), last: (0.0, 0.0) };

@@ -7,7 +7,7 @@
 use crate::editor::SlurHandle;
 use corinzia_layout::display::{DisplayList, Item};
 use corinzia_score::score::ids;
-use corinzia_layout::font::{Font as MusicFont, FONT_DATA};
+use corinzia_layout::font::Font as MusicFont;
 use iced::mouse;
 use iced::widget::canvas::{self, path, Cache, Event, Frame, Geometry, Path, Stroke, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
@@ -51,10 +51,12 @@ fn glyph_path(codepoint: u32) -> Option<Path> {
             self.0.close();
         }
     }
-    let face = ttf_parser::Face::parse(FONT_DATA, 0).ok()?;
-    let gid = char::from_u32(codepoint).and_then(|c| face.glyph_index(c));
+    // Byzantine glyphs come from Neanes, the rest from Bravura.
+    let (data, ch) = corinzia_layout::byz_font::glyph_source(codepoint);
+    let face = ttf_parser::Face::parse(data, 0).ok()?;
+    let gid = ch.and_then(|c| face.glyph_index(c));
     let path = gid.and_then(|g| {
-        let mut b = B(path::Builder::new(), MusicFont::bravura().units_per_space);
+        let mut b = B(path::Builder::new(), face.units_per_em() as f32 / 4.0);
         face.outline_glyph(g, &mut b).map(|_| b.0.build())
     });
     cache.lock().unwrap().insert(codepoint, path.clone());

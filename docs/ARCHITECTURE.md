@@ -8,9 +8,10 @@ One process, one window (iced on wgpu), one project file (SQLite).
 ```
 rust/
   corinzia-app       the application: UI, editor, playback glue, files
-  corinzia-edit      pure editing operations (note input, ranges, structure)
+  corinzia-edit      pure editing operations (note input, ranges, structure, names)
   corinzia-model     project model + .project storage
-  corinzia-layout    the engraver: display lists, pages, PDF
+  corinzia-byz       Byzantine chant: neumes, modes, scales in moria, the melody
+  corinzia-layout    the engraver: display lists, pages, PDF (Western and Byzantine)
   corinzia-perform   the performance of a movement; tempo maps; export documents
   corinzia-audio     CLAP and VST3 host, plugin editors, realtime engine, PipeWire output
   corinzia-sine      Corinzia Sine, the built-in CLAP instrument
@@ -293,6 +294,26 @@ Items that join staves (barlines) belong to no staff's skyline.
 uses DejaVu Serif). The test notation (`notation.rs`, LilyPond-like) builds
 scores for the engraving tests.
 
+## 4a. Byzantine chant (`corinzia-byz`, `corinzia-layout::byz`)
+
+Chrysanthine notation is a second notation, not a staff. `corinzia-byz`
+holds the model: a `Chant` is a mode signature (`ModeKey`: the mode, its
+base note and genus) and a line of elements (neumes, martyriae, breaks).
+A neume is a quantity sign (steps from the note before; some sing two
+notes), with an optional time sign, fthora and syllable. Scales are in the
+72 moria of the 1881 Patriarchal Commission; `Chant::sing` reads the chant
+as a singer does and returns each note's time, register and pitch, and
+anything that does not add up (a martyria naming another note, a gorgon too
+early). Neume values follow Neanes.
+
+`corinzia-layout::byz` engraves a chant with Neanes, an SBMuFL font
+(`assets/fonts/neanes`): marks go on neumes by the font's anchors (the base
+glyph's anchor minus the mark's), martyriae pair a note with its root sign
+for the genus and register, and lines are filled greedily and justified,
+with syllables centred under their neumes, hyphens and extenders.
+Display-list glyphs with the `BYZ` bit are drawn from Neanes by every
+renderer; at scale 1 an em is 4 staff spaces in both fonts.
+
 ## 4b. Import (`corinzia-import`)
 
 `corinzia_import::musicxml` reads a `score-partwise` file (plain or `.mxl`)
@@ -414,8 +435,11 @@ output), automation, VST3 state in the project.
 
 | Module | Holds |
 |---|---|
-| `main.rs` | the iced application: messages, toolbar, Score and Mix tabs, popovers, status bar, autosave, `--keys` / `--screenshot` / `--export` |
-| `editor.rs` | the editing controller (§3) |
+| `main.rs` | startup: the module list, fonts, `main()` (headless `--export`, `--scan-plugin`, the window) |
+| `cli.rs` | command-line arguments, `--keys` parsing, saving screenshots |
+| `app/` | the iced application: `mod.rs` holds `App`, `Message` and the shared work (engraving, syncing playback, scrolling); `update.rs` and `view.rs`; `actions.rs` (keys and menus), `document.rs` (open, save, export), `mixing.rs` (the Mix tab), `piano_roll.rs`, `midi_keys.rs`; the app's tests in `tests/` (score, dialogs, document, playback, mixing; shared helpers in `tests/mod.rs`) |
+| `dialogs/` | the modal cards, each with its state, messages, handler and view: New score, Players, Layout, Preferences, the shortcut help |
+| `editor/` | the editing controller (§3): `mod.rs` holds the state, undo/redo and movements; one file per area (input, selection, spanners, structure, page items, clipboard, filters, players, tracks, mixer, automation) |
 | `keys.rs` | the keyboard map |
 | `score_view.rs` | the score canvas |
 | `panels.rs` | the Notes and Structure panels (SMuFL glyph buttons) |

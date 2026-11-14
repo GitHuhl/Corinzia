@@ -1,6 +1,7 @@
 //! Pure editing operations on the Corinzia model: note input and ranges
 //! (`note_input`), score structure (`structure`), tuplets (`tuplets`),
-//! filters (`select`), explode and reduce (`staves`).
+//! filters (`select`), explode and reduce (`staves`), and names and
+//! lookups shared with the app (`names`).
 //!
 //! Note input follows the "overwrite" model of the major notation editors:
 //! a new event occupies `[pos, pos + duration)`, anything it covers is removed
@@ -12,6 +13,7 @@
 //! undo). Element ids come from an [`Ids`] counter seeded from
 //! `Project::next_id` and written back afterwards.
 
+pub mod names;
 pub mod note_input;
 pub mod select;
 pub mod staves;
