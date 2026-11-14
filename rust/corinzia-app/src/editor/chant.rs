@@ -205,6 +205,17 @@ impl Editor {
         Ok(())
     }
 
+    /// The ison under the chant, on or off.
+    pub fn chant_toggle_ison(&mut self) {
+        let on = self.shown_chant().is_some_and(|c| !c.ison);
+        if self.chant_edit(if on { "Ison on" } else { "Ison off" }, |c, _| {
+            c.ison = on;
+            true
+        }) {
+            self.status = if on { "The ison is sung under the chant" } else { "No ison" }.into();
+        }
+    }
+
     pub fn chant_title(&mut self, text: &str) {
         let text = text.trim().to_string();
         self.chant_edit("Chant title", |c, _| {

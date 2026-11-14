@@ -141,6 +141,9 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                if self.editor.chant.is_some() && self.playback.is_playing() {
+                    self.follow_chant();
+                }
                 self.bounce_step();
                 if let Some(t) = self.autosave() {
                     return t;

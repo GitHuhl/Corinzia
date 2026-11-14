@@ -96,3 +96,40 @@ fn a_click_puts_the_caret_after_a_neume_and_a_chant_exports_to_pdf() {
     let _ = a.update(Message::Act(Action::Undo));
     assert_eq!(a.editor.project.chants.len(), 1);
 }
+
+#[test]
+fn a_chant_is_sung_in_its_genus_with_the_ison() {
+    let a = app(View::Page);
+    let c = &a.editor.project.chants[0];
+    let (tones, length) = crate::app::chant::chant_tones(c, corinzia_byz::Reference::default(), 0);
+    let (sung, _) = c.sing();
+    assert_eq!(tones.len(), sung.len() + 1, "every note and the ison");
+    let last = sung.last().unwrap();
+    assert!((length - quarters(last.start + last.length) / 4.0).abs() < 1e-9);
+    // Pa (12 moria above Ni = D4) is E4 exactly; diatonic Vou (22 moria) is
+    // F#4 a third of a semitone flat.
+    let pa = &tones[0];
+    assert_eq!((pa.key, pa.bend), (64, 0.0));
+    let vou = tones.iter().find(|t| t.key == 66).expect("Vou");
+    assert!((vou.bend as f64 + 33.333 / 200.0).abs() < 1e-3, "{}", vou.bend);
+    let ison = tones.last().unwrap();
+    assert_eq!((ison.key, ison.channel, ison.on, ison.off), (52, 1, 0.0, length), "Pa an octave down, held");
+    // Diatonic Ga (30 moria) is G4 exactly; after the fthora to the hard
+    // chromatic it is 38 moria: G#4 a third of a semitone sharp.
+    assert!(tones.iter().any(|t| (t.key, t.bend) == (67, 0.0)));
+    assert!(tones.iter().any(|t| t.key == 68 && (t.bend as f64 - 33.333 / 200.0).abs() < 1e-3), "hard chromatic Ga");
+}
+
+#[test]
+fn space_sings_the_chant_from_the_caret_and_shift_d_drops_the_ison() {
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::Chant(Some(0))));
+    key(&mut a, "home");
+    key(&mut a, "space");
+    assert!(a.editor.status.starts_with("Singing on"), "{}", a.editor.status);
+    assert!(a.editor.status.ends_with("with the ison"));
+    key(&mut a, "shift+d");
+    assert!(!shown(&a).ison);
+    let _ = a.update(Message::Act(Action::Undo));
+    assert!(shown(&a).ison);
+}

@@ -40,8 +40,12 @@ parallel on every core, that outputs through PipeWire.
   the Notes panel becomes a neume palette, and F1 lists the keys. The melody
   is worked out in the 72 moria of each genus, and a martyria that does not
   match it is named in the status bar. Export → PDF prints the chant shown;
-  `--chant N` opens on chant N. Playback in the modes' intervals and saving
-  chants in the project come next.
+  `--chant N` opens on chant N. Space sings the chant from the caret on
+  the first player's instrument, every note at its pitch in moria (the
+  nearest key, pitch-bent; Corinzia Sine follows the usual ±2 semitone
+  bend), with the ison held an octave under the mode's base note (Shift+D
+  turns it off); the neume being sung is highlighted. Chants are not saved
+  in the project yet.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
   such as "Flute, 2 Violin" with any name), remove players with their
   music, and reorder them; Apply makes it one undo step. New players get

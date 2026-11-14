@@ -99,6 +99,7 @@ pub(crate) fn help_card() -> Element<'static, Message> {
                 ("G", "Gorgon, digorgon, trigorgon"),
                 ("F", "Fthora on the neume's note"),
                 ("M  Shift+M", "Martyria; the mode"),
+                ("Space  Shift+D", "Sing from the caret; ison on / off"),
                 ("Enter", "Line break"),
                 ("Ctrl+L", "Syllables (space: next neume)"),
                 ("Double-click", "Syllables from that neume"),

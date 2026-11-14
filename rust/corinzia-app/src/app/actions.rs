@@ -137,6 +137,7 @@ impl App {
             Action::ChantFthora => ed.chant_fthora(),
             Action::ChantMartyria => ed.chant_martyria(),
             Action::ChantBreak => ed.chant_break(),
+            Action::ChantIson => ed.chant_toggle_ison(),
             Action::MovementStep(d) => {
                 let i = (ed.movement as i64 + d).clamp(0, ed.project.movements.len() as i64 - 1) as usize;
                 ed.switch_movement(i);
@@ -275,7 +276,7 @@ impl App {
             return;
         }
         if self.editor.chant.is_some() {
-            self.editor.status = "Playing chants in their modes comes next".into();
+            self.play_chant();
             return;
         }
         // From the selection, else the caret.

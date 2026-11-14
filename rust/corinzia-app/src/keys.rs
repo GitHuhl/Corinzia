@@ -29,6 +29,8 @@ pub enum Action {
     ChantFthora,
     ChantMartyria,
     ChantBreak,
+    /// The ison under the chant, on or off.
+    ChantIson,
     DeleteMovement,
     GraceInput(bool), // grace note input on/off (slashed?)
     Nudge(i64),   // move the selection by the rhythmic grid

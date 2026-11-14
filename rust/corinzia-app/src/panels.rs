@@ -321,6 +321,7 @@ fn neumes(ed: &Editor) -> Element<'_, Action> {
         wide("Syllables…", false, "Ctrl+L: the syllables, from the caret on (space: next neume, - : the word goes on)", Action::Popover(PopoverKind::ChantLyric)),
         wide("Mode…", false, "Shift+M: 1–8, α΄, πλ. β΄, βαρύς", Action::Popover(PopoverKind::ChantMode)),
         wide("Line break", false, "Enter: end the line here (again joins it)", Action::ChantBreak),
+        wide("Ison (drone)", ed.shown_chant().is_some_and(|c| c.ison), "Shift+D: the mode's base note held under the melody, an octave down", Action::ChantIson),
         wide("Back to the movement", false, "The Western score again", Action::Chant(None)),
     ]
     .spacing(6)

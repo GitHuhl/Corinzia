@@ -632,7 +632,7 @@ impl Engine {
                 Kind::BusPan => (7u64 << 60) | n.node as u64,
                 Kind::MasterGain => 8u64 << 60,
                 Kind::Send { index } => (9u64 << 60) | ((n.node as u64) << 8) | index as u64,
-                Kind::PitchBend => (10u64 << 60) | n.node as u64,
+                Kind::PitchBend => (10u64 << 60) | ((n.node as u64) << 8) | (n.channel as u64 & 15),
             };
             if done[..n_done].contains(&key) {
                 continue;

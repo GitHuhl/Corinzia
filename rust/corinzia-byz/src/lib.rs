@@ -109,6 +109,9 @@ pub struct Chant {
     pub mode: ModeKey,
     /// Beats per minute.
     pub tempo: u32,
+    /// Sing the ison under the melody: the mode's base note, held, an
+    /// octave down.
+    pub ison: bool,
     pub elements: Vec<Element>,
 }
 
@@ -138,12 +141,19 @@ pub enum Problem {
 
 impl Chant {
     pub fn new(title: &str, echos: Echos) -> Chant {
-        Chant { title: title.into(), mode: ModeKey::new(echos), tempo: 120, elements: vec![] }
+        Chant { title: title.into(), mode: ModeKey::new(echos), tempo: 100, ison: true, elements: vec![] }
     }
 
     pub fn push(&mut self, n: Neume) -> &mut Chant {
         self.elements.push(Element::Neume(n));
         self
+    }
+
+    /// The ison's note and pitch (moria above the middle Ni): the mode's
+    /// base, an octave down, in the mode's genus.
+    pub fn ison_note(&self) -> (Note, i32) {
+        let n = self.mode.base.step(-7);
+        (n, self.mode.genus.moria(n))
     }
 
     /// The melody, note by note, and anything that does not add up.

@@ -346,6 +346,46 @@ pub fn build_from_pool(project: &Project, sample_rate: f64, generation: u64, mov
     snap
 }
 
+/// A tone of a melody given note by note (a Byzantine chant): times in
+/// beats, the key and the pitch bend (-1..1 of the instrument's range,
+/// ±2 semitones by MIDI convention) that make its pitch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tone {
+    pub on: f64,
+    pub off: f64,
+    pub key: i16,
+    pub bend: f32,
+    pub channel: i16,
+    pub velocity: f32,
+    /// The element sounding (highlighting).
+    pub element: Id,
+}
+
+/// A plan that plays `tones` on `track`'s instrument, through the
+/// project's mixer, as one section (`section`: its id on the timeline,
+/// `bpm`: the beat, `length`: in beats). Each tone's bend is set on its
+/// channel just before it starts.
+pub fn build_tones_from_pool(project: &Project, sample_rate: f64, generation: u64, section: Id, bpm: f64, length: f64, track: Id, tones: &[Tone], pool: &mut crate::pool::PluginPool) -> Snapshot {
+    let mut snap = build_from_pool(project, sample_rate, generation, &[], pool);
+    let tempo = TempoMap::new(&[corinzia_perform::tempo::TempoPoint { quarter: 0.0, bpm, ramp_to_next: false }], &[]);
+    let to_sample = |beat: f64| (tempo.seconds_at(beat.max(0.0)) * sample_rate).round() as i64;
+    if let Some(strip) = snap.nodes.iter().position(|n| n.track == track) {
+        let node = snap.nodes[strip].host.unwrap_or(strip as u32);
+        let port = project.track(track).map(|t| t.note_port as i16).unwrap_or(0);
+        for (k, t) in tones.iter().enumerate() {
+            let on = to_sample(t.on);
+            let off = to_sample(t.off).max(on + 1);
+            let base = ScheduledNote { kind: Kind::Note, at: on, node, note_id: k as i32, port, channel: t.channel, key: t.key, on: true, velocity: t.velocity, element: t.element };
+            snap.notes.push(ScheduledNote { kind: Kind::PitchBend, at: (on - 1).max(0), note_id: -1, on: false, velocity: t.bend.clamp(-1.0, 1.0), ..base });
+            snap.notes.push(base);
+            snap.notes.push(ScheduledNote { at: off, on: false, ..base });
+        }
+    }
+    snap.notes.sort_by_key(|n| (n.at, n.on));
+    snap.sections = vec![Section { movement: section, start: 0, end: to_sample(length), sample_rate, tempo, meters: vec![], spans: vec![] }];
+    snap
+}
+
 /// Tracks' levels: (track, linear gain, pan, audible, direct) (see `solo`).
 pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool, bool)> {
     let (heard, _) = solo(project);
