@@ -245,3 +245,58 @@ fn tweaks_round_trip() {
     assert_eq!(load(&path).unwrap().movements[0].tweaks, a.movements[0].tweaks);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+fn temp(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("corinzia-store-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("p.project")
+}
+
+#[test]
+fn chants_round_trip() {
+    let path = temp("chants");
+    let mut p = sample();
+    let mut c = corinzia_byz::demo();
+    c.ison = false;
+    c.mode = corinzia_byz::ModeKey::new(corinzia_byz::Echos::PlagalSecond);
+    p.chants = vec![c.clone(), corinzia_byz::Chant::new("Empty", corinzia_byz::Echos::Varys)];
+    save(&p, &path).unwrap();
+    let back = load(&path).unwrap();
+    assert_eq!(back.chants.len(), 2);
+    assert_eq!(back.chants[0], c);
+    assert_eq!(back.chants[1].title, "Empty");
+    // Saved again without them: they are gone.
+    save(&Project { chants: vec![], ..back }, &path).unwrap();
+    assert!(load(&path).unwrap().chants.is_empty());
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}
+
+#[test]
+fn files_of_another_format_or_kind_are_refused_untouched() {
+    use corinzia_model::store::{format_version, FORMAT_VERSION};
+    let path = temp("versions");
+    save(&sample(), &path).unwrap();
+    assert_eq!(format_version(&path), Some(FORMAT_VERSION));
+    let stamp = |v: i64| {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.pragma_update(None, "user_version", v).unwrap();
+    };
+    stamp(FORMAT_VERSION + 1);
+    let e = load(&path).unwrap_err().to_string();
+    assert!(e.contains("newer Corinzia"), "{e}");
+    assert!(save(&sample(), &path).is_err(), "not overwritten either");
+    assert_eq!(format_version(&path), Some(FORMAT_VERSION + 1));
+    stamp(1);
+    let e = load(&path).unwrap_err().to_string();
+    assert!(e.contains("earlier Corinzia preview"), "{e}");
+    // Another SQLite database, and a file that is not a database at all.
+    let other = path.with_file_name("other.db");
+    rusqlite::Connection::open(&other).unwrap().execute_batch("CREATE TABLE t(x)").unwrap();
+    assert!(load(&other).unwrap_err().to_string().contains("not a Corinzia project"));
+    assert!(save(&sample(), &other).is_err());
+    let text = path.with_file_name("notes.project");
+    std::fs::write(&text, "not a database, just some notes that should stay").unwrap();
+    assert!(load(&text).is_err() && save(&sample(), &text).is_err());
+    assert_eq!(std::fs::read_to_string(&text).unwrap(), "not a database, just some notes that should stay");
+    std::fs::remove_dir_all(path.parent().unwrap()).ok();
+}

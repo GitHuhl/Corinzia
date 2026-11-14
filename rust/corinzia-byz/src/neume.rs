@@ -10,7 +10,7 @@ use crate::scale::{Degree, Genus};
 
 /// The body of a neume and the notes it sings, as steps from the note
 /// before it (each step relative to the previous note).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Quantity {
     /// The same note again.
     Ison,
@@ -68,7 +68,7 @@ impl Quantity {
 }
 
 /// A time sign on a neume.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TimeSign {
     /// One beat more (on the neume's last note).
     Klasma,
@@ -86,14 +86,14 @@ pub enum TimeSign {
 
 /// A fthora: from this neume's (first) note on, the melody is sung in
 /// `genus`, and that note is `degree`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Fthora {
     pub genus: Genus,
     pub degree: Degree,
 }
 
 /// A neume with its signs and the syllable sung on it.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Neume {
     pub quantity: Option<Quantity>,
     pub time: Option<TimeSign>,

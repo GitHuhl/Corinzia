@@ -44,8 +44,8 @@ parallel on every core, that outputs through PipeWire.
   the first player's instrument, every note at its pitch in moria (the
   nearest key, pitch-bent; Corinzia Sine follows the usual ±2 semitone
   bend), with the ison held an octave under the mode's base note (Shift+D
-  turns it off); the neume being sung is highlighted. Chants are not saved
-  in the project yet.
+  turns it off); the neume being sung is highlighted. Chants are saved
+  with the project.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
   such as "Flute, 2 Violin" with any name), remove players with their
   music, and reorder them; Apply makes it one undo step. New players get
@@ -261,9 +261,11 @@ default output device (WASAPI). CLAP instruments are found in
 instruments in `%LOCALAPPDATA%\Programs\Common\VST3` and
 `%COMMONPROGRAMFILES%\VST3`.
 
-**This is a preview:** saving projects is turned off while the file format
-is still changing. Open and import scores, edit, play, and export to PDF,
-MIDI or MusicXML.
+**This is a preview:** the `.project` format is still changing. Each file
+records its format version, and a version of Corinzia opens only its own:
+a file from an earlier or later version is refused (never misread or
+overwritten), so keep MusicXML exports of anything you need to carry
+across versions.
 
 Found a bug? Please [open an issue](https://github.com/githuhl/corinzia/issues).
 

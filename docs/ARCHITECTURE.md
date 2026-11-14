@@ -314,7 +314,7 @@ with syllables centred under their neumes, hyphens and extenders.
 Display-list glyphs with the `BYZ` bit are drawn from Neanes by every
 renderer; at scale 1 an em is 4 staff spaces in both fonts.
 
-In the app, `Project::chants` holds the chants (not saved yet) and the
+In the app, `Project::chants` holds the chants (saved as JSON in the `setting` table) and the
 editor's `chant` names the one shown in place of the movement, with a caret
 between its elements (`editor/chant.rs`; every change one undo step).
 `app/chant.rs` maps keys and clicks to it; the Notes panel becomes a neume

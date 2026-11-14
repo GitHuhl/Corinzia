@@ -17,7 +17,7 @@ pub use scale::*;
 use corinzia_score::Frac;
 
 /// The eight modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Echos {
     First,
     Second,
@@ -78,7 +78,7 @@ impl Echos {
 
 /// The mode signature at the head of a chant: its mode, and the note and
 /// genus the melody starts from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModeKey {
     pub echos: Echos,
     pub base: Note,
@@ -93,7 +93,7 @@ impl ModeKey {
 }
 
 /// One thing on the line of a chant.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Element {
     Neume(Neume),
     /// A martyria: the note the melody stands on here.
@@ -103,7 +103,7 @@ pub enum Element {
 }
 
 /// A chant: a title, a mode signature, a tempo and a line of elements.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chant {
     pub title: String,
     pub mode: ModeKey,

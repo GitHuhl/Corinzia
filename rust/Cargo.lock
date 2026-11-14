@@ -836,6 +836,7 @@ name = "corinzia-byz"
 version = "0.2.6"
 dependencies = [
  "corinzia-score",
+ "serde",
 ]
 
 [[package]]

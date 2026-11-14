@@ -223,9 +223,6 @@ impl App {
             Action::FirstSecondEndings => ed.add_first_second_endings(),
             Action::Undo => ed.undo(),
             Action::Redo => ed.redo(),
-            Action::Save | Action::SaveAs if !self.saving_enabled => {
-                ed.status = "Saving is turned off in this preview build · export to PDF, MIDI or MusicXML instead".into();
-            }
             Action::Save if self.path.is_some() => self.save(self.path.clone().unwrap()),
             Action::Save | Action::SaveAs => return self.ask_save_path(),
             Action::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),

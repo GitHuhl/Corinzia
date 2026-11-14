@@ -36,27 +36,11 @@ fn without_a_system_file_dialog_corinzias_browser_opens() {
 }
 
 #[test]
-fn saving_is_off_in_the_preview() {
-    let dir = std::env::temp_dir().join(format!("corinzia-nosave-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("demo.project");
-    let mut a = app(View::Page);
-    a.path = Some(path.clone());
-    key(&mut a, "ctrl+a");
-    key(&mut a, "[");
-    let _ = a.update(Message::Act(Action::Save));
-    assert!(a.editor.status.starts_with("Saving is turned off"), "{}", a.editor.status);
-    assert!(a.autosave_at.is_none() && !path.exists());
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
 fn saves_a_project_both_apps_can_open() {
     let dir = std::env::temp_dir().join(format!("corinzia-app-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("demo.project");
     let mut a = app(View::Page);
-    a.saving_enabled = true;
     a.path = Some(path.clone());
     let _ = a.update(Message::Act(Action::Save));
     assert!(a.editor.status.starts_with("Saved"), "{}", a.editor.status);
@@ -108,7 +92,6 @@ fn autosaves_projects_with_a_file() {
     let path = dir.join("a.project");
     corinzia_model::store::save(&demo::project(), &path).unwrap();
     let mut a = App::new(corinzia_model::store::load(&path).unwrap(), Some(path.clone()), View::Page, String::new());
-    a.saving_enabled = true;
     assert!(a.autosave_at.is_none(), "nothing to save after opening");
     key(&mut a, "ctrl+a");
     key(&mut a, "[");

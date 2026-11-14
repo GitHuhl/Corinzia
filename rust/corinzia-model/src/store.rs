@@ -9,7 +9,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub const SCHEMA: &str = include_str!("../../../schema/project.sql");
-const SCHEMA_VERSION: i64 = 1;
+/// The file format this version reads and writes (`PRAGMA user_version`).
+/// The format is not stable yet: a file of another version is refused, not
+/// guessed at. 2: Byzantine chants.
+pub const FORMAT_VERSION: i64 = 2;
+/// `PRAGMA application_id` of a .project file: "CORZ".
+const APPLICATION_ID: i64 = 1129271898;
 /// Voice content is stored in chunks of this many whole notes.
 const CHUNK_WHOLE_NOTES: i64 = 4;
 
@@ -46,12 +51,42 @@ fn chunk_of(start: Frac) -> i64 {
     start.num.div_euclid(start.den * CHUNK_WHOLE_NOTES)
 }
 
-/// Opens (creating or migrating as needed) a project database.
+/// Opens a project database, creating it if the file is new or empty. A
+/// file that is not a Corinzia project, or is of another format version,
+/// is refused and left untouched.
 fn open_db(path: &Path) -> Result<Connection> {
     let db = Connection::open(path)?;
+    let not_a_project = || Error(format!("{} is not a Corinzia project", path.display()));
+    let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_schema", [], |r| r.get(0)).map_err(|_| not_a_project())?;
+    if tables > 0 {
+        let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if app != APPLICATION_ID {
+            return Err(not_a_project());
+        }
+        if version > FORMAT_VERSION {
+            return Err(Error(format!(
+                "{} was saved by a newer Corinzia (file format {version}; this version reads format {FORMAT_VERSION}): open it there, or export MusicXML from it",
+                path.display()
+            )));
+        }
+        if version < FORMAT_VERSION {
+            return Err(Error(format!(
+                "{} was saved by an earlier Corinzia preview (file format {version}; this version reads format {FORMAT_VERSION}): the format is not stable yet, so open it in that version and export MusicXML",
+                path.display()
+            )));
+        }
+    }
     db.execute_batch(SCHEMA)?;
-    db.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    db.pragma_update(None, "user_version", FORMAT_VERSION)?;
     Ok(db)
+}
+
+/// The format version of a project file (`None`: not a Corinzia project).
+pub fn format_version(path: &Path) -> Option<i64> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let app: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).ok()?;
+    (app == APPLICATION_ID).then(|| db.pragma_query_value(None, "user_version", |r| r.get(0)).ok()).flatten()
 }
 
 pub fn load(path: &Path) -> Result<Project> {
@@ -86,6 +121,9 @@ pub fn load(path: &Path) -> Result<Project> {
         Some(v) => layout_from(&v, Layout::parts()),
         None => Layout::parts(),
     };
+    if let Some(c) = setting("chants")? {
+        p.chants = serde_json::from_value(c)?;
+    }
     if let Some(t) = setting("texts")? {
         let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
         (p.subtitle, p.lyricist, p.arranger, p.copyright) = (s("subtitle"), s("lyricist"), s("arranger"), s("copyright"));
@@ -630,7 +668,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer)] {
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?)] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

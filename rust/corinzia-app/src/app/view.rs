@@ -93,8 +93,8 @@ impl App {
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
             .push(panels::tip(flat("Import", true, Message::Import), "Import MusicXML (.musicxml, .xml, .mxl) as a new score"))
             .push(panels::tip(
-                flat("Save", self.saving_enabled, Message::Act(Action::Save)),
-                if self.saving_enabled { "Save (Ctrl+S)" } else { "Saving is turned off in this preview build" },
+                flat("Save", true, Message::Act(Action::Save)),
+                "Save (Ctrl+S)",
             ))
             .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
@@ -193,7 +193,7 @@ impl App {
         if self.confirm.is_some() {
             let card = column![
                 text("Discard the changes to this score?").size(16).font(bold),
-                text("Saving is not available in this preview, so they cannot be kept; export first if you need them.").size(12).style(theme::dim),
+                text("They have not been saved.").size(12).style(theme::dim),
                 row![
                     panels::spacer(),
                     button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::ConfirmDiscard(false)),
