@@ -831,6 +831,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "corinzia-byz"
+version = "0.2.6"
+dependencies = [
+ "corinzia-score",
+]
+
+[[package]]
 name = "corinzia-edit"
 version = "0.2.6"
 dependencies = [

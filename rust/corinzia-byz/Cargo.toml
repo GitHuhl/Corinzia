@@ -1,0 +1,9 @@
+[package]
+name = "corinzia-byz"
+description = "Byzantine chant notation (Chrysanthine): neumes, modes, scales in moria, and the melody they spell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corinzia-score.workspace = true

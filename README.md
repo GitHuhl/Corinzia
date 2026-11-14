@@ -272,6 +272,7 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 | Path | What |
 |---|---|
 | `rust/corinzia-app` | the application (iced): score canvas, editor, panels, playback, Mix tab, files |
+| `rust/corinzia-byz` | Byzantine chant (Chrysanthine notation): neumes, modes, scales in moria, the melody a chant spells |
 | `rust/corinzia-edit` | pure editing operations: note input, ranges, structure, popover parsing, pitch and interval names |
 | `rust/corinzia-model` | project model and `.project` storage (SQLite, `schema/project.sql`) |
 | `rust/corinzia-layout` | the engraver: display lists, page layout, PDF |
