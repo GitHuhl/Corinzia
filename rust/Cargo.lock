@@ -792,6 +792,7 @@ name = "corinzia-app"
 version = "0.2.6"
 dependencies = [
  "corinzia-audio",
+ "corinzia-byz",
  "corinzia-edit",
  "corinzia-import",
  "corinzia-layout",
@@ -882,6 +883,7 @@ dependencies = [
 name = "corinzia-model"
 version = "0.2.6"
 dependencies = [
+ "corinzia-byz",
  "corinzia-score",
  "rusqlite",
  "serde",

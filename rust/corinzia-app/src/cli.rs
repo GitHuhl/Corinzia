@@ -11,16 +11,19 @@ pub(crate) struct Args {
     pub(crate) export: Option<PathBuf>,
     /// Show player N's part (from 1).
     pub(crate) part: Option<usize>,
+    /// Show Byzantine chant N (from 1).
+    pub(crate) chant: Option<usize>,
 }
 
 pub(crate) fn args() -> Args {
-    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None };
+    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None, chant: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--view" => a.view = if it.next().as_deref() == Some("panorama") { View::Panorama } else { View::Page },
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--part" => a.part = it.next().and_then(|n| n.parse().ok()),
+            "--chant" => a.chant = it.next().and_then(|n| n.parse().ok()),
             // Scripted key presses (testing and demos): "n c d shift+e ctrl+z".
             // Export the (edited) movement and exit: format from the extension.
             "--export" => a.export = it.next().map(PathBuf::from),
@@ -61,6 +64,7 @@ pub(crate) fn parse_key_token(t: &str) -> Option<(iced::keyboard::Key, iced::key
         "home" => Key::Named(Named::Home),
         "end" => Key::Named(Named::End),
         "f1" => Key::Named(Named::F1),
+        "return" => Key::Named(Named::Enter),
         c => Key::Character(c.into()),
     };
     Some((key, mods))

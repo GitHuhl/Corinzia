@@ -8,7 +8,7 @@ use iced::Element;
 
 /// The keyboard shortcut overview (F1).
 pub(crate) fn help_card() -> Element<'static, Message> {
-    const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
+    const SECTIONS: [(&str, &[(&str, &str)]); 5] = [
         (
             "Note input",
             &[
@@ -86,6 +86,22 @@ pub(crate) fn help_card() -> Element<'static, Message> {
                 ("Ctrl+N  O  S", "New, open, save"),
                 ("Ctrl+1  2", "Score, Mix"),
                 ("F1", "This overview"),
+            ],
+        ),
+        (
+            "Byzantine chant",
+            &[
+                ("0 1 2 3 4 5", "Ison, oligon, kentima, +3, +4, +5"),
+                ("A  E  Shift+E  C", "Apostrofos, elafron, −3, chamili"),
+                ("Y  P  K", "Yporroi, petasti, kentimata"),
+                ("Shift+K  Shift+I", "Kentimata under oligon; with ison"),
+                (".  D", "Klasma; dipli, tripli"),
+                ("G", "Gorgon, digorgon, trigorgon"),
+                ("F", "Fthora on the neume's note"),
+                ("M  Shift+M", "Martyria; the mode"),
+                ("Enter", "Line break"),
+                ("Ctrl+L", "Syllables (space: next neume)"),
+                ("Double-click", "Syllables from that neume"),
             ],
         ),
     ];

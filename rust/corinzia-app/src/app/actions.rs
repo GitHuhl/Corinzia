@@ -116,7 +116,27 @@ impl App {
             Action::Accidental(x) if !ed.input_mode && ed.has_selection() => ed.set_selection_accidental(x),
             Action::Triplet => ed.toggle_triplets(),
             Action::GraceInput(slash) => ed.toggle_grace_input(slash),
-            Action::Movement(i) => ed.switch_movement(i),
+            Action::Movement(i) => {
+                if ed.chant.is_some() {
+                    ed.show_chant(None);
+                }
+                ed.switch_movement(i);
+            }
+            Action::Chant(i) => ed.show_chant(i),
+            Action::AddChant => ed.add_chant(corinzia_byz::Echos::First),
+            Action::DeleteChant => ed.delete_chant(),
+            Action::ChantNeume(q) => ed.chant_neume(q),
+            Action::ChantTime(k) => {
+                use corinzia_byz::TimeSign::*;
+                ed.chant_time(match k {
+                    0 => &[Klasma],
+                    1 => &[Gorgon, Digorgon, Trigorgon],
+                    _ => &[Dipli, Tripli],
+                })
+            }
+            Action::ChantFthora => ed.chant_fthora(),
+            Action::ChantMartyria => ed.chant_martyria(),
+            Action::ChantBreak => ed.chant_break(),
             Action::MovementStep(d) => {
                 let i = (ed.movement as i64 + d).clamp(0, ed.project.movements.len() as i64 - 1) as usize;
                 ed.switch_movement(i);
@@ -254,6 +274,10 @@ impl App {
             self.playback.stop();
             return;
         }
+        if self.editor.chant.is_some() {
+            self.editor.status = "Playing chants in their modes comes next".into();
+            return;
+        }
         // From the selection, else the caret.
         let ed = &self.editor;
         let (Some(m), Some((_, at))) = (ed.movement(), ed.structure_target()) else { return };
@@ -313,6 +337,7 @@ impl App {
         let commits = p.target.is_none()
             && match p.kind {
                 PopoverKind::Lyrics => matches!(last, Some(' ' | '-' | '_')),
+                PopoverKind::ChantLyric => matches!(last, Some(' ' | '-')),
                 PopoverKind::Chord => last == Some(' '),
                 _ => false,
             };
@@ -323,6 +348,8 @@ impl App {
         let word = s[..s.len() - 1].trim().to_string();
         let kind = p.kind;
         let result = match kind {
+            // A syllable for the next neume; a hyphen keeps the word going.
+            PopoverKind::ChantLyric => self.editor.chant_lyric_next(&if last == Some('-') { format!("{word}-") } else { word.clone() }),
             PopoverKind::Lyrics => self.editor.enter_lyric(self.editor.lyric_verse, &word, last == Some('-'), last == Some('_')).map(|_| ()),
             _ if word.is_empty() => {
                 self.editor.advance_target();

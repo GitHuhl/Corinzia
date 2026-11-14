@@ -234,6 +234,15 @@ impl Editor {
     /// Applies a popover; `Err` carries the hint to show.
     pub fn apply_popover(&mut self, kind: PopoverKind, input: &str) -> Result<(), String> {
         let text = input.trim().to_string();
+        match kind {
+            PopoverKind::ChantLyric => return self.chant_lyric(&text),
+            PopoverKind::ChantMode => return self.chant_mode(&text),
+            PopoverKind::ChantTitle => {
+                self.chant_title(&text);
+                return Ok(());
+            }
+            _ => {}
+        }
         if kind == PopoverKind::Fingering {
             let fingers = edit::parse_fingering(&text).ok_or("Fingering not understood: 1, 2… or \"1 3 5\" for a chord")?;
             if self.range.is_none() && self.selection.is_none() {
@@ -416,7 +425,7 @@ impl Editor {
                 };
                 return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter | PopoverKind::ChantLyric | PopoverKind::ChantMode | PopoverKind::ChantTitle => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);

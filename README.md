@@ -30,6 +30,18 @@ parallel on every core, that outputs through PipeWire.
   signature or barline to change it (a right-drag pans).
   Escape or a click on blank paper deselects. Every action is one undo
   step.
+* **Byzantine chant** (Structure → Byzantine chants): chants in
+  Chrysanthine notation, shown in the Score tab in place of the movement
+  and engraved with the Neanes font: the mode signature, neumes with their
+  time signs, gorgons and fthoras, martyriae, and Greek syllables with
+  hyphens and melismas, on justified lines. Type neumes at the caret (0–5
+  up, A E C down, Y P K…), `.` G D for time, F a fthora on the neume's note,
+  M a martyria, Ctrl+L syllables as a stream, Shift+M the mode ("πλ. β΄");
+  the Notes panel becomes a neume palette, and F1 lists the keys. The melody
+  is worked out in the 72 moria of each genus, and a martyria that does not
+  match it is named in the status bar. Export → PDF prints the chant shown;
+  `--chant N` opens on chant N. Playback in the modes' intervals and saving
+  chants in the project come next.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
   such as "Flute, 2 Violin" with any name), remove players with their
   music, and reorder them; Apply makes it one undo step. New players get

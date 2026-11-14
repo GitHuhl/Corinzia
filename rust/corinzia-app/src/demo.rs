@@ -82,6 +82,7 @@ pub fn project() -> Project {
         lanes, breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
     });
     p.next_id = id + 1;
+    p.chants.push(corinzia_byz::demo());
     p
 }
 

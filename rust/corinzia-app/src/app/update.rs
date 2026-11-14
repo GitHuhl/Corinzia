@@ -235,6 +235,11 @@ impl App {
             self.selected_clip = None;
             return Some(Task::none());
         }
+        if self.tab == Tab::Score && self.editor.chant.is_some() {
+            if let Some(t) = self.chant_key(key, mods) {
+                return Some(t);
+            }
+        }
         let action = keys::map(key, mods, self.editor.input_mode)?;
         Some(self.act(action))
     }
@@ -251,6 +256,7 @@ impl App {
                 self.pan = Vector::new(around.x - (around.x - self.pan.x) * k, around.y - (around.y - self.pan.y) * k);
                 self.zoom = z;
             }
+            ViewEvent::Click { hit, .. } if self.editor.chant.is_some() => self.chant_click(hit),
             ViewEvent::Click { hit, at, shift } => {
                 self.export_menu = false;
                 self.editor.status.clear();
@@ -262,6 +268,14 @@ impl App {
                 }
                 self.click(hit, at, shift);
             }
+            // In a chant: a double click types the syllables from that neume on.
+            ViewEvent::DoubleClick { hit: Some(id) } if self.editor.chant.is_some() && id > 0 => {
+                self.editor.chant_caret = id as usize - 1;
+                self.editor.revision += 1;
+                self.sync();
+                return Some(self.open_popover(PopoverKind::ChantLyric));
+            }
+            ViewEvent::Marquee { .. } | ViewEvent::SlurDrag { .. } | ViewEvent::Context { .. } | ViewEvent::DoubleClick { .. } if self.editor.chant.is_some() => {}
             ViewEvent::Marquee { ids, shift } => self.editor.select_elements(&ids, shift),
             ViewEvent::SlurDrag { handle, at } => {
                 self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));

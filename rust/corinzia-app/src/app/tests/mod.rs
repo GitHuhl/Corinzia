@@ -6,6 +6,7 @@ use corinzia_layout::display::Item;
 use crate::editor::SlurHandle;
 use corinzia_model::dynamic_index;
 
+mod chant;
 mod dialogs;
 mod document;
 mod mixing;

@@ -314,6 +314,12 @@ with syllables centred under their neumes, hyphens and extenders.
 Display-list glyphs with the `BYZ` bit are drawn from Neanes by every
 renderer; at scale 1 an em is 4 staff spaces in both fonts.
 
+In the app, `Project::chants` holds the chants (not saved yet) and the
+editor's `chant` names the one shown in place of the movement, with a caret
+between its elements (`editor/chant.rs`; every change one undo step).
+`app/chant.rs` maps keys and clicks to it; the Notes panel becomes a neume
+palette, and PDF export prints the chant shown.
+
 ## 4b. Import (`corinzia-import`)
 
 `corinzia_import::musicxml` reads a `score-partwise` file (plain or `.mxl`)
