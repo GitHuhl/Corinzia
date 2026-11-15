@@ -664,3 +664,33 @@ fn tracks_sharing_a_plugin_node_play_through_one_instance_on_their_channels() {
     let snap = snapshot::build_from_pool(&p, SR, 2, &[0], &mut pool);
     assert!(snap.nodes[1].host.is_none() && snap.nodes.iter().filter(|n| n.plugin.is_some()).count() == 2);
 }
+
+/// The dominant frequency of a stretch of samples, by zero crossings.
+fn frequency(x: &[f32]) -> f64 {
+    let crossings = x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+    crossings as f64 * SR / x.len() as f64
+}
+
+#[test]
+fn tones_play_at_their_bent_pitch_with_a_drone_unbent() {
+    let p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    // A' (69) bent up a semitone on channel 0 = 466.16 Hz; nothing else for
+    // the first beat, then a drone on channel 1 joins, its own bend at 0.
+    let tones = [
+        snapshot::Tone { on: 0.0, off: 2.0, key: 69, bend: 0.5, channel: 0, velocity: 0.8, element: 1 },
+        snapshot::Tone { on: 1.0, off: 2.0, key: 57, bend: 0.0, channel: 1, velocity: 0.8, element: 0 },
+    ];
+    let snap = snapshot::build_tones_from_pool(&p, SR, 1, 77, 60.0, 2.0, 1, &tones, &mut pool);
+    assert_eq!(snap.sections.len(), 1);
+    assert_eq!(snap.end(), (2.0 * SR) as i64);
+    assert_eq!(snap.timeline().locate((SR * 1.5) as i64), Some((77, 1.5)));
+    let bends: Vec<_> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::PitchBend).collect();
+    assert_eq!(bends.len(), 2);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snap);
+    ui.play();
+    let (l, _) = eng.render_offline((2.0 * SR) as usize);
+    let f = frequency(&l[4800..43200]);
+    assert!((f - 466.16).abs() < 3.0, "the bent A sounds as B flat: {f}");
+}

@@ -248,6 +248,15 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
     }
 }
 
+/// A Byzantine chant as a PDF.
+pub fn chant_pdf(chant: &corinzia_byz::Chant) -> Vec<u8> {
+    if corinzia_layout::display::text_fonts().0.is_none() {
+        crate::load_text_fonts();
+    }
+    let pages = corinzia_layout::byz::engrave(chant, &corinzia_layout::byz::ByzPage::default());
+    corinzia_layout::pdf::to_pdf(&pages, if chant.title.is_empty() { "Chant" } else { &chant.title })
+}
+
 /// The engraver's options and page for a layout (a part's: multi-bar
 /// rests, no staff names).
 pub fn page_setup(l: &corinzia_model::Layout, part: bool) -> (Options, PageSpec) {

@@ -12,7 +12,7 @@
 //! here, so a change of genus keeps them in place.
 
 /// One of the seven notes, in rising order from Ni.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Degree {
     Ni,
     Pa,
@@ -48,7 +48,7 @@ impl Degree {
 
 /// A note in a register: `octave` 0 runs from the middle Ni up to Zo,
 /// 1 from the high Ni (Ni΄) up, -1 from the low Ni down to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     pub octave: i8,
     pub degree: Degree,
@@ -85,7 +85,7 @@ impl Note {
 }
 
 /// A genus: the intervals the scale is sung in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Genus {
     Diatonic,
     SoftChromatic,

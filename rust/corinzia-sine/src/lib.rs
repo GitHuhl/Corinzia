@@ -57,6 +57,8 @@ struct Voice {
     port: i16,
     channel: i16,
     key: i16,
+    /// The key's frequency (Hz), before the channel's pitch bend.
+    freq: f64,
     phase: f64,
     step: f64,
     level: f32, // envelope
@@ -77,6 +79,8 @@ struct Synth {
     /// MIDI expression (CC11) and volume (CC7), 0..1.
     expression: f32,
     volume: f32,
+    /// Each MIDI channel's pitch bend, in semitones (the usual ±2 range).
+    bend: [f64; 16],
     voices: [Voice; VOICES],
     clock: u64,
 }
@@ -94,6 +98,7 @@ impl Synth {
             .or_else(|| (0..VOICES).filter(|&i| self.voices[i].releasing).min_by_key(|&i| self.voices[i].age))
             .unwrap_or_else(|| (0..VOICES).min_by_key(|&i| self.voices[i].age).unwrap());
         let freq = 440.0 * 2f64.powf((key as f64 - 69.0) / 12.0);
+        let bend = self.bend[(channel & 15).max(0) as usize];
         self.voices[i] = Voice {
             active: true,
             releasing: false,
@@ -101,12 +106,25 @@ impl Synth {
             port,
             channel,
             key,
+            freq,
             phase: 0.0,
-            step: freq / self.sample_rate,
+            step: freq * 2f64.powf(bend / 12.0) / self.sample_rate,
             level: 0.0,
             velocity: velocity.clamp(0.0, 1.0) as f32,
             age: self.clock,
         };
+    }
+
+    /// Pitch bend on a channel (0..16383, 8192 = none; ±2 semitones):
+    /// its sounding voices follow.
+    fn pitch_bend(&mut self, channel: i16, value: u16) {
+        let semitones = (value as f64 - 8192.0) / 8192.0 * 2.0;
+        let ch = (channel & 15) as usize;
+        self.bend[ch] = semitones;
+        let k = 2f64.powf(semitones / 12.0) / self.sample_rate;
+        for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
+            v.step = v.freq * k;
+        }
     }
 
     fn note_off(&mut self, note_id: i32, channel: i16, key: i16) {
@@ -142,6 +160,7 @@ impl Synth {
                         (0x80, _) | (0x90, _) => self.note_off(-1, ch, key),
                         (0xB0, v) if key == 11 => self.expression = v as f32 / 127.0,
                         (0xB0, v) if key == 7 => self.volume = v as f32 / 127.0,
+                        (0xE0, msb) => self.pitch_bend(ch, (key as u16 & 0x7f) | ((msb as u16 & 0x7f) << 7)),
                         (0xC0, _) => self.program = (key as u8).min(PROGRAMS.len() as u8 - 1),
                         _ => {}
                     }
@@ -212,7 +231,9 @@ unsafe extern "C" fn start_processing(_p: *const clap_plugin) -> bool {
 }
 unsafe extern "C" fn stop_processing(_p: *const clap_plugin) {}
 unsafe extern "C" fn reset(p: *const clap_plugin) {
-    Synth::from(p).voices = [Voice::default(); VOICES];
+    let s = Synth::from(p);
+    s.voices = [Voice::default(); VOICES];
+    s.bend = [0.0; 16];
 }
 
 unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
@@ -419,6 +440,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         program: 0,
         expression: 1.0,
         volume: 1.0,
+        bend: [0.0; 16],
         voices: [Voice::default(); VOICES],
         clock: 0,
     }));

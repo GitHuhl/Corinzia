@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 mod actions;
+mod chant;
 mod document;
 mod midi_keys;
 mod mixing;
@@ -73,10 +74,6 @@ pub(crate) enum Tab {
 }
 
 /// Live audio output (PipeWire) for the windowed app; tests and --export run without.
-/// Saving projects (Save, Save As, autosave). Off while Corinzia is a
-/// preview not ready for real-world projects: the button is grayed out and
-/// the shortcuts explain; export still works.
-pub(crate) const SAVING_ENABLED: bool = false;
 
 pub(crate) struct App {
     pub(crate) editor: Editor,
@@ -145,8 +142,6 @@ pub(crate) struct App {
     pub(crate) window: Size,
     /// The keyboard shortcut overview (F1).
     pub(crate) help: bool,
-    /// See [`SAVING_ENABLED`] (tests turn it on).
-    pub(crate) saving_enabled: bool,
     /// The Export menu is open.
     pub(crate) export_menu: bool,
     /// The part shown (a player), or the full score.
@@ -235,6 +230,9 @@ impl App {
         let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
         app.part = a.part.and_then(|n| app.editor.project.players.get(n.wrapping_sub(1))).map(|p| p.id);
+        if let Some(n) = a.chant {
+            app.editor.show_chant(n.checked_sub(1));
+        }
         app.engraved = None;
         for t in &a.keys {
             // An open popover takes typed text ("type:5:4") and Enter.
@@ -326,7 +324,6 @@ impl App {
             frames: 0,
             window: Size::new(1280.0, 860.0),
             help: false,
-            saving_enabled: SAVING_ENABLED,
             export_menu: false,
             part: None,
             staff_lanes: Vec::new(),
@@ -351,6 +348,16 @@ impl App {
     /// Native engraving of the current movement (milliseconds).
     pub(crate) fn engrave(&mut self) {
         self.engraved = Some(self.editor.music_revision);
+        // A Byzantine chant shown in place of the movement.
+        if let Some(c) = self.editor.shown_chant() {
+            let t = Instant::now();
+            self.pages = corinzia_layout::byz::engrave(c, &corinzia_layout::byz::ByzPage::default());
+            self.staff_lanes.clear();
+            self.page_movements = vec![self.editor.movement; self.pages.len()];
+            self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
+            self.arrange = arrange::content(&self.editor.project, self.editor.movement);
+            return;
+        }
         let Some(m) = self.editor.movement() else {
             self.pages.clear();
             return;
@@ -446,7 +453,7 @@ impl App {
         if self.selected_clip.is_some_and(|(t, c)| self.editor.clip(t, c).is_none()) {
             self.selected_clip = None;
         }
-        if self.saving_enabled && self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
+        if self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
             self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
         self.sync_roll();
@@ -471,6 +478,10 @@ impl App {
                     }
                 }
             }
+        }
+        // In a chant, the element before the caret.
+        if self.editor.chant.is_some() && self.editor.chant_caret > 0 {
+            sel.insert(corinzia_layout::byz::element_id(self.editor.chant_caret - 1));
         }
         sel.extend(self.editor.selected_slur());
         sel.extend(self.editor.picked.iter().copied());

@@ -168,6 +168,14 @@ impl App {
     /// `start_bounce`).
     pub(crate) fn export_to(&mut self, format: files::Format, path: PathBuf) {
         let path = if path.extension().is_none() { path.with_extension(format.extension()) } else { path };
+        // A chant shown: its pages.
+        if let (Some(c), files::Format::Pdf) = (self.editor.shown_chant(), format) {
+            self.editor.status = match std::fs::write(&path, files::chant_pdf(c)) {
+                Ok(()) => format!("Exported the chant to {}", path.display()),
+                Err(e) => format!("Export failed: {e}"),
+            };
+            return;
+        }
         self.editor.status = match files::export_to(&self.editor.project, self.editor.movement, format, self.editor.transposed, &path) {
             Ok(()) => format!("Exported {} to {}", format.label(), path.display()),
             Err(e) => format!("Export failed: {e}"),

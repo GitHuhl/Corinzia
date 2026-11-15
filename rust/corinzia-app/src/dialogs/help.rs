@@ -8,7 +8,7 @@ use iced::Element;
 
 /// The keyboard shortcut overview (F1).
 pub(crate) fn help_card() -> Element<'static, Message> {
-    const SECTIONS: [(&str, &[(&str, &str)]); 4] = [
+    const SECTIONS: [(&str, &[(&str, &str)]); 5] = [
         (
             "Note input",
             &[
@@ -88,6 +88,23 @@ pub(crate) fn help_card() -> Element<'static, Message> {
                 ("F1", "This overview"),
             ],
         ),
+        (
+            "Byzantine chant",
+            &[
+                ("0 1 2 3 4 5", "Ison, oligon, kentima, +3, +4, +5"),
+                ("A  E  Shift+E  C", "Apostrofos, elafron, −3, chamili"),
+                ("Y  P  K", "Yporroi, petasti, kentimata"),
+                ("Shift+K  Shift+I", "Kentimata under oligon; with ison"),
+                (".  D", "Klasma; dipli, tripli"),
+                ("G", "Gorgon, digorgon, trigorgon"),
+                ("F", "Fthora on the neume's note"),
+                ("M  Shift+M", "Martyria; the mode"),
+                ("Space  Shift+D", "Sing from the caret; ison on / off"),
+                ("Enter", "Line break"),
+                ("Ctrl+L", "Syllables (space: next neume)"),
+                ("Double-click", "Syllables from that neume"),
+            ],
+        ),
     ];
     let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
     let mut cols = row![].spacing(20);
@@ -99,5 +116,13 @@ pub(crate) fn help_card() -> Element<'static, Message> {
         cols = cols.push(c);
     }
     let close = button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::Act(Action::Help));
-    container(column![row![text("Keyboard shortcuts").size(16).font(bold), panels::spacer(), close], cols].spacing(14)).padding(20).style(theme::card).into()
+    // The sections wrap onto a second row in a narrow window.
+    // The sections wrap onto further rows in a narrow window, and scroll.
+    let cols = iced::widget::scrollable(container(cols.wrap().vertical_spacing(18)).padding(iced::Padding { top: 0.0, right: 16.0, bottom: 0.0, left: 0.0 })).height(iced::Length::Fill);
+    container(column![row![text("Keyboard shortcuts").size(16).font(bold), panels::spacer(), close], cols].spacing(14))
+        .padding(20)
+        .max_width(1180)
+        .max_height(760)
+        .style(theme::card)
+        .into()
 }

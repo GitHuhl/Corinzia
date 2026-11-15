@@ -1,7 +1,7 @@
 //! Corinzia: a music notation editor and CLAP DAW (iced).
 //!
 //! `corinzia [file.project] [--view page|panorama] [--keys "n c d"]
-//! [--screenshot out.png] [--export out.pdf|mid|musicxml] [--part N]`
+//! [--screenshot out.png] [--export out.pdf|mid|musicxml] [--part N] [--chant N]`
 //! (in `--keys`, `type:TEXT` and `enter` fill and submit an open popover)
 //!
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
@@ -97,6 +97,15 @@ fn main() -> iced::Result {
             }
             return Ok(());
         }
+        // A chant shown (--chant N): its pages.
+        if let (Some(c), files::Format::Pdf) = (app.editor.shown_chant(), format) {
+            if let Err(e) = std::fs::write(&out, files::chant_pdf(c)) {
+                eprintln!("export failed: {e}");
+                std::process::exit(1);
+            }
+            println!("exported {}", out.display());
+            return Ok(());
+        }
         match files::export_to(&app.editor.project, app.editor.movement, format, app.editor.transposed, &out) {
             Ok(()) => println!("exported {}", out.display()),
             Err(e) => {
@@ -112,7 +121,8 @@ fn main() -> iced::Result {
         .theme(|_: &App| theme::theme())
         .window_size(Size::new(1280.0, 860.0))
         .antialiasing(true)
-        .font(corinzia_layout::font::FONT_DATA);
+        .font(corinzia_layout::font::FONT_DATA)
+        .font(corinzia_layout::byz_font::BYZ_FONT_DATA);
     LIVE_AUDIO.store(true, std::sync::atomic::Ordering::Relaxed);
     for font in load_text_fonts() {
         app = app.font(font);

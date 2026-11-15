@@ -27,6 +27,8 @@ mod structure;
 mod filters;
 mod clipboard;
 mod page;
+mod chant;
+
 
 /// A passage: staves `lane_from..=lane_to`, time `[from, to)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +108,10 @@ pub struct Editor {
     /// Unsaved changes.
     pub modified: bool,
     pub status: String,
+    /// The Byzantine chant shown instead of the movement, if any.
+    pub chant: Option<usize>,
+    /// The caret in that chant: before element `chant_caret`.
+    pub chant_caret: usize,
 }
 
 /// Where an element lives in the current movement.
@@ -332,6 +338,8 @@ impl Editor {
             slur: None,
             modified: false,
             status: String::new(),
+            chant: None,
+            chant_caret: 0,
         }
     }
 
@@ -606,6 +614,9 @@ impl Editor {
     // ------------------------------------------------------------- labels --
     /// "Bar 3, beat 2 · Flute · voice 1"
     pub fn caret_label(&self) -> String {
+        if let Some(l) = self.chant_label() {
+            return l;
+        }
         let Some(m) = self.movement() else { return String::new() };
         let (bar, offset) = edit::bar_number(m, self.caret);
         let den = m.meter.iter().filter(|x| x.at <= self.caret).last().map(|x| x.den).unwrap_or(4);
@@ -670,6 +681,11 @@ pub enum PopoverKind {
     Instrument,
     Transpose,
     Filter,
+    /// A Byzantine chant's syllables, typed as a stream.
+    ChantLyric,
+    /// A Byzantine chant's mode.
+    ChantMode,
+    ChantTitle,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -695,6 +711,9 @@ impl PopoverKind {
             PopoverKind::Instrument => "Instrument change",
             PopoverKind::Transpose => "Transpose",
             PopoverKind::Filter => "Select only",
+            PopoverKind::ChantLyric => "Syllables",
+            PopoverKind::ChantMode => "Mode (ἦχος)",
+            PopoverKind::ChantTitle => "Chant title",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -720,6 +739,9 @@ impl PopoverKind {
             PopoverKind::Instrument => "Piccolo, Clarinet in A, Flute…; empty removes",
             PopoverKind::Transpose => "up M2, down P5, -m3, octave; to Eb",
             PopoverKind::Filter => "top, bottom, voice 2, above C5, F#, staccato, tied, rests, dynamics mf, lyrics",
+            PopoverKind::ChantLyric => "Syllable; space = next neume, - = the word goes on",
+            PopoverKind::ChantMode => "1–8, α΄, πλ. β΄, βαρύς, plagal 4",
+            PopoverKind::ChantTitle => "Κύριε ἐκέκραξα",
         }
     }
 }

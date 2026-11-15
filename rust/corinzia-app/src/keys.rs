@@ -18,6 +18,19 @@ pub enum Action {
     Movement(usize), // show movement i
     MovementStep(i64), // the previous (-1) or next (+1) movement
     AddMovement,
+    /// Show Byzantine chant i (None: the movements again).
+    Chant(Option<usize>),
+    AddChant,
+    DeleteChant,
+    /// In the chant shown: a neume at the caret.
+    ChantNeume(corinzia_byz::Quantity),
+    /// The neume's time sign: 0 klasma, 1 gorgons, 2 dipli and tripli.
+    ChantTime(u8),
+    ChantFthora,
+    ChantMartyria,
+    ChantBreak,
+    /// The ison under the chant, on or off.
+    ChantIson,
     DeleteMovement,
     GraceInput(bool), // grace note input on/off (slashed?)
     Nudge(i64),   // move the selection by the rhythmic grid

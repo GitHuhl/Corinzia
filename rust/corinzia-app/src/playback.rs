@@ -28,6 +28,9 @@ pub struct Playback {
     mixed: Option<u64>,  // revision whose mixer settings were sent
     generation: u64,
     previews: Vec<(Instant, u32, i16)>,
+    /// A chant's plan in place of the movements' (the music revision it
+    /// was built for, and when it started), until it stops.
+    chant: Option<(u64, Instant)>,
     /// Set when PipeWire is unavailable (the details go to stderr).
     pub problem: Option<String>,
     pub plugins: Vec<PluginInfo>,
@@ -84,6 +87,7 @@ impl Playback {
             mixed: None,
             generation: 0,
             previews: Vec::new(),
+            chant: None,
             problem,
             plugins: Vec::new(),
             clip_errors: Vec::new(),
@@ -103,6 +107,16 @@ impl Playback {
         if self.pool.media.base.as_deref() != folder {
             self.pool.media.base = folder.map(Into::into);
             self.built = None; // the same names may now be other files
+        }
+        // A chant playing keeps its plan; once it stops (or the music
+        // changes) the movements' plan comes back.
+        if let Some((rev, started)) = self.chant {
+            let starting = started.elapsed() < Duration::from_millis(300);
+            if rev == music_revision && (self.is_playing() || starting) {
+                return;
+            }
+            self.chant = None;
+            self.built = None;
         }
         let routing = snapshot::routing(project);
         if self.built != Some(music_revision) || routing != self.routing {
@@ -190,6 +204,24 @@ impl Playback {
     /// Plays from a written position of a movement.
     pub fn play_from(&mut self, movement: Id, written_quarter: f64) {
         if let Some(s) = self.timeline.sample_of(movement, written_quarter) {
+            self.handle.seek(s);
+        }
+        self.handle.play();
+    }
+
+    /// Plays tones (a chant's) on a track's instrument from `from` (beats),
+    /// in place of the movements until they stop.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_tones(&mut self, project: &Project, music_revision: u64, section: Id, bpm: f64, length: f64, track: Id, tones: &[snapshot::Tone], from: f64) {
+        self.generation += 1;
+        self.pool.retain_tracks(project);
+        let snap = snapshot::build_tones_from_pool(project, self.sample_rate, self.generation, section, bpm, length, track, tones, &mut self.pool);
+        self.node_tracks = snap.nodes.iter().map(|n| n.track).collect();
+        self.plan_buses = snap.buses.iter().map(|b| b.id).collect();
+        self.timeline = snap.timeline();
+        self.handle.swap(snap);
+        self.chant = Some((music_revision, Instant::now()));
+        if let Some(s) = self.timeline.sample_of(section, from) {
             self.handle.seek(s);
         }
         self.handle.play();

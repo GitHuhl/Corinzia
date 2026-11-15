@@ -823,6 +823,9 @@ pub struct Project {
     pub buses: Vec<Bus>,
     pub master: Master,
     pub movements: Vec<Movement>,
+    /// Byzantine chants, in Chrysanthine notation (corinzia-byz), saved
+    /// as JSON in the project file's settings.
+    pub chants: Vec<corinzia_byz::Chant>,
     /// The audio graph and the state chunks of its plugin nodes.
     pub nodes: Vec<AudioNode>,
     pub edges: Vec<AudioEdge>,
@@ -848,6 +851,7 @@ impl Default for Project {
             buses: vec![],
             master: Master::default(),
             movements: vec![],
+            chants: vec![],
             nodes: vec![],
             edges: vec![],
             plugin_state: Default::default(),

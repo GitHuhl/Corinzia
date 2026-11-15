@@ -17,7 +17,7 @@ pub use scale::*;
 use corinzia_score::Frac;
 
 /// The eight modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Echos {
     First,
     Second,
@@ -78,7 +78,7 @@ impl Echos {
 
 /// The mode signature at the head of a chant: its mode, and the note and
 /// genus the melody starts from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ModeKey {
     pub echos: Echos,
     pub base: Note,
@@ -93,7 +93,7 @@ impl ModeKey {
 }
 
 /// One thing on the line of a chant.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Element {
     Neume(Neume),
     /// A martyria: the note the melody stands on here.
@@ -103,12 +103,15 @@ pub enum Element {
 }
 
 /// A chant: a title, a mode signature, a tempo and a line of elements.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chant {
     pub title: String,
     pub mode: ModeKey,
     /// Beats per minute.
     pub tempo: u32,
+    /// Sing the ison under the melody: the mode's base note, held, an
+    /// octave down.
+    pub ison: bool,
     pub elements: Vec<Element>,
 }
 
@@ -138,12 +141,19 @@ pub enum Problem {
 
 impl Chant {
     pub fn new(title: &str, echos: Echos) -> Chant {
-        Chant { title: title.into(), mode: ModeKey::new(echos), tempo: 120, elements: vec![] }
+        Chant { title: title.into(), mode: ModeKey::new(echos), tempo: 100, ison: true, elements: vec![] }
     }
 
     pub fn push(&mut self, n: Neume) -> &mut Chant {
         self.elements.push(Element::Neume(n));
         self
+    }
+
+    /// The ison's note and pitch (moria above the middle Ni): the mode's
+    /// base, an octave down, in the mode's genus.
+    pub fn ison_note(&self) -> (Note, i32) {
+        let n = self.mode.base.step(-7);
+        (n, self.mode.genus.moria(n))
     }
 
     /// The melody, note by note, and anything that does not add up.
