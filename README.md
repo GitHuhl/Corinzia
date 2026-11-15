@@ -15,7 +15,7 @@ back in the true intervals of each mode.
 
 ![A Beethoven string quartet engraved in Corinzia](docs/screenshots/quartet.png)
 
-> **Early preview.** Corinzia is moving fast and isn't finished. It's great
+> **Alpha.** Corinzia is under active development and moving fast. It's great
 > for trying out and for real sketches, but keep MusicXML exports of
 > anything important while the file format settles.
 
