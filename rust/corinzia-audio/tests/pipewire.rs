@@ -27,7 +27,7 @@ fn plays_through_pipewire() {
     // stream to it, as on a desktop.
     assert!(pw(&["pw-cli", "create-node", "adapter", "{ factory.name=support.null-audio-sink node.name=test-sink media.class=Audio/Sink object.linger=1 audio.position=[FL FR] }"]));
     let (mut ui, eng) = engine::new(48000.0, 1024);
-    let out = backend::start(eng, 48000, 1024).expect("PipeWire stream");
+    let out = backend::start(eng, 48000, 1024, "").expect("PipeWire stream");
     let p = Project::default();
     let mut pool = PluginPool::new(48000.0, 1024);
     ui.swap(snapshot::build(&p, 48000.0, 1, &[], |t| pool.plugin_for(&p, t)));
