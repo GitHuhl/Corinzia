@@ -11,7 +11,7 @@ use std::io::{BufRead, Write};
 const PROTOCOL: &str = "2025-06-18";
 
 fn tool() -> Value {
-    let commands: String = HELP.iter().map(|(u, w)| format!("\n- {u}: {w}")).collect();
+    let commands: String = HELP.iter().chain(crate::command_mix::HELP).map(|(u, w)| format!("\n- {u}: {w}")).collect();
     json!({
         "name": "corinzia",
         "description": format!(

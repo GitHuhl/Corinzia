@@ -10,7 +10,7 @@ use corinzia_model::{Id, Project};
 use iced::widget::{button, canvas, column, container, pick_list, row, scrollable, slider, text, Space};
 use iced::{Alignment, Element, Length};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MixMsg {
     Select(Id),
     AddAudioTrack,
@@ -78,7 +78,7 @@ pub enum MixMsg {
     TechEdit(Id, usize, TechField, String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum TechField {
     Technique,
     Kind,
@@ -209,7 +209,7 @@ pub fn cc_name(cc: u8) -> Option<&'static str> {
 pub const DYNAMICS_CC: [&str; 3] = ["Velocity only", "CC1 (modulation)", "CC11 (expression)"];
 
 /// Whose plugin a preset is for: a track's instrument, or an effect.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Target {
     Track(Id),
     Effect(Id),

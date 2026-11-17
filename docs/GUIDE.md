@@ -286,6 +286,21 @@ corinzia score.project --do "get notes bar 1-2 staff 1"
   can do, a script can do. `help` lists the readable commands (`note`,
   `key`, `select bar`, `save`, `neume`…).
 
+**The mixer** has commands of its own, naming strips by their track or bus
+name (or `master`, or a track's number), plugins by name and effects by
+their place in the chain:
+
+```bash
+corinzia score.project --do "bus add Strings" --do "output cello strings" --do "send flute strings -12 pre" --do "effect add strings Corinzia Reverb" --do "param strings 1 Mix 0.4" --do "automate flute gain at 5:3 -6" --do save
+```
+
+`gain`, `pan`, `mute`, `solo`, `plugin`, `effect add|remove|bypass|move`,
+`param`, `bus add|remove`, `output`, `send`, `program`, `color`, `folder`,
+`automate` (gain, pan, bend, cc, send or an effect parameter, at a bar and
+beat) and `audio track|add`; `get mixer`, `get plugins` and
+`get params <strip> <effect>` answer with JSON, and `mix <message>` runs
+any Mix tab message as JSON.
+
 **MCP:** `corinzia --mcp score.project` is a Model Context Protocol
 server on standard input and output, for AI assistants. Its tool,
 `corinzia`, runs one command and answers with its JSON. With Claude Code:

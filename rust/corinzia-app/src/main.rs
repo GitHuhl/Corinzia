@@ -13,6 +13,7 @@ mod arrange;
 mod browser;
 mod cli;
 mod command;
+mod command_mix;
 mod mcp;
 mod demo;
 mod dialogs;

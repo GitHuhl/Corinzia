@@ -109,3 +109,49 @@ fn the_mcp_server_lists_its_tool_and_runs_commands() {
     let unknown = call(&mut a, serde_json::json!({"jsonrpc": "2.0", "id": 9, "method": "nope"})).unwrap();
     assert_eq!(unknown["error"]["code"], -32601);
 }
+
+#[test]
+fn the_mixer_is_set_up_by_command() {
+    let mut a = app(View::Page);
+    let mixer = |a: &mut App| ok(a, "get mixer");
+    ok(&mut a, "bus add Strings");
+    ok(&mut a, "output cello strings");
+    ok(&mut a, "send flute strings -12 pre");
+    ok(&mut a, "gain 1 -6");
+    ok(&mut a, "pan cello L30");
+    ok(&mut a, "mute flute on");
+    ok(&mut a, "mute flute on"); // already: stays on
+    let m = mixer(&mut a);
+    let (flute, cello) = (&m["tracks"][0], &m["tracks"][1]);
+    assert_eq!((flute["gain_db"].as_f64(), flute["mute"].as_bool()), (Some(-6.0), Some(true)));
+    assert_eq!(flute["sends"][0], serde_json::json!({"bus": "Strings", "db": -12.0, "pre": true}));
+    assert_eq!((cello["output"].as_str(), cello["pan"].as_f64()), (Some("Strings"), Some(-0.3)));
+    // Effects by plugin name, their parameters by name.
+    ok(&mut a, "effect add strings Corinzia Reverb");
+    ok(&mut a, "effect add strings Corinzia Gain");
+    ok(&mut a, "effect move strings 2 up");
+    let m = mixer(&mut a);
+    assert_eq!(m["buses"][0]["effects"][0]["name"], "Corinzia Gain");
+    let params = ok(&mut a, "get params strings 2");
+    assert!(params.as_array().unwrap().iter().any(|p| p["name"] == "Mix"));
+    ok(&mut a, "param strings 2 Mix 0.4");
+    let mix = ok(&mut a, "get params strings 2").as_array().unwrap().iter().find(|p| p["name"] == "Mix").unwrap()["value"].as_f64().unwrap();
+    assert!((mix - 0.4).abs() < 1e-6, "{mix}");
+    ok(&mut a, "effect bypass strings 1");
+    assert_eq!(mixer(&mut a)["buses"][0]["effects"][0]["bypassed"], true);
+    // Automation at bars and beats.
+    assert_eq!(ok(&mut a, "automate flute gain at 2 -3"), serde_json::json!({"point": 0}));
+    ok(&mut a, "automate flute gain at 3:3 -9");
+    let lane = a.editor.auto_lane(corinzia_model::AutoTarget::Gain(a.editor.project.tracks[0].id)).expect("a lane");
+    assert_eq!(lane.points.len(), 2);
+    assert_eq!(lane.points[1].at, corinzia_score::Frac::new(5, 2), "bar 3, beat 3 of 4/4: two and a half whole notes in");
+    ok(&mut a, "automate flute gain clear");
+    assert!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(a.editor.project.tracks[0].id)).is_none_or(|l| l.points.is_empty()));
+    // Errors name what is there.
+    assert!(a.command("gain oboe 0").unwrap_err().contains("Flute"));
+    assert!(a.command("effect add strings No Such Plugin").unwrap_err().contains("Corinzia Reverb"));
+    assert!(a.command("send flute nowhere").unwrap_err().contains("Strings"));
+    // Everything is undoable, one step each.
+    ok(&mut a, "undo");
+    assert!(a.editor.auto_lane(corinzia_model::AutoTarget::Gain(a.editor.project.tracks[0].id)).is_some_and(|l| !l.points.is_empty()));
+}

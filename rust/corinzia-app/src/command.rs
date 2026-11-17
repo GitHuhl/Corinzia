@@ -94,12 +94,16 @@ impl App {
         let args = words(rest);
         let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
         let text = || args.join(" ");
-        let answer = match verb.to_lowercase().as_str() {
+        let lower = verb.to_lowercase();
+        if let Some(r) = self.mix_command(&lower, &args, rest) {
+            return r;
+        }
+        let answer = match lower.as_str() {
             "" => return Ok(Value::Null),
             "help" => match arg(0) {
                 "actions" => json!({"actions": "Every variant of Action, as serde JSON: a name (\"Undo\") or {\"Name\": value}. See rust/corinzia-app/src/keys.rs."}),
                 "popovers" => json!(POPOVERS),
-                _ => json!(HELP.iter().map(|(u, w)| json!({"command": u, "does": w})).collect::<Vec<_>>()),
+                _ => json!(HELP.iter().chain(crate::command_mix::HELP).map(|(u, w)| json!({"command": u, "does": w})).collect::<Vec<_>>()),
             },
             "act" => {
                 let action: Action = serde_json::from_str(rest).map_err(|e| format!("Not an action ({e}): try act \"Undo\" or act {{\"Duration\":2}}"))?;
@@ -251,7 +255,10 @@ impl App {
     }
 
     /// `get …`
-    fn query(&self, args: &[String]) -> Result<Value, String> {
+    fn query(&mut self, args: &[String]) -> Result<Value, String> {
+        if let Some(r) = self.mix_query(args) {
+            return r;
+        }
         let ed = &self.editor;
         let p = &ed.project;
         let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
@@ -323,7 +330,7 @@ impl App {
                     "problems": problems.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>(),
                 })
             }
-            w => return Err(format!("get project|selection|notes|chant|status: not {w}")),
+            w => return Err(format!("get project|selection|notes|chant|status|mixer|plugins|params: not {w}")),
         })
     }
 
