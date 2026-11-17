@@ -42,6 +42,46 @@ pub(crate) fn grid_picker(ed: &editor::Editor) -> Element<'static, Message> {
 }
 
 impl App {
+    /// The score canvas's program: the pages, the selection, the caret, the
+    /// playhead and the note-input shadow as they stand.
+    pub(crate) fn score_view(&self) -> ScoreView<'_> {
+        let ed = &self.editor;
+        // Lanes to the staves they are engraved on (a part shows some).
+        let staff_of = |lane: usize| self.staff_lanes.iter().position(|&l| l == lane);
+        let caret = ed.input_mode.then(|| staff_of(ed.caret_lane)).flatten().map(|s| Caret { part: s, quarter: quarters(ed.caret) });
+        let highlight = ed.range.and_then(|r| {
+            let shown: Vec<usize> = (r.lane_from..=r.lane_to).filter_map(staff_of).collect();
+            Some(Highlight { part_from: *shown.first()?, part_to: *shown.last()?, start: quarters(r.from), end: quarters(r.to) })
+        });
+        ScoreView {
+            pages: &self.pages,
+            vertical: self.view == View::Page,
+            zoom: self.zoom,
+            pan: self.pan,
+            selected: &self.selected,
+            caret,
+            highlight,
+            playhead: self.playback.playhead().and_then(|(id, q)| {
+                let mi = ed.project.movements.iter().position(|m| m.id == id)?;
+                (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
+            }),
+            active: self.pages_of(ed.movement),
+            slur: ed.selected_slur(),
+            ghost: ed.input_mode.then(|| {
+                use corinzia_edit::BaseDuration as B;
+                use corinzia_layout::font::Glyph;
+                let glyph = match ed.spec.base {
+                    B::Whole => Glyph::NoteheadWhole,
+                    B::Half => Glyph::NoteheadHalf,
+                    _ => Glyph::NoteheadBlack,
+                };
+                let grid = corinzia_edit::DurationSpec { dots: 0, ..ed.spec }.value();
+                score_view::Ghost { glyph: glyph.codepoint(), dots: ed.spec.dots, grid: quarters(grid) }
+            }),
+            cache: &self.cache,
+        }
+    }
+
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let ed = &self.editor;
         let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
@@ -99,40 +139,7 @@ impl App {
             .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
-        // Lanes to the staves they are engraved on (a part shows some).
-        let staff_of = |lane: usize| self.staff_lanes.iter().position(|&l| l == lane);
-        let caret = ed.input_mode.then(|| staff_of(ed.caret_lane)).flatten().map(|s| Caret { part: s, quarter: quarters(ed.caret) });
-        let highlight = ed.range.and_then(|r| {
-            let shown: Vec<usize> = (r.lane_from..=r.lane_to).filter_map(staff_of).collect();
-            Some(Highlight { part_from: *shown.first()?, part_to: *shown.last()?, start: quarters(r.from), end: quarters(r.to) })
-        });
-        let score = canvas(ScoreView {
-            pages: &self.pages,
-            vertical: self.view == View::Page,
-            zoom: self.zoom,
-            pan: self.pan,
-            selected: &self.selected,
-            caret,
-            highlight,
-            playhead: self.playback.playhead().and_then(|(id, q)| {
-                let mi = ed.project.movements.iter().position(|m| m.id == id)?;
-                (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
-            }),
-            active: self.pages_of(ed.movement),
-            slur: ed.selected_slur(),
-            ghost: ed.input_mode.then(|| {
-                use corinzia_edit::BaseDuration as B;
-                use corinzia_layout::font::Glyph;
-                let glyph = match ed.spec.base {
-                    B::Whole => Glyph::NoteheadWhole,
-                    B::Half => Glyph::NoteheadHalf,
-                    _ => Glyph::NoteheadBlack,
-                };
-                let grid = corinzia_edit::DurationSpec { dots: 0, ..ed.spec }.value();
-                score_view::Ghost { glyph: glyph.codepoint(), dots: ed.spec.dots, grid: quarters(grid) }
-            }),
-            cache: &self.cache,
-        })
+        let score = canvas(self.score_view())
         .width(Length::Fill)
         .height(Length::Fill);
         let mut desk = stack![container(Element::from(score).map(Message::Canvas)).width(Length::Fill).height(Length::Fill)];

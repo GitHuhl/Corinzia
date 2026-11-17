@@ -47,6 +47,29 @@ fn clefs_keys_and_barlines_change_by_right_click() {
 }
 
 #[test]
+fn the_note_input_shadow_follows_the_pointer_by_itself() {
+    // Nothing else redraws the window (no playback, no audition, no
+    // autosave): moving the pointer alone must redraw the shadow.
+    use iced::widget::canvas::Program;
+    let mut a = app(View::Page);
+    let _ = a.act(Action::SetInput(true));
+    let view = a.score_view();
+    let mut state = score_view::Interaction::default();
+    let bounds = iced::Rectangle::new(iced::Point::ORIGIN, iced::Size::new(1000.0, 700.0));
+    let px = a.zoom * score_view::BASE_PX;
+    let origins = score_view::page_origins(&a.pages, true);
+    let st = &a.pages[0].staves[0];
+    let screen = |dx: f32| iced::Point::new((origins[0].x + st.left + 8.0 + dx) * px + a.pan.x, (origins[0].y + st.top + 1.0) * px + a.pan.y);
+    let moved = |p: iced::Point, state: &mut score_view::Interaction| {
+        view.update(state, &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: p }), bounds, iced::mouse::Cursor::Available(p)).is_some()
+    };
+    for k in 0..50 {
+        assert!(moved(screen(k as f32 * 0.5), &mut state), "move {k} redraws the shadow");
+    }
+    assert!(!moved(screen(24.5), &mut state), "no move, no redraw");
+}
+
+#[test]
 fn the_note_input_shadow_is_where_a_click_writes() {
     let mut a = app(View::Page);
     let _ = a.act(Action::SetInput(true));

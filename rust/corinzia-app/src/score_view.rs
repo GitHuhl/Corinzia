@@ -452,13 +452,17 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
                         None => canvas::Action::capture(),
                     });
                 }
-                let (from, p) = (state.press?, pos?);
-                let d = p - from;
-                if state.marquee || d.x.abs() + d.y.abs() > 4.0 {
-                    state.marquee = true;
-                    state.current = Some(p);
-                    return Some(canvas::Action::request_redraw().and_capture());
+                // A press moving far enough draws a rubber band.
+                if let (Some(from), Some(p)) = (state.press, pos) {
+                    let d = p - from;
+                    if state.marquee || d.x.abs() + d.y.abs() > 4.0 {
+                        state.marquee = true;
+                        state.current = Some(p);
+                        return Some(canvas::Action::request_redraw().and_capture());
+                    }
                 }
+                // The note-input shadow follows the pointer by itself (not
+                // only while something else keeps the window redrawing).
                 (hover != state.hover).then(canvas::Action::request_redraw)
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)) => {
