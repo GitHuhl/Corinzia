@@ -6,18 +6,27 @@ HERE="$(dirname "$(readlink -f "$0")")"
 : "${CORINZIA_TEXT_FONT:=$HERE/usr/share/corinzia/DejaVuSerif.ttf}"
 export CORINZIA_TEXT_FONT
 
-# The system's PipeWire is used when there is one. Without it, a stand-in
-# library lets Corinzia start (without audio output) instead of failing.
-have_pipewire() {
-    if command -v ldconfig >/dev/null 2>&1 || [ -x /sbin/ldconfig ]; then
-        { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libpipewire-0\.3\.so\.0' && return 0
+# The system's PipeWire is used when the loader can find it. Without it, a
+# stand-in library lets Corinzia start (without audio output) instead of
+# failing to load.
+#
+# The loader itself decides (ldd: is libpipewire "not found" for this very
+# binary?). Without ldd, the loader's cache is read for a 64-bit
+# libpipewire; a copy for another architecture, or one in a folder the
+# loader does not search, does not count.
+needs_stand_in() {
+    if command -v ldd >/dev/null 2>&1; then
+        if deps=$(ldd "$HERE/usr/bin/corinzia" 2>/dev/null); then
+            case "$deps" in
+                *"libpipewire-0.3.so.0 => not found"*) return 0 ;;
+                *libpipewire-0.3.so.0*) return 1 ;;
+            esac
+        fi
     fi
-    for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib64 /usr/lib /lib64 /lib /run/current-system/sw/lib; do
-        [ -e "$d/libpipewire-0.3.so.0" ] && return 0
-    done
-    return 1
+    { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libpipewire-0\.3\.so\.0 (.*x86-64' && return 1
+    return 0
 }
-if ! have_pipewire; then
+if needs_stand_in; then
     LD_LIBRARY_PATH="$HERE/usr/lib/no-pipewire${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export LD_LIBRARY_PATH
 fi
