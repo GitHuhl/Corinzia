@@ -359,7 +359,7 @@ fn spanners_continue_across_system_breaks() {
     let slur_pieces: usize = pages.iter().flat_map(|p| p.items.iter()).filter(|i| matches!(i, Item::Crescent { id, .. } if *id == slur_id)).count();
     assert!(slur_pieces >= 3, "a piece of the slur in each system it crosses: {slur_pieces}");
     // The crescendo: a pair of lines per system; openings grow from piece to piece.
-    let hairpin_id = s.parts[0].voices[0].events[8].pitches[0].id;
+    let hairpin_id = corinzia_score::score::ids::hairpin(s.parts[0].voices[0].events[8].id);
     let mut openings: Vec<(f32, f32)> = Vec::new();
     for p in &pages {
         let lines: Vec<_> = p.items.iter().filter_map(|i| match i { Item::Line { from, to, id, .. } if *id == hairpin_id => Some((*from, *to)), _ => None }).collect();
@@ -374,7 +374,7 @@ fn spanners_continue_across_system_breaks() {
     for w in openings.windows(2) {
         assert!((w[1].0 - w[0].1).abs() < 0.05, "each piece continues the previous opening: {openings:?}");
     }
-    assert!((openings.last().unwrap().1 - 1.0).abs() < 1e-3, "ends fully open");
+    assert!((openings.last().unwrap().1 - 4.0 / 3.0).abs() < 1e-3, "ends fully open, as wide as LilyPond's (1⅓ spaces)");
 }
 
 #[test]

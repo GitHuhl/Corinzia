@@ -489,6 +489,7 @@ impl App {
             sel.insert(corinzia_layout::byz::element_id(self.editor.chant_caret - 1));
         }
         sel.extend(self.editor.selected_slur());
+        sel.extend(self.editor.selected_hairpin().map(corinzia_score::score::ids::hairpin));
         sel.extend(self.editor.picked.iter().copied());
         self.selected = sel;
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());

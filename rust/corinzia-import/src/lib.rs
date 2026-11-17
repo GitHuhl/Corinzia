@@ -1161,11 +1161,16 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
     }
     for (at, w) in std::mem::take(&mut s.wedges) {
         if w == span::HAIRPIN_END {
-            // A hairpin ends on the last note starting before its stop.
-            for v in voices.iter_mut() {
-                if let Some(e) = v.iter_mut().rev().find(|e| e.start < at && !e.is_rest()) {
-                    e.spans |= span::HAIRPIN_END;
-                    break;
+            // A hairpin ends on the note (or rest) at its stop, as LilyPond's
+            // \! does; the engraver stops one ending on a bar's first note at
+            // the barline. A stop after the last note ends it there.
+            let next = voices.iter_mut().flat_map(|v| v.iter_mut()).filter(|e| e.start >= at).min_by_key(|e| e.start);
+            match next {
+                Some(e) => e.spans |= span::HAIRPIN_END,
+                None => {
+                    if let Some(e) = voices.iter_mut().flat_map(|v| v.iter_mut()).filter(|e| !e.is_rest()).max_by_key(|e| e.start) {
+                        e.spans |= span::HAIRPIN_END;
+                    }
                 }
             }
         } else {

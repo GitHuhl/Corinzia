@@ -61,7 +61,22 @@ fn ly_event(e: &Event, ratio: Frac, slur: (bool, bool)) -> String {
             (false, true) => ")",
             _ => "",
         };
-        let _ = write!(out, "{body}{}{slur} ", if tie && !e.pitches.is_empty() { "~" } else { "" });
+        // Dynamics and hairpins go on the first piece.
+        let mut marks = String::new();
+        if k == 0 {
+            use corinzia_score::score::span;
+            if let Some(d) = &e.dynamic {
+                let _ = write!(marks, "\\{d}");
+            } else if e.spans & span::HAIRPIN_END != 0 {
+                marks.push_str("\\!");
+            }
+            if e.spans & span::CRESC_START != 0 {
+                marks.push_str("\\<");
+            } else if e.spans & span::DIM_START != 0 {
+                marks.push_str("\\>");
+            }
+        }
+        let _ = write!(out, "{body}{}{slur}{marks} ", if tie && !e.pitches.is_empty() { "~" } else { "" });
         if v.triplet {
             out = format!("\\tuplet 3/2 {{ {out}}} ");
         }
@@ -96,10 +111,22 @@ fn to_ly(s: &Score, line_mm: Option<f32>) -> String {
      (format #t "SL ~a" (if (null? ids) 0 (car ids)))
      (for-each (lambda (p) (format #t " ~,4f ~,4f" (+ x (car p)) (+ y (cdr p)))) cps)
      (newline)))
+#(define (bound-id grob dir)
+   (let* ((b (ly:spanner-bound grob dir))
+          (heads (if (ly:grob? b) (ly:grob-object b 'note-heads) '()))
+          (hl (if (ly:grob-array? heads) (ly:grob-array->list heads) '()))
+          (ids (filter (lambda (i) (> i 0)) (map (lambda (h) (ly:assoc-get 'cz-id (ly:grob-property h 'details) 0)) hl))))
+     (if (null? ids) 0 (car ids))))
+#(define (report-hairpin grob)
+   (let* ((sys (ly:grob-system grob))
+          (xe (ly:grob-extent grob sys X))
+          (ye (ly:grob-extent grob sys Y)))
+     (format #t "HP ~a ~a ~,4f ~,4f ~,4f ~,4f\n" (bound-id grob LEFT) (bound-id grob RIGHT) (car xe) (cdr xe) (- (car ye)) (- (cdr ye)))))
 @PAPER@
 \layout { \context { \Voice
   \override NoteHead.after-line-breaking = #report
   \override Slur.after-line-breaking = #report-slur
+  \override Hairpin.after-line-breaking = #report-hairpin
   \override Rest.after-line-breaking = #report } }
 "#,
     );
@@ -555,4 +582,106 @@ fn slurs_against_lilypond() {
     assert!(e_ends / n as f32 <= 0.35, "slur ends drift from LilyPond's");
     assert!(e_height / n as f32 <= 0.15, "slur heights drift from LilyPond's");
     assert!(worst <= 2.0, "a slur far from LilyPond's: {worst}");
+}
+
+/// Hairpins from LilyPond: (start head id, end head id, x0, x1, y top, y
+/// bottom), y down.
+fn lilypond_hairpins(ly: &str) -> Option<(Vec<(u64, u64, f32, f32, f32, f32)>, HashMap<u64, (u32, f32, f32)>)> {
+    let text = run_lilypond(ly)?;
+    let mut pins = vec![];
+    let mut heads = HashMap::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() == 7 && f[0] == "HP" {
+            let n = |i: usize| f[i].parse::<f32>().unwrap();
+            pins.push((f[1].parse().unwrap(), f[2].parse().unwrap(), n(3), n(4), n(6).min(n(5)), n(6).max(n(5))));
+        } else if f.len() == 5 && f[0] == "NH" {
+            heads.entry(f[1].parse().unwrap()).or_insert((0, f[3].parse().unwrap(), -f[4].parse::<f32>().unwrap()));
+        }
+    }
+    Some((pins, heads))
+}
+
+/// Hairpins measured against LilyPond's: where each starts and ends beside
+/// its notes, how wide it opens, and that a hairpin and the next one it
+/// touches share one line instead of stacking.
+#[test]
+fn hairpins_against_lilypond() {
+    let pieces = [
+        ("a bar long", "c'4\\cr d' e' f' | g'1\\!"),
+        ("diminuendo", "g'4\\decr f' e' d' | c'1\\!"),
+        ("between dynamics", "c'4\\p\\cr d' e' f' | g'1\\f"),
+        ("one note each", "c''4\\cr d''\\!\\decr e''\\! f'' | g''1"),
+        ("there and back", "e'4\\cr f' g' a' | b'4\\!\\decr a' g' f' | e'1\\!"),
+        ("to a barline", "c''2\\cr d'' | e''1\\!"),
+        ("short", "c'8\\cr d'\\! e'4 f'2"),
+    ];
+    let (mut n, mut e_start, mut e_end, mut e_open, mut worst) = (0, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut chains_ok = true;
+    for (name, music) in pieces {
+        let s = score(&[("treble", &[music])], (4, 4), 0);
+        let Some((lily, lheads)) = lilypond_hairpins(&to_ly(&s, None)) else {
+            eprintln!("lilypond not found; skipping");
+            return;
+        };
+        let list = layout_line(&s, &Options { names: false, ..Options::default() });
+        let heads: HashMap<u64, f32> = list.items.iter().filter_map(|i| match i { Item::Glyph { at, id, .. } => Some((*id, at.x)), _ => None }).collect();
+        // Ours: each hairpin's two strokes, by the id of its first head.
+        let mut ours: HashMap<u64, (f32, f32, f32, f32)> = HashMap::new();
+        let first_head: HashMap<u64, u64> = s.parts.iter().flat_map(|p| p.voices.iter()).flat_map(|v| v.events.iter()).filter_map(|e| Some((e.id, e.pitches.first()?.id))).collect();
+        for i in &list.items {
+            if let Item::Line { from, to, id, width } = i {
+                // A hairpin's strokes carry its own id: by its first head.
+                if let Some(&head) = corinzia_score::score::ids::as_hairpin(*id).and_then(|e| first_head.get(&e)) {
+                    let e = ours.entry(head).or_insert((f32::MAX, f32::MIN, f32::MAX, f32::MIN));
+                    e.0 = e.0.min(from.x.min(to.x));
+                    e.1 = e.1.max(from.x.max(to.x));
+                    e.2 = e.2.min(from.y.min(to.y) - width / 2.0);
+                    e.3 = e.3.max(from.y.max(to.y) + width / 2.0);
+                }
+            }
+        }
+        eprintln!("{name}:");
+        let mut prev: Option<((f32, f32), (f32, f32))> = None;
+        for &(h0, h1, lx0, lx1, ly0, ly1) in &lily {
+            // A hairpin starting at a dynamic is bound to it, not a head: the
+            // head under its start.
+            let h0 = if h0 != 0 { h0 } else { lheads.iter().filter(|(_, l)| l.1 <= lx0 + 0.5).max_by(|a, b| a.1 .1.total_cmp(&b.1 .1)).map_or(0, |(id, _)| *id) };
+            let (Some(&o), Some(&lh0), Some(&oh0)) = (ours.get(&h0), lheads.get(&h0), heads.get(&h0)) else {
+                eprintln!("  hairpin from {h0}: not drawn by us");
+                chains_ok = false;
+                continue;
+            };
+            // The end: against the head LilyPond ends it at (or its own start).
+            let (le, oe) = match (lheads.get(&h1), heads.get(&h1)) {
+                (Some(l), Some(oh)) => (lx1 - l.1, o.1 - oh),
+                _ => (lx1 - lh0.1, o.1 - oh0),
+            };
+            let (ls, os) = (lx0 - lh0.1, o.0 - oh0);
+            let (lo, oo) = (ly1 - ly0, o.3 - o.2);
+            n += 1;
+            e_start += (ls - os).abs();
+            e_end += (le - oe).abs();
+            e_open += (lo - oo).abs();
+            worst = worst.max((ls - os).abs()).max((le - oe).abs());
+            eprintln!("  start {ls:+.2} / {os:+.2}  end {le:+.2} / {oe:+.2}  opening {lo:.2} / {oo:.2}  (lilypond / ours, spaces from the heads)");
+            // Touching the one before: on its line (LilyPond's are; ours must be too).
+            if let Some((lp, op)) = prev {
+                let touching = lx0 - lp.1 < 1.5;
+                if touching && ((ly0 + ly1) / 2.0 - lp.0).abs() < 0.3 && ((o.2 + o.3) / 2.0 - op.0).abs() > 0.3 {
+                    eprintln!("  ^ stacked below the hairpin before it, not on its line");
+                    chains_ok = false;
+                }
+            }
+            prev = Some((((ly0 + ly1) / 2.0, lx1), ((o.2 + o.3) / 2.0, o.1)));
+        }
+    }
+    eprintln!("hairpins vs LilyPond over {n}: start error {:.2}, end error {:.2}, opening error {:.2}, worst end {worst:.2} spaces", e_start / n.max(1) as f32, e_end / n.max(1) as f32, e_open / n.max(1) as f32);
+    assert!(n >= 9, "hairpins compared: {n}");
+    assert!(chains_ok, "every hairpin drawn, and hairpins that touch on one line");
+    // Measured: start 0.08, end 0.21, opening 0.06, worst 0.36.
+    assert!(e_start / n as f32 <= 0.15, "hairpin starts drift from LilyPond's");
+    assert!(e_end / n as f32 <= 0.35, "hairpin ends drift from LilyPond's");
+    assert!(e_open / n as f32 <= 0.12, "hairpin openings differ from LilyPond's");
+    assert!(worst <= 0.6, "a hairpin end far from LilyPond's: {worst}");
 }

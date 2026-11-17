@@ -113,6 +113,23 @@ pub fn slur_above(pages: &[DisplayList], id: u64) -> Option<bool> {
 
 /// The drag handles of slur `id` in desk coordinates: its two ends.
 pub fn slur_handles(pages: &[DisplayList], origins: &[Vector], id: u64) -> Vec<(SlurHandle, Point)> {
+    // A hairpin: at its narrow and wide ends, midway between its strokes.
+    if ids::as_hairpin(id).is_some() {
+        let mut ends: Vec<(usize, f32, f32, f32, f32)> = vec![]; // (page, x0, y at x0, x1, y at x1)
+        for (k, p) in pages.iter().enumerate() {
+            for item in &p.items {
+                if let Item::Line { from, to, id: i, .. } = item {
+                    if *i == id {
+                        ends.push((k, from.x, from.y, to.x, to.y));
+                    }
+                }
+            }
+        }
+        // Strokes come in pairs: the first pair starts it, the last ends it.
+        let (Some(a), Some(b)) = (ends.get(..2), ends.len().checked_sub(2).and_then(|n| ends.get(n..))) else { return vec![] };
+        let at = |k: usize, x: f32, y: f32| Point::new(x + origins[k].x, y + origins[k].y);
+        return vec![(SlurHandle::Start, at(a[0].0, a[0].1, (a[0].2 + a[1].2) / 2.0)), (SlurHandle::End, at(b[0].0, b[0].3, (b[0].4 + b[1].4) / 2.0))];
+    }
     let pieces: Vec<_> = curve_pieces(pages, id).collect();
     let (Some(&(k0, first)), Some(&(k1, last))) = (pieces.first(), pieces.last()) else { return vec![] };
     let at = |k: usize, p: Point| Point::new(p.x + origins[k].x, p.y + origins[k].y);
@@ -132,6 +149,18 @@ pub fn hit_test(pages: &[DisplayList], origins: &[Vector], at: Point) -> Option<
             if let (Item::Crescent { id, .. }, Some(line)) = (item, midline(item)) {
                 if *id != 0 && line.iter().any(|q| q.distance(local) < 0.45) && best.is_none_or(|b| b.0 > 3.0) {
                     best = Some((3.0, *id));
+                }
+                continue;
+            }
+            // A hairpin along its strokes.
+            if let Item::Line { from, to, id, .. } = item {
+                if ids::as_hairpin(*id).is_some() {
+                    let (d, l2) = (Point::new(to.x - from.x, to.y - from.y), (to.x - from.x).powi(2) + (to.y - from.y).powi(2));
+                    let t = if l2 > 0.0 { (((local.x - from.x) * d.x + (local.y - from.y) * d.y) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                    let q = Point::new(from.x + t * d.x, from.y + t * d.y);
+                    if q.distance(local) < 0.45 && best.is_none_or(|b| b.0 > 3.0) {
+                        best = Some((3.0, *id));
+                    }
                 }
                 continue;
             }

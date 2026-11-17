@@ -69,7 +69,9 @@ fn notes_chords_ties_marks_and_lyrics() {
     assert!(v[3].articulations & art::STACCATO != 0);
     assert_eq!(v[1].dynamic, Some(2)); // p
     assert!(v[1].spans & span::CRESC_START != 0);
-    assert!(v[3].spans & span::HAIRPIN_END != 0);
+    // The stop after the bar's last note: the hairpin ends on the next note
+    // (as LilyPond's \! there; it is drawn to the barline).
+    assert!(v[4].spans & span::HAIRPIN_END != 0 && v[3].spans & span::HAIRPIN_END == 0);
     assert_eq!(v[4].dynamic, Some(5)); // f
     assert!(v[4].heads[0].tie && !v[5].heads[0].tie);
     assert!(v[5].articulations & art::FERMATA != 0);

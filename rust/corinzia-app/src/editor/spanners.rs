@@ -17,6 +17,14 @@ impl Editor {
         self.selection = None;
         self.range = None;
         self.range_anchor = None;
+        if ids::as_hairpin(id).is_some() {
+            if self.selected_hairpin().is_none() {
+                self.slur = None;
+                return false;
+            }
+            self.status = "Hairpin · drag an end to another note · Shift+←→ end · Alt+←→ start · Delete removes it".into();
+            return true;
+        }
         if self.selected_slur().is_none() {
             self.slur = None;
             return false;
@@ -97,6 +105,102 @@ impl Editor {
         });
         self.slur = None;
         self.status = "Slur deleted".into();
+    }
+
+    // ----------------------------------------------------------- hairpins --
+    /// The hairpin selected (the event it starts on): valid while nothing
+    /// else is selected and the event still starts a hairpin. Selected
+    /// through the slur's slot, by its display id.
+    pub fn selected_hairpin(&self) -> Option<Id> {
+        let event = ids::as_hairpin(self.slur.filter(|_| self.selection.is_none() && self.range.is_none())?)?;
+        let (_, e) = self.event_of(event)?;
+        (e.spans & (span::CRESC_START | span::DIM_START) != 0).then_some(event)
+    }
+
+    /// The events a hairpin starts and ends on (its lane and voice): the end
+    /// is the next note or rest with an end mark or a dynamic, as the
+    /// engraver reads it; none when it runs to its bar's end.
+    fn hairpin_ends(&self, start: Id) -> Option<(Locator, usize, Option<usize>)> {
+        let loc = self.locate(start)?;
+        let evs = &self.movement()?.lanes[loc.lane].voices[loc.voice].events;
+        let k = evs.iter().position(|e| e.id == start)?;
+        let end = (k + 1..evs.len()).find(|&i| evs[i].dynamic.is_some() || evs[i].spans & span::HAIRPIN_END != 0);
+        Some((loc, k, end))
+    }
+
+    /// Moves an end of the selected hairpin: its start to another note before
+    /// its end, its end to another note or rest after its start. `pick`
+    /// chooses the event index from the voice's events and the end's current
+    /// index. `merge`: part of a drag (one undo step).
+    fn set_hairpin_end(&mut self, handle: SlurHandle, pick: impl FnOnce(&[Event], usize) -> usize, merge: bool) {
+        let Some(start) = self.selected_hairpin() else { return };
+        let Some((loc, k, end)) = self.hairpin_ends(start) else { return };
+        let evs: Vec<Event> = self.movement().unwrap().lanes[loc.lane].voices[loc.voice].events.to_vec();
+        let current = if handle == SlurHandle::Start { k } else { end.unwrap_or(evs.len() - 1) };
+        let want = pick(&evs, current).min(evs.len() - 1);
+        // The nearest allowed event: a note before the end for the start;
+        // after the start for the end.
+        let ok = |i: usize| match handle {
+            SlurHandle::Start => !evs[i].is_rest() && end.is_none_or(|e| i < e) && evs[i].spans & (span::CRESC_START | span::DIM_START) == 0 || i == k,
+            SlurHandle::End => i > k,
+        };
+        let Some(to) = (0..evs.len()).filter(|&i| ok(i)).min_by_key(|&i| i.abs_diff(want)) else { return };
+        if to == current {
+            return;
+        }
+        let kind = evs[k].spans & (span::CRESC_START | span::DIM_START);
+        let before = self.snapshot();
+        let m = &mut self.project.movements[self.movement];
+        let v = std::sync::Arc::make_mut(&mut m.lanes[loc.lane].voices[loc.voice].events);
+        match handle {
+            SlurHandle::Start => {
+                v[k].spans &= !kind;
+                v[to].spans |= kind;
+                self.slur = Some(ids::hairpin(v[to].id));
+            }
+            SlurHandle::End => {
+                if let Some(e) = end {
+                    v[e].spans &= !span::HAIRPIN_END;
+                }
+                v[to].spans |= span::HAIRPIN_END;
+            }
+        }
+        self.commit_with(before, "Move hairpin", true, merge.then_some(start));
+        self.status = "Hairpin moved".into();
+    }
+
+    /// Moves an end of the selected hairpin by `by` notes (keyboard).
+    pub fn step_hairpin(&mut self, handle: SlurHandle, by: i64) {
+        self.set_hairpin_end(handle, |_, k| (k as i64 + by).max(0) as usize, false);
+    }
+
+    /// Drags an end of the selected hairpin to the event nearest `at`
+    /// (written time, whole notes).
+    pub fn drag_hairpin(&mut self, handle: SlurHandle, at: Frac) {
+        self.set_hairpin_end(
+            handle,
+            |evs, _| {
+                let d = |e: &Event| if e.start > at { e.start - at } else { at - e.start };
+                (0..evs.len()).min_by(|&a, &b| d(&evs[a]).cmp(&d(&evs[b]))).unwrap_or(0)
+            },
+            true,
+        );
+    }
+
+    /// Removes the selected hairpin (and its end mark).
+    pub fn delete_hairpin(&mut self) {
+        let Some(start) = self.selected_hairpin() else { return };
+        let Some((loc, k, end)) = self.hairpin_ends(start) else { return };
+        let before = self.snapshot();
+        let m = &mut self.project.movements[self.movement];
+        let v = std::sync::Arc::make_mut(&mut m.lanes[loc.lane].voices[loc.voice].events);
+        v[k].spans &= !(span::CRESC_START | span::DIM_START);
+        if let Some(e) = end {
+            v[e].spans &= !span::HAIRPIN_END;
+        }
+        self.commit(before, "Delete hairpin");
+        self.slur = None;
+        self.status = "Hairpin deleted".into();
     }
 
     // ----------------------------------------------------------- spanners --

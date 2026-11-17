@@ -2084,12 +2084,14 @@ impl<'a> Engraver<'a> {
         for (pi, part) in self.score.parts.iter().enumerate() {
             for v in &part.voices {
                 let notes: Vec<&corinzia_score::score::Event> = v.events.iter().filter(|e| !e.pitches.is_empty()).collect();
-                for (k, e) in notes.iter().enumerate() {
+                for e in notes.iter() {
                     at.insert(e.id, (pi, v.index, e.start));
-                    let id = e.pitches.first().map(|p| p.id).unwrap_or(e.id);
+                    // Selectable by an id of its own (not its first head's).
+                    let id = ids::hairpin(e.id);
                     if e.spans & (span::CRESC_START | span::DIM_START) != 0 {
                         let kind = if e.spans & span::CRESC_START != 0 { SpanKind::Cresc } else { SpanKind::Dim };
-                        let to = notes[k + 1..].iter().find(|o| o.dynamic.is_some() || o.spans & span::HAIRPIN_END != 0).map(|o| o.start);
+                        // It ends at the next dynamic or end mark, on a note or a rest.
+                        let to = v.events.iter().filter(|o| o.start > e.start).find(|o| o.dynamic.is_some() || o.spans & span::HAIRPIN_END != 0).map(|o| o.start);
                         // Without an end: to the end of the note's bar.
                         let to = to.unwrap_or_else(|| self.score_bar_end(e.start));
                         out.push(Spanner { part: pi, voice: v.index, to_part: pi, to_voice: v.index, from: e.start, to, kind, id, dir: 0 });
@@ -2106,6 +2108,11 @@ impl<'a> Engraver<'a> {
             out.push(Spanner { part: p0, voice: v0, to_part: p1, to_voice: v1, from: t0, to: t1, kind: SpanKind::Slur, id: sl.id, dir: sl.dir });
         }
         out
+    }
+
+    /// Whether a bar starts at `t` (whole movement).
+    fn is_bar_start(&self, t: Frac) -> bool {
+        t > Frac::ZERO && self.score_bar_end(t - Frac::new(1, 4096)) == t
     }
 
     /// The end of the bar containing `t` (whole movement).
@@ -2655,56 +2662,108 @@ impl<'a> Engraver<'a> {
         let mut baseline_for: std::collections::HashMap<usize, f32> = Default::default();
         let (r0, r1) = self.range;
         let (left, right) = self.system_edges();
-        for sp in self.spanners().into_iter().filter(|s| s.kind != SpanKind::Slur && s.from < r1 && s.to > r0) {
+        let pins: Vec<Spanner> = self.spanners().into_iter().filter(|s| s.kind != SpanKind::Slur && s.from < r1 && s.to > r0).collect();
+        // Where each hairpin starts and ends, as LilyPond places them: just
+        // after a dynamic or its first head; at a dynamic, at the end head's
+        // right side, or (on the first note of a bar) at the barline; where
+        // one hands over to the next on a note, the first stops inside the
+        // head and the next starts just after it.
+        struct Pin {
+            sp: Spanner,
+            si: Option<usize>,
+            ei: Option<usize>,
+            x0: f32,
+            x1: f32,
+        }
+        let mut placed: Vec<Pin> = Vec::new();
+        for sp in pins.iter().cloned() {
             let si = if sp.from >= r0 { self.note_at(sp.part, sp.voice, sp.from) } else { None };
             let ei = if sp.to < r1 { self.note_at(sp.part, sp.voice, sp.to) } else { None };
-            let start_x = match si {
+            // A hand-over on a bar's first note happens at the barline instead.
+            let handed_from = !self.is_bar_start(sp.from) && pins.iter().any(|o| o.part == sp.part && o.voice == sp.voice && o.to == sp.from && o.from < sp.from);
+            let hands_on = pins.iter().any(|o| o.part == sp.part && o.voice == sp.voice && o.from == sp.to && o.to > sp.to);
+            let x0 = match si {
                 Some(i) => {
                     let n = &self.notes[i];
-                    n.x + n.dynamic.as_ref().map(|t| HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5).unwrap_or(0.0)
+                    match &n.dynamic {
+                        Some(t) => n.x + HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5,
+                        None if handed_from => n.x + 0.8 * HEAD_W,
+                        None => n.x,
+                    }
                 }
                 None => left,
             };
-            let end_x = match ei {
+            let x1 = match ei {
                 Some(k) => {
                     let o = &self.notes[k];
-                    match &o.dynamic {
-                        Some(t) => o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - 0.5,
-                        None => o.x + HEAD_W,
+                    let at_dynamic = o.dynamic.as_ref().map(|t| o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - 0.5);
+                    if self.is_bar_start(sp.to) && sp.to > sp.from {
+                        // LilyPond's to-barline: a hairpin ending on a bar's
+                        // first note stops at the barline before it.
+                        (self.bar_x(sp.to) - 0.6).min(at_dynamic.unwrap_or(f32::MAX))
+                    } else if let Some(x) = at_dynamic {
+                        x
+                    } else if hands_on {
+                        o.x + 0.3 * HEAD_W
+                    } else {
+                        o.x + HEAD_W
                     }
                 }
                 // Continues in the next system (or ends at its bar's end).
                 None if sp.to >= r1 => right,
                 None => self.col_x(sp.to) - 0.5,
             };
-            if end_x <= start_x + 0.5 {
+            if x1 <= x0 + 0.5 {
                 continue;
             }
-            let hi = ei.map(|k| self.notes[k].x + 2.5).unwrap_or(end_x);
-            let base = (self.sky[sp.part].bottom_over(start_x - 0.5, hi) + 2.0).max(self.top(sp.part) + 6.5);
-            let c = base - 0.55;
-            // The opening grows (or shrinks) with time, so the parts of a
-            // hairpin cut by a system break continue each other.
-            let total = sp.to - sp.from;
-            let frac = |t: Frac| -> f32 {
-                if total.is_zero() {
-                    return 0.0;
+            placed.push(Pin { sp, si, ei, x0, x1 });
+        }
+        // Hairpins that touch (one ends where the next starts) share one
+        // line, below everything under any of them.
+        placed.sort_by(|a, b| (a.sp.part, a.sp.voice, a.sp.from).cmp(&(b.sp.part, b.sp.voice, b.sp.from)));
+        let mut k = 0;
+        while k < placed.len() {
+            let mut end = k + 1;
+            while end < placed.len() && placed[end].sp.part == placed[k].sp.part && placed[end].sp.voice == placed[k].sp.voice && placed[end].sp.from <= placed[end - 1].sp.to {
+                end += 1;
+            }
+            let part = placed[k].sp.part;
+            let base = placed[k..end]
+                .iter()
+                .map(|p| {
+                    let hi = p.ei.map(|e| self.notes[e].x + 2.5).unwrap_or(p.x1);
+                    self.sky[part].bottom_over(p.x0 - 0.5, hi) + 2.0
+                })
+                .fold(self.top(part) + 6.5, f32::max);
+            for p in &placed[k..end] {
+                let sp = &p.sp;
+                let c = base - 0.55;
+                // The opening grows (or shrinks) with time, so the parts of a
+                // hairpin cut by a system break continue each other; at its
+                // widest, LilyPond's 1⅓ spaces.
+                let total = sp.to - sp.from;
+                let frac = |t: Frac| -> f32 {
+                    if total.is_zero() {
+                        return 0.0;
+                    }
+                    let f = (t.max(sp.from).min(sp.to) - sp.from) * Frac::new(total.den, total.num);
+                    (f.num as f32 / f.den as f32).clamp(0.0, 1.0)
+                };
+                const HALF: f32 = 2.0 / 3.0;
+                let open = |f: f32| if sp.kind == SpanKind::Cresc { HALF * f } else { HALF * (1.0 - f) };
+                let (fa, fb) = (if p.si.is_some() { 0.0 } else { frac(r0) }, if p.ei.is_some() || sp.to < r1 { 1.0 } else { frac(r1) });
+                let (a, b) = (open(fa), open(fb));
+                let w = d.hairpin_thickness;
+                self.place(part, Item::line(p.x0, c - a, p.x1, c - b, w, sp.id));
+                self.place(part, Item::line(p.x0, c + a, p.x1, c + b, w, sp.id));
+                if let Some(i) = p.si {
+                    baseline_for.insert(i, base);
                 }
-                let f = (t.max(sp.from).min(sp.to) - sp.from) * Frac::new(total.den, total.num);
-                (f.num as f32 / f.den as f32).clamp(0.0, 1.0)
-            };
-            let open = |f: f32| if sp.kind == SpanKind::Cresc { 0.5 * f } else { 0.5 * (1.0 - f) };
-            let (fa, fb) = (if si.is_some() { 0.0 } else { frac(r0) }, if ei.is_some() || sp.to < r1 { 1.0 } else { frac(r1) });
-            let (a, b) = (open(fa), open(fb));
-            let w = d.hairpin_thickness;
-            self.place(sp.part, Item::line(start_x, c - a, end_x, c - b, w, sp.id));
-            self.place(sp.part, Item::line(start_x, c + a, end_x, c + b, w, sp.id));
-            if let Some(i) = si {
-                baseline_for.insert(i, base);
+                if let Some(e) = p.ei {
+                    baseline_for.insert(e, base);
+                }
             }
-            if let Some(k) = ei {
-                baseline_for.insert(k, base);
-            }
+            k = end;
         }
         for i in 0..self.notes.len() {
             let n = self.notes[i].clone();
