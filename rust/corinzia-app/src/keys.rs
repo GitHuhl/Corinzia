@@ -6,7 +6,7 @@ use corinzia_score::score::art;
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     ToggleInput,
     Escape,

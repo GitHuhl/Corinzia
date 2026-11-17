@@ -182,6 +182,25 @@ impl Editor {
         self.status = if b0 == b1 { format!("Bar {b0}") } else { format!("Bars {b0}–{b1}") };
     }
 
+    /// Bars `first..=last` (as numbered in the score: a pickup is bar 0) on
+    /// staves `lanes` as a passage.
+    pub fn select_bars(&mut self, first: usize, last: usize, lanes: std::ops::RangeInclusive<usize>) -> Result<(), String> {
+        let m = self.movement().ok_or("No movement")?;
+        let starts = edit::bar_starts(m);
+        let base = if edit::pickup(m).is_some() { 0 } else { 1 };
+        let bars = starts.len() + base - 1;
+        let index = |n: usize| n.checked_sub(base).filter(|&i| i < starts.len()).ok_or(format!("No bar {n}: bars run from {base} to {bars}"));
+        let (a, b) = (index(first)?, index(last.max(first))?);
+        if *lanes.end() >= m.lanes.len() || lanes.start() > lanes.end() {
+            return Err(format!("No staff {}: there are {}", lanes.end() + 1, m.lanes.len()));
+        }
+        let to = starts.get(b + 1).copied().unwrap_or(m.length);
+        self.set_range(Range { lane_from: *lanes.start(), lane_to: *lanes.end(), from: starts[a], to });
+        self.range_anchor = None;
+        self.status = if a == b { format!("Bar {first}") } else { format!("Bars {first}–{}", last.max(first)) };
+        Ok(())
+    }
+
     /// The union of the staves and time spans of these notes and rests (plus
     /// the current selection when extending): marquee and shift-click.
     pub fn select_elements(&mut self, ids: &[Id], extend: bool) {

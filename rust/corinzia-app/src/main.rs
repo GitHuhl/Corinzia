@@ -12,6 +12,8 @@ mod app;
 mod arrange;
 mod browser;
 mod cli;
+mod command;
+mod mcp;
 mod demo;
 mod dialogs;
 mod editor;
@@ -48,6 +50,36 @@ fn load_text_fonts() -> Vec<Vec<u8>> {
     std::iter::once(regular).chain(bold).collect()
 }
 
+/// `--do`, `--script` and `--stdin`: the commands in that order. A script
+/// or `--do` stops at the first failure; standard input goes on.
+fn run_scripted_in(app: &mut App, a: &cli::Args) -> bool {
+    // A file that does not open is an error here, not the demo instead.
+    if a.file.is_some() && app.path.is_none() && app.editor.status.starts_with("Could not open") {
+        let error = app.editor.status.trim_end_matches(" — showing the demo");
+        println!("{}", serde_json::json!({"ok": false, "command": "open", "error": error}));
+        return false;
+    }
+    let mut ok = app.run_commands(a.commands.clone(), true);
+    if let (true, Some(path)) = (ok, &a.script) {
+        match std::fs::read_to_string(path) {
+            Ok(text) => ok = app.run_commands(text.lines().map(String::from), true),
+            Err(e) => {
+                eprintln!("--script {}: {e}", path.display());
+                return false;
+            }
+        }
+    }
+    if ok && a.stdin {
+        use std::io::BufRead;
+        ok = app.run_commands(std::io::stdin().lock().lines().map_while(Result::ok), false);
+    }
+    ok
+}
+
+fn run_scripted(mut app: App, a: &cli::Args) -> bool {
+    run_scripted_in(&mut app, a)
+}
+
 fn main() -> iced::Result {
     // The plugin scanner's child process: one bundle, its plugins as JSON.
     let raw: Vec<String> = std::env::args().collect();
@@ -65,19 +97,29 @@ fn main() -> iced::Result {
         }
     }
     let a = args();
-    if let Some(out) = a.export.clone() {
-        // Headless: open, apply scripted keys, export, exit.
+    if a.mcp {
+        // An MCP server for AI agents on standard input and output.
         load_text_fonts();
-        let app = App::from_args(a);
-        let format = match out.extension().and_then(|e| e.to_str()) {
-            Some("pdf") => files::Format::Pdf,
-            Some("mid" | "midi") => files::Format::Midi,
-            Some("musicxml" | "xml") => files::Format::MusicXml,
-            Some("wav") => files::Format::Audio,
-            _ => {
-                eprintln!("--export: use a .pdf, .mid, .musicxml or .wav file name");
-                std::process::exit(2);
-            }
+        mcp::serve(App::from_args_keeping(&a));
+        return Ok(());
+    }
+    let scripted = !a.commands.is_empty() || a.script.is_some() || a.stdin;
+    if scripted && a.export.is_none() {
+        // Headless: open, run the commands (one JSON line of answer each), exit.
+        load_text_fonts();
+        let ok = run_scripted(App::from_args_keeping(&a), &a);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+    if let Some(out) = a.export.clone() {
+        // Headless: open, apply scripted keys and commands, export, exit.
+        load_text_fonts();
+        let mut app = App::from_args_keeping(&a);
+        if scripted && !run_scripted_in(&mut app, &a) {
+            std::process::exit(1);
+        }
+        let Some(format) = files::format_of(&out) else {
+            eprintln!("--export: use a .pdf, .mid, .musicxml or .wav file name");
+            std::process::exit(2);
         };
         if format == files::Format::Audio {
             let folder = app.path.as_deref().and_then(|p| p.parent());

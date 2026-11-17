@@ -7,6 +7,7 @@ use crate::editor::SlurHandle;
 use corinzia_model::dynamic_index;
 
 mod chant;
+mod command;
 mod dialogs;
 mod document;
 mod mixing;

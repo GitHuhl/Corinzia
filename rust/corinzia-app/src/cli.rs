@@ -3,6 +3,7 @@
 use crate::app::View;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub(crate) struct Args {
     pub(crate) file: Option<PathBuf>,
     pub(crate) view: View,
@@ -13,10 +14,17 @@ pub(crate) struct Args {
     pub(crate) part: Option<usize>,
     /// Show Byzantine chant N (from 1).
     pub(crate) chant: Option<usize>,
+    /// Text commands to run headless (`--do`, repeatable), a file of them
+    /// (`--script`), or commands read from standard input (`--stdin`).
+    pub(crate) commands: Vec<String>,
+    pub(crate) script: Option<PathBuf>,
+    pub(crate) stdin: bool,
+    /// Serve the Model Context Protocol on standard input and output.
+    pub(crate) mcp: bool,
 }
 
 pub(crate) fn args() -> Args {
-    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None, chant: None };
+    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None, chant: None, commands: vec![], script: None, stdin: false, mcp: false };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -24,6 +32,10 @@ pub(crate) fn args() -> Args {
             "--screenshot" => a.screenshot = it.next().map(PathBuf::from),
             "--part" => a.part = it.next().and_then(|n| n.parse().ok()),
             "--chant" => a.chant = it.next().and_then(|n| n.parse().ok()),
+            "--do" => a.commands.extend(it.next()),
+            "--script" => a.script = it.next().map(PathBuf::from),
+            "--stdin" => a.stdin = true,
+            "--mcp" => a.mcp = true,
             // Scripted key presses (testing and demos): "n c d shift+e ctrl+z".
             // Export the (edited) movement and exit: format from the extension.
             "--export" => a.export = it.next().map(PathBuf::from),

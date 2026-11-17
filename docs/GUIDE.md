@@ -259,6 +259,41 @@ the output), automation playback and saving plugin settings.
   `--export out.wav` works headless too).
   `corinzia score.project --export score.pdf` works headless.
 
+## Scripting and AI agents
+
+Every edit can be made from the command line, without opening a window.
+Commands run in order, each answering with one line of JSON
+(`{"ok":true,"result":…}` or `{"ok":false,"error":…}`); the program exits
+with status 1 if one fails.
+
+```bash
+corinzia score.project --do "select bar 3-4 staff 1" --do "transpose \"up M2\"" --do save
+```
+
+```bash
+corinzia score.project --do "get notes bar 1-2 staff 1"
+```
+
+* `--do "<command>"` runs one command (repeat it for more);
+  `--script file.txt` runs a file of them, one per line (`#` starts a
+  comment); `--stdin` reads commands from standard input until it ends.
+  `--export out.pdf` afterwards exports the result.
+* `get project`, `get notes [bar A-B] [staff S]`, `get selection`,
+  `get chant` and `get status` answer with JSON.
+* `act <action>` runs any keyboard or menu action as JSON (`act "Undo"`,
+  `act {"Duration":2}`), and `popover <kind> <text>` types into any
+  popover (`popover Tempo "Allegro 132"`), so everything the interface
+  can do, a script can do. `help` lists the readable commands (`note`,
+  `key`, `select bar`, `save`, `neume`…).
+
+**MCP:** `corinzia --mcp score.project` is a Model Context Protocol
+server on standard input and output, for AI assistants. Its tool,
+`corinzia`, runs one command and answers with its JSON. With Claude Code:
+
+```bash
+claude mcp add corinzia -- corinzia --mcp /path/to/score.project
+```
+
 ## Project files
 
 The `.project` format is still changing. Each file records its format
