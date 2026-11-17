@@ -248,6 +248,17 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
     }
 }
 
+/// The export format a file name asks for, by its extension.
+pub fn format_of(path: &std::path::Path) -> Option<Format> {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("pdf") => Some(Format::Pdf),
+        Some("mid" | "midi") => Some(Format::Midi),
+        Some("musicxml" | "xml") => Some(Format::MusicXml),
+        Some("wav") => Some(Format::Audio),
+        _ => None,
+    }
+}
+
 /// A Byzantine chant as a PDF.
 pub fn chant_pdf(chant: &corinzia_byz::Chant) -> Vec<u8> {
     if corinzia_layout::display::text_fonts().0.is_none() {

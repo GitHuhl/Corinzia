@@ -219,6 +219,11 @@ impl App {
 
     /// The app as the command line asks for it (file, view, scripted keys);
     /// no window is needed, so `--export` runs headless.
+    /// `from_args` without giving the arguments up.
+    pub(crate) fn from_args_keeping(a: &Args) -> App {
+        App::from_args(a.clone())
+    }
+
     pub(crate) fn from_args(a: Args) -> App {
         let (project, path, status) = match &a.file {
             Some(f) => match files::load(f) {

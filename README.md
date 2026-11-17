@@ -86,6 +86,13 @@ shortcut a keystroke away (F1).
 
 ![Preferences: theme, audio and MIDI](docs/screenshots/preferences.png)
 
+## Works with your AI assistant
+
+Every edit Corinzia can make, it can make from a command, too: "select
+bars 3 to 4 on the violin, transpose up a tone, save". Script repetitive
+jobs, or connect Corinzia to an AI assistant through MCP and ask it to
+read, edit and export your scores for you.
+
 ## Plays well with others
 
 Open and save MusicXML, including compressed `.mxl`, to move scores to
