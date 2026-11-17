@@ -628,10 +628,12 @@ fn hairpins_against_lilypond() {
         let heads: HashMap<u64, f32> = list.items.iter().filter_map(|i| match i { Item::Glyph { at, id, .. } => Some((*id, at.x)), _ => None }).collect();
         // Ours: each hairpin's two strokes, by the id of its first head.
         let mut ours: HashMap<u64, (f32, f32, f32, f32)> = HashMap::new();
+        let first_head: HashMap<u64, u64> = s.parts.iter().flat_map(|p| p.voices.iter()).flat_map(|v| v.events.iter()).filter_map(|e| Some((e.id, e.pitches.first()?.id))).collect();
         for i in &list.items {
             if let Item::Line { from, to, id, width } = i {
-                if heads.contains_key(id) {
-                    let e = ours.entry(*id).or_insert((f32::MAX, f32::MIN, f32::MAX, f32::MIN));
+                // A hairpin's strokes carry its own id: by its first head.
+                if let Some(&head) = corinzia_score::score::ids::as_hairpin(*id).and_then(|e| first_head.get(&e)) {
+                    let e = ours.entry(head).or_insert((f32::MAX, f32::MIN, f32::MAX, f32::MIN));
                     e.0 = e.0.min(from.x.min(to.x));
                     e.1 = e.1.max(from.x.max(to.x));
                     e.2 = e.2.min(from.y.min(to.y) - width / 2.0);

@@ -35,6 +35,18 @@ impl App {
     /// Keys on a selected slur: Shift+←→ move its end a note, Alt+←→ its
     /// start, X flips it, Delete removes it, Escape deselects.
     pub(crate) fn slur_action(&mut self, a: &Action) -> bool {
+        // A selected hairpin: the same keys, but no flipping.
+        if self.editor.selected_hairpin().is_some() {
+            let ed = &mut self.editor;
+            match a {
+                Action::Extend(d) => ed.step_hairpin(editor::SlurHandle::End, *d),
+                Action::Nudge(d) => ed.step_hairpin(editor::SlurHandle::Start, *d),
+                Action::Delete | Action::Backspace => ed.delete_hairpin(),
+                Action::Escape => ed.clear_selection(),
+                _ => return false,
+            }
+            return true;
+        }
         let Some(id) = self.editor.selected_slur() else {
             if matches!(a, Action::Flip) {
                 self.editor.status = "Select a slur first (click its curve)".into();

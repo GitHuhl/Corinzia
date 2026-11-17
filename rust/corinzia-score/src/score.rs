@@ -18,12 +18,17 @@ pub mod ids {
     const TEMPO: u64 = 1 << 62;
     const DYNAMIC: u64 = 1 << 61;
     const LYRIC: u64 = 1 << 60; // verse in bits 52..60
+    const HAIRPIN: u64 = TEMPO | DYNAMIC;
     const TAGS: u64 = TEMPO | DYNAMIC | LYRIC;
     pub fn tempo(index: usize) -> u64 {
         TEMPO | index as u64
     }
     pub fn dynamic(event: u64) -> u64 {
         DYNAMIC | event
+    }
+    /// A hairpin, by the event it starts on.
+    pub fn hairpin(event: u64) -> u64 {
+        HAIRPIN | event
     }
     pub fn lyric(event: u64, verse: u8) -> u64 {
         LYRIC | (verse as u64) << 52 | event
@@ -35,6 +40,10 @@ pub mod ids {
     /// The event whose dynamic this is, if `id` is one.
     pub fn as_dynamic(id: u64) -> Option<u64> {
         (id < PROJECT_TITLE - 8 && id & TAGS == DYNAMIC).then_some(id & !TAGS)
+    }
+    /// The event a hairpin starts on, if `id` is one.
+    pub fn as_hairpin(id: u64) -> Option<u64> {
+        (id < PROJECT_TITLE - 8 && id & TAGS == HAIRPIN).then_some(id & !TAGS)
     }
     /// The event and verse of a lyric, if `id` is one.
     pub fn as_lyric(id: u64) -> Option<(u64, u8)> {

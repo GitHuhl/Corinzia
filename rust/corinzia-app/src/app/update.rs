@@ -281,7 +281,12 @@ impl App {
             ViewEvent::Marquee { .. } | ViewEvent::SlurDrag { .. } | ViewEvent::Context { .. } | ViewEvent::DoubleClick { .. } if self.editor.chant.is_some() => {}
             ViewEvent::Marquee { ids, shift } => self.editor.select_elements(&ids, shift),
             ViewEvent::SlurDrag { handle, at } => {
-                self.editor.drag_slur(handle, Frac::new((at.quarter * 1024.0).round() as i64, 4096));
+                let at = Frac::new((at.quarter * 1024.0).round() as i64, 4096);
+                if self.editor.selected_hairpin().is_some() {
+                    self.editor.drag_hairpin(handle, at);
+                } else {
+                    self.editor.drag_slur(handle, at);
+                }
             }
             ViewEvent::SlurDragEnd => self.editor.end_gesture(),
             ViewEvent::Context { target, at, screen } => {

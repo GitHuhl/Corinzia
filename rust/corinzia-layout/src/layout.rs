@@ -2086,7 +2086,8 @@ impl<'a> Engraver<'a> {
                 let notes: Vec<&corinzia_score::score::Event> = v.events.iter().filter(|e| !e.pitches.is_empty()).collect();
                 for e in notes.iter() {
                     at.insert(e.id, (pi, v.index, e.start));
-                    let id = e.pitches.first().map(|p| p.id).unwrap_or(e.id);
+                    // Selectable by an id of its own (not its first head's).
+                    let id = ids::hairpin(e.id);
                     if e.spans & (span::CRESC_START | span::DIM_START) != 0 {
                         let kind = if e.spans & span::CRESC_START != 0 { SpanKind::Cresc } else { SpanKind::Dim };
                         // It ends at the next dynamic or end mark, on a note or a rest.

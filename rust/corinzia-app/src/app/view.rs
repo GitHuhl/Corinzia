@@ -66,7 +66,7 @@ impl App {
                 (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
             }),
             active: self.pages_of(ed.movement),
-            slur: ed.selected_slur(),
+            slur: ed.selected_slur().or(ed.selected_hairpin().map(corinzia_score::score::ids::hairpin)),
             ghost: ed.input_mode.then(|| {
                 use corinzia_edit::BaseDuration as B;
                 use corinzia_layout::font::Glyph;

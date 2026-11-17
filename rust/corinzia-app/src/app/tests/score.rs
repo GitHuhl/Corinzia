@@ -688,3 +688,44 @@ fn lyrics_and_chords_are_typed_as_a_stream() {
         std::fs::write(std::path::Path::new(&dir).join("lyrics.pdf"), files::export(&a.editor.project, 0, files::Format::Pdf, false).unwrap()).unwrap();
     }
 }
+
+#[test]
+fn hairpins_are_selected_dragged_by_their_ends_and_deleted() {
+    use corinzia_score::score::{ids, span};
+    let mut a = app(View::Page);
+    a.command("select bar 2 staff 1").unwrap();
+    let _ = a.act(Action::Hairpin { crescendo: true });
+    a.sync();
+    let flute = |a: &App| a.editor.movement().unwrap().lanes[0].voices[0].events.to_vec();
+    let start = flute(&a).iter().find(|e| e.spans & span::CRESC_START != 0).expect("a crescendo").id;
+    let pid = ids::hairpin(start);
+    // Its strokes carry its own id: a click on one selects it, not a note.
+    let origins = score_view::page_origins(&a.pages, true);
+    let (page, mid) = a.pages.iter().enumerate().find_map(|(k, p)| p.items.iter().find_map(|i| match i {
+        Item::Line { from, to, id, .. } if *id == pid => Some((k, iced::Point::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0))),
+        _ => None,
+    })).expect("the hairpin is drawn");
+    let desk = iced::Point::new(mid.x + origins[page].x, mid.y + origins[page].y);
+    assert_eq!(score_view::hit_test(&a.pages, &origins, desk), Some(pid));
+    let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(pid), at: None, shift: false }));
+    assert_eq!(a.editor.selected_hairpin(), Some(start));
+    assert!(a.selected.contains(&pid), "drawn selected");
+    let handles = score_view::slur_handles(&a.pages, &origins, pid);
+    assert_eq!(handles.len(), 2, "a handle at each end");
+    assert!(handles[0].1.x < handles[1].1.x);
+    // Dragging the end to bar 3's third beat ends it there.
+    let _ = a.update(Message::Canvas(ViewEvent::SlurDrag { handle: crate::editor::SlurHandle::End, at: score_view::StaffPoint { page: 0, part: 0, quarter: 10.0, step_below_top: 0 } }));
+    let _ = a.update(Message::Canvas(ViewEvent::SlurDragEnd));
+    let ends: Vec<_> = flute(&a).iter().filter(|e| e.spans & span::HAIRPIN_END != 0).map(|e| e.start).collect();
+    assert_eq!(ends, [corinzia_score::Frac::new(5, 2)], "the end mark moved to bar 3, beat 3");
+    // Alt+→ moves its start a note later, keeping it selected.
+    let _ = a.act(Action::Nudge(1));
+    let new_start = flute(&a).iter().find(|e| e.spans & span::CRESC_START != 0).unwrap().id;
+    assert_ne!(new_start, start);
+    assert_eq!(a.editor.selected_hairpin(), Some(new_start));
+    // Delete removes it and its end mark; undo brings it back.
+    let _ = a.act(Action::Delete);
+    assert!(flute(&a).iter().all(|e| e.spans & (span::CRESC_START | span::HAIRPIN_END) == 0));
+    let _ = a.act(Action::Undo);
+    assert!(flute(&a).iter().any(|e| e.spans & span::CRESC_START != 0));
+}
