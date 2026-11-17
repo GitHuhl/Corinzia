@@ -93,6 +93,18 @@ struct State {
     marked: bool,
 }
 
+/// Whether the PipeWire library loaded is at least `major.minor.micro`.
+fn library_at_least(major: u32, minor: u32, micro: u32) -> bool {
+    let v = unsafe { pw::sys::pw_get_library_version() };
+    if v.is_null() {
+        return false;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(v) }.to_string_lossy();
+    let mut parts = text.split('.').map(|p| p.trim().parse::<u32>().unwrap_or(0));
+    let found = (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    found >= (major, minor, micro)
+}
+
 fn run(engine: Engine, rate: u32, max_frames: u32, device: &str, quit: pw::channel::Receiver<()>, ready: &std::sync::mpsc::Sender<Result<(), String>>) -> Result<(), String> {
     pw::init();
     let mainloop = match pw::main_loop::MainLoop::new(None) {
@@ -127,21 +139,30 @@ fn run(engine: Engine, rate: u32, max_frames: u32, device: &str, quit: pw::chann
         Err(e) => return Err(format!("PipeWire stream: {e}")),
     };
     let block = max_frames as usize;
+    // pw_buffer.requested (the frames a cycle wants) exists from 0.3.49 on;
+    // an older library's buffers have no such field.
+    let knows_requested = library_at_least(0, 3, 49);
     let state = State { engine, left: vec![0.0; block], right: vec![0.0; block], marked: false };
     let listener = stream
         .add_local_listener_with_user_data(state)
-        .process(|stream, st| {
+        .process(move |stream, st| {
             if !st.marked {
                 crate::host::mark_audio_thread();
                 st.marked = true;
             }
             let Some(mut buffer) = stream.dequeue_buffer() else { return };
+            // The frames this cycle wants. The mapped buffer is usually
+            // larger: filling all of it would hand PipeWire several cycles'
+            // audio at once, which it queues or drops (stutter, drifting
+            // latency). Without a request (an old PipeWire): one block.
+            let requested = if knows_requested { buffer.requested() as usize } else { 0 };
             let datas = buffer.datas_mut();
             let data = &mut datas[0];
             let stride = 2 * std::mem::size_of::<f32>();
             let frames = match data.data() {
                 Some(bytes) => {
-                    let frames = bytes.len() / stride;
+                    let capacity = bytes.len() / stride;
+                    let frames = if requested > 0 { requested.min(capacity) } else { st.left.len().min(capacity) };
                     let mut at = 0;
                     while at < frames {
                         let n = (frames - at).min(st.left.len());

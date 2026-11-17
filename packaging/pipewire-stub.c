@@ -6,6 +6,7 @@
 static int dummy_properties;
 
 void pw_init(int *argc, char **argv[]) { (void)argc; (void)argv; }
+const char *pw_get_library_version(void) { return "0.0.0"; }
 void *pw_main_loop_new(const void *props) { (void)props; return NULL; }
 void *pw_main_loop_get_loop(void *loop) { (void)loop; return NULL; }
 int pw_main_loop_run(void *loop) { (void)loop; return -1; }
