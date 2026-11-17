@@ -374,7 +374,7 @@ fn spanners_continue_across_system_breaks() {
     for w in openings.windows(2) {
         assert!((w[1].0 - w[0].1).abs() < 0.05, "each piece continues the previous opening: {openings:?}");
     }
-    assert!((openings.last().unwrap().1 - 1.0).abs() < 1e-3, "ends fully open");
+    assert!((openings.last().unwrap().1 - 4.0 / 3.0).abs() < 1e-3, "ends fully open, as wide as LilyPond's (1⅓ spaces)");
 }
 
 #[test]
