@@ -41,6 +41,27 @@ fn plays_through_pipewire() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(ui.shared.generation.load(Ordering::Acquire), 1, "the plan reached the realtime thread");
+
+    // Playing advances one cycle at a time: each callback renders what
+    // PipeWire asked for (a quantum), not the whole buffer it maps (often
+    // many quanta), which would bunch many blocks of plugin work into one
+    // deadline and make PipeWire queue the rest. A silent minute.
+    ui.swap(snapshot::build_tones_from_pool(&p, 48000.0, 2, 99, 60.0, 60.0, 0, &[], &mut pool));
+    ui.seek(0);
+    ui.play();
+    std::thread::sleep(Duration::from_millis(300));
+    let (t0, p0) = (Instant::now(), ui.position());
+    let (mut last, mut biggest) = (p0, 0);
+    while t0.elapsed() < Duration::from_millis(1500) {
+        std::thread::sleep(Duration::from_millis(3));
+        let now = ui.position();
+        biggest = biggest.max(now - last);
+        last = now;
+    }
+    let (seconds, played) = (t0.elapsed().as_secs_f64(), (last - p0) as f64 / 48000.0);
+    assert!(ui.is_playing(), "still playing");
+    assert!((played / seconds - 1.0).abs() < 0.15, "{played:.2} s of audio in {seconds:.2} s");
+    assert!(biggest <= 2 * 1024, "the playhead jumped {biggest} frames at once (a quantum is 1024)");
     drop(out); // stops the loop and joins the thread
     ui.collect();
 }
