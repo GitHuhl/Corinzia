@@ -63,6 +63,7 @@ fn sample() -> Project {
     p.tracks[0].program = Some(40);
     p.tracks[0].bank = Some(129);
     p.tracks[0].sends = vec![SendLevel { bus: 60, gain_db: -6.0, pre: false }];
+    p.tracks[0].output_bus = Some(60);
     p.buses = vec![Bus { id: 60, name: "Reverb".into(), inserts: vec![502], gain_db: -3.0, pan: 0.2, mute: false, solo: false, output: None }];
     p.master = Master { inserts: vec![503], gain_db: -1.5 };
     p.subtitle = "for flute".into();
@@ -114,6 +115,7 @@ fn save_and_load_round_trip() {
     assert_eq!(b.instruments[0].tuning, GUITAR_TUNING);
     assert_eq!((&b.tracks[0].inserts, &b.tracks[0].sends), (&a.tracks[0].inserts, &a.tracks[0].sends));
     assert_eq!((b.tracks[0].program, b.tracks[0].bank), (Some(40), Some(129)));
+    assert_eq!(b.tracks[0].output_bus, Some(60), "a track into a bus stays there");
     assert_eq!((&b.buses, &b.master), (&a.buses, &a.master));
     let (ma, mb) = (&a.movements[0], &b.movements[0]);
     assert_eq!(mb.lanes[0].chords, ma.lanes[0].chords);
