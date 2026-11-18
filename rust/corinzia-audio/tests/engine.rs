@@ -754,19 +754,44 @@ fn live_blocks() {
     let mut pool = PluginPool::new(SR, block as u32);
     let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
     let total = snap.end() as usize + SR as usize;
-    let (mut ui, mut eng) = engine::new(SR, block as u32);
+    let workers = match std::env::var("CORINZIA_WORKERS").ok().and_then(|w| w.parse().ok()) {
+        Some(n) => corinzia_audio::workers::Workers::new(n),
+        None => corinzia_audio::workers::Workers::for_this_machine(),
+    };
+    let (mut ui, mut eng) = engine::with_workers(SR, block as u32, workers);
     ui.swap(snap);
     ui.play();
     let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
     let mut out = Vec::with_capacity(total);
     let mut times = Vec::new();
     let mut at = 0;
+    let start = std::time::Instant::now();
     while at < total {
+        // CORINZIA_RT=1: the audio thread realtime (as PipeWire makes it)
+        // from the second block on, the workers left as they were made
+        // (normal priority, as without the right to raise them).
+        if times.len() == 1 && std::env::var("CORINZIA_RT").is_ok() {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                let param = libc::sched_param { sched_priority: 50 };
+                assert_eq!(libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param), 0, "no right to realtime");
+            }
+        }
+        // CORINZIA_RAGGED=1: each cycle asks for another number of frames
+        // (as PipeWire's may), up to the block.
+        let n = if std::env::var("CORINZIA_RAGGED").is_ok() { [block, block / 2, 37, block - 1, 1, block / 3 + 5][(at / 7 + times.len()) % 6].clamp(1, block) } else { block };
         let t = std::time::Instant::now();
-        eng.process(&mut l, &mut r);
+        eng.process(&mut l[..n], &mut r[..n]);
         times.push(t.elapsed().as_secs_f64());
-        out.extend_from_slice(&l);
-        at += block;
+        // CORINZIA_PACE=1: in real time, as a sound card asks.
+        if std::env::var("CORINZIA_PACE").is_ok() {
+            let due = start + std::time::Duration::from_secs_f64((at + n) as f64 / SR);
+            if let Some(wait) = due.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        out.extend_from_slice(&l[..n]);
+        at += n;
     }
     let budget = block as f64 / SR;
     for (i, t) in times.iter().enumerate().filter(|(_, &t)| t > budget * 0.3) {
@@ -800,4 +825,18 @@ fn live_blocks() {
         }
         std::fs::write(wav, b).unwrap();
     }
+}
+
+#[test]
+fn the_engine_reports_its_load_and_late_blocks() {
+    let p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.play();
+    eng.render_offline(SR as usize);
+    let load = ui.take_load();
+    assert!(load > 0.0 && load < 1.0, "{load}");
+    assert_eq!(ui.take_load(), 0.0, "taken");
+    assert_eq!(ui.late(), 0);
 }

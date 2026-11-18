@@ -56,6 +56,11 @@ pub struct Shared {
     pub generation: AtomicU64,
     pub dropped: AtomicU64, // events lost to full queues (diagnostics)
     pub blocks: AtomicU64,
+    /// Blocks that took longer to render than they last (each one a click
+    /// or a gap in live playback), and the highest load since the UI last
+    /// took it (rendering time over the block's duration, in thousandths).
+    pub late: AtomicU64,
+    pub load: AtomicU32,
     /// Peak levels since the UI last took them (f32 bits; positive floats
     /// order as their bits): per node, then per bus, then the master; left
     /// and right. See [`Shared::take_peak`].
@@ -147,6 +152,15 @@ impl EngineHandle {
     }
     pub fn is_playing(&self) -> bool {
         self.shared.playing.load(Ordering::Acquire)
+    }
+    /// Blocks rendered too late for live playback, so far.
+    pub fn late(&self) -> u64 {
+        self.shared.late.load(Ordering::Relaxed)
+    }
+    /// The highest load (1.0: a block took as long as it lasts) since the
+    /// last call.
+    pub fn take_load(&self) -> f32 {
+        self.shared.load.swap(0, Ordering::Relaxed) as f32 / 1000.0
     }
 }
 
@@ -794,6 +808,7 @@ impl Engine {
 
     /// Fills `left`/`right` (same length, at most `max_frames`).
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let started = std::time::Instant::now();
         let frames = left.len().min(right.len()).min(self.max_frames as usize);
         // In parts where the cycle's end falls inside the block: after each,
         // back to the cycle's start (notes released, automation caught up).
@@ -818,6 +833,14 @@ impl Engine {
         self.shared.position.store(self.pos, Ordering::Release);
         self.shared.playing.store(self.playing, Ordering::Release);
         self.shared.blocks.fetch_add(1, Ordering::Relaxed);
+        // How long it took against how long it lasts.
+        if frames > 0 {
+            let load = started.elapsed().as_secs_f64() * self.sample_rate / frames as f64;
+            self.shared.load.fetch_max((load * 1000.0).min(u32::MAX as f64) as u32, Ordering::Relaxed);
+            if load > 1.0 {
+                self.shared.late.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     /// Renders a stretch of the block (the commands go with the first).

@@ -36,6 +36,11 @@ pub struct Playback {
     pub plugins: Vec<PluginInfo>,
     /// Clips whose files could not be read (shown in the Mix tab).
     pub clip_errors: Vec<String>,
+    /// Late blocks counted so far, the highest load since playback started,
+    /// and a report of new late blocks for the status bar.
+    late_seen: u64,
+    pub peak_load: f32,
+    pub overload: Option<String>,
     /// The cycle: a movement's written stretch (quarters), and whether it is on.
     pub cycle: Option<(Id, f64, f64)>,
     pub cycling: bool,
@@ -91,6 +96,9 @@ impl Playback {
             problem,
             plugins: Vec::new(),
             clip_errors: Vec::new(),
+            late_seen: 0,
+            peak_load: 0.0,
+            overload: None,
             cycle: None,
             cycling: false,
             levels: Default::default(),
@@ -192,6 +200,11 @@ impl Playback {
         let _ = self.handle.send(Command::Loop(samples));
     }
 
+    /// Blocks the engine rendered too late (each a click or a gap).
+    pub fn late_blocks(&self) -> u64 {
+        self.handle.late()
+    }
+
     /// The largest block the engine renders.
     pub fn max_frames(&self) -> u32 {
         self.pool.max_frames
@@ -203,6 +216,7 @@ impl Playback {
 
     /// Plays from a written position of a movement.
     pub fn play_from(&mut self, movement: Id, written_quarter: f64) {
+        self.peak_load = 0.0;
         if let Some(s) = self.timeline.sample_of(movement, written_quarter) {
             self.handle.seek(s);
         }
@@ -292,6 +306,18 @@ impl Playback {
     /// Per frame (UI thread): end previews, drop retired plans, plugin idle.
     pub fn tick(&mut self) {
         self.meter();
+        // The engine's load: blocks rendered too late are clicks or gaps.
+        self.peak_load = self.peak_load.max(self.handle.take_load());
+        let late = self.handle.late();
+        if late > self.late_seen {
+            self.overload = Some(format!(
+                "Audio overload: {} block{} rendered too late (peak load {:.0} %) — a larger buffer (Preferences) gives more time",
+                late,
+                if late == 1 { "" } else { "s" },
+                self.peak_load * 100.0
+            ));
+            self.late_seen = late;
+        }
         let now = Instant::now();
         let mut i = 0;
         while i < self.previews.len() {
