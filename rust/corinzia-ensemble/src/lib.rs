@@ -34,6 +34,7 @@ use std::ptr;
 pub mod dsp;
 pub mod effects;
 pub mod patches;
+pub mod body;
 pub mod voice;
 
 use voice::Voice;

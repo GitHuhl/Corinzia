@@ -69,6 +69,9 @@ pub struct Spectrum {
     /// The waveguide's share of the sustained sound (0..1); the attack
     /// always has more.
     pub physical: f32,
+    /// A measured body ([`crate::body`]): the strings' harmonic levels come
+    /// from it instead of the slope and peaks.
+    pub body: Option<u8>,
 }
 
 impl Spectrum {
@@ -91,6 +94,13 @@ impl Spectrum {
 }
 
 const MAX_HARMONICS: usize = 40;
+/// log2 of the harmonic numbers.
+static LOG2: [f32; MAX_HARMONICS + 1] = {
+    // log2(n) for n in 0..=40 (0 for n = 0), to four decimals.
+    [0.0, 0.0, 1.0, 1.585, 2.0, 2.3219, 2.585, 2.8074, 3.0, 3.1699, 3.3219, 3.4594, 3.585, 3.7004, 3.8074, 3.9069, 4.0, 4.0875, 4.1699, 4.2479, 4.3219, 4.3923, 4.4594, 4.5236, 4.585, 4.6439, 4.7004, 4.7549, 4.8074, 4.858, 4.9069, 4.9542, 5.0, 5.0444, 5.0875, 5.1293, 5.1699, 5.2095, 5.2479, 5.2854, 5.3219]
+};
+/// Players of a string section, each played in full.
+const PLAYERS: usize = 4;
 const MAX_MODES: usize = 16;
 const CONTROL: usize = 16; // samples between control updates
 
@@ -187,6 +197,24 @@ pub struct Voice {
     h_target: [f32; MAX_HARMONICS],
     h_drift: [f32; MAX_HARMONICS],
     n_h: usize,
+    // a section's players: their harmonics, tuning, vibrato and entry
+    pl_re: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_im: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_c: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_s: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_amp: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_target: [[f32; MAX_HARMONICS]; PLAYERS],
+    pl_n: [usize; PLAYERS],
+    pl_detune: [f32; PLAYERS],
+    pl_vib: [f32; PLAYERS],
+    pl_rate: [f32; PLAYERS],
+    pl_depth: [f32; PLAYERS],
+    pl_delay: [f32; PLAYERS],
+    pl_wander: [f32; PLAYERS],
+    phys_lp: f32,
+    /// The body's gains for the current dynamic and technique.
+    curve: Box<[f32; crate::body::FINE]>,
+    curve_key: (f32, u8),
     // oscillators of the subtractive parts and exciters
     phases: [f32; 6],
     // waveguide / Karplus-Strong
@@ -251,6 +279,22 @@ impl Voice {
             h_target: [0.0; MAX_HARMONICS],
             h_drift: [0.0; MAX_HARMONICS],
             n_h: 0,
+            pl_re: [[0.0; MAX_HARMONICS]; PLAYERS],
+            pl_im: [[0.0; MAX_HARMONICS]; PLAYERS],
+            pl_c: [[1.0; MAX_HARMONICS]; PLAYERS],
+            pl_s: [[0.0; MAX_HARMONICS]; PLAYERS],
+            pl_amp: [[0.0; MAX_HARMONICS]; PLAYERS],
+            pl_target: [[0.0; MAX_HARMONICS]; PLAYERS],
+            pl_n: [0; PLAYERS],
+            pl_detune: [0.0; PLAYERS],
+            pl_vib: [0.0; PLAYERS],
+            pl_rate: [5.5; PLAYERS],
+            pl_depth: [1.0; PLAYERS],
+            pl_delay: [0.0; PLAYERS],
+            pl_wander: [0.0; PLAYERS],
+            phys_lp: 0.0,
+            curve: Box::new([0.0; crate::body::FINE]),
+            curve_key: (-1.0, 255),
             phases: [0.0; 6],
             line: vec![0.0; len].into_boxed_slice(),
             pos: 0,
@@ -328,6 +372,28 @@ impl Voice {
             self.h_drift[h] = self.rng.noise();
         }
         self.n_h = 0;
+        // A section's players: none quite in tune with the others, each
+        // with a vibrato of their own, coming in a little apart.
+        const DETUNE: [f32; PLAYERS] = [0.0, 0.8, -0.7, 0.35];
+        for q in 0..PLAYERS {
+            let section = p.unison > 1;
+            self.pl_detune[q] = if section { p.spread * (DETUNE[q] + 0.3 * self.rng.noise()) } else { 0.0 };
+            self.pl_rate[q] = p.vib_rate * (0.92 + 0.16 * self.rng.unit());
+            self.pl_vib[q] = self.rng.unit();
+            self.pl_depth[q] = 0.8 + 0.4 * self.rng.unit();
+            self.pl_delay[q] = if section && q > 0 { 0.03 * self.rng.unit() * (1.2 - self.vel) } else { 0.0 };
+            self.pl_wander[q] = 0.0;
+            self.pl_n[q] = 0;
+            for h in 0..MAX_HARMONICS {
+                let a = std::f32::consts::PI * (h * (h + 1)) as f32 / MAX_HARMONICS as f32 + 1.37 * (q * (h + 1)) as f32;
+                self.pl_re[q][h] = a.cos();
+                self.pl_im[q][h] = a.sin();
+                self.pl_amp[q][h] = 0.0;
+                self.pl_target[q][h] = 0.0;
+            }
+        }
+        self.phys_lp = 0.0;
+        self.curve_key = (-1.0, 255);
         self.line.fill(0.0);
         self.pos = 0;
         self.loop_lp = 0.0;
@@ -642,6 +708,7 @@ impl Voice {
             Model::Pluck(_) => self.render_pluck(out, bend, trims),
             Model::Piano | Model::Mallet(_) | Model::Timpani => self.render_modes(out, trims),
             Model::Kit => self.render_kit(out, trims),
+            Model::Bowed if crate::patches::spectrum(self.patch).is_some_and(|s| s.body.is_some()) => self.render_bowed(out, bend, trims),
             Model::Bowed | Model::Reed(_) | Model::Flute | Model::Brass if crate::patches::spectrum(self.patch).is_some() => self.render_hybrid(out, bend, trims),
             _ => self.render_simple(out, bend, trims),
         }
@@ -828,6 +895,159 @@ impl Voice {
             self.pos = (self.pos + 1) % len;
             let phys = self.loop_lp * 0.25;
             let sum = harm * 0.5 + phys * phys_gain + noise;
+            *o += sum * gain * self.env * tech_amp;
+        }
+    }
+
+    // ------------------------------------------------------- bowed strings --
+    /// A bowed string on a measured body: each player's harmonics at the
+    /// body's level for their frequency (so vibrato moves them through its
+    /// resonances), bow noise, and the waveguide for the attack and joins.
+    fn render_bowed(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) {
+        let s = *crate::patches::spectrum(self.patch).unwrap();
+        let p = *self.p();
+        let body = s.body.unwrap();
+        let sr = self.sr;
+        let dt = 1.0 / sr;
+        let players = (p.unison as usize).clamp(1, PLAYERS);
+        let solo = players == 1;
+        let dyn_rate = dsp::smoothing(0.04, sr);
+        let amp_rate = dsp::smoothing(0.006, sr);
+        let (mut noise_gain, mut phys_gain, mut gain, mut tech_amp, mut period, mut f_main) = (0.0, 0.0, 0.0, 1.0, 100.0f32, self.freq);
+        let len = self.line.len();
+        let phys_k = 1.0 - (-TAU * 2500.0 / sr).exp();
+        for o in out.iter_mut() {
+            if self.ctl == 0 {
+                self.ctl = CONTROL;
+                let blocks = CONTROL as f32 / sr;
+                self.dynamic += (self.dyn_target - self.dynamic) * (1.0 - (1.0 - dyn_rate).powi(CONTROL as i32));
+                self.cur += (self.freq - self.cur) * (1.0 - (1.0 - self.glide).powi(CONTROL as i32));
+                self.scoop *= dsp::decay(0.08, sr / CONTROL as f32);
+                let d = self.dynamic;
+                let base = self.cur * 2f32.powf((bend + self.scoop) / 12.0);
+                f_main = base;
+                period = (sr / base).clamp(2.0, len as f32 - 2.0);
+                // The body's curve for this dynamic and technique (made
+                // again only when they change).
+                if (d - self.curve_key.0).abs() > 0.004 || self.tech != self.curve_key.1 {
+                    self.curve_key = (d, self.tech);
+                    let t = self.tech;
+                    let shape = move |hz: f32| match t {
+                        // Bowing near the bridge or over the fingerboard.
+                        tech::SUL_PONT => 6.0 * (hz / 1000.0).log2().max(-2.0),
+                        tech::SUL_TASTO => -6.0 * (hz / 600.0).log2().max(0.0),
+                        // A mute: the bridge's high resonances damped.
+                        tech::CON_SORD => -9.0 * (hz / 1200.0).log2().clamp(0.0, 2.0),
+                        _ => 0.0,
+                    };
+                    crate::body::fine_curve(body, d, !solo, shape, &mut self.curve);
+                }
+                tech_amp = match self.tech {
+                    tech::TREM => 0.45 + 0.55 * (self.t * 7.5 * std::f32::consts::PI).sin().abs(),
+                    tech::CON_SORD => 0.6,
+                    tech::SUL_PONT | tech::SUL_TASTO => 0.8,
+                    tech::HARMONICS => 0.5,
+                    _ => 1.0,
+                };
+                // Vibrato: after the attack, wider when louder.
+                let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
+                let depth = if self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) };
+                let limit = (sr * 0.45).min(14000.0);
+                for q in 0..players {
+                    self.pl_vib[q] = (self.pl_vib[q] + self.pl_rate[q] * blocks).fract();
+                    // Intonation wanders a little, slowly.
+                    self.pl_wander[q] = (self.pl_wander[q] + 6.0 * self.rng.noise() * blocks.sqrt()).clamp(-4.0, 4.0) * 0.999;
+                    let cents = self.pl_detune[q] + self.pl_wander[q] + 100.0 * depth * self.pl_depth[q] * (self.pl_vib[q] * TAU).sin();
+                    let fq = base * 2f32.powf(cents / 1200.0);
+                    let n_h = ((limit / fq) as usize).clamp(1, MAX_HARMONICS);
+                    self.pl_n[q] = n_h;
+                    let entry = ((self.t - self.pl_delay[q]) / (p.attack * (1.5 - self.vel)).max(0.005)).clamp(0.0, 1.0);
+                    let log2_f = fq.log2();
+                    let w = TAU * fq / sr;
+                    let (c1, s1) = (w.cos(), w.sin());
+                    let (mut cn, mut sn) = (c1, s1);
+                    let mut power = 0.0;
+                    for h in 0..n_h {
+                        let a = if self.tech == tech::HARMONICS {
+                            if h == 0 { 1.0 } else { 0.0 }
+                        } else {
+                            crate::body::at(&self.curve, log2_f + LOG2[h + 1])
+                        };
+                        power += a * a;
+                        self.pl_target[q][h] = a;
+                        self.pl_c[q][h] = cn;
+                        self.pl_s[q][h] = sn;
+                        (cn, sn) = (cn * c1 - sn * s1, sn * c1 + cn * s1);
+                        let m = self.pl_re[q][h] * self.pl_re[q][h] + self.pl_im[q][h] * self.pl_im[q][h];
+                        // Back to the unit circle (one Newton step suffices).
+                        let k = 1.5 - 0.5 * m;
+                        self.pl_re[q][h] *= k;
+                        self.pl_im[q][h] *= k;
+                    }
+                    let norm = if power > 0.0 { entry / (power.sqrt() * (players as f32).sqrt()) } else { 0.0 };
+                    for h in 0..n_h {
+                        // The bow's start: the upper harmonics settle a little
+                        // after the fundamental.
+                        let rise_t = p.attack * (1.0 + s.rise * LOG2[h + 1]);
+                        let rise = (self.t / rise_t.max(1e-3)).min(1.0);
+                        self.pl_target[q][h] *= norm * rise;
+                    }
+                    for h in n_h..MAX_HARMONICS {
+                        self.pl_target[q][h] = 0.0;
+                    }
+                }
+                for (i, &(c, w, _)) in s.peaks.iter().enumerate() {
+                    self.nf[i].set(c.max(80.0), (1.0 / w.max(0.1)).clamp(0.5, 8.0), sr);
+                }
+                let attack_noise = (1.0 - self.t / (p.attack * 2.0 + 0.02)).max(0.0);
+                noise_gain = db(s.noise_db + 4.0 * (0.62 - d))
+                    * (1.0 + 3.0 * attack_noise + 2.0 * self.join)
+                    * match self.tech {
+                        tech::SUL_PONT => 2.5,
+                        tech::HARMONICS => 1.5,
+                        _ => 1.0,
+                    };
+                let attack_phys = (1.0 - self.t / (p.attack * 3.0 + 0.03)).max(0.0);
+                phys_gain = s.physical + 0.5 * attack_phys + 0.5 * self.join;
+                self.join *= dsp::decay(0.12, sr / CONTROL as f32);
+                self.lp.set(base * (p.dark + (p.bright - p.dark) * d.powf(1.4)), 0.7, sr);
+                gain = self.gain(trims) * (1.0 + self.accent * (-self.t / 0.09).exp());
+            }
+            self.ctl -= 1;
+            self.envelope_step();
+            self.t += dt;
+            let mut harm = 0.0;
+            for q in 0..players {
+                let (re, im, c, sn, amp, target) = (&mut self.pl_re[q], &mut self.pl_im[q], &self.pl_c[q], &self.pl_s[q], &mut self.pl_amp[q], &self.pl_target[q]);
+                for h in 0..self.pl_n[q] {
+                    let r = re[h] * c[h] - im[h] * sn[h];
+                    let i = re[h] * sn[h] + im[h] * c[h];
+                    re[h] = r;
+                    im[h] = i;
+                    amp[h] += (target[h] - amp[h]) * amp_rate;
+                    harm += i * amp[h];
+                }
+            }
+            // Bow noise through the instrument's resonances.
+            let n = self.rng.noise();
+            let mut noise = 0.0;
+            for (i, &(_, _, g)) in s.peaks.iter().enumerate() {
+                noise += self.nf[i].tick(n).band * db(g * 0.5);
+            }
+            noise *= noise_gain * 0.25;
+            // The waveguide: a bowed sawtooth into the tuned string.
+            let step = f_main / sr;
+            self.phases[0] = (self.phases[0] + step).fract();
+            let exc = self.lp.tick(saw(self.phases[0], step) * (1.0 + 0.05 * n)).low;
+            let rd = self.pos as f32 + len as f32 - period;
+            let i0 = rd as usize;
+            let fr = rd - i0 as f32;
+            let back = self.line[i0 % len] + (self.line[(i0 + 1) % len] - self.line[i0 % len]) * fr;
+            self.loop_lp += (back - self.loop_lp) * self.loop_bright;
+            self.line[self.pos] = (exc * 0.12 + self.loop_lp * self.loop_fb).clamp(-4.0, 4.0);
+            self.pos = (self.pos + 1) % len;
+            self.phys_lp += (self.loop_lp - self.phys_lp) * phys_k;
+            let sum = harm * 0.5 + self.phys_lp * 0.25 * phys_gain + noise;
             *o += sum * gain * self.env * tech_amp;
         }
     }
