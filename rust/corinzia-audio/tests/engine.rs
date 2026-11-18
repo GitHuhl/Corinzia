@@ -741,3 +741,63 @@ fn the_builtin_instruments_get_slurs_hairpins_and_techniques() {
     let b = beat as usize;
     assert!(rms(&l[3 * b - 2000..3 * b + 2000]) > 0.5 * rms(&l[2 * b..2 * b + 4000]), "joined");
 }
+
+/// Live-like rendering of a project file, block by block, timed:
+/// CORINZIA_PROJECT=file CORINZIA_BLOCK=512 [CORINZIA_WAV=out.wav]
+/// cargo test --release -p corinzia-audio --test engine live_blocks -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_blocks() {
+    let Ok(path) = std::env::var("CORINZIA_PROJECT") else { return };
+    let block: usize = std::env::var("CORINZIA_BLOCK").ok().and_then(|b| b.parse().ok()).unwrap_or(512);
+    let p = corinzia_model::store::load(std::path::Path::new(&path)).unwrap();
+    let mut pool = PluginPool::new(SR, block as u32);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let total = snap.end() as usize + SR as usize;
+    let (mut ui, mut eng) = engine::new(SR, block as u32);
+    ui.swap(snap);
+    ui.play();
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut out = Vec::with_capacity(total);
+    let mut times = Vec::new();
+    let mut at = 0;
+    while at < total {
+        let t = std::time::Instant::now();
+        eng.process(&mut l, &mut r);
+        times.push(t.elapsed().as_secs_f64());
+        out.extend_from_slice(&l);
+        at += block;
+    }
+    let budget = block as f64 / SR;
+    for (i, t) in times.iter().enumerate().filter(|(_, &t)| t > budget * 0.3) {
+        eprintln!("  slow block {i} at {:.2} s: {:.2} ms", (i * block) as f64 / SR, t * 1e3);
+    }
+    times.sort_by(|a, b| a.total_cmp(b));
+    let late = times.iter().filter(|&&t| t > budget).count();
+    eprintln!(
+        "block {block}: budget {:.2} ms, median {:.2} ms, p99 {:.2} ms, max {:.2} ms, over budget {late}/{}, dropped events {}",
+        budget * 1e3,
+        times[times.len() / 2] * 1e3,
+        times[times.len() * 99 / 100] * 1e3,
+        times.last().unwrap() * 1e3,
+        times.len(),
+        ui.shared.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    if let Ok(wav) = std::env::var("CORINZIA_WAV") {
+        let mut b = Vec::new();
+        let data = (out.len() * 2) as u32;
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&[16, 0, 0, 0, 1, 0, 1, 0]);
+        b.extend_from_slice(&(SR as u32).to_le_bytes());
+        b.extend_from_slice(&(SR as u32 * 2).to_le_bytes());
+        b.extend_from_slice(&[2, 0, 16, 0]);
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        for v in &out {
+            b.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+        std::fs::write(wav, b).unwrap();
+    }
+}
