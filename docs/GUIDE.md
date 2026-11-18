@@ -169,6 +169,24 @@ the output), automation playback and saving plugin settings.
 * **Cycle:** ⟲ in the toolbar (Alt+L) cycles the selected passage, or
   turns the cycle on and off; Shift+drag along the arrange view's ruler
   sets it. Playback goes round it, notes released at each turn.
+* **Metronome and count-in:** Click in the toolbar (Alt+M) clicks every
+  beat while playing (a dotted quarter in 6/8, 9/8, 12/8; the downbeat
+  higher). Preferences → Count-in plays one or two bars of clicks, at the
+  tempo where playback starts, before it does. Neither is in exports.
+* **Where you are:** the toolbar shows the bar and beat, the time into
+  the movement and the tempo: the playhead's while playing, the caret's
+  otherwise. Ctrl+G (or `goto 25`, `goto B`) goes to a bar or a rehearsal
+  mark, in the score and the arrange view.
+* **Recent scores:** the Recent menu beside Open lists the last eight
+  scores opened or saved.
+* **The Mix tab's panes:** the wheel scrolls the arrange view's tracks,
+  Shift+wheel along time, Ctrl+wheel zooms; Alt+wheel or dragging a
+  track's bottom edge (in the headers) makes the tracks taller or
+  shorter; drag the headers' edge to widen them. Each header has mute (M)
+  and solo (S) buttons. Drag the bar between the arrange view and the
+  mixer, or before the side panel, to resize them; the faders grow with
+  the mixer. The sizes are remembered. A strip's automation lane and
+  dynamics controller are in the side panel when the strip is selected.
 * **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" (or drop
   a WAV, FLAC, MP3 or Ogg file on the window) puts a clip at the caret.
   Clips sit at fixed times (seconds after their movement's start: tempo
@@ -180,7 +198,8 @@ the output), automation playback and saving plugin settings.
   (through the tempo), optionally with a line to where it ends. Audio tracks have effects,
   sends, an output and a fader like any track. Files are decoded and
   resampled to the engine's rate once and kept in memory.
-* **Automation** (Mix tab): a strip's "Automation lane" shows a curve on
+* **Automation** (Mix tab): a strip's "Automation lane" (in the side panel
+  when the strip is selected) shows a curve on
   the track's lane in the arrange view: its gain, its pan, or any parameter
   of its instrument or effects. Click to add a point, drag to move it,
   right-click to delete it, Shift+click to make it hold until the next

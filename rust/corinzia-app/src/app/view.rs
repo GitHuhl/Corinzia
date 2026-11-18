@@ -104,11 +104,17 @@ impl App {
                 "Cycle: the selected passage, or the cycle on or off (Alt+L; Shift+drag along the arrange view's ruler to set it)",
             ),
             panels::tip(
+                button(text("Click").size(13)).padding([5, 10]).style(theme::tool(self.prefs.metronome)).on_press(Message::Act(Action::Metronome)),
+                "Metronome: a click on every beat while playing (Alt+M); the count-in is in the preferences",
+            ),
+            panels::tip(
                 button(text("Phrasing").size(13)).padding([5, 10]).style(theme::tool(ed.project.phrasing)).on_press(Message::Act(Action::Phrasing(!ed.project.phrasing))),
                 "Phrasing: play with phrase arches, a final ritardando and accents, as players do (off: as written)",
             ),
             panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
             panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
+            rule(),
+            panels::tip(self.transport_readout(), "Where playback is (or starts, at the caret): bar and beat, minutes and seconds into the movement, the tempo"),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center);
@@ -135,6 +141,7 @@ impl App {
             .push(panels::tip(flat("Players", true, Message::Players(PlayersMsg::Open)), "Add, remove or reorder players (the instrumentation)"))
             .push(panels::tip(flat("New", true, Message::Act(Action::New)), "New score (Ctrl+N)"))
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
+            .push(panels::tip(self.recent_picker(), "Scores opened or saved lately"))
             .push(panels::tip(flat("Import", true, Message::Import), "Import MusicXML (.musicxml, .xml, .mxl) as a new score"))
             .push(panels::tip(
                 flat("Save", true, Message::Act(Action::Save)),
@@ -287,6 +294,8 @@ impl App {
             Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
             Tab::Mix => {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
+                // The arrange headers' mute and solo buttons, per lane.
+                let mute_solo: Vec<(bool, bool)> = self.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
                 let top: Element<'_, Message> = match &self.roll {
                     Some(r) => {
                         let tweaks = ed.movement().map(|m| m.tweaks.as_slice()).unwrap_or(&[]);
@@ -322,6 +331,7 @@ impl App {
                     clips: &self.arrange_clips,
                     selected_clip: self.selected_clip.map(|s| s.1),
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
+                    mute_solo,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill))
@@ -338,6 +348,51 @@ impl App {
             }
         };
         column![toolbar, hline(), body, hline(), status].into()
+    }
+
+    /// Bar and beat, time into the movement, tempo: the playhead's while
+    /// playing, else the caret's.
+    pub(crate) fn transport_readout(&self) -> Element<'_, Message> {
+        let ed = &self.editor;
+        let at = ed.movement().map(|m| (m.id, super::quarters(ed.caret)));
+        let label = match self.playback.clock(at) {
+            Some((mid, q, secs, bpm)) => {
+                let m = ed.project.movements.iter().find(|m| m.id == mid);
+                let (bar, beat) = m.map_or((0, 0), |m| {
+                    let pos = Frac::new((q * 16.0).round() as i64, 64);
+                    let (bar, offset) = corinzia_edit::bar_number(m, pos);
+                    let den = m.meter.iter().filter(|x| x.at <= pos).last().map(|x| x.den).unwrap_or(4);
+                    (bar, (offset.num * den / offset.den.max(1)) as usize + 1)
+                });
+                let s = secs.max(0.0);
+                format!("{bar:>3}.{beat:<2}  {}:{:04.1}  ♩={bpm:.0}", (s / 60.0) as u64, s % 60.0)
+            }
+            None => "  –.–   –:––.–".into(),
+        };
+        text(label).size(13).font(iced::Font::MONOSPACE).style(if self.playback.is_playing() { theme::accent } else { theme::dim }).into()
+    }
+
+    /// The recent scores: "name · folder", the latest first.
+    pub(crate) fn recent_picker(&self) -> Element<'_, Message> {
+        let paths: Vec<std::path::PathBuf> = self.prefs.recent.iter().map(std::path::PathBuf::from).collect();
+        let labels: Vec<String> = paths
+            .iter()
+            .map(|p| {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let dir = p.parent().and_then(|d| d.file_name()).map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                if dir.is_empty() { name } else { format!("{name} · {dir}") }
+            })
+            .collect();
+        let pick = labels.clone();
+        iced::widget::pick_list(labels, None::<String>, move |chosen: String| {
+            let k = pick.iter().position(|l| *l == chosen).unwrap_or(0);
+            Message::OpenRecent(paths[k].clone())
+        })
+        .placeholder("Recent")
+        .text_size(13)
+        .padding([5, 9])
+        .width(110)
+        .into()
     }
 
     /// Full score, or a player's part.

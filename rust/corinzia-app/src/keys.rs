@@ -102,6 +102,8 @@ pub enum Action {
     Cycle,
     /// Playback with the phrasing rules, on or off.
     Phrasing(bool),
+    /// The metronome on or off.
+    Metronome,
     /// Lyrics popover for a verse.
     Lyrics(u8),
     ShowScore,
@@ -181,6 +183,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if alt && !ctrl && c == 'l' {
         return Some(Cycle);
     }
+    if alt && !ctrl && c == 'm' {
+        return Some(Metronome);
+    }
     if ctrl {
         return Some(match (c, shift) {
             ('z', false) => Undo,
@@ -192,6 +197,7 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('a', false) => SelectAll,
             ('a', true) => SelectSimilar,
             ('f', _) => Popover(PopoverKind::Filter),
+            ('g', false) => Popover(PopoverKind::GoTo),
             (',', _) => Preferences,
             ('b', _) => InsertBar,
             ('s', false) => Save,

@@ -260,6 +260,9 @@ pub enum ArrangeEvent {
     ToggleFolder(String),
     /// Scrolled up or down (pixels).
     ScrollY(f32),
+    /// A track's mute or solo button in its header.
+    Mute(Id),
+    Solo(Id),
     /// The tracks' height (a lane's bottom edge dragged, or Alt+wheel), the
     /// headers' width (their edge dragged); then the drag let go.
     LaneHeight(f32),
@@ -314,6 +317,8 @@ pub struct ArrangeView<'a> {
     pub selected_clip: Option<Id>,
     /// The cycle on this movement (quarters) and whether it is on.
     pub cycle: Option<(f64, f64, bool)>,
+    /// Per lane: (muted, soloed), for the headers' buttons.
+    pub mute_solo: Vec<(bool, bool)>,
 }
 
 const PALETTE: [Color; 6] = [
@@ -359,6 +364,17 @@ impl ArrangeView<'_> {
             return None;
         }
         (0..self.content.rows.len()).find(|&r| (self.row_y(r) + self.lane_height - y).abs() < 4.0)
+    }
+    /// A lane's mute and solo buttons (in its header, at the right).
+    fn ms_buttons(&self, lane: usize) -> Option<(Rectangle, Rectangle)> {
+        let l = self.content.lanes.get(lane)?;
+        if l.mixer || self.header < 120.0 {
+            return None;
+        }
+        let y = self.lane_y(lane) + 6.0;
+        let s = Rectangle::new(Point::new(self.header - 26.0, y), Size::new(20.0, 18.0));
+        let m = Rectangle::new(Point::new(self.header - 50.0, y), Size::new(20.0, 18.0));
+        Some((m, s))
     }
     fn on_header_edge(&self, x: f32, y: f32) -> bool {
         y >= RULER && (x - self.header).abs() < 4.0
@@ -508,6 +524,17 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 if let Some(row) = self.edge_at(p.x, p.y) {
                     state.resize_lanes = Some((row, self.lane_height, p.y));
                     return Some(canvas::Action::capture());
+                }
+                if let Some(Row::Lane(lane)) = self.row_at(p.y).cloned() {
+                    if let Some((m, s)) = self.ms_buttons(lane) {
+                        let track = self.content.lanes[lane].track;
+                        if m.contains(p) {
+                            return Some(canvas::Action::publish(ArrangeEvent::Mute(track)).and_capture());
+                        }
+                        if s.contains(p) {
+                            return Some(canvas::Action::publish(ArrangeEvent::Solo(track)).and_capture());
+                        }
+                    }
                 }
                 if p.y < RULER && p.x > self.header && mods.shift() {
                     state.cycle_from = Some(self.beat(self.quarter_at(p.x), false));
@@ -704,6 +731,20 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 }
             }
             overlay.fill_text(Text { content: c.label.clone(), position: Point::new(12.0, self.lane_y(lane) + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().accent, ..Text::default() });
+        }
+        // The headers' mute and solo buttons (not cached: they change often).
+        for lane in 0..self.content.lanes.len() {
+            let Some((m, s)) = self.ms_buttons(lane) else { continue };
+            if m.y < RULER || m.y > bounds.height || self.content.row_of.get(lane).copied().flatten().is_none() {
+                continue;
+            }
+            let (muted, soloed) = self.mute_solo.get(lane).copied().unwrap_or((false, false));
+            let pal = crate::theme::palette();
+            for (r, on, label, color) in [(m, muted, "M", pal.danger), (s, soloed, "S", pal.success)] {
+                overlay.fill_rectangle(r.position(), r.size(), if on { color } else { pal.base });
+                overlay.stroke(&Path::rectangle(r.position(), r.size()), Stroke::default().with_width(1.0).with_color(pal.line));
+                overlay.fill_text(Text { content: label.into(), position: Point::new(r.x + 6.0, r.y + 2.0), size: iced::Pixels(11.0), color: if on { pal.base } else { pal.dim }, ..Text::default() });
+            }
         }
         // The cycle along the ruler (dim when off).
         if let Some((a, b, on)) = self.cycle {

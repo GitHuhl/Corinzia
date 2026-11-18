@@ -27,7 +27,7 @@ impl App {
                 let l = &mut self.prefs.layout;
                 l.side_width = (l.side_width - d).clamp(crate::prefs::Layout::SIDE.0, crate::prefs::Layout::SIDE.1);
             }
-            SplitSide(None) => self.save_layout(),
+            SplitSide(None) => self.save_prefs(),
             Select(t) => self.strip = Some(t),
             Editor(t) => {
                 self.strip = Some(t);
@@ -402,17 +402,18 @@ impl App {
         });
     }
 
-    /// The arrange view: clips, the cycle, folders, the caret, scrolling,
-    /// zoom and automation points.
-    /// The panes' sizes into the preferences file (not in tests).
-    pub(crate) fn save_layout(&mut self) {
+    /// The preferences (the panes' sizes, recent scores, the metronome)
+    /// into their file (not in tests).
+    pub(crate) fn save_prefs(&mut self) {
         if !cfg!(test) {
             if let Err(e) = self.prefs.save() {
-                self.editor.status = format!("Could not save the layout: {e}");
+                self.editor.status = format!("Could not save the preferences: {e}");
             }
         }
     }
 
+    /// The arrange view: clips, the cycle, folders, the caret, scrolling,
+    /// zoom, the tracks' height, automation points.
     pub(crate) fn arrange_event(&mut self, e: arrange::ArrangeEvent) {
         match e {
         arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
@@ -475,7 +476,9 @@ impl App {
             self.prefs.layout.header_width = w.clamp(arrange::HEADER_WIDTHS.0, arrange::HEADER_WIDTHS.1);
             self.arrange_cache.clear();
         }
-        arrange::ArrangeEvent::LayoutDone => self.save_layout(),
+        arrange::ArrangeEvent::LayoutDone => self.save_prefs(),
+        arrange::ArrangeEvent::Mute(t) => self.mix(mix::MixMsg::Mute(t)),
+        arrange::ArrangeEvent::Solo(t) => self.mix(mix::MixMsg::Solo(t)),
         arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
         arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
             if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {

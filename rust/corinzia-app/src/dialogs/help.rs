@@ -38,6 +38,7 @@ pub(crate) fn help_card() -> Element<'static, Message> {
                 ("↑ ↓", "Transpose a step"),
                 ("Ctrl+↑ ↓", "Transpose an octave"),
                 ("Space", "Play / stop"),
+                ("Alt+L  Alt+M", "Cycle on / off; metronome on / off"),
                 ("Ctrl+= −", "Zoom in / out"),
                 ("Ctrl+0", "Fit the page width"),
                 ("Ctrl+T", "Transposed / concert pitch"),

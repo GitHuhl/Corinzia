@@ -370,7 +370,7 @@ fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
-    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
+    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
     let r = v.clip_rect(&clips[0]);
     let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
     let mid_y = r.y + r.height / 2.0;
@@ -530,6 +530,12 @@ fn the_mix_tab_panes_scroll_and_resize() {
     let saved = serde_json::to_string(&a.prefs).unwrap();
     let back: crate::prefs::Prefs = serde_json::from_str(&saved).unwrap();
     assert_eq!(back.layout, a.prefs.layout);
+    // A header's mute and solo buttons: the track's own.
+    let t = a.editor.project.tracks[0].id;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Mute(t)));
+    assert!(a.editor.project.tracks[0].mute);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Solo(t)));
+    assert!(a.editor.project.tracks[0].solo);
     let old: crate::prefs::Prefs = serde_json::from_str(r#"{"theme": "Dark"}"#).unwrap();
     assert_eq!(old.layout, crate::prefs::Layout::default(), "preferences from before keep the defaults");
 }

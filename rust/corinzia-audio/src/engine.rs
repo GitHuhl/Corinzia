@@ -42,6 +42,9 @@ pub enum Command {
     Loop(Option<(i64, i64)>),
     /// Audition: velocity in 0..1; a negative velocity ends the note.
     Preview { node: u32, key: i16, channel: i16, velocity: f32 },
+    /// The metronome: a click on every beat while playing, and the bars of
+    /// clicks counted in before playback starts (0: none).
+    Metronome { on: bool, count_in: u8 },
 }
 
 pub enum Retired {
@@ -130,6 +133,10 @@ impl EngineHandle {
     }
     pub fn stop(&mut self) {
         let _ = self.send(Command::Stop);
+    }
+    /// The metronome on or off, and the bars counted in before playing.
+    pub fn metronome(&mut self, on: bool, count_in: u8) {
+        let _ = self.send(Command::Metronome { on, count_in });
     }
     pub fn seek(&mut self, sample: i64) {
         let _ = self.send(Command::Seek(sample));
@@ -429,6 +436,12 @@ pub struct Engine {
     cursor: usize,
     playing: bool,
     cycle: Option<(i64, i64)>,
+    metronome: bool,
+    count_in: u8,
+    /// Counting in: clicks to go, the samples to the next, between them,
+    /// and the beats in a bar (for the downbeat's click).
+    counting: Option<CountIn>,
+    click: Click,
     steady: i64,
     out_events: clap_output_events,
     buses: Vec<BusState>,
@@ -470,6 +483,10 @@ pub fn with_workers(sample_rate: f64, max_frames: u32, workers: Workers) -> (Eng
         cursor: 0,
         playing: false,
         cycle: None,
+        metronome: false,
+        count_in: 0,
+        counting: None,
+        click: Click::default(),
         steady: 0,
         out_events: clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(out_push) },
         buses,
@@ -581,15 +598,21 @@ impl Engine {
                     self.send_guest_mixes();
                 }
                 Command::Play => {
-                    self.playing = true;
-                    self.reset_cursor();
-                    self.send_programs();
-                    self.send_guest_mixes();
-                    self.chase();
+                    // Counted in: the bars of clicks first, at the tempo and
+                    // in the meter where playback starts.
+                    match self.count_in_from(self.pos) {
+                        Some(c) => self.counting = Some(c),
+                        None => self.start_playing(),
+                    }
                 }
                 Command::Stop => {
                     self.playing = false;
+                    self.counting = None;
                     self.release_all(0);
+                }
+                Command::Metronome { on, count_in } => {
+                    self.metronome = on;
+                    self.count_in = count_in;
                 }
                 Command::Seek(s) => {
                     self.release_all(0);
@@ -844,6 +867,54 @@ impl Engine {
     }
 
     /// Renders a stretch of the block (the commands go with the first).
+    fn start_playing(&mut self) {
+        self.playing = true;
+        self.reset_cursor();
+        self.send_programs();
+        self.send_guest_mixes();
+        self.chase();
+    }
+
+    /// The count-in for playback from a sample, if one is set.
+    fn count_in_from(&self, sample: i64) -> Option<CountIn> {
+        if self.count_in == 0 {
+            return None;
+        }
+        let sec = self.snap.as_ref()?.section_at(sample)?;
+        let q = sec.performed_quarter(sample);
+        let (beat, num) = beat_of(sec, q);
+        let seconds = 60.0 / sec.tempo.tempo_at(q).max(1.0) * beat;
+        Some(CountIn { left: num * self.count_in as u32, next: 0, period: (seconds * sec.sample_rate).round().max(1.0) as i64, num, done: 0 })
+    }
+
+    /// The metronome's clicks on the beats in [from, to) (timeline samples):
+    /// (offset in the block, downbeat).
+    fn beats_between(&self, from: i64, to: i64, out: &mut [(usize, bool); 8]) -> usize {
+        let Some(snap) = self.snap.as_ref() else { return 0 };
+        let Some(sec) = snap.section_at(from) else { return 0 };
+        if from >= sec.end {
+            return 0;
+        }
+        let (q0, q1) = (sec.performed_quarter(from), sec.performed_quarter(to.min(sec.end)));
+        let meter = sec.meters.iter().filter(|m| m.quarter <= q0 + 1e-9).last().copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
+        let (beat, num) = beat_of(sec, q0);
+        let mut k = ((q0 - meter.quarter) / beat - 1e-9).ceil();
+        let mut n = 0;
+        loop {
+            let q = meter.quarter + k * beat;
+            if q >= q1 || n == out.len() {
+                break;
+            }
+            let at = sec.start + (sec.tempo.seconds_at(q) * sec.sample_rate).round() as i64;
+            if at >= from && at < to {
+                out[n] = ((at - from) as usize, (k as i64).rem_euclid(num as i64) == 0);
+                n += 1;
+            }
+            k += 1.0;
+        }
+        n
+    }
+
     fn process_part(&mut self, left: &mut [f32], right: &mut [f32], first: bool) {
         let frames = left.len().min(right.len());
         left.fill(0.0);
@@ -889,7 +960,36 @@ impl Engine {
             }
         }
         self.render(left, right, frames, block_start);
-        if self.playing {
+        // The metronome over the music, the count-in before it.
+        let mut clicks = [(0usize, false); 8];
+        let mut started = false;
+        let n = if let Some(c) = self.counting.as_mut() {
+            let mut n = 0;
+            while c.left > 0 && c.next < frames as i64 && n < clicks.len() {
+                clicks[n] = (c.next as usize, c.done % c.num == 0);
+                n += 1;
+                c.left -= 1;
+                c.done += 1;
+                c.next += c.period;
+            }
+            c.next -= frames as i64;
+            if c.left == 0 && c.next >= 0 {
+                // The bar after the last click: playback starts.
+                if c.next < frames as i64 {
+                    // From the next block, at the position it was counted in to.
+                    self.counting = None;
+                    self.start_playing();
+                    started = true;
+                }
+            }
+            n
+        } else if self.playing && self.metronome {
+            self.beats_between(block_start, block_end, &mut clicks)
+        } else {
+            0
+        };
+        self.click.render(left, right, &clicks[..n], self.sample_rate);
+        if self.playing && !started {
             self.pos = block_end;
         }
         self.steady += frames as i64;
@@ -1080,6 +1180,64 @@ impl Drop for Engine {
         if let Some(s) = self.snap.as_ref() {
             for p in s.plugins() {
                 p.rt_stop();
+            }
+        }
+    }
+}
+
+/// A count-in: clicks to go, the samples to the next one (from the block's
+/// start), between clicks, beats in a bar, clicks done.
+#[derive(Clone, Copy, Debug)]
+struct CountIn {
+    left: u32,
+    next: i64,
+    period: i64,
+    num: u32,
+    done: u32,
+}
+
+/// The beat (quarters) and the beats in a bar at a performed quarter: the
+/// meter's denominator, but a dotted quarter in 6/8, 9/8, 12/8.
+fn beat_of(sec: &crate::snapshot::Section, q: f64) -> (f64, u32) {
+    let m = sec.meters.iter().filter(|m| m.quarter <= q + 1e-9).last().copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
+    if m.den == 8 && m.num % 3 == 0 && m.num > 3 {
+        (1.5, (m.num / 3) as u32)
+    } else {
+        (4.0 / m.den.max(1) as f64, m.num.max(1) as u32)
+    }
+}
+
+/// The metronome's click: a short wooden-sounding blip, higher and louder
+/// on the downbeat.
+#[derive(Default)]
+struct Click {
+    phase: f32,
+    step: f32,
+    level: f32,
+}
+
+impl Click {
+    fn render(&mut self, left: &mut [f32], right: &mut [f32], at: &[(usize, bool)], sample_rate: f64) {
+        if self.level < 1e-5 && at.is_empty() {
+            return;
+        }
+        let sr = sample_rate as f32;
+        let decay = (-1.0 / (0.012 * sr)).exp();
+        let mut next = 0;
+        for i in 0..left.len().min(right.len()) {
+            while next < at.len() && at[next].0 == i {
+                let down = at[next].1;
+                self.step = if down { 1760.0 } else { 1320.0 } / sr;
+                self.level = if down { 0.3 } else { 0.2 };
+                self.phase = 0.0;
+                next += 1;
+            }
+            if self.level > 1e-5 {
+                let x = (self.phase * std::f32::consts::TAU).sin() * self.level;
+                self.phase = (self.phase + self.step).fract();
+                self.level *= decay;
+                left[i] += x;
+                right[i] += x;
             }
         }
     }

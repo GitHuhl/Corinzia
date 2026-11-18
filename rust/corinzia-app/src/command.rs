@@ -26,6 +26,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("get project|selection|notes [bar A[-B]] [staff S]|chant|status", "Queries, answered with JSON"),
     ("open <file> | save [file] | export <file.pdf|mid|musicxml|wav>", "Files"),
     ("undo | redo", "Undo or redo the last edit"),
+    ("goto <bar>|<mark>", "Go to a bar (goto 25) or a rehearsal mark (goto B): the bar selected on the caret's staff"),
     ("phrasing on|off", "Playback with the phrasing rules (phrase arches, final ritardando, accents) or as written"),
     ("movement <n> | chant <n|off>", "Show movement n or chant n (from 1)"),
     ("select all | select none | select bar <a>[-<b>] [staff <s>[-<t>]]", "Select (bars as numbered in the score, staves from 1)"),
@@ -80,7 +81,7 @@ fn variant<T: serde::de::DeserializeOwned>(name: &str, all: &[&str]) -> Option<T
 }
 
 const POPOVERS: &[&str] = &[
-    "Key", "Time", "Clef", "Barline", "Tempo", "Expression", "Technique", "Ending", "Rehearsal", "Ornament", "Lyrics", "Chord", "Tuplet", "MovementTitle", "Fingering", "Dynamic", "Title", "Composer", "Instrument", "Transpose", "Filter", "ChantLyric", "ChantMode", "ChantTitle",
+    "Key", "Time", "Clef", "Barline", "Tempo", "Expression", "Technique", "Ending", "Rehearsal", "Ornament", "Lyrics", "Chord", "Tuplet", "MovementTitle", "Fingering", "Dynamic", "Title", "Composer", "Instrument", "Transpose", "Filter", "ChantLyric", "ChantMode", "ChantTitle", "GoTo",
 ];
 const NEUMES: &[&str] = &[
     "Ison", "Oligon", "Petasti", "Kentimata", "Kentima", "OligonKentimaAbove", "OligonYpsiliRight", "OligonYpsiliLeft", "Apostrofos", "Elafron", "ElafronApostrofos", "Chamili", "Yporroi", "OligonKentimataBelow", "OligonIsonKentimata",
@@ -118,6 +119,13 @@ impl App {
                 Value::Null
             }
             "get" => return self.query(&args),
+            "goto" | "go" => {
+                let target = if arg(0) == "to" { arg(1).to_string() } else { text() };
+                self.editor.apply_popover(PopoverKind::GoTo, &target)?;
+                self.show_caret();
+                self.sync();
+                Value::Null
+            }
             "phrasing" => match arg(0) {
                 "on" => self.run_action(Action::Phrasing(true)),
                 "off" => self.run_action(Action::Phrasing(false)),

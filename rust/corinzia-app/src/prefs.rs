@@ -23,6 +23,12 @@ pub struct Prefs {
     pub midi_input: String,
     /// The sizes of the window's panes, as last dragged.
     pub layout: Layout,
+    /// The metronome while playing, and the bars of clicks counted in
+    /// before playback starts (0..=2).
+    pub metronome: bool,
+    pub count_in: u8,
+    /// Scores opened or saved lately, the latest first.
+    pub recent: Vec<String>,
 }
 
 /// The Mix tab's panes: the mixer's height, the side panel's width, the
@@ -56,7 +62,7 @@ impl Layout {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new(), layout: Layout::default() }
+        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new(), layout: Layout::default(), metronome: false, count_in: 0, recent: vec![] }
     }
 }
 
@@ -94,7 +100,16 @@ impl Prefs {
         self.sample_rate = self.sample_rate.clamp(22050, 192000);
         self.buffer = self.buffer.clamp(64, 8192);
         self.layout = self.layout.sane();
+        self.count_in = self.count_in.min(2);
         self
+    }
+
+    /// A score opened or saved: first in the recent list (at most eight).
+    pub fn remember(&mut self, path: &std::path::Path) {
+        let p = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned();
+        self.recent.retain(|r| *r != p);
+        self.recent.insert(0, p);
+        self.recent.truncate(8);
     }
 
     /// Where plugins are looked for.

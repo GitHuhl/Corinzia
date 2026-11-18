@@ -83,6 +83,13 @@ impl App {
                     _ => self.playback.toggle_cycle(),
                 }
             }
+            Action::Metronome => {
+                self.prefs.metronome = !self.prefs.metronome;
+                self.playback.set_metronome(self.prefs.metronome, self.prefs.count_in);
+                let on = self.prefs.metronome;
+                self.save_prefs();
+                self.editor.status = if on { "Metronome on (Alt+M)" } else { "Metronome off" }.into();
+            }
             Action::Phrasing(on) => {
                 ed.set_phrasing(on);
                 ed.status = if on { "Phrasing on: phrases shaped, the end slowing, accents" } else { "Phrasing off: played as written" }.into();
@@ -387,15 +394,30 @@ impl App {
 
     /// Enter in the popover: applies it, closing it unless it was refused.
     pub(crate) fn popover_submit(&mut self) {
+        let mut went = false;
         if let Some(p) = self.popover.as_mut() {
             let done = match p.target {
                 Some(id) => self.editor.edit_item(id, &p.input),
                 None => self.editor.apply_popover(p.kind, &p.input),
             };
             match done {
-                Ok(()) => self.popover = None,
+                Ok(()) => {
+                    went = p.kind == PopoverKind::GoTo;
+                    self.popover = None;
+                }
                 Err(e) => p.error = Some(e),
             }
         }
+        if went {
+            self.show_caret();
+        }
+    }
+
+    /// The caret in view: the page panned to it, the arrange view scrolled
+    /// to its bar, playback (when stopped) ready to start there.
+    pub(crate) fn show_caret(&mut self) {
+        self.reveal();
+        let q = super::quarters(self.editor.caret) as f32;
+        self.arrange_scroll = crate::arrange::clamp_scroll(q * self.arrange_ppq - 40.0, &self.arrange, self.arrange_ppq);
     }
 }

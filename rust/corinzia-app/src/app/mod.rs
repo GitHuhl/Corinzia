@@ -163,6 +163,8 @@ pub(crate) enum Message {
     SetPanel(Panel),
     Mix(mix::MixMsg),
     Arrange(arrange::ArrangeEvent),
+    /// A score from the recent list.
+    OpenRecent(std::path::PathBuf),
     /// The divider between the arrange view and the mixer dragged (pixels;
     /// none: let go).
     SplitMixer(Option<f32>),

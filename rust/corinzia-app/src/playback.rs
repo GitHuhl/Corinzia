@@ -59,7 +59,8 @@ impl Playback {
     /// is false, at the preferences' rate and buffer, on their device.
     pub fn new(live: bool, prefs: &crate::prefs::Prefs) -> Playback {
         let (rate, frames) = (prefs.sample_rate as f64, prefs.buffer);
-        let (handle, eng) = engine::new(rate, frames);
+        let (mut handle, eng) = engine::new(rate, frames);
+        handle.metronome(prefs.metronome, prefs.count_in);
         let mut offline = Some(eng);
         let mut problem = None;
         #[cfg(feature = "audio-out")]
@@ -200,6 +201,11 @@ impl Playback {
         let _ = self.handle.send(Command::Loop(samples));
     }
 
+    /// The metronome on or off, and the bars counted in.
+    pub fn set_metronome(&mut self, on: bool, count_in: u8) {
+        self.handle.metronome(on, count_in);
+    }
+
     /// Blocks the engine rendered too late (each a click or a gap).
     pub fn late_blocks(&self) -> u64 {
         self.handle.late()
@@ -246,6 +252,13 @@ impl Playback {
     }
 
     /// (movement, written quarter) under the playhead while playing.
+    /// Where playback is, or would start from a written position: the
+    /// movement, the written quarter, seconds into the movement, the tempo.
+    pub fn clock(&self, at: Option<(Id, f64)>) -> Option<(Id, f64, f64, f64)> {
+        let sample = if self.is_playing() { self.handle.position() } else { self.timeline.sample_of(at?.0, at?.1)? };
+        self.timeline.clock(sample)
+    }
+
     pub fn playhead(&self) -> Option<(Id, f64)> {
         self.is_playing().then(|| self.timeline.locate(self.handle.position())).flatten()
     }
