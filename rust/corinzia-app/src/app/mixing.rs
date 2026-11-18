@@ -22,6 +22,12 @@ impl App {
     pub(crate) fn mix_msg(&mut self, m: mix::MixMsg) {
         use mix::MixMsg::*;
         match m {
+            SplitSide(Some(d)) => {
+                // Dragged left: the side panel gets wider.
+                let l = &mut self.prefs.layout;
+                l.side_width = (l.side_width - d).clamp(crate::prefs::Layout::SIDE.0, crate::prefs::Layout::SIDE.1);
+            }
+            SplitSide(None) => self.save_layout(),
             Select(t) => self.strip = Some(t),
             Editor(t) => {
                 self.strip = Some(t);
@@ -398,6 +404,15 @@ impl App {
 
     /// The arrange view: clips, the cycle, folders, the caret, scrolling,
     /// zoom and automation points.
+    /// The panes' sizes into the preferences file (not in tests).
+    pub(crate) fn save_layout(&mut self) {
+        if !cfg!(test) {
+            if let Err(e) = self.prefs.save() {
+                self.editor.status = format!("Could not save the layout: {e}");
+            }
+        }
+    }
+
     pub(crate) fn arrange_event(&mut self, e: arrange::ArrangeEvent) {
         match e {
         arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
@@ -448,6 +463,19 @@ impl App {
             }
         }
         arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
+        arrange::ArrangeEvent::ScrollY(d) => self.arrange_scroll_y = arrange::clamp_scroll_y(self.arrange_scroll_y + d, &self.arrange, self.prefs.layout.lane_height),
+        arrange::ArrangeEvent::LaneHeight(h) => {
+            // The row under the pointer stays put, roughly: the scroll in rows.
+            let rows = self.arrange_scroll_y / self.prefs.layout.lane_height;
+            self.prefs.layout.lane_height = h.clamp(arrange::LANE_HEIGHTS.0, arrange::LANE_HEIGHTS.1);
+            self.arrange_scroll_y = arrange::clamp_scroll_y(rows * self.prefs.layout.lane_height, &self.arrange, self.prefs.layout.lane_height);
+            self.arrange_cache.clear();
+        }
+        arrange::ArrangeEvent::HeaderWidth(w) => {
+            self.prefs.layout.header_width = w.clamp(arrange::HEADER_WIDTHS.0, arrange::HEADER_WIDTHS.1);
+            self.arrange_cache.clear();
+        }
+        arrange::ArrangeEvent::LayoutDone => self.save_layout(),
         arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
         arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
             if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {

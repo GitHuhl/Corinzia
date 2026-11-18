@@ -312,7 +312,9 @@ impl App {
                     content: &self.arrange,
                     pixels_per_quarter: self.arrange_ppq,
                     scroll_x: self.arrange_scroll,
-                    lane_height: 56.0,
+                    scroll_y: self.arrange_scroll_y,
+                    header: self.prefs.layout.header_width,
+                    lane_height: self.prefs.layout.lane_height,
                     selected: &self.selected,
                     playhead,
                     cache: &self.arrange_cache,
@@ -325,10 +327,11 @@ impl App {
                 .height(Length::Fill))
                     .map(Message::Arrange),
                 };
+                let layout = self.prefs.layout;
                 column![
                     top,
-                    hline(),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip).map(Message::Mix)).height(420).width(Length::Fill).style(theme::panel),
+                    crate::splitter::view(false, Message::SplitMixer),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()

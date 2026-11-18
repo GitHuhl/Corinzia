@@ -11,7 +11,11 @@ use iced::widget::canvas::{self, Event, Frame, Geometry, Path, Stroke, Text};
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme};
 
 pub const RULER: f32 = 24.0;
+/// The track headers' width to start with (it can be dragged).
 pub const HEADER: f32 = 150.0;
+/// Track heights and header widths allowed.
+pub const LANE_HEIGHTS: (f32, f32) = (28.0, 240.0);
+pub const HEADER_WIDTHS: (f32, f32) = (90.0, 420.0);
 
 #[derive(Clone, Debug, Default)]
 pub struct Lane {
@@ -254,6 +258,13 @@ pub enum ArrangeEvent {
     Cycle { from: f64, to: f64 },
     /// A folder's header clicked: fold it away, or open it.
     ToggleFolder(String),
+    /// Scrolled up or down (pixels).
+    ScrollY(f32),
+    /// The tracks' height (a lane's bottom edge dragged, or Alt+wheel), the
+    /// headers' width (their edge dragged); then the drag let go.
+    LaneHeight(f32),
+    HeaderWidth(f32),
+    LayoutDone,
 }
 
 /// A lane's automation as shown: what it drives, its range, its points
@@ -280,12 +291,19 @@ pub struct State {
     cycle_from: Option<f64>,
     /// The last click on a lane (for double-clicks).
     last_click: Option<(std::time::Instant, usize)>,
+    /// Resizing: the lanes from a row's bottom edge (the row, the height
+    /// and the y where the drag began), or the headers.
+    resize_lanes: Option<(usize, f32, f32)>,
+    resize_header: bool,
 }
 
 pub struct ArrangeView<'a> {
     pub content: &'a Content,
     pub pixels_per_quarter: f32,
     pub scroll_x: f32,
+    /// Scrolled down this far (pixels), and the headers' width.
+    pub scroll_y: f32,
+    pub header: f32,
     pub lane_height: f32,
     pub selected: &'a std::collections::HashSet<u64>,
     pub playhead: Option<f64>,
@@ -309,24 +327,41 @@ const PALETTE: [Color; 6] = [
 
 impl ArrangeView<'_> {
     fn x(&self, q: f64) -> f32 {
-        HEADER + q as f32 * self.pixels_per_quarter - self.scroll_x
+        self.header + q as f32 * self.pixels_per_quarter - self.scroll_x
     }
     fn quarter_at(&self, x: f32) -> f64 {
-        ((x - HEADER + self.scroll_x) / self.pixels_per_quarter).max(0.0) as f64
+        ((x - self.header + self.scroll_x) / self.pixels_per_quarter).max(0.0) as f64
     }
     /// The top of a lane's row; folded away: far above the view.
     fn lane_y(&self, lane: usize) -> f32 {
         match self.content.row_of.get(lane).copied().flatten() {
-            Some(r) => RULER + r as f32 * self.lane_height,
+            Some(r) => self.row_y(r),
             None => -1.0e6,
         }
     }
-    fn row_at(&self, y: f32) -> Option<&Row> {
-        let i = ((y - RULER) / self.lane_height).floor();
-        if i < 0.0 {
+    /// The top of the row shown `r`th (under the ruler when scrolled away).
+    fn row_y(&self, r: usize) -> f32 {
+        RULER + r as f32 * self.lane_height - self.scroll_y
+    }
+    fn row_index_at(&self, y: f32) -> Option<usize> {
+        if y < RULER {
             return None;
         }
-        self.content.rows.get(i as usize)
+        let i = ((y - RULER + self.scroll_y) / self.lane_height).floor();
+        (i >= 0.0 && (i as usize) < self.content.rows.len()).then_some(i as usize)
+    }
+    fn row_at(&self, y: f32) -> Option<&Row> {
+        self.content.rows.get(self.row_index_at(y)?)
+    }
+    /// The row whose bottom edge is at y (in the headers: a lane resize).
+    fn edge_at(&self, x: f32, y: f32) -> Option<usize> {
+        if x > self.header || y < RULER {
+            return None;
+        }
+        (0..self.content.rows.len()).find(|&r| (self.row_y(r) + self.lane_height - y).abs() < 4.0)
+    }
+    fn on_header_edge(&self, x: f32, y: f32) -> bool {
+        y >= RULER && (x - self.header).abs() < 4.0
     }
     /// A lane's curve area: (top, height).
     fn curve_band(&self, lane: usize) -> (f32, f32) {
@@ -365,7 +400,7 @@ impl ArrangeView<'_> {
     /// The clip under a point and what dragging there does: the top
     /// corners fade, the edges trim, the body moves.
     pub fn clip_at(&self, p: Point) -> Option<(&ClipBlock, ClipEdit)> {
-        let c = self.clips.iter().rev().find(|c| self.clip_rect(c).contains(p) && p.x > HEADER)?;
+        let c = self.clips.iter().rev().find(|c| self.clip_rect(c).contains(p) && p.x > self.header)?;
         let r = self.clip_rect(c);
         let edge = 6.0f32.min(r.width / 4.0);
         let corner = 12.0f32.min(r.width / 3.0);
@@ -404,16 +439,33 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         let pos = cursor.position_in(bounds);
         let mods = &mut state.mods;
         match event {
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.resize_lanes.is_some() => {
+                let (row, h0, y0) = state.resize_lanes?;
+                let p = pos?;
+                // The edge of row `row` follows the pointer: every lane above
+                // it grows alike.
+                let h = (h0 + (p.y - y0) / (row + 1) as f32).clamp(LANE_HEIGHTS.0, LANE_HEIGHTS.1);
+                Some(canvas::Action::publish(ArrangeEvent::LaneHeight(h)).and_capture())
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.resize_header => {
+                let p = pos?;
+                Some(canvas::Action::publish(ArrangeEvent::HeaderWidth(p.x.clamp(HEADER_WIDTHS.0, HEADER_WIDTHS.1))).and_capture())
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.resize_lanes.is_some() || state.resize_header => {
+                state.resize_lanes = None;
+                state.resize_header = false;
+                Some(canvas::Action::publish(ArrangeEvent::LayoutDone).and_capture())
+            }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.drag.is_some() => {
                 let (lane, index) = state.drag?;
                 let p = pos?;
                 let c = self.curves.get(lane)?.as_ref()?;
-                let ev = ArrangeEvent::AutoMove { lane, index, q: self.snapped(p.x.max(HEADER)), value: self.curve_value(lane, c, p.y) };
+                let ev = ArrangeEvent::AutoMove { lane, index, q: self.snapped(p.x.max(self.header)), value: self.curve_value(lane, c, p.y) };
                 Some(canvas::Action::publish(ev).and_capture())
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.cycle_from.is_some() => {
                 let (a, p) = (state.cycle_from?, pos?);
-                let b = self.beat(self.quarter_at(p.x.max(HEADER)), mods.alt());
+                let b = self.beat(self.quarter_at(p.x.max(self.header)), mods.alt());
                 (a != b).then(|| canvas::Action::publish(ArrangeEvent::Cycle { from: a.min(b), to: a.max(b) }).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if state.cycle_from.is_some() => {
@@ -423,7 +475,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             Event::Mouse(mouse::Event::CursorMoved { .. }) if state.clip_drag.is_some() => {
                 let (edit, grab) = state.clip_drag?;
                 let p = pos?;
-                let at = self.quarter_at(p.x.max(HEADER));
+                let at = self.quarter_at(p.x.max(self.header));
                 let free = mods.shift();
                 let q = match edit {
                     ClipEdit::Move => self.beat(at - grab, free),
@@ -441,7 +493,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 Some(canvas::Action::publish(ArrangeEvent::AutoRelease).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                let p = pos.filter(|p| p.x > HEADER)?;
+                let p = pos.filter(|p| p.x > self.header)?;
                 let lane = self.lane_at(p.y)?;
                 let c = self.curves.get(lane)?.as_ref()?;
                 let index = self.point_at(lane, c, p)?;
@@ -449,18 +501,26 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = pos?;
-                if p.y < RULER && p.x > HEADER && mods.shift() {
+                if self.on_header_edge(p.x, p.y) {
+                    state.resize_header = true;
+                    return Some(canvas::Action::capture());
+                }
+                if let Some(row) = self.edge_at(p.x, p.y) {
+                    state.resize_lanes = Some((row, self.lane_height, p.y));
+                    return Some(canvas::Action::capture());
+                }
+                if p.y < RULER && p.x > self.header && mods.shift() {
                     state.cycle_from = Some(self.beat(self.quarter_at(p.x), false));
                     return Some(canvas::Action::capture());
                 }
-                if p.y < RULER && p.x > HEADER {
+                if p.y < RULER && p.x > self.header {
                     return Some(canvas::Action::publish(ArrangeEvent::Locate(self.quarter_at(p.x))).and_capture());
                 }
                 if let Some(Row::Folder { name, .. }) = self.row_at(p.y) {
                     return Some(canvas::Action::publish(ArrangeEvent::ToggleFolder(name.clone())).and_capture());
                 }
                 // A lane showing automation: grab a point, or add one.
-                if let Some((lane, c)) = self.lane_at(p.y).filter(|_| p.x > HEADER).and_then(|l| Some((l, self.curves.get(l)?.as_ref()?))) {
+                if let Some((lane, c)) = self.lane_at(p.y).filter(|_| p.x > self.header).and_then(|l| Some((l, self.curves.get(l)?.as_ref()?))) {
                     if let Some(index) = self.point_at(lane, c, p) {
                         if mods.shift() {
                             return Some(canvas::Action::publish(ArrangeEvent::AutoHold { lane, index }).and_capture());
@@ -496,7 +556,19 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                     mouse::ScrollDelta::Lines { x, y } => (x * 40.0, y * 40.0),
                     mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
-                let ev = if mods.control() { ArrangeEvent::Zoom((1.0 + dy / 400.0).clamp(0.5, 2.0)) } else { ArrangeEvent::Scroll(-(dx + dy)) };
+                // The wheel scrolls the tracks; Shift (or a sideways swipe)
+                // along time; Ctrl zooms time, Alt the tracks' height.
+                let ev = if mods.control() {
+                    ArrangeEvent::Zoom((1.0 + dy / 400.0).clamp(0.5, 2.0))
+                } else if mods.alt() {
+                    ArrangeEvent::LaneHeight((self.lane_height * (1.0 + dy / 400.0)).clamp(LANE_HEIGHTS.0, LANE_HEIGHTS.1))
+                } else if mods.shift() {
+                    ArrangeEvent::Scroll(-(dx + dy))
+                } else if dx.abs() > dy.abs() {
+                    ArrangeEvent::Scroll(-dx)
+                } else {
+                    ArrangeEvent::ScrollY(-dy)
+                };
                 Some(canvas::Action::publish(ev).and_capture())
             }
             Event::Keyboard(iced::keyboard::Event::ModifiersChanged(m)) => {
@@ -507,6 +579,17 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         }
     }
 
+    fn mouse_interaction(&self, state: &Self::State, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let Some(p) = cursor.position_in(bounds) else { return mouse::Interaction::default() };
+        if state.resize_header || self.on_header_edge(p.x, p.y) {
+            mouse::Interaction::ResizingHorizontally
+        } else if state.resize_lanes.is_some() || self.edge_at(p.x, p.y).is_some() {
+            mouse::Interaction::ResizingVertically
+        } else {
+            mouse::Interaction::default()
+        }
+    }
+
     fn draw(&self, _state: &Self::State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
         let c = self.content;
         let geometry = self.cache.draw(renderer, bounds.size(), |f: &mut Frame| {
@@ -514,42 +597,45 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
             // Rows: lanes, and folders' headers.
             for (i, row) in c.rows.iter().enumerate() {
-                let y = RULER + i as f32 * self.lane_height;
+                let y = self.row_y(i);
+                if y + self.lane_height < RULER || y > bounds.height {
+                    continue;
+                }
                 if matches!(row, Row::Folder { .. }) {
-                    f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::palette().base);
+                    f.fill_rectangle(Point::new(self.header, y), Size::new(bounds.width - self.header, self.lane_height), crate::theme::palette().base);
                 } else if i % 2 == 1 {
-                    f.fill_rectangle(Point::new(HEADER, y), Size::new(bounds.width - HEADER, self.lane_height), crate::theme::palette().surface);
+                    f.fill_rectangle(Point::new(self.header, y), Size::new(bounds.width - self.header, self.lane_height), crate::theme::palette().surface);
                 }
                 f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
             }
-            // Bar grid and numbers.
-            for (n, &bq) in c.bars.iter().enumerate() {
+            // Bar grid (the numbers go on the ruler, last).
+            for &bq in c.bars.iter() {
                 let x = self.x(bq);
-                if x < HEADER || x > bounds.width {
+                if x < self.header || x > bounds.width {
                     continue;
                 }
-                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER + c.rows.len() as f32 * self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
-                if n + 1 < c.bars.len() {
-                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
-                }
+                f.stroke(&Path::line(Point::new(x, RULER), Point::new(x, (self.row_y(c.rows.len())).min(bounds.height))), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
             }
             // Note blocks.
             for b in c.blocks.iter().filter(|b| c.row_of.get(b.lane).copied().flatten().is_some()) {
                 let r = self.block_rect(b);
-                if r.x + r.width < HEADER || r.x > bounds.width {
+                if r.x + r.width < self.header || r.x > bounds.width {
                     continue;
                 }
                 let color = if self.selected.contains(&b.element) { crate::theme::palette().accent } else { c.lanes[b.lane].color };
-                f.fill_rectangle(Point::new(r.x.max(HEADER), r.y), Size::new(r.width - (HEADER - r.x).max(0.0), r.height), color);
+                f.fill_rectangle(Point::new(r.x.max(self.header), r.y), Size::new(r.width - (self.header - r.x).max(0.0), r.height), color);
             }
             // Clips, with their waveform and fades.
             for clip in self.clips.iter().filter(|x| c.row_of.get(x.lane).copied().flatten().is_some()) {
                 draw_clip(f, self, clip, bounds.width);
             }
             // Track headers over everything that scrolled under them.
-            f.fill_rectangle(Point::ORIGIN, Size::new(HEADER, bounds.height), crate::theme::palette().surface);
+            f.fill_rectangle(Point::ORIGIN, Size::new(self.header, bounds.height), crate::theme::palette().surface);
             for (i, row) in c.rows.iter().enumerate() {
-                let y = RULER + i as f32 * self.lane_height;
+                let y = self.row_y(i);
+                if y + self.lane_height < RULER || y > bounds.height {
+                    continue;
+                }
                 let l = match row {
                     Row::Folder { name, collapsed, tracks } => {
                         let label = format!("{} {name}  ({tracks})", if *collapsed { "▸" } else { "▾" });
@@ -568,18 +654,35 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                     f.fill_text(Text { content: "Audio".into(), position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
                 }
             }
+            // The ruler over the rows scrolled under it: bar numbers, and
+            // the headers' edge.
+            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
+            for (n, &bq) in c.bars.iter().enumerate() {
+                let x = self.x(bq);
+                if x < self.header || x > bounds.width {
+                    continue;
+                }
+                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
+                if n + 1 < c.bars.len() {
+                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                }
+            }
+            f.stroke(&Path::line(Point::new(self.header, 0.0), Point::new(self.header, bounds.height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
             f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(12.0), color: crate::theme::palette().dim, ..Text::default() });
         });
         let mut overlay = Frame::new(renderer, bounds.size());
         // Automation over the lanes that show it.
         for (lane, c) in self.curves.iter().enumerate().filter_map(|(i, c)| Some((i, c.as_ref()?))).filter(|(i, _)| self.content.row_of.get(*i).copied().flatten().is_some()) {
             let (top, h) = self.curve_band(lane);
-            overlay.fill_rectangle(Point::new(HEADER, top), Size::new(bounds.width - HEADER, h), Color { a: 0.12, ..crate::theme::palette().accent });
-            let pts: Vec<Point> = c.points.iter().map(|&(q, v)| Point::new(self.x(q).max(HEADER), self.curve_y(lane, c, v))).collect();
+            if top < RULER || top > bounds.height {
+                continue;
+            }
+            overlay.fill_rectangle(Point::new(self.header, top), Size::new(bounds.width - self.header, h), Color { a: 0.12, ..crate::theme::palette().accent });
+            let pts: Vec<Point> = c.points.iter().map(|&(q, v)| Point::new(self.x(q).max(self.header), self.curve_y(lane, c, v))).collect();
             if let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) {
                 // A held point steps: flat to the next point, then up or down.
                 let path = Path::new(|b| {
-                    b.move_to(Point::new(HEADER, first.y));
+                    b.move_to(Point::new(self.header, first.y));
                     for (i, p) in pts.iter().enumerate() {
                         if i > 0 && c.holds.get(i - 1).copied().unwrap_or(false) {
                             b.line_to(Point::new(p.x, pts[i - 1].y));
@@ -590,7 +693,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 });
                 overlay.stroke(&path, Stroke::default().with_width(2.0).with_color(crate::theme::palette().accent));
                 for (i, p) in pts.iter().enumerate() {
-                    if p.x > HEADER {
+                    if p.x > self.header {
                         // Held points are squares.
                         if c.holds.get(i).copied().unwrap_or(false) {
                             overlay.fill(&Path::rectangle(Point::new(p.x - 4.0, p.y - 4.0), Size::new(8.0, 8.0)), crate::theme::palette().accent);
@@ -604,7 +707,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         }
         // The cycle along the ruler (dim when off).
         if let Some((a, b, on)) = self.cycle {
-            let (x0, x1) = (self.x(a).max(HEADER), self.x(b).min(bounds.width));
+            let (x0, x1) = (self.x(a).max(self.header), self.x(b).min(bounds.width));
             if x1 > x0 {
                 let c = if on { crate::theme::palette().accent } else { crate::theme::palette().dim };
                 overlay.fill_rectangle(Point::new(x0, 2.0), Size::new(x1 - x0, RULER - 6.0), Color { a: 0.35, ..c });
@@ -613,7 +716,7 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
         }
         if let Some(q) = self.playhead {
             let x = self.x(q);
-            if x >= HEADER {
+            if x >= self.header {
                 overlay.stroke(&Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)), Stroke::default().with_width(2.0).with_color(crate::theme::palette().success));
             }
         }
@@ -625,12 +728,12 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
 /// its fades as lines from the top corners, its name.
 fn draw_clip(f: &mut Frame, v: &ArrangeView, c: &ClipBlock, width: f32) {
     let r = v.clip_rect(c);
-    if r.x + r.width < HEADER || r.x > width {
+    if r.x + r.width < v.header || r.x > width {
         return;
     }
     let base = if c.muted { Color::from_rgb(0.55, 0.55, 0.58) } else { v.content.lanes.get(c.lane).map(|l| l.color).unwrap_or(PALETTE[0]) };
     let selected = v.selected_clip == Some(c.clip);
-    let (x0, x1) = (r.x.max(HEADER), (r.x + r.width).min(width));
+    let (x0, x1) = (r.x.max(v.header), (r.x + r.width).min(width));
     f.fill_rectangle(Point::new(x0, r.y), Size::new(x1 - x0, r.height), Color { a: 0.35, ..base });
     let wave = Color { a: 0.9, ..base };
     if let Some(d) = c.data.as_ref().filter(|d| !d.peaks.is_empty()) {
@@ -658,9 +761,14 @@ fn draw_clip(f: &mut Frame, v: &ArrangeView, c: &ClipBlock, width: f32) {
         f.stroke(&Path::line(Point::new(v.x(c.fade_out_q), r.y), Point::new(r.x + r.width, r.y + r.height)), fade);
     }
     f.stroke(&Path::rectangle(Point::new(x0, r.y), Size::new(x1 - x0, r.height)), Stroke::default().with_width(if selected { 2.0 } else { 1.0 }).with_color(if selected { crate::theme::palette().accent } else { base }));
-    if r.x >= HEADER - 1.0 {
+    if r.x >= v.header - 1.0 {
         f.fill_text(Text { content: c.name.clone(), position: Point::new(r.x + 4.0, r.y + 2.0), size: iced::Pixels(11.0), ..Text::default() });
     }
+}
+
+/// Keeps the vertical scroll inside the rows (the last one can reach the top).
+pub fn clamp_scroll_y(scroll: f32, content: &Content, lane_height: f32) -> f32 {
+    scroll.clamp(0.0, ((content.rows.len() as f32 - 1.0) * lane_height).max(0.0))
 }
 
 /// Keeps the scroll inside the content.
