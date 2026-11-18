@@ -52,6 +52,7 @@
             --set-default CORINZIA_TEXT_FONT ${textFont pkgs}
         '';
         meta.mainProgram = "corinzia";
+        meta.license = pkgs.lib.licenses.gpl3Plus;
       };
       # The AppImage runtime (AppImage/type2-runtime), pinned.
       appimageRuntime = pkgs: pkgs.fetchurl {
