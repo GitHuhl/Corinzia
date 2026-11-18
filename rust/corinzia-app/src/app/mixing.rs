@@ -320,8 +320,19 @@ impl App {
     /// Places a sound file on an audio track (`None`, or not an audio
     /// track: a new one named after the file) at the caret of the movement edited. A file in the
     /// project's folder is kept by its relative path.
-    pub(crate) fn add_audio_file(&mut self, track: Option<corinzia_model::Id>, path: &std::path::Path) {
-        let Some(movement) = self.editor.movement().map(|m| m.id) else { return };
+    /// A sound file onto an audio track (else a new one, named after the
+    /// file), at a written position (quarters; none: the caret). The
+    /// track it went on.
+    pub(crate) fn add_audio_file(&mut self, track: Option<corinzia_model::Id>, path: &std::path::Path, at_q: Option<f64>) -> Option<corinzia_model::Id> {
+        let t = self.place_audio_file(track, path, at_q);
+        self.sync();
+        t
+    }
+
+    /// [`add_audio_file`](Self::add_audio_file) without bringing playback
+    /// up to date (several at once: then once).
+    fn place_audio_file(&mut self, track: Option<corinzia_model::Id>, path: &std::path::Path, at_q: Option<f64>) -> Option<corinzia_model::Id> {
+        let movement = self.editor.movement().map(|m| m.id)?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Audio".into());
         let folder = self.path.as_deref().and_then(|p| p.parent());
         let file = match folder.and_then(|f| path.strip_prefix(f).ok()) {
@@ -331,9 +342,9 @@ impl App {
         // Decoded now, so a file Corinzia cannot read says so at once.
         if let Err(e) = self.playback.pool.media.get(&self.playback.pool.media.resolve(&file).to_string_lossy()) {
             self.editor.status = e;
-            return;
+            return None;
         }
-        let at = arrange::seconds_of(self.movement_section(), quarters(self.editor.caret));
+        let at = arrange::seconds_of(self.movement_section(), at_q.unwrap_or_else(|| quarters(self.editor.caret)));
         let track = match track.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio)) {
             Some(t) => t,
             None => self.editor.add_audio_track(&name),
@@ -342,7 +353,58 @@ impl App {
             self.selected_clip = Some((track, id));
             self.strip = Some(track);
         }
-        self.sync();
+        Some(track)
+    }
+
+    /// Where a drop at a window point would go: on the arrange view, (an
+    /// audio track there, or none: a new one; the beat there, quarters).
+    pub(crate) fn drop_target(&self, p: iced::Point) -> Option<(Option<corinzia_model::Id>, f64)> {
+        if self.tab != Tab::Mix || self.roll.is_some() {
+            return None;
+        }
+        let layout = self.prefs.layout;
+        let top = 47.0;
+        let bottom = self.window.height - 28.0 - layout.mixer_height - crate::splitter::SIZE;
+        if p.y < top + arrange::RULER || p.y > bottom {
+            return None;
+        }
+        let q = ((p.x - layout.header_width + self.arrange_scroll) / self.arrange_ppq).max(0.0).round() as f64;
+        let row = ((p.y - top - arrange::RULER + self.arrange_scroll_y) / layout.lane_height).floor() as usize;
+        let track = match self.arrange.rows.get(row) {
+            Some(arrange::Row::Lane(l)) => self.arrange.lanes.get(*l).filter(|l| l.audio).map(|l| l.track),
+            _ => None,
+        };
+        Some((track, q))
+    }
+
+    /// Files dropped (at a window point, when known): sounds onto audio
+    /// tracks (the one under the point, else new ones), a score opened.
+    pub(crate) fn drop_files(&mut self, paths: Vec<std::path::PathBuf>, at: Option<iced::Point>) -> Task<Message> {
+        let (sounds, others): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| crate::app::update::is_sound(p));
+        let target = at.and_then(|p| self.drop_target(p));
+        let mut first = target.and_then(|t| t.0);
+        let q = target.map(|t| t.1);
+        let mut added = 0;
+        for path in &sounds {
+            // The first onto the track under the drop; each other on a new one.
+            if self.place_audio_file(first.take(), path, q).is_some() {
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.sync();
+        }
+        if added > 1 {
+            self.editor.status = format!("{added} sounds added");
+        }
+        match others.into_iter().next() {
+            Some(score) if sounds.is_empty() => Task::done(Message::Dropped(score)),
+            Some(other) => {
+                self.editor.status = format!("{} not added: drop sounds and scores separately", other.display());
+                Task::none()
+            }
+            None => Task::none(),
+        }
     }
 
     /// Changes the selected clip; `live`: a slider or typing (one undo step

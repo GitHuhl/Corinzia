@@ -187,9 +187,13 @@ the output), automation playback and saving plugin settings.
   mixer, or before the side panel, to resize them; the faders grow with
   the mixer. The sizes are remembered. A strip's automation lane and
   dynamics controller are in the side panel when the strip is selected.
-* **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" (or drop
-  a WAV, FLAC, MP3 or Ogg file on the window) puts a clip at the caret.
-  Clips sit at fixed times (seconds after their movement's start: tempo
+* **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" puts a
+  clip at the caret. Or drag WAV, FLAC, MP3 or Ogg files in from your
+  file manager (Wayland and X11 alike): dropped on an audio track in the
+  arrange view, the first goes on that track at the beat under the
+  pointer and any others each on a new track there; dropped anywhere
+  else, each goes on a new track at the caret. The status bar says where
+  a drag will land. Clips sit at fixed times (seconds after their movement's start: tempo
   changes do not move them). In the arrange view, drag a clip to move it
   (snapping to the beat; Shift for none), its edges to trim, its top
   corners to fade; Ctrl+drag copies, Delete removes. A selected clip has
@@ -198,6 +202,12 @@ the output), automation playback and saving plugin settings.
   (through the tempo), optionally with a line to where it ends. Audio tracks have effects,
   sends, an output and a fader like any track. Files are decoded and
   resampled to the engine's rate once and kept in memory.
+* **Audio tracks in the score:** each audio track with clips in the
+  movement has a staff of its own under the players', named after the
+  track: one line, with no clef, key or time signature and no rests.
+  Each clip shows its file's name in bold in a box where it starts, with
+  a heavy line along the staff to where it ends. A muted clip is left
+  out. Players' parts don't show these staves (use a cue for that).
 * **Automation** (Mix tab): a strip's "Automation lane" (in the side panel
   when the strip is selected) shows a curve on
   the track's lane in the arrange view: its gain, its pan, or any parameter

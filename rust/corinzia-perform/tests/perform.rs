@@ -341,6 +341,32 @@ fn audio_clips_are_cued_where_they_start_through_the_tempo() {
 }
 
 #[test]
+fn audio_tracks_are_staves_named_after_them_with_their_clips_files() {
+    let m = fixture(); // two bars of 4/4 at 120: two quarters a second
+    let mut c = AudioClip::new(60, "Rain", "/sounds/Rain Take 2.wav", 1, 1.0);
+    c.length = 2.0;
+    let mut project = Project {
+        players: vec![Player { id: 2, name: "P".into(), instruments: vec![4] }],
+        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![] }],
+        movements: vec![m.clone()],
+        ..Default::default()
+    };
+    project.tracks.push(Track { id: 7, name: "Tape".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: true, clips: vec![c] });
+    let s = score_as(&project, &m, true);
+    assert_eq!(s.parts.len(), 2, "the flute, then the tape");
+    let tape = &s.parts[1];
+    assert!(tape.audio && !s.parts[0].audio);
+    assert_eq!(tape.name, "Tape");
+    assert!(tape.voices.is_empty(), "nothing written: tacet but for the clip");
+    assert_eq!((tape.texts[0].id, tape.texts[0].at, tape.texts[0].text.as_str()), (60, f(1, 2), "Rain Take 2.wav"));
+    assert_eq!((tape.lines[0].from, tape.lines[0].to), (f(1, 2), f(3, 2)), "1 s to 3 s: quarters 2 to 6");
+    // Not in a player's part; and a muted clip is not shown.
+    assert_eq!(part_score(&project, &m, 2).parts.len(), 1);
+    project.tracks[0].clips[0].mute = true;
+    assert_eq!(score_as(&project, &m, true).parts.len(), 1);
+}
+
+#[test]
 fn tweaks_change_how_notes_play_not_how_they_are_written() {
     let mut m = fixture(); // c'4 d'4 <e' g'>2 | b''4 a''4-. r2
     let plain = perform(&m);

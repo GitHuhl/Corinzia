@@ -96,10 +96,17 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 
 ## Audio tracks: decisions so far
 
-* **On the page:** audio is not engraved by default (option 1). A clip
-  can optionally show a cue mark on a chosen staff: its name at its
-  start ("Tape 3 ▸"), optionally with a line to its end (option 2). A
-  dedicated tape/electronics staff is not planned.
+* **On the page:** each audio track with clips in the movement is a
+  one-line staff of its own in the full score, named after the track,
+  its clips shown as their files' names (boxed, bold) with a line to
+  where they end, and otherwise empty, like a tacet part. A clip can also
+  show a cue mark on a chosen player's staff: its name at its start
+  ("Tape 3 ▸"), optionally with a line to its end, which players' parts
+  then carry too.
+* **Getting files in:** "Add sound…", or drag and drop from the file
+  manager. Under Wayland, Corinzia listens for drops itself (the window
+  library takes them only on X11 and Windows): a `wl_data_device` per
+  seat on the window's own connection, taking `text/uri-list` as a copy.
 * **In the arrange view (Mix tab):** audio tracks are lanes with clips
   drawn as blocks with their waveform. Clips are dragged along the
   timeline to move them (snapping to the beat grid, Shift for no snap),

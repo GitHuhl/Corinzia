@@ -25,6 +25,13 @@ serde.workspace = true
 serde_json.workspace = true
 rfd = "0.15"
 
+# Files dropped on the window under Wayland (src/wayland_dnd.rs): on the
+# window's own connection; libwayland is loaded when it runs.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 midir = "0.10"
 

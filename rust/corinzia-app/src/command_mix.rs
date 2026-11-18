@@ -277,7 +277,7 @@ impl App {
                         let file = std::path::PathBuf::from(args[2..].join(" "));
                         let clips = |app: &App| app.editor.project.track(t).map_or(0, |x| x.clips.len());
                         let before = clips(app);
-                        app.add_audio_file(Some(t), &file);
+                        app.add_audio_file(Some(t), &file, None);
                         app.sync();
                         if clips(app) == before {
                             return Err(app.editor.status.clone());

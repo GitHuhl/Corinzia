@@ -73,8 +73,7 @@ fn page_content(page: &DisplayList) -> Vec<u8> {
         c.stroke();
     };
     for st in &page.staves {
-        for l in 0..5 {
-            let y = st.top + l as f32;
+        for y in st.line_ys() {
             stroke(&mut c, to(st.left, y), to(st.right, y), st.line_width);
         }
     }

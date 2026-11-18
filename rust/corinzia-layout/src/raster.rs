@@ -40,7 +40,7 @@ pub fn render(list: &DisplayList, scale: f32, pad: f32) -> Pixmap {
     let text_font: Option<Vec<u8>> = std::env::var("CORINZIA_TEXT_FONT").ok().and_then(|p| std::fs::read(p).ok());
     let p = |q: &Point| (q.x, q.y);
     let staff_lines = list.staves.iter().flat_map(|st| {
-        (0..5).map(move |k| Item::line(st.left, st.top + k as f32, st.right, st.top + k as f32, st.line_width, 0))
+        st.line_ys().map(move |y| Item::line(st.left, y, st.right, y, st.line_width, 0))
     });
     let all: Vec<Item> = staff_lines.chain(list.items.iter().cloned()).collect();
     for item in &all {

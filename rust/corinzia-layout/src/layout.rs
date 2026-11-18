@@ -591,8 +591,9 @@ fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
             }
         }
     }
-    // Voice 1 of a part with nothing in a bar gets a whole-bar rest.
-    for pi in 0..score.parts.len() {
+    // Voice 1 of a part with nothing in a bar gets a whole-bar rest (not
+    // an audio track's staff: nothing is written there).
+    for pi in (0..score.parts.len()).filter(|&pi| !score.parts[pi].audio) {
         for (mi, m) in ms.iter().enumerate() {
             if !out.iter().any(|n| (n.part == pi || n.home == pi) && n.measure == mi && n.voice == 1) {
                 out.push(Note {
@@ -1288,11 +1289,15 @@ impl<'a> Engraver<'a> {
         let right = self.out.width - self.opt.margin;
         for pi in 0..self.score.parts.len() {
             let top = self.top(pi);
-            self.out.staves.push(StaffGeom { part: pi, top, left: self.left, right, line_width: t, system: 0 });
-            // Clef at the system start (the one in force); the instrument name left of the staff.
-            let clef = self.clef_at(pi, self.range.0);
-            let (g, dy) = clef_glyph(&clef);
-            self.push(Item::glyph(g, self.left + 0.8, top + dy, 0));
+            let audio = self.score.parts[pi].audio;
+            self.out.staves.push(StaffGeom { part: pi, top, left: self.left, right, line_width: t, system: 0, single: audio });
+            // Clef at the system start (the one in force; an audio staff has
+            // none); the instrument name left of the staff.
+            if !audio {
+                let clef = self.clef_at(pi, self.range.0);
+                let (g, dy) = clef_glyph(&clef);
+                self.push(Item::glyph(g, self.left + 0.8, top + dy, 0));
+            }
             // A grand staff is named once, between its staves, left of its brace.
             let braced = self.score.parts[pi].brace && pi + 1 < self.score.parts.len();
             let second = pi > 0 && self.score.parts[pi - 1].brace;
@@ -1340,6 +1345,10 @@ impl<'a> Engraver<'a> {
             let m = self.ms[mi].clone();
             let mut x = if mi == 0 { self.left + 0.8 + clef_w + 0.8 } else { self.ms[mi - 1].x1 + 1.0 };
             for pi in 0..self.score.parts.len() {
+                // An audio staff: no key or time signature.
+                if self.score.parts[pi].audio {
+                    continue;
+                }
                 let mut kx = x;
                 let clef = self.clef_at(pi, m.start);
                 if let Some(k) = m.key.filter(|_| clef != "percussion") {
@@ -1390,6 +1399,8 @@ impl<'a> Engraver<'a> {
                 // Barlines run through a grand staff and a bracketed family.
                 let joined = joined_to_next(self.score, pi);
                 let (top, bot) = (self.top(pi), if joined { self.top(pi + 1) } else { self.top(pi) + 4.0 });
+                // Across an audio staff's one line: a space each way.
+                let (top, bot) = if self.score.parts[pi].audio && !joined { (top + 1.0, top + 3.0) } else { (top, bot) };
                 let x1 = m.x1;
                 match (kind, last) {
                     (Some(BarKind::Final), _) | (None, true) => {
@@ -2479,6 +2490,32 @@ impl<'a> Engraver<'a> {
                         }
                         if ends {
                             self.place(pi, Item::glyph(Glyph::PedalUp, release, y, id));
+                        }
+                    }
+                    LineKind::Cue if part.audio => {
+                        // An audio clip: its file's name in bold in a box
+                        // above the line, then a heavy line along the
+                        // staff's line to where it ends, with a stroke there.
+                        let Some(t) = part.texts.iter().find(|t| t.id == id) else { continue };
+                        let x0 = if starts { self.col_x(l.from) } else { x0 };
+                        let x1 = if ends { self.col_x(l.to.min(r1)).max(x0 + 1.0) } else { self.ms.last().map(|m| m.x1).unwrap_or(x0) };
+                        let mid = self.top(pi) + 2.0;
+                        if starts {
+                            let w = text_width(&t.text, TEXT_SIZE, true);
+                            let (pad, h) = (0.5, 0.72 * TEXT_SIZE);
+                            let (bx0, bx1, by1) = (x0, x0 + w + 2.0 * pad, mid - 0.5);
+                            let by0 = by1 - h - 2.0 * pad;
+                            let base = by1 - pad - 0.12 * TEXT_SIZE;
+                            self.place(pi, Item::Text { text: t.text.clone(), at: pt(bx0 + pad, base), size: TEXT_SIZE, italic: false, bold: true, anchor: 0, id });
+                            let bw = 0.12;
+                            for (a, b, c, d) in [(bx0, by0, bx1, by0), (bx1, by0, bx1, by1), (bx1, by1, bx0, by1), (bx0, by1, bx0, by0)] {
+                                self.place(pi, Item::line(a, b, c, d, bw, id));
+                            }
+                            self.place(pi, Item::line(x0, by1, x0, mid + 1.0, bw, id));
+                        }
+                        self.place(pi, Item::line(x0, mid, x1, mid, 0.4, id));
+                        if ends {
+                            self.place(pi, Item::line(x1, mid - 1.0, x1, mid + 1.0, 0.12, id));
                         }
                     }
                     LineKind::Cue => {

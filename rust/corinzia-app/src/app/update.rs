@@ -31,10 +31,34 @@ impl App {
                 self.part = p;
                 self.engraved = None;
             }
-            Message::Dropped(path) if path.extension().and_then(|e| e.to_str()).is_some_and(|e| browser::AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())) => {
+            Message::Dropped(path) if is_sound(&path) => {
                 // A sound file: onto the selected audio track, else a new one.
                 let track = self.strip.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio));
-                self.add_audio_file(track, &path);
+                self.add_audio_file(track, &path, None);
+            }
+            Message::NativeWindow(handles) => {
+                #[cfg(target_os = "linux")]
+                if let Some((display, surface)) = handles {
+                    if let Err(e) = super::listen_for_drops(display, surface) {
+                        eprintln!("corinzia: files dropped on the window will not be taken: {e}");
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = handles;
+            }
+            Message::DragOver(p) => {
+                self.drag_over = p;
+                self.editor.status = match p.map(|p| self.drop_target(p)) {
+                    Some(Some((Some(t), _))) => format!("Drop to add the sound to {}", self.editor.project.track(t).map(|t| t.name.as_str()).unwrap_or("the track")),
+                    Some(Some((None, _))) => "Drop to add the sound on a new audio track, there".into(),
+                    Some(None) => "Drop sounds (on a new audio track, at the caret) or a score (to open it)".into(),
+                    None => String::new(),
+                };
+            }
+            Message::DroppedAt(paths, p) => {
+                self.drag_over = None;
+                self.editor.status.clear();
+                return self.drop_files(paths, Some(p));
             }
             Message::Dropped(path) => {
                 if path.extension().is_some_and(|e| e == "project") || files::is_musicxml(&path) {
@@ -127,7 +151,9 @@ impl App {
                 }
             }
             Message::Opened(None) | Message::SaveTo(None) | Message::ExportTo(_, None) | Message::AudioChosen(_, None) => return Task::none(),
-            Message::AudioChosen(track, Some(path)) => self.add_audio_file(Some(track), &path),
+            Message::AudioChosen(track, Some(path)) => {
+                self.add_audio_file(Some(track), &path, None);
+            }
             Message::Opened(Some(path)) => self.open(path),
             Message::SaveTo(Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension("project") } else { path };
@@ -190,19 +216,24 @@ impl App {
         Task::none()
     }
 
+    /// The lane (of the movement's) engraved on staff `staff`; none for
+    /// another staff (an audio track's).
+    pub(crate) fn lane_of_staff(&self, staff: usize) -> Option<usize> {
+        let lanes = self.editor.movement()?.lanes.len();
+        self.staff_lanes.get(staff).copied().filter(|&l| l < lanes)
+    }
+
     /// A click on the score: select, or (input mode, empty paper) enter a note.
     pub(crate) fn click(&mut self, hit: Option<u64>, at: Option<StaffPoint>, shift: bool) {
+        let lane_at = at.and_then(|p| self.lane_of_staff(p.part));
         let ed = &mut self.editor;
         if ed.input_mode && (hit.is_none() || shift) {
-            if let (Some(p), Some(m)) = (at, ed.movement()) {
-                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
-                if lane < m.lanes.len() {
-                    let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
-                    let diatonic = top_line(&clef_at(&ed.project, m, lane, pos)) - p.step_below_top;
-                    ed.place_note_at(lane, p.quarter, diatonic, shift);
-                    self.audition();
-                    return;
-                }
+            if let (Some(p), Some(m), Some(lane)) = (at, ed.movement(), lane_at) {
+                let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
+                let diatonic = top_line(&clef_at(&ed.project, m, lane, pos)) - p.step_below_top;
+                ed.place_note_at(lane, p.quarter, diatonic, shift);
+                self.audition();
+                return;
             }
         }
         // A slur's curve selects the slur.
@@ -215,13 +246,12 @@ impl App {
             (Some(id), true) => ed.select_elements(&[id], true),
             (Some(id), false) => ed.select(Some(id)),
             (None, _) => {
-                if let (Some(p), true) = (at, ed.input_mode) {
-                    ed.caret_lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                if let Some(lane) = lane_at.filter(|_| ed.input_mode) {
+                    ed.caret_lane = lane;
                 }
                 // Empty space inside a bar's staff selects the bar (Shift
                 // extends the passage); the paper around it deselects.
-                if let Some(p) = at.filter(|p| !ed.input_mode && (-1..=9).contains(&p.step_below_top)) {
-                    let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                if let (Some(p), Some(lane)) = (at.filter(|p| !ed.input_mode && (-1..=9).contains(&p.step_below_top)), lane_at) {
                     let pos = Frac::new((p.quarter * 1024.0).round() as i64, 4096);
                     ed.select_bar(lane, pos, shift);
                     return;
@@ -313,7 +343,7 @@ impl App {
                     score_view::ContextTarget::Time => PopoverKind::Time,
                     score_view::ContextTarget::Barline => PopoverKind::Barline,
                 };
-                let lane = self.staff_lanes.get(p.part).copied().unwrap_or(p.part);
+                let Some(lane) = self.lane_of_staff(p.part) else { return None };
                 self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
                 self.sync();
                 self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
@@ -327,4 +357,9 @@ impl App {
         }
         None
     }
+}
+
+/// A file audio tracks take (by its extension).
+pub(crate) fn is_sound(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| browser::AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
