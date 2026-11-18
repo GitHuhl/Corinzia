@@ -100,7 +100,7 @@ static LOG2: [f32; MAX_HARMONICS + 1] = {
     [0.0, 0.0, 1.0, 1.585, 2.0, 2.3219, 2.585, 2.8074, 3.0, 3.1699, 3.3219, 3.4594, 3.585, 3.7004, 3.8074, 3.9069, 4.0, 4.0875, 4.1699, 4.2479, 4.3219, 4.3923, 4.4594, 4.5236, 4.585, 4.6439, 4.7004, 4.7549, 4.8074, 4.858, 4.9069, 4.9542, 5.0, 5.0444, 5.0875, 5.1293, 5.1699, 5.2095, 5.2479, 5.2854, 5.3219]
 };
 /// Players of a string section, each played in full.
-const PLAYERS: usize = 4;
+const PLAYERS: usize = 6;
 const MAX_MODES: usize = 16;
 const CONTROL: usize = 16; // samples between control updates
 
@@ -179,6 +179,12 @@ pub struct Voice {
     accent: f32,
     /// A legato join's renewed excitation, decaying.
     join: f32,
+    /// 1, or less for a note taken up from a still-ringing one (a bow
+    /// change, a new breath): its attack is quicker.
+    attack_scale: f32,
+    /// The waveguide's and the noise's gains as they sound (smoothed).
+    phys_g: f32,
+    noise_g: f32,
     scoop: f32,
     vib_phase: f32,
     vib_rate: f32,
@@ -211,6 +217,8 @@ pub struct Voice {
     pl_depth: [f32; PLAYERS],
     pl_delay: [f32; PLAYERS],
     pl_wander: [f32; PLAYERS],
+    /// Each player's instrument: its own small differences per harmonic.
+    pl_colour: [[f32; MAX_HARMONICS]; PLAYERS],
     phys_lp: f32,
     /// The body's gains for the current dynamic and technique.
     curve: Box<[f32; crate::body::FINE]>,
@@ -262,6 +270,9 @@ impl Voice {
             vel: 0.5,
             accent: 0.0,
             join: 0.0,
+            attack_scale: 1.0,
+            phys_g: 0.0,
+            noise_g: 0.0,
             scoop: 0.0,
             vib_phase: 0.0,
             vib_rate: 5.5,
@@ -292,6 +303,7 @@ impl Voice {
             pl_depth: [1.0; PLAYERS],
             pl_delay: [0.0; PLAYERS],
             pl_wander: [0.0; PLAYERS],
+            pl_colour: [[1.0; MAX_HARMONICS]; PLAYERS],
             phys_lp: 0.0,
             curve: Box::new([0.0; crate::body::FINE]),
             curve_key: (-1.0, 255),
@@ -343,6 +355,9 @@ impl Voice {
         self.glide = dsp::smoothing(0.03, sr);
         self.t = 0.0;
         self.join = 0.0;
+        self.attack_scale = 1.0;
+        self.phys_g = 0.0;
+        self.noise_g = 0.0;
         self.env = 0.0;
         let attack = (p.attack * (1.5 - self.vel)).max(0.002) * if technique == tech::HARMONICS { 1.5 } else { 1.0 };
         self.env_rate = dsp::smoothing(attack / 3.0, sr);
@@ -374,13 +389,18 @@ impl Voice {
         self.n_h = 0;
         // A section's players: none quite in tune with the others, each
         // with a vibrato of their own, coming in a little apart.
-        const DETUNE: [f32; PLAYERS] = [0.0, 0.8, -0.7, 0.35];
+        const DETUNE: [f32; PLAYERS] = [0.0, 0.8, -0.7, 0.35, -0.3, 0.55];
         for q in 0..PLAYERS {
             let section = p.unison > 1;
             self.pl_detune[q] = if section { p.spread * (DETUNE[q] + 0.3 * self.rng.noise()) } else { 0.0 };
             self.pl_rate[q] = p.vib_rate * (0.92 + 0.16 * self.rng.unit());
             self.pl_vib[q] = self.rng.unit();
             self.pl_depth[q] = 0.8 + 0.4 * self.rng.unit();
+            // No two instruments alike: up to ±3 dB per harmonic, so the
+            // players never cancel all at once.
+            for h in 0..MAX_HARMONICS {
+                self.pl_colour[q][h] = if section { db(3.0 * self.rng.noise()) } else { 1.0 };
+            }
             self.pl_delay[q] = if section && q > 0 { 0.03 * self.rng.unit() * (1.2 - self.vel) } else { 0.0 };
             self.pl_wander[q] = 0.0;
             self.pl_n[q] = 0;
@@ -429,6 +449,26 @@ impl Voice {
         self.join = 0.35 + 0.3 * velocity;
         if let Some(s) = crate::patches::spectrum(self.patch) {
             self.tune_waveguide(s);
+        }
+    }
+
+    /// Still sounding after its note ended (a bow change can take it up).
+    pub fn is_ringing(&self) -> bool {
+        self.active && self.releasing && self.sustained && self.env > 0.02
+    }
+
+    /// The note just started follows one still ringing on its instrument:
+    /// the bow or breath changes rather than starting from silence.
+    pub fn connect(&mut self) {
+        let p = self.p();
+        self.attack_scale = 0.2;
+        let attack = (p.attack * (1.5 - self.vel) * self.attack_scale).max(0.002);
+        self.env_rate = dsp::smoothing(attack / 3.0, self.sr);
+        self.env = 0.5;
+        self.scoop *= 0.3;
+        // A section changes bow nearly together.
+        for d in self.pl_delay.iter_mut() {
+            *d *= 0.25;
         }
     }
 
@@ -704,6 +744,10 @@ impl Voice {
         if !self.active {
             return false;
         }
+        // The host splits its blocks at every event: the control values are
+        // the renderers' locals, so they are worked out afresh at the start
+        // of every call (else the first samples of a split play silent).
+        self.ctl = 0;
         match self.model {
             Model::Pluck(_) => self.render_pluck(out, bend, trims),
             Model::Piano | Model::Mallet(_) | Model::Timpani => self.render_modes(out, trims),
@@ -742,7 +786,8 @@ impl Voice {
     // ------------------------------------------------ strings, winds, brass --
     fn render_hybrid(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) {
         let s = *crate::patches::spectrum(self.patch).unwrap();
-        let p = *self.p();
+        let mut p = *self.p();
+        p.attack *= self.attack_scale;
         let sr = self.sr;
         let dt = 1.0 / sr;
         let dyn_rate = dsp::smoothing(0.04, sr);
@@ -754,6 +799,7 @@ impl Voice {
         let mut exc_shape = 0.5;
         let mut period = 100.0f32;
         let len = self.line.len();
+        let glide_k = dsp::smoothing(0.005, sr);
         for o in out.iter_mut() {
             if self.ctl == 0 {
                 self.ctl = CONTROL;
@@ -869,7 +915,9 @@ impl Voice {
             for (i, &(_, _, g)) in s.peaks.iter().enumerate() {
                 noise += self.nf[i].tick(n).band * db(g * 0.5);
             }
-            noise *= noise_gain * 0.25;
+            self.noise_g += (noise_gain - self.noise_g) * glide_k;
+            self.phys_g += (phys_gain - self.phys_g) * glide_k;
+            noise *= self.noise_g * 0.25;
             // Physical layer: exciter into a tuned waveguide.
             let f = self.cur * ratio;
             let step = f / sr;
@@ -894,7 +942,7 @@ impl Voice {
             self.line[self.pos] = y.clamp(-4.0, 4.0);
             self.pos = (self.pos + 1) % len;
             let phys = self.loop_lp * 0.25;
-            let sum = harm * 0.5 + phys * phys_gain + noise;
+            let sum = harm * 0.5 + phys * self.phys_g + noise;
             *o += sum * gain * self.env * tech_amp;
         }
     }
@@ -905,7 +953,8 @@ impl Voice {
     /// resonances), bow noise, and the waveguide for the attack and joins.
     fn render_bowed(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) {
         let s = *crate::patches::spectrum(self.patch).unwrap();
-        let p = *self.p();
+        let mut p = *self.p();
+        p.attack *= self.attack_scale;
         let body = s.body.unwrap();
         let sr = self.sr;
         let dt = 1.0 / sr;
@@ -916,6 +965,7 @@ impl Voice {
         let (mut noise_gain, mut phys_gain, mut gain, mut tech_amp, mut period, mut f_main) = (0.0, 0.0, 0.0, 1.0, 100.0f32, self.freq);
         let len = self.line.len();
         let phys_k = 1.0 - (-TAU * 2500.0 / sr).exp();
+        let glide_k = dsp::smoothing(0.005, sr);
         for o in out.iter_mut() {
             if self.ctl == 0 {
                 self.ctl = CONTROL;
@@ -952,7 +1002,9 @@ impl Voice {
                 // Vibrato: after the attack, wider when louder.
                 let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
                 let depth = if self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) };
-                let limit = (sr * 0.45).min(14000.0);
+                // The measured strings lie 35 dB and more under their 1 kHz region
+                // past 10 kHz: harmonics up to there (a soloist to 12 kHz).
+                let limit = (sr * 0.45).min(if solo { 12000.0 } else { 10000.0 });
                 for q in 0..players {
                     self.pl_vib[q] = (self.pl_vib[q] + self.pl_rate[q] * blocks).fract();
                     // Intonation wanders a little, slowly.
@@ -971,7 +1023,7 @@ impl Voice {
                         let a = if self.tech == tech::HARMONICS {
                             if h == 0 { 1.0 } else { 0.0 }
                         } else {
-                            crate::body::at(&self.curve, log2_f + LOG2[h + 1])
+                            crate::body::at(&self.curve, log2_f + LOG2[h + 1]) * self.pl_colour[q][h]
                         };
                         power += a * a;
                         self.pl_target[q][h] = a;
@@ -994,6 +1046,31 @@ impl Voice {
                     }
                     for h in n_h..MAX_HARMONICS {
                         self.pl_target[q][h] = 0.0;
+                    }
+                }
+                // A section's players beat against each other; where a
+                // harmonic's players happen to cancel (or pile up), it is
+                // mostly evened out: the sum's power against the sum of
+                // the powers, from the phasors themselves, so without lag.
+                if !solo {
+                    let n_max = self.pl_n[..players].iter().copied().max().unwrap_or(0);
+                    for h in 0..n_max {
+                        let (mut re, mut im, mut expect) = (0.0f32, 0.0f32, 0.0f32);
+                        for q in 0..players {
+                            if h < self.pl_n[q] {
+                                let a = self.pl_target[q][h];
+                                re += a * self.pl_re[q][h];
+                                im += a * self.pl_im[q][h];
+                                expect += a * a;
+                            }
+                        }
+                        let actual = re * re + im * im;
+                        if actual > 1e-20 && expect > 1e-20 {
+                            let g = (expect / actual).powf(0.4).clamp(0.4, 2.5);
+                            for q in 0..players {
+                                self.pl_target[q][h] *= g;
+                            }
+                        }
                     }
                 }
                 for (i, &(c, w, _)) in s.peaks.iter().enumerate() {
@@ -1034,7 +1111,10 @@ impl Voice {
             for (i, &(_, _, g)) in s.peaks.iter().enumerate() {
                 noise += self.nf[i].tick(n).band * db(g * 0.5);
             }
-            noise *= noise_gain * 0.25;
+            // Gains glide (a join's lift is no step).
+            self.noise_g += (noise_gain - self.noise_g) * glide_k;
+            self.phys_g += (phys_gain - self.phys_g) * glide_k;
+            noise *= self.noise_g * 0.25;
             // The waveguide: a bowed sawtooth into the tuned string.
             let step = f_main / sr;
             self.phases[0] = (self.phases[0] + step).fract();
@@ -1047,7 +1127,7 @@ impl Voice {
             self.line[self.pos] = (exc * 0.12 + self.loop_lp * self.loop_fb).clamp(-4.0, 4.0);
             self.pos = (self.pos + 1) % len;
             self.phys_lp += (self.loop_lp - self.phys_lp) * phys_k;
-            let sum = harm * 0.5 + self.phys_lp * 0.25 * phys_gain + noise;
+            let sum = harm * 0.5 + self.phys_lp * 0.25 * self.phys_g + noise;
             *o += sum * gain * self.env * tech_amp;
         }
     }

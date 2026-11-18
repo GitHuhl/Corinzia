@@ -137,7 +137,13 @@ impl Synth {
             .or_else(|| (0..self.voices.len()).filter(|&i| self.voices[i].releasing).min_by_key(|&i| self.voices[i].age))
             .unwrap_or_else(|| (0..self.voices.len()).min_by_key(|&i| self.voices[i].age).unwrap());
         let seed = self.clock as u32;
+        // A note right after another on the instrument, still ringing: a
+        // bow change or a new breath, not a start from silence.
+        let follows = self.voices.iter().any(|v| v.is_ringing() && v.channel as usize == ch && v.patch == c.patch);
         self.voices[i].start(c.patch, c.technique, note_id, port, channel, key, velocity, c.dynamic, self.clock, seed);
+        if follows && self.voices[i].sustained {
+            self.voices[i].connect();
+        }
     }
 
     fn note_off(&mut self, note_id: i32, channel: i16, key: i16) {

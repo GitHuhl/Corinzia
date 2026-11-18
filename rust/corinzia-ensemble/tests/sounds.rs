@@ -237,3 +237,72 @@ fn strings_have_the_measured_bodies_roll_off() {
     let s = note(0, 69, 0.62, 1.0, 1.0);
     assert!((rms(&s[24000..28096]) - rms(x)).abs() > 1e-5 || s[24000..24100] != v[24000..24100]);
 }
+
+/// Isolated events for click hunting:
+/// CORINZIA_RUNS=dir cargo test --release -p corinzia-ensemble write_events -- --ignored
+#[test]
+#[ignore]
+fn write_events() {
+    let Ok(dir) = std::env::var("CORINZIA_RUNS") else { return };
+    let trims = patches::trims();
+    for (patch, name) in [(5usize, "violin"), (0, "violins"), (13, "flute"), (23, "trumpet"), (16, "clarinet")] {
+        let key = patches::PATCHES[patch].ref_key as i16;
+        // 1: a crescendo in CC steps every 25 ms; 2: a slur (legato_to);
+        // 3: a note off then a new note on the same voice slot.
+        for event in ["cresc", "slur", "repeat"] {
+            let mut v = Voice::new(SR);
+            let mut w = Voice::new(SR);
+            v.start(patch, tech::ORD, 0, 0, 0, key, 0.4, Some(0.4), 0, 1);
+            let n = (3.0 * SR) as usize;
+            let mut out = vec![0.0f32; n];
+            let mut at = 0;
+            while at < n {
+                let t = at as f32 / SR as f32;
+                match event {
+                    "cresc" if (1.0..2.0).contains(&t) => v.dyn_target = 0.4 + 0.5 * (((t - 1.0) / 0.025).floor() * 0.025),
+                    "slur" if (t - 1.0).abs() < 0.003 => v.legato_to(1, key + 2, 0.5, 1),
+                    "slur" if (t - 2.0).abs() < 0.003 => v.legato_to(2, key - 3, 0.5, 2),
+                    "repeat" if (t - 1.0).abs() < 0.003 => v.release(),
+                    "repeat" if (t - 1.06).abs() < 0.003 => w.start(patch, tech::ORD, 3, 0, 0, key + 2, 0.5, Some(0.5), 3, 4),
+                    _ => {}
+                }
+                let end = (at + 97).min(n);
+                v.render(&mut out[at..end], 0.0, trims);
+                w.render(&mut out[at..end], 0.0, trims);
+                at = end;
+            }
+            write_wav(&format!("{dir}/{name}-{event}.wav"), &out, SR as u32);
+        }
+    }
+}
+
+#[test]
+fn split_blocks_play_like_whole_ones() {
+    // The host splits its blocks at every event: a note in pieces of odd
+    // sizes is the same note (no silent starts of a piece, no clicks).
+    let trims = patches::trims();
+    for patch in [0usize, 5, 13, 16, 23, 28, 32] {
+        let key = patches::PATCHES[patch].ref_key as i16;
+        let render = |sizes: &[usize]| {
+            let mut v = Voice::new(SR);
+            v.start(patch, tech::ORD, 0, 0, 0, key, 0.6, Some(0.6), 0, 3);
+            let mut out = vec![0.0f32; 24000];
+            let (mut at, mut k) = (0, 0);
+            while at < out.len() {
+                let end = (at + sizes[k % sizes.len()]).min(out.len());
+                v.render(&mut out[at..end], 0.0, trims);
+                at = end;
+                k += 1;
+            }
+            out
+        };
+        let whole = render(&[256]);
+        let split = render(&[1, 7, 13, 3, 61, 2, 29]);
+        let (w, s) = (rms(&whole[4800..]), rms(&split[4800..]));
+        // (a section's players wander at random: within a decibel)
+        assert!((20.0 * (s / w).log10()).abs() < if PATCHES[patch].unison > 1 { 1.0 } else { 0.5 }, "{}: {w} vs {s}", PATCHES[patch].name);
+        // No sample-to-sample jumps far beyond the sound's own.
+        let jump = |x: &[f32]| x.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump(&split[4800..]) < 2.0 * jump(&whole[4800..]) + 1e-4, "{}", PATCHES[patch].name);
+    }
+}
