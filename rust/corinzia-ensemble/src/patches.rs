@@ -90,17 +90,21 @@ const fn base(name: &'static str, model: Model, level_db: f32, range_db: f32, re
     }
 }
 
-const fn strings(name: &'static str, level_db: f32, unison: u8, body: [(f32, f32, f32); 3], ref_key: u8) -> Patch {
+/// A bowed string. `attack`: the bow's 10-90 % rise at mf (measured:
+/// quicker on the violin, slower on the double bass); `vibrato`: its
+/// depth in semitones (a section's players each a little different).
+const fn strings(name: &'static str, level_db: f32, unison: u8, body: [(f32, f32, f32); 3], ref_key: u8, attack: f32, vibrato: f32) -> Patch {
     let mut p = base(name, Model::Bowed, level_db, 30.0, ref_key);
     p.unison = unison;
-    p.spread = if unison > 1 { 9.0 } else { 0.0 };
+    p.spread = if unison > 1 { 7.0 } else { 0.0 };
     p.dark = 2.5;
     p.bright = 16.0;
     p.formants = body;
-    p.attack = 0.07;
-    p.release = 0.2;
-    p.vibrato = if unison > 1 { 0.14 } else { 0.2 };
-    p.vib_rate = 5.6;
+    p.attack = attack;
+    // The string rings on a little once the bow leaves it.
+    p.release = 0.35;
+    p.vibrato = vibrato;
+    p.vib_rate = 5.8;
     p.noise = 0.035;
     p.legato = true;
     p
@@ -157,16 +161,16 @@ pub const MODES: [&[(f32, f32, f32)]; 7] = [
 /// Every sound, in the order of [`PATCH_NAMES`]' indices.
 pub static PATCHES: [Patch; COUNT] = [
     // 0..=4: strings, sections
-    strings("Violins", 0.0, 3, [(450.0, 1.2, 0.6), (2800.0, 1.5, 0.35), (5500.0, 2.0, 0.12)], 76),
-    strings("Violas", -2.0, 3, [(350.0, 1.2, 0.7), (1800.0, 1.4, 0.3), (4200.0, 2.0, 0.1)], 64),
-    strings("Cellos", 0.0, 3, [(220.0, 1.2, 0.8), (1300.0, 1.3, 0.3), (3200.0, 2.0, 0.1)], 50),
-    strings("Basses", -1.0, 3, [(110.0, 1.0, 0.8), (800.0, 1.2, 0.25), (2000.0, 2.0, 0.08)], 38),
-    strings("Strings", 0.0, 4, [(400.0, 1.0, 0.6), (2400.0, 1.4, 0.3), (5000.0, 2.0, 0.1)], 62),
+    strings("Violins", 0.0, 6, [(450.0, 1.2, 0.6), (2800.0, 1.5, 0.35), (5500.0, 2.0, 0.12)], 76, 0.07, 0.16),
+    strings("Violas", -2.0, 6, [(350.0, 1.2, 0.7), (1800.0, 1.4, 0.3), (4200.0, 2.0, 0.1)], 64, 0.08, 0.16),
+    strings("Cellos", 0.0, 6, [(220.0, 1.2, 0.8), (1300.0, 1.3, 0.3), (3200.0, 2.0, 0.1)], 50, 0.16, 0.15),
+    strings("Basses", -1.0, 6, [(110.0, 1.0, 0.8), (800.0, 1.2, 0.25), (2000.0, 2.0, 0.08)], 38, 0.3, 0.1),
+    strings("Strings", 0.0, 6, [(400.0, 1.0, 0.6), (2400.0, 1.4, 0.3), (5000.0, 2.0, 0.1)], 62, 0.09, 0.15),
     // 5..=8: strings, solo
-    strings("Violin", -8.0, 1, [(450.0, 1.5, 0.8), (2900.0, 2.0, 0.45), (5500.0, 2.5, 0.15)], 76),
-    strings("Viola", -9.0, 1, [(350.0, 1.5, 0.8), (1900.0, 1.8, 0.4), (4200.0, 2.5, 0.12)], 64),
-    strings("Cello", -7.0, 1, [(220.0, 1.5, 0.9), (1400.0, 1.6, 0.35), (3200.0, 2.5, 0.12)], 50),
-    strings("Double bass", -8.0, 1, [(110.0, 1.2, 0.9), (850.0, 1.5, 0.3), (2000.0, 2.5, 0.1)], 38),
+    strings("Violin", -8.0, 1, [(450.0, 1.5, 0.8), (2900.0, 2.0, 0.45), (5500.0, 2.5, 0.15)], 76, 0.07, 0.22),
+    strings("Viola", -9.0, 1, [(350.0, 1.5, 0.8), (1900.0, 1.8, 0.4), (4200.0, 2.5, 0.12)], 64, 0.08, 0.21),
+    strings("Cello", -7.0, 1, [(220.0, 1.5, 0.9), (1400.0, 1.6, 0.35), (3200.0, 2.5, 0.12)], 50, 0.16, 0.2),
+    strings("Double bass", -8.0, 1, [(110.0, 1.2, 0.9), (850.0, 1.5, 0.3), (2000.0, 2.5, 0.1)], 38, 0.3, 0.14),
     // 9..=11: plucked
     timing(base("Pizzicato strings", Model::Pluck(0.45), -4.0, 26.0, 62), 0.002, 0.15, 0.9),
     timing(base("Harp", Model::Pluck(0.55), -6.0, 28.0, 60), 0.002, 1.2, 4.0),
@@ -387,7 +391,13 @@ pub const REFERENCE_RMS: f32 = 0.012;
 use crate::voice::{Exciter, Spectrum};
 
 const fn spec(tilt_pp: f32, tilt_ff: f32, peaks: [(f32, f32, f32); 3], even: (f32, f32), rise: f32, noise_db: f32, exciter: Exciter, physical: f32) -> Option<Spectrum> {
-    Some(Spectrum { tilt_pp, tilt_ff, peaks, even_db: even.0, even_below: even.1, rise, noise_db, exciter, physical })
+    Some(Spectrum { tilt_pp, tilt_ff, peaks, even_db: even.0, even_below: even.1, rise, noise_db, exciter, physical, body: None })
+}
+
+/// A bowed string on a measured body ([`crate::body`]): its noise part
+/// through `peaks` at `noise_db`.
+const fn bowed(body: u8, peaks: [(f32, f32, f32); 3], noise_db: f32) -> Option<Spectrum> {
+    Some(Spectrum { tilt_pp: 0.0, tilt_ff: 0.0, peaks, even_db: 0.0, even_below: 0.0, rise: 0.15, noise_db, exciter: Exciter::Bow, physical: 0.1, body: Some(body) })
 }
 
 const NO_EVEN: (f32, f32) = (0.0, 0.0);
@@ -403,15 +413,18 @@ static SPECTRA: [Option<Spectrum>; COUNT] = {
     let viola = [(230.0, 0.4, 4.0), (400.0, 0.5, 3.0), (2200.0, 0.6, 4.0)];
     let cello = [(100.0, 0.4, 3.0), (220.0, 0.5, 4.0), (1800.0, 0.6, 3.0)];
     let bass = [(60.0, 0.4, 3.0), (130.0, 0.5, 3.0), (900.0, 0.6, 2.0)];
-    s[0] = spec(-7.0, -4.5, violin, NO_EVEN, 0.1, -26.0, Exciter::Bow, 0.25);
-    s[1] = spec(-7.5, -4.8, viola, NO_EVEN, 0.1, -26.0, Exciter::Bow, 0.25);
-    s[2] = spec(-7.5, -4.8, cello, NO_EVEN, 0.1, -27.0, Exciter::Bow, 0.25);
-    s[3] = spec(-8.0, -5.5, bass, NO_EVEN, 0.1, -28.0, Exciter::Bow, 0.25);
-    s[4] = spec(-7.5, -4.8, [(250.0, 0.6, 3.0), (480.0, 0.6, 2.0), (2500.0, 0.7, 4.0)], NO_EVEN, 0.1, -26.0, Exciter::Bow, 0.25);
-    s[5] = spec(-6.5, -4.0, violin, NO_EVEN, 0.1, -24.0, Exciter::Bow, 0.3);
-    s[6] = spec(-7.0, -4.3, viola, NO_EVEN, 0.1, -24.0, Exciter::Bow, 0.3);
-    s[7] = spec(-7.0, -4.3, cello, NO_EVEN, 0.1, -25.0, Exciter::Bow, 0.3);
-    s[8] = spec(-7.5, -5.0, bass, NO_EVEN, 0.1, -26.0, Exciter::Bow, 0.3);
+    use crate::body::{BASS, CELLO, VIOLA, VIOLIN};
+    // Noise levels matched to the recordings' bow noise between the
+    // harmonics (about -37 dB on the violin, -36 cello, -40 bass).
+    s[0] = bowed(VIOLIN, violin, -24.0);
+    s[1] = bowed(VIOLA, viola, -23.0);
+    s[2] = bowed(CELLO, cello, -21.0);
+    s[3] = bowed(BASS, bass, -22.0);
+    s[4] = bowed(VIOLA, [(250.0, 0.6, 3.0), (480.0, 0.6, 2.0), (2500.0, 0.7, 4.0)], -23.0);
+    s[5] = bowed(VIOLIN, violin, -24.0);
+    s[6] = bowed(VIOLA, viola, -23.0);
+    s[7] = bowed(CELLO, cello, -21.0);
+    s[8] = bowed(BASS, bass, -22.0);
     s[12] = spec(-18.0, -9.0, [(1500.0, 1.0, 1.0), P0, P0], NO_EVEN, 0.3, -24.0, Exciter::Jet, 0.2);
     s[13] = spec(-16.0, -8.0, [(1500.0, 1.0, 2.0), P0, P0], NO_EVEN, 0.3, -22.0, Exciter::Jet, 0.2);
     s[14] = spec(-5.0, -2.0, [(1100.0, 0.35, 10.0), (2900.0, 0.3, 6.0), (4400.0, 0.3, 2.0)], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.18), 0.3);

@@ -20,6 +20,10 @@ fn q(f: Frac) -> f64 {
     f.num as f64 * 4.0 / f.den as f64
 }
 
+/// The break players leave after an unmarked note (seconds, at most): a
+/// bow change or a tonguing, not a silence.
+pub const NOTE_BREAK: f64 = 0.03;
+
 /// Fraction of the written length that sounds.
 pub fn gate_factor(a: u16) -> f64 {
     if a & art::STACCATISSIMO != 0 {
@@ -577,7 +581,16 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                             k += 1;
                         }
                         let end = end.min(b);
-                        let gate = if shape[ei].legato && last_art & (art::STACCATO | art::STACCATISSIMO) == 0 { 1.0 } else { gate_factor(last_art) };
+                        let mut gate = if shape[ei].legato && last_art & (art::STACCATO | art::STACCATISSIMO) == 0 { 1.0 } else { gate_factor(last_art) };
+                        // Unmarked notes: players leave a short break, not a
+                        // tenth of every note (a half note at 72 would lose
+                        // 170 ms): at most 30 ms, at most a tenth.
+                        if gate == gate_factor(0) {
+                            let secs = tempo.seconds_at(to_q(end)) - tempo.seconds_at(to_q(ev.start));
+                            if secs > 0.0 {
+                                gate = 1.0 - (1.0 - gate_factor(0)).min(NOTE_BREAK / secs);
+                            }
+                        }
                         let vel = if h.velocity > 0 {
                             h.velocity as f32 / 127.0
                         } else {

@@ -139,3 +139,170 @@ fn instrument_names_choose_their_sounds() {
     assert_eq!(orch("Double Bass"), "Basses");
     assert_eq!(patches::PATCHES[patches::patch_for(0, patches::DRUM_BANK)].name, "Drum kit");
 }
+
+/// Chromatic runs like the University of Iowa recordings (one note a
+/// second and a half, at pp, mf and ff), as WAV files for comparing
+/// spectra: CORINZIA_RUNS=dir cargo test --release -p corinzia-ensemble write_runs -- --ignored
+#[test]
+#[ignore]
+fn write_runs() {
+    let Ok(dir) = std::env::var("CORINZIA_RUNS") else { return };
+    let trims = patches::trims();
+    for (patch, name, lo, hi) in [(5usize, "Violin", 55i16, 93i16), (6, "Viola", 48, 84), (7, "Cello", 36, 72), (8, "Bass", 28, 62), (0, "Violins", 55, 93), (2, "Cellos", 36, 72)] {
+        for (level, vel) in [("pp", 0.26f32), ("mf", 0.62), ("ff", 0.87)] {
+            let note = (1.5 * SR) as usize;
+            let mut out = vec![0.0f32; note * (hi - lo + 2) as usize];
+            for (k, key) in (lo..=hi).enumerate() {
+                let mut v = Voice::new(SR);
+                v.start(patch, tech::ORD, 0, 0, 0, key, vel, Some(vel), 0, k as u32);
+                let start = k * note + note / 4;
+                let len = note * 2 / 3;
+                let mut at = 0;
+                while at < note && start + at < out.len() {
+                    let end = (at + 256).min(note).min(out.len() - start);
+                    if at <= len && len < end {
+                        v.release();
+                    }
+                    v.render(&mut out[start + at..start + end], 0.0, trims);
+                    at = end;
+                }
+            }
+            let path = format!("{dir}/{name}.arco.{level}.{}{}.synth.wav", note_name(lo), note_name(hi));
+            write_wav(&path, &out, SR as u32);
+        }
+    }
+}
+
+fn note_name(key: i16) -> String {
+    const N: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+    format!("{}{}", N[(key % 12) as usize], key / 12 - 1)
+}
+
+fn write_wav(path: &str, x: &[f32], sr: u32) {
+    let mut b = Vec::with_capacity(44 + x.len() * 2);
+    let data = (x.len() * 2) as u32;
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&sr.to_le_bytes());
+    b.extend_from_slice(&(sr * 2).to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data.to_le_bytes());
+    // Normalised: only the spectrum is compared.
+    let peak = x.iter().fold(1e-9f32, |m, v| m.max(v.abs()));
+    for v in x {
+        b.extend_from_slice(&((v / peak * 0.9 * 32767.0) as i16).to_le_bytes());
+    }
+    std::fs::write(path, b).unwrap();
+}
+
+/// The level (dB) of a frequency band in a stretch of samples.
+fn band_db(x: &[f32], lo: f32, hi: f32) -> f32 {
+    let n = x.len();
+    let mut sum = 0.0f64;
+    let k0 = (lo * n as f32 / SR as f32) as usize;
+    let k1 = (hi * n as f32 / SR as f32) as usize;
+    for k in k0..=k1 {
+        let w = std::f64::consts::TAU * k as f64 / n as f64;
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (i, v) in x.iter().enumerate() {
+            let win = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n as f64).cos();
+            re += *v as f64 * win * (w * i as f64).cos();
+            im += *v as f64 * win * (w * i as f64).sin();
+        }
+        sum += re * re + im * im;
+    }
+    (10.0 * (sum / (k1 - k0 + 1) as f64).log10()) as f32
+}
+
+#[test]
+fn strings_have_the_measured_bodies_roll_off() {
+    // A violin's A4 at mf: the harmonics around 6 kHz lie far under those
+    // around 1 kHz, as in the recordings (about 27 dB); a cello's C3 falls
+    // from its low register.
+    let v = note(5, 69, 0.62, 1.0, 1.0);
+    let x = &v[24000..28096];
+    let drop = band_db(x, 800.0, 1300.0) - band_db(x, 5500.0, 7000.0);
+    assert!(drop > 18.0, "violin: {drop} dB");
+    let c = note(7, 48, 0.62, 1.0, 1.0);
+    let y = &c[24000..28096];
+    let fall = band_db(y, 120.0, 300.0) - band_db(y, 2000.0, 3000.0);
+    assert!(fall > 20.0, "cello: {fall} dB");
+    // A section is not one player: the same note differs.
+    let s = note(0, 69, 0.62, 1.0, 1.0);
+    assert!((rms(&s[24000..28096]) - rms(x)).abs() > 1e-5 || s[24000..24100] != v[24000..24100]);
+}
+
+/// Isolated events for click hunting:
+/// CORINZIA_RUNS=dir cargo test --release -p corinzia-ensemble write_events -- --ignored
+#[test]
+#[ignore]
+fn write_events() {
+    let Ok(dir) = std::env::var("CORINZIA_RUNS") else { return };
+    let trims = patches::trims();
+    for (patch, name) in [(5usize, "violin"), (0, "violins"), (13, "flute"), (23, "trumpet"), (16, "clarinet")] {
+        let key = patches::PATCHES[patch].ref_key as i16;
+        // 1: a crescendo in CC steps every 25 ms; 2: a slur (legato_to);
+        // 3: a note off then a new note on the same voice slot.
+        for event in ["cresc", "slur", "repeat"] {
+            let mut v = Voice::new(SR);
+            let mut w = Voice::new(SR);
+            v.start(patch, tech::ORD, 0, 0, 0, key, 0.4, Some(0.4), 0, 1);
+            let n = (3.0 * SR) as usize;
+            let mut out = vec![0.0f32; n];
+            let mut at = 0;
+            while at < n {
+                let t = at as f32 / SR as f32;
+                match event {
+                    "cresc" if (1.0..2.0).contains(&t) => v.dyn_target = 0.4 + 0.5 * (((t - 1.0) / 0.025).floor() * 0.025),
+                    "slur" if (t - 1.0).abs() < 0.003 => v.legato_to(1, key + 2, 0.5, 1),
+                    "slur" if (t - 2.0).abs() < 0.003 => v.legato_to(2, key - 3, 0.5, 2),
+                    "repeat" if (t - 1.0).abs() < 0.003 => v.release(),
+                    "repeat" if (t - 1.06).abs() < 0.003 => w.start(patch, tech::ORD, 3, 0, 0, key + 2, 0.5, Some(0.5), 3, 4),
+                    _ => {}
+                }
+                let end = (at + 97).min(n);
+                v.render(&mut out[at..end], 0.0, trims);
+                w.render(&mut out[at..end], 0.0, trims);
+                at = end;
+            }
+            write_wav(&format!("{dir}/{name}-{event}.wav"), &out, SR as u32);
+        }
+    }
+}
+
+#[test]
+fn split_blocks_play_like_whole_ones() {
+    // The host splits its blocks at every event: a note in pieces of odd
+    // sizes is the same note (no silent starts of a piece, no clicks).
+    let trims = patches::trims();
+    for patch in [0usize, 5, 13, 16, 23, 28, 32] {
+        let key = patches::PATCHES[patch].ref_key as i16;
+        let render = |sizes: &[usize]| {
+            let mut v = Voice::new(SR);
+            v.start(patch, tech::ORD, 0, 0, 0, key, 0.6, Some(0.6), 0, 3);
+            let mut out = vec![0.0f32; 24000];
+            let (mut at, mut k) = (0, 0);
+            while at < out.len() {
+                let end = (at + sizes[k % sizes.len()]).min(out.len());
+                v.render(&mut out[at..end], 0.0, trims);
+                at = end;
+                k += 1;
+            }
+            out
+        };
+        let whole = render(&[256]);
+        let split = render(&[1, 7, 13, 3, 61, 2, 29]);
+        let (w, s) = (rms(&whole[4800..]), rms(&split[4800..]));
+        // (a section's players wander at random: within a decibel)
+        assert!((20.0 * (s / w).log10()).abs() < if PATCHES[patch].unison > 1 { 1.0 } else { 0.5 }, "{}: {w} vs {s}", PATCHES[patch].name);
+        // No sample-to-sample jumps far beyond the sound's own.
+        let jump = |x: &[f32]| x.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max);
+        assert!(jump(&split[4800..]) < 2.0 * jump(&whole[4800..]) + 1e-4, "{}", PATCHES[patch].name);
+    }
+}
