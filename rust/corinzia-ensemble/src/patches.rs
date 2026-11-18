@@ -141,6 +141,11 @@ const fn timing(mut p: Patch, attack: f32, release: f32, ring: f32) -> Patch {
     p
 }
 
+const fn attack(mut p: Patch, attack: f32) -> Patch {
+    p.attack = attack;
+    p
+}
+
 const fn section(mut p: Patch, unison: u8, spread: f32) -> Patch {
     p.unison = unison;
     p.spread = spread;
@@ -176,21 +181,24 @@ pub static PATCHES: [Patch; COUNT] = [
     timing(base("Harp", Model::Pluck(0.55), -6.0, 28.0, 60), 0.002, 1.2, 4.0),
     timing(base("Guitar", Model::Pluck(0.6), -8.0, 26.0, 55), 0.002, 0.3, 3.0),
     // 12..=21: woodwinds
-    with_vibrato(wind("Piccolo", Model::Flute, -2.0, 22.0, [NONE; 3], 86), 0.12, 5.2),
-    with_vibrato(wind("Flute", Model::Flute, -3.0, 24.0, [NONE; 3], 74), 0.14, 5.0),
-    with_vibrato(wind("Oboe", Model::Reed(0.18), -4.0, 20.0, [(1100.0, 3.0, 0.9), (2900.0, 4.0, 0.5), (4400.0, 4.0, 0.2)], 69), 0.12, 5.4),
-    with_vibrato(wind("Cor anglais", Model::Reed(0.2), -5.0, 20.0, [(950.0, 3.0, 0.9), (2300.0, 3.0, 0.4), (3800.0, 4.0, 0.15)], 62), 0.11, 5.2),
-    tone(wind("Clarinet", Model::Reed(0.5), -5.0, 36.0, [(1500.0, 1.5, 0.3), (3000.0, 2.0, 0.15), NONE], 65), 1.6, 9.0),
-    tone(wind("Bass clarinet", Model::Reed(0.5), -6.0, 30.0, [(700.0, 1.5, 0.3), (1800.0, 2.0, 0.15), NONE], 46), 1.6, 8.0),
-    wind("Bassoon", Model::Reed(0.3), -6.0, 24.0, [(450.0, 2.5, 0.9), (1150.0, 3.0, 0.5), (2600.0, 3.0, 0.15)], 50),
-    wind("Contrabassoon", Model::Reed(0.3), -7.0, 22.0, [(250.0, 2.0, 0.9), (700.0, 2.5, 0.4), NONE], 34),
-    with_vibrato(wind("Saxophone", Model::Reed(0.0), -1.0, 28.0, [(600.0, 2.0, 0.8), (1700.0, 2.5, 0.5), (3200.0, 3.0, 0.2)], 63), 0.12, 5.0),
-    with_vibrato(wind("Recorder", Model::Flute, -9.0, 10.0, [NONE; 3], 79), 0.04, 5.0),
+    // Attacks and vibratos as the recordings give them (10-90 % rise at mf;
+    // the flute's vibrato ±14 cents at 4.8 Hz, the saxophone's and the
+    // trumpet's slight, none on clarinet and horn).
+    attack(with_vibrato(wind("Piccolo", Model::Flute, -2.0, 22.0, [NONE; 3], 86), 0.12, 4.9), 0.14),
+    attack(with_vibrato(wind("Flute", Model::Flute, -3.0, 24.0, [NONE; 3], 74), 0.14, 4.8), 0.2),
+    attack(with_vibrato(wind("Oboe", Model::Reed(0.18), -4.0, 20.0, [(1100.0, 3.0, 0.9), (2900.0, 4.0, 0.5), (4400.0, 4.0, 0.2)], 69), 0.1, 5.0), 0.13),
+    attack(with_vibrato(wind("Cor anglais", Model::Reed(0.2), -5.0, 20.0, [(950.0, 3.0, 0.9), (2300.0, 3.0, 0.4), (3800.0, 4.0, 0.15)], 62), 0.1, 4.9), 0.14),
+    attack(tone(wind("Clarinet", Model::Reed(0.5), -5.0, 36.0, [(1500.0, 1.5, 0.3), (3000.0, 2.0, 0.15), NONE], 65), 1.6, 9.0), 0.12),
+    attack(tone(wind("Bass clarinet", Model::Reed(0.5), -6.0, 30.0, [(700.0, 1.5, 0.3), (1800.0, 2.0, 0.15), NONE], 46), 1.6, 8.0), 0.15),
+    attack(wind("Bassoon", Model::Reed(0.3), -6.0, 24.0, [(450.0, 2.5, 0.9), (1150.0, 3.0, 0.5), (2600.0, 3.0, 0.15)], 50), 0.06),
+    attack(wind("Contrabassoon", Model::Reed(0.3), -7.0, 22.0, [(250.0, 2.0, 0.9), (700.0, 2.5, 0.4), NONE], 34), 0.09),
+    attack(with_vibrato(wind("Saxophone", Model::Reed(0.0), -1.0, 28.0, [(600.0, 2.0, 0.8), (1700.0, 2.5, 0.5), (3200.0, 3.0, 0.2)], 63), 0.08, 4.8), 0.04),
+    attack(with_vibrato(wind("Recorder", Model::Flute, -9.0, 10.0, [NONE; 3], 79), 0.04, 5.0), 0.05),
     // 22..=27: brass
-    tone(timing(wind("Horn", Model::Brass, 0.0, 34.0, [(400.0, 1.5, 0.5), (1200.0, 2.0, 0.25), NONE], 60), 0.04, 0.15, 2.0), 1.2, 7.0),
-    tone(timing(wind("Trumpet", Model::Brass, 2.0, 36.0, [(1300.0, 1.5, 0.5), (2600.0, 2.0, 0.3), NONE], 72), 0.025, 0.1, 2.0), 1.6, 16.0),
-    tone(timing(wind("Trombone", Model::Brass, 2.0, 38.0, [(550.0, 1.5, 0.5), (1400.0, 2.0, 0.3), NONE], 53), 0.035, 0.12, 2.0), 1.4, 14.0),
-    tone(timing(wind("Tuba", Model::Brass, 1.0, 32.0, [(230.0, 1.5, 0.6), (600.0, 2.0, 0.3), NONE], 38), 0.045, 0.15, 2.0), 1.3, 9.0),
+    tone(timing(wind("Horn", Model::Brass, 0.0, 34.0, [(400.0, 1.5, 0.5), (1200.0, 2.0, 0.25), NONE], 60), 0.03, 0.15, 2.0), 1.2, 7.0),
+    with_vibrato(tone(timing(wind("Trumpet", Model::Brass, 2.0, 36.0, [(1300.0, 1.5, 0.5), (2600.0, 2.0, 0.3), NONE], 72), 0.1, 0.1, 2.0), 1.6, 16.0), 0.04, 4.8),
+    tone(timing(wind("Trombone", Model::Brass, 2.0, 38.0, [(550.0, 1.5, 0.5), (1400.0, 2.0, 0.3), NONE], 53), 0.16, 0.12, 2.0), 1.4, 14.0),
+    tone(timing(wind("Tuba", Model::Brass, 1.0, 32.0, [(230.0, 1.5, 0.6), (600.0, 2.0, 0.3), NONE], 38), 0.035, 0.15, 2.0), 1.3, 9.0),
     tone(timing(wind("Muted trumpet", Model::Brass, -6.0, 24.0, [(1800.0, 4.0, 1.2), (4000.0, 4.0, 0.5), NONE], 72), 0.025, 0.1, 2.0), 3.0, 14.0),
     section(tone(timing(wind("Brass", Model::Brass, 3.0, 36.0, [(500.0, 1.5, 0.5), (1500.0, 2.0, 0.3), NONE], 60), 0.04, 0.15, 2.0), 1.4, 12.0), 3, 6.0),
     // 28..=31: voices
@@ -413,7 +421,7 @@ static SPECTRA: [Option<Spectrum>; COUNT] = {
     let viola = [(230.0, 0.4, 4.0), (400.0, 0.5, 3.0), (2200.0, 0.6, 4.0)];
     let cello = [(100.0, 0.4, 3.0), (220.0, 0.5, 4.0), (1800.0, 0.6, 3.0)];
     let bass = [(60.0, 0.4, 3.0), (130.0, 0.5, 3.0), (900.0, 0.6, 2.0)];
-    use crate::body::{BASS, CELLO, VIOLA, VIOLIN};
+    use crate::body::{DOUBLE_BASS as BASS, CELLO, VIOLA, VIOLIN};
     // Noise levels matched to the recordings' bow noise between the
     // harmonics (about -37 dB on the violin, -36 cello, -40 bass).
     s[0] = bowed(VIOLIN, violin, -24.0);
@@ -429,20 +437,51 @@ static SPECTRA: [Option<Spectrum>; COUNT] = {
     s[13] = spec(-16.0, -8.0, [(1500.0, 1.0, 2.0), P0, P0], NO_EVEN, 0.3, -22.0, Exciter::Jet, 0.2);
     s[14] = spec(-5.0, -2.0, [(1100.0, 0.35, 10.0), (2900.0, 0.3, 6.0), (4400.0, 0.3, 2.0)], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.18), 0.3);
     s[15] = spec(-5.5, -2.5, [(950.0, 0.35, 10.0), (2300.0, 0.3, 5.0), (3800.0, 0.3, 1.5)], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.2), 0.3);
-    s[16] = spec(-10.0, -5.0, [(1500.0, 0.6, 2.0), P0, P0], (-18.0, 1800.0), 0.2, -34.0, Exciter::Reed(0.5), 0.3);
-    s[17] = spec(-10.0, -5.0, [(700.0, 0.6, 2.0), P0, P0], (-15.0, 900.0), 0.2, -34.0, Exciter::Reed(0.5), 0.3);
+    s[16] = spec(-10.0, -5.0, [(1500.0, 0.6, 2.0), P0, P0], (-18.0, 1800.0), 0.2, -29.0, Exciter::Reed(0.5), 0.3);
+    s[17] = spec(-10.0, -5.0, [(700.0, 0.6, 2.0), P0, P0], (-15.0, 900.0), 0.2, -22.0, Exciter::Reed(0.5), 0.3);
     s[18] = spec(-7.0, -3.0, [(480.0, 0.4, 9.0), (1150.0, 0.35, 5.0), (2600.0, 0.4, 1.0)], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.3), 0.3);
     s[19] = spec(-7.5, -3.5, [(250.0, 0.4, 8.0), (700.0, 0.4, 4.0), P0], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.3), 0.3);
     s[20] = spec(-6.0, -2.5, [(600.0, 0.5, 6.0), (1700.0, 0.5, 6.0), (3200.0, 0.4, 2.0)], NO_EVEN, 0.3, -30.0, Exciter::Reed(0.0), 0.3);
     s[21] = spec(-18.0, -12.0, [(2000.0, 1.0, 1.0), P0, P0], NO_EVEN, 0.2, -24.0, Exciter::Jet, 0.2);
-    s[22] = spec(-14.0, -3.5, [(380.0, 0.5, 6.0), (1200.0, 0.5, 2.0), P0], NO_EVEN, 0.8, -40.0, Exciter::Lip, 0.15);
-    s[23] = spec(-12.0, -1.5, [(1300.0, 0.5, 6.0), (2600.0, 0.5, 3.0), P0], NO_EVEN, 0.9, -40.0, Exciter::Lip, 0.15);
-    s[24] = spec(-13.0, -2.0, [(550.0, 0.5, 6.0), (1400.0, 0.5, 3.0), P0], NO_EVEN, 0.9, -40.0, Exciter::Lip, 0.15);
-    s[25] = spec(-14.0, -4.0, [(230.0, 0.5, 6.0), (600.0, 0.5, 2.0), P0], NO_EVEN, 0.8, -40.0, Exciter::Lip, 0.15);
+    s[22] = spec(-14.0, -3.5, [(380.0, 0.5, 6.0), (1200.0, 0.5, 2.0), P0], NO_EVEN, 0.8, -24.0, Exciter::Lip, 0.15);
+    s[23] = spec(-12.0, -1.5, [(1300.0, 0.5, 6.0), (2600.0, 0.5, 3.0), P0], NO_EVEN, 0.9, -30.0, Exciter::Lip, 0.15);
+    s[24] = spec(-13.0, -2.0, [(550.0, 0.5, 6.0), (1400.0, 0.5, 3.0), P0], NO_EVEN, 0.9, -22.0, Exciter::Lip, 0.15);
+    s[25] = spec(-14.0, -4.0, [(230.0, 0.5, 6.0), (600.0, 0.5, 2.0), P0], NO_EVEN, 0.8, -16.0, Exciter::Lip, 0.15);
     s[26] = spec(-8.0, -3.0, [(1800.0, 0.3, 12.0), (4000.0, 0.3, 5.0), (300.0, 0.6, -12.0)], NO_EVEN, 0.6, -36.0, Exciter::Lip, 0.3);
-    s[27] = spec(-13.0, -2.0, [(500.0, 0.5, 5.0), (1500.0, 0.5, 3.0), P0], NO_EVEN, 0.8, -40.0, Exciter::Lip, 0.15);
+    s[27] = spec(-13.0, -2.0, [(500.0, 0.5, 5.0), (1500.0, 0.5, 3.0), P0], NO_EVEN, 0.8, -24.0, Exciter::Lip, 0.15);
+    // The woodwinds and brass on their measured spectra ([`crate::body`]);
+    // the waveguide only for the attack and the joins. (The muted trumpet
+    // keeps its own: the recordings have no mute.)
+    use crate::body as b;
+    s[12] = measured(s[12], b::FLUTE);
+    s[13] = measured(s[13], b::FLUTE);
+    s[14] = measured(s[14], b::OBOE);
+    s[15] = measured(s[15], b::COR_ANGLAIS);
+    s[16] = measured(s[16], b::CLARINET);
+    s[17] = measured(s[17], b::BASS_CLARINET);
+    s[18] = measured(s[18], b::BASSOON);
+    s[19] = measured(s[19], b::CONTRABASSOON);
+    s[20] = measured(s[20], b::SAXOPHONE);
+    s[21] = measured(s[21], b::FLUTE);
+    s[22] = measured(s[22], b::HORN);
+    s[23] = measured(s[23], b::TRUMPET);
+    s[24] = measured(s[24], b::TROMBONE);
+    s[25] = measured(s[25], b::TUBA);
+    s[27] = measured(s[27], b::TROMBONE);
     s
 };
+
+/// A wind's spectrum on its measured body.
+const fn measured(s: Option<Spectrum>, body: u8) -> Option<Spectrum> {
+    match s {
+        Some(mut x) => {
+            x.body = Some(body);
+            x.physical = 0.1;
+            Some(x)
+        }
+        None => None,
+    }
+}
 
 /// A sound's spectral envelope, if it is one of the hybrids.
 pub fn spectrum(patch: usize) -> Option<&'static Spectrum> {

@@ -150,7 +150,11 @@ fn instrument_names_choose_their_sounds() {
 fn write_runs() {
     let Ok(dir) = std::env::var("CORINZIA_RUNS") else { return };
     let trims = patches::trims();
-    for (patch, name, lo, hi) in [(5usize, "Violin", 55i16, 93i16), (6, "Viola", 48, 84), (7, "Cello", 36, 72), (8, "Bass", 28, 62), (0, "Violins", 55, 93), (2, "Cellos", 36, 72)] {
+    let which = std::env::var("CORINZIA_RUNS_SET").unwrap_or_default();
+    let strings = [(5usize, "Violin", 55i16, 93i16), (6, "Viola", 48, 84), (7, "Cello", 36, 72), (8, "Bass", 28, 62), (0, "Violins", 55, 93), (2, "Cellos", 36, 72)];
+    let winds = [(13usize, "Flute", 60i16, 96i16), (14, "Oboe", 58, 91), (16, "BbClar", 50, 91), (17, "BassClarinet", 34, 77), (18, "Bassoon", 34, 74), (20, "AltoSax", 49, 80), (22, "Horn", 34, 77), (23, "Trumpet", 52, 86), (24, "TenorTrombone", 40, 72), (25, "Tuba", 26, 60)];
+    let set: &[(usize, &str, i16, i16)] = if which == "winds" { &winds } else { &strings };
+    for &(patch, name, lo, hi) in set {
         for (level, vel) in [("pp", 0.26f32), ("mf", 0.62), ("ff", 0.87)] {
             let note = (1.5 * SR) as usize;
             let mut out = vec![0.0f32; note * (hi - lo + 2) as usize];
@@ -301,8 +305,10 @@ fn split_blocks_play_like_whole_ones() {
         let whole = render(&[256]);
         let split = render(&[1, 7, 13, 3, 61, 2, 29]);
         let (w, s) = (rms(&whole[4800..]), rms(&split[4800..]));
-        // (a section's players wander at random: within a decibel)
-        assert!((20.0 * (s / w).log10()).abs() < if PATCHES[patch].unison > 1 { 1.0 } else { 0.5 }, "{}: {w} vs {s}", PATCHES[patch].name);
+        // (the measured instruments' intonation wanders at random, a
+        // section's players each: within a decibel)
+        let wanders = PATCHES[patch].unison > 1 || patches::spectrum(patch).is_some_and(|x| x.body.is_some());
+        assert!((20.0 * (s / w).log10()).abs() < if wanders { 1.0 } else { 0.5 }, "{}: {w} vs {s}", PATCHES[patch].name);
         // No sample-to-sample jumps far beyond the sound's own.
         let jump = |x: &[f32]| x.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0f32, f32::max);
         assert!(jump(&split[4800..]) < 2.0 * jump(&whole[4800..]) + 1e-4, "{}", PATCHES[patch].name);

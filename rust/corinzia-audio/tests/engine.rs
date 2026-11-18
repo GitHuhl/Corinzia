@@ -8,10 +8,13 @@ use std::sync::Arc;
 
 const SR: f64 = 48000.0;
 
-/// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
+/// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on
+/// beat 4. Played by the built-in sine (General MIDI 79): these tests are
+/// about the engine, and it speaks at once and the same every time (a
+/// flute takes a fifth of a second).
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: Some(79), bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -105,8 +108,12 @@ fn renders_the_score_sample_accurately() {
     assert_eq!(played.len(), 4);
     let beat = (SR * 0.5) as i64; // 120 bpm
     assert_eq!(played[0].at, 0);
-    // The flute's sound, its dynamic (f) as CC1, the normal technique.
-    assert_eq!(snap.nodes[0].program, Some((0, 73, Some(0))));
+    // The track's program; without one, the flute's sound.
+    assert_eq!(snap.nodes[0].program, Some((0, 79, None)));
+    let mut flute = p.clone();
+    flute.tracks[0].program = None;
+    assert_eq!(snapshot::builtin_program(&flute, 1), Some((0, 73, Some(0))));
+    // Its dynamic (f) as CC1, the normal technique.
     assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(1) && (n.velocity - 0.75).abs() < 0.01));
     assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(3) && n.velocity == 0.0));
     assert_eq!(snap.notes.iter().find(|n| n.on && n.key == 81).unwrap().at, 3 * beat);
@@ -278,7 +285,9 @@ fn effect_parameters_set_while_idle_and_while_playing() {
 #[test]
 fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
     let beat = (SR * 0.5) as usize;
-    let flute = render(&project(), beat);
+    let mut f = project();
+    f.tracks[0].program = None; // the flute's own sound
+    let flute = render(&f, beat);
     let mut p = project();
     p.tracks[0].program = Some(56); // General MIDI: trumpet
     let trumpet = render(&p, beat);
