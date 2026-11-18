@@ -279,7 +279,7 @@ impl App {
                 "phrasing": p.phrasing,
                 "modified": ed.modified,
             }),
-            "status" => json!({"status": ed.status, "at": ed.caret_label(), "input": ed.input_mode}),
+            "status" => json!({"status": ed.status, "at": ed.caret_label(), "input": ed.input_mode, "audio": {"late_blocks": self.playback.late_blocks(), "peak_load": self.playback.peak_load, "buffer": self.playback.max_frames()}}),
             "selection" => {
                 let range = ed.range.and_then(|r| {
                     let m = ed.movement()?;

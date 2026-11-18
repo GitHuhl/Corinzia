@@ -741,3 +741,102 @@ fn the_builtin_instruments_get_slurs_hairpins_and_techniques() {
     let b = beat as usize;
     assert!(rms(&l[3 * b - 2000..3 * b + 2000]) > 0.5 * rms(&l[2 * b..2 * b + 4000]), "joined");
 }
+
+/// Live-like rendering of a project file, block by block, timed:
+/// CORINZIA_PROJECT=file CORINZIA_BLOCK=512 [CORINZIA_WAV=out.wav]
+/// cargo test --release -p corinzia-audio --test engine live_blocks -- --ignored --nocapture
+#[test]
+#[ignore]
+fn live_blocks() {
+    let Ok(path) = std::env::var("CORINZIA_PROJECT") else { return };
+    let block: usize = std::env::var("CORINZIA_BLOCK").ok().and_then(|b| b.parse().ok()).unwrap_or(512);
+    let p = corinzia_model::store::load(std::path::Path::new(&path)).unwrap();
+    let mut pool = PluginPool::new(SR, block as u32);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let total = snap.end() as usize + SR as usize;
+    let workers = match std::env::var("CORINZIA_WORKERS").ok().and_then(|w| w.parse().ok()) {
+        Some(n) => corinzia_audio::workers::Workers::new(n),
+        None => corinzia_audio::workers::Workers::for_this_machine(),
+    };
+    let (mut ui, mut eng) = engine::with_workers(SR, block as u32, workers);
+    ui.swap(snap);
+    ui.play();
+    let (mut l, mut r) = (vec![0.0f32; block], vec![0.0f32; block]);
+    let mut out = Vec::with_capacity(total);
+    let mut times = Vec::new();
+    let mut at = 0;
+    let start = std::time::Instant::now();
+    while at < total {
+        // CORINZIA_RT=1: the audio thread realtime (as PipeWire makes it)
+        // from the second block on, the workers left as they were made
+        // (normal priority, as without the right to raise them).
+        if times.len() == 1 && std::env::var("CORINZIA_RT").is_ok() {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                let param = libc::sched_param { sched_priority: 50 };
+                assert_eq!(libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param), 0, "no right to realtime");
+            }
+        }
+        // CORINZIA_RAGGED=1: each cycle asks for another number of frames
+        // (as PipeWire's may), up to the block.
+        let n = if std::env::var("CORINZIA_RAGGED").is_ok() { [block, block / 2, 37, block - 1, 1, block / 3 + 5][(at / 7 + times.len()) % 6].clamp(1, block) } else { block };
+        let t = std::time::Instant::now();
+        eng.process(&mut l[..n], &mut r[..n]);
+        times.push(t.elapsed().as_secs_f64());
+        // CORINZIA_PACE=1: in real time, as a sound card asks.
+        if std::env::var("CORINZIA_PACE").is_ok() {
+            let due = start + std::time::Duration::from_secs_f64((at + n) as f64 / SR);
+            if let Some(wait) = due.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
+            }
+        }
+        out.extend_from_slice(&l[..n]);
+        at += n;
+    }
+    let budget = block as f64 / SR;
+    for (i, t) in times.iter().enumerate().filter(|(_, &t)| t > budget * 0.3) {
+        eprintln!("  slow block {i} at {:.2} s: {:.2} ms", (i * block) as f64 / SR, t * 1e3);
+    }
+    times.sort_by(|a, b| a.total_cmp(b));
+    let late = times.iter().filter(|&&t| t > budget).count();
+    eprintln!(
+        "block {block}: budget {:.2} ms, median {:.2} ms, p99 {:.2} ms, max {:.2} ms, over budget {late}/{}, dropped events {}",
+        budget * 1e3,
+        times[times.len() / 2] * 1e3,
+        times[times.len() * 99 / 100] * 1e3,
+        times.last().unwrap() * 1e3,
+        times.len(),
+        ui.shared.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    if let Ok(wav) = std::env::var("CORINZIA_WAV") {
+        let mut b = Vec::new();
+        let data = (out.len() * 2) as u32;
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&[16, 0, 0, 0, 1, 0, 1, 0]);
+        b.extend_from_slice(&(SR as u32).to_le_bytes());
+        b.extend_from_slice(&(SR as u32 * 2).to_le_bytes());
+        b.extend_from_slice(&[2, 0, 16, 0]);
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        for v in &out {
+            b.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+        }
+        std::fs::write(wav, b).unwrap();
+    }
+}
+
+#[test]
+fn the_engine_reports_its_load_and_late_blocks() {
+    let p = project();
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.play();
+    eng.render_offline(SR as usize);
+    let load = ui.take_load();
+    assert!(load > 0.0 && load < 1.0, "{load}");
+    assert_eq!(ui.take_load(), 0.0, "taken");
+    assert_eq!(ui.late(), 0);
+}

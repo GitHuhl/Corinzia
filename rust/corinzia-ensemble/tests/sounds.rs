@@ -88,7 +88,9 @@ fn renders_faster_than_real_time() {
     }
     let s = t.elapsed().as_secs_f32();
     eprintln!("32 voice-seconds in {s:.2} s");
-    assert!(s < if cfg!(debug_assertions) { 60.0 } else { 0.8 });
+    // Well inside real time (32 s), with room for a busy machine; the
+    // crate is optimised in every build (see the workspace's profiles).
+    assert!(s < 3.2, "{s} s");
 }
 
 #[test]

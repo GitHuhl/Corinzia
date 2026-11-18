@@ -20,3 +20,15 @@ corinzia-perform = { path = "corinzia-perform" }
 corinzia-ensemble = { path = "corinzia-ensemble" }
 corinzia-audio = { path = "corinzia-audio", default-features = false }
 corinzia-layout = { path = "corinzia-layout", default-features = false }
+
+# The audio path renders in real time: unoptimised, the built-in
+# instruments and the engine miss their deadlines (clicks and dropouts in
+# playback). Optimised even in development builds; the rest stays quick to
+# build.
+[profile.dev.package.corinzia-ensemble]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.dev.package.corinzia-audio]
+opt-level = 3

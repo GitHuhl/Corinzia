@@ -283,10 +283,12 @@ unsafe extern "C" fn init(_p: *const clap_plugin) -> bool {
 unsafe extern "C" fn destroy(p: *const clap_plugin) {
     drop(Box::from_raw((*p).plugin_data as *mut Synth));
 }
-unsafe extern "C" fn activate(p: *const clap_plugin, sr: f64, _min: u32, _max: u32) -> bool {
+unsafe extern "C" fn activate(p: *const clap_plugin, sr: f64, _min: u32, max: u32) -> bool {
     let s = Synth::from(p);
     s.sample_rate = sr;
     s.new_voices();
+    // The largest block, so the audio thread never allocates.
+    s.scratch = vec![0.0; (max as usize).max(1024)];
     true
 }
 unsafe extern "C" fn deactivate(_p: *const clap_plugin) {}

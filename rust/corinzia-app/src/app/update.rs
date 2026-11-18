@@ -141,6 +141,9 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                if let Some(report) = self.playback.overload.take() {
+                    self.editor.status = report;
+                }
                 if self.editor.chant.is_some() && self.playback.is_playing() {
                     self.follow_chant();
                 }
