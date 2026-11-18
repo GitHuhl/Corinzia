@@ -15,5 +15,6 @@ MusicXML.
 
 Report problems at https://github.com/GitHuhl/Corinzia/issues
 
-Corinzia is MIT licensed. The bundled DejaVu fonts are free fonts under the
+Corinzia is free software under the GNU General Public License, version 3
+or later (see LICENSE). The bundled DejaVu fonts are free fonts under the
 DejaVu Fonts License: https://dejavu-fonts.github.io/License.html

@@ -138,7 +138,8 @@ plugins you already have installed.
 **Windows:** download `Corinzia-…-x86_64-windows.zip`, unzip it and run
 `corinzia.exe`. It finds your CLAP and VST3 plugins in their usual folders.
 
-Corinzia is free and open source.
+Corinzia is free and open source, under the
+[GNU General Public License, version 3](LICENSE) or later.
 
 ## Learn more
 
