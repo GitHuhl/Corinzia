@@ -432,6 +432,28 @@ pub fn builtin_program(project: &Project, track: Id) -> Option<(u8, u8, Option<u
     Some((ch, program, Some(bank)))
 }
 
+/// The articulation controller's value (CC9) for a note: its written
+/// articulation, else a light, short stroke for a quick unslurred note;
+/// its written bowing.
+pub fn articulation_code(n: &corinzia_perform::PerformedNote, written_seconds: f64) -> u8 {
+    use corinzia_ensemble::voice::articulation as a;
+    use corinzia_score::score::art;
+    let kind = if n.arts & art::STACCATISSIMO != 0 {
+        a::STACCATISSIMO
+    } else if n.arts & art::STACCATO != 0 {
+        a::STACCATO
+    } else if n.arts & art::MARCATO != 0 {
+        a::MARCATO
+    } else if n.arts & art::TENUTO != 0 {
+        a::TENUTO
+    } else if !n.slurred && written_seconds < 0.2 {
+        a::SPICCATO
+    } else {
+        a::NORMAL
+    };
+    kind | if n.arts & art::DOWN_BOW != 0 { a::DOWN_BOW } else { 0 } | if n.arts & art::UP_BOW != 0 { a::UP_BOW } else { 0 }
+}
+
 /// The technique controller's value (CC3) for a technique.
 pub fn technique_value(t: Option<&str>) -> u8 {
     use corinzia_ensemble::voice::tech;
@@ -549,13 +571,46 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                 }
             }
         }
+        // A tremolo on the built-in instruments is one held note in the
+        // tremolo technique (the bow's quick strokes), not the written-out
+        // repeated notes other instruments get: its first note lasts to the
+        // last one's end; the others are left out.
+        let mut merged: std::collections::HashMap<usize, usize> = Default::default(); // first -> last
+        let mut skip: std::collections::HashSet<usize> = Default::default();
+        {
+            let mut open: std::collections::HashMap<(Id, i32), usize> = Default::default();
+            for (ni, n) in perf.notes.iter().enumerate() {
+                if n.arts & corinzia_score::score::art::TREMOLO == 0 || !project.instrument(n.instrument).and_then(|i| i.track).is_some_and(|t| builtin.contains(&t)) {
+                    continue;
+                }
+                match open.get(&(n.element, n.key)).copied() {
+                    Some(first) if (perf.notes[merged.get(&first).copied().unwrap_or(first)].full_off_q - n.on_q).abs() < 1e-6 => {
+                        merged.insert(first, ni);
+                        skip.insert(ni);
+                    }
+                    _ => {
+                        open.insert((n.element, n.key), ni);
+                    }
+                }
+            }
+        }
+        // (A note and where it ends: a merged tremolo's last note's end.)
+        let end_of = |ni: usize| -> &corinzia_perform::PerformedNote { &perf.notes[merged.get(&ni).copied().unwrap_or(ni)] };
         for (ni, n) in perf.notes.iter().enumerate() {
+            if skip.contains(&ni) {
+                continue;
+            }
             let Some(track) = project.instrument(n.instrument).and_then(|i| i.track) else { continue };
             let Some(node) = node_of(track) else { continue };
             let channel = channels[ni].map(|c| c as i16).unwrap_or_else(|| project.track(track).map(|t| t.midi_channel as i16 & 15).unwrap_or(0));
             let port = project.track(track).map(|t| t.note_port as i16).unwrap_or(0);
             let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
-            let mut off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
+            let last = end_of(ni);
+            let mut off_sec = if merged.contains_key(&ni) {
+                perf.tempo.seconds_at(last.on_q) + (perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(last.on_q)) * last.gate
+            } else {
+                on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate
+            };
             // Slurred on the built-in instruments: held into the next note,
             // which joins it (CC68).
             if n.slurred && builtin.contains(&track) {
@@ -575,23 +630,30 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let Some(node) = node_of(track) else { continue };
             let Some(t) = project.track(track) else { continue };
             let channel = t.midi_channel as i16 & 15;
-            let mut list: Vec<&corinzia_perform::PerformedNote> = perf.notes.iter().filter(|n| project.instrument(n.instrument).and_then(|i| i.track) == Some(track)).collect();
-            list.sort_by(|a, b| a.on_q.total_cmp(&b.on_q).then(b.key.cmp(&a.key)));
+            let mut list: Vec<(usize, &corinzia_perform::PerformedNote)> = perf.notes.iter().enumerate().filter(|(i, n)| !skip.contains(i) && project.instrument(n.instrument).and_then(|i| i.track) == Some(track)).collect();
+            list.sort_by(|a, b| a.1.on_q.total_cmp(&b.1.on_q).then(b.1.key.cmp(&a.1.key)));
             let at = |sec: f64| start + (sec * sample_rate).round() as i64;
             let cc = |notes: &mut Vec<ScheduledNote>, at: i64, cc: u8, v: f32| notes.push(ScheduledNote { kind: Kind::Cc(cc), at: at.max(0), node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: v.clamp(0.0, 1.0), element: 0 });
-            let (mut technique, mut legato, mut last_on) = (None::<u8>, false, f64::NAN);
+            let (mut technique, mut legato, mut last_on, mut articulation) = (None::<u8>, false, f64::NAN, None::<u8>);
             let mut level: Option<f32> = None;
-            for n in list {
+            for (ni, n) in list {
+                let tremolo = merged.contains_key(&ni);
+                let last = end_of(ni);
                 let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
                 let on = at(on_sec);
                 let chord = (n.on_q - last_on).abs() < 1e-9;
                 last_on = n.on_q;
-                // An accent is in the attack, not in the dynamic.
-                let accent = if n.arts & corinzia_score::score::art::ACCENT != 0 { 1.15 } else { 1.0 };
-                let (d0, d1) = (n.velocity / accent, n.end_velocity / accent);
+                // The dynamic is what the note settles to; an accent or an
+                // sfz is in the velocity, the attack.
+                let (d0, d1) = (n.sustain, last.end_velocity);
                 if !chord {
+                    let code = articulation_code(n, perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(n.on_q));
+                    if articulation != Some(code) {
+                        articulation = Some(code);
+                        cc(&mut notes, on - 3, 9, code as f32 / 127.0);
+                    }
                     if t.techniques.is_empty() {
-                        let tv = technique_value(n.technique);
+                        let tv = if tremolo { corinzia_ensemble::voice::tech::TREM } else { technique_value(n.technique) };
                         if technique != Some(tv) {
                             technique = Some(tv);
                             cc(&mut notes, on - 4, 3, tv as f32 / 127.0);
@@ -603,7 +665,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                     level = Some(d0);
                     if (d1 - d0).abs() > 0.004 {
                         // A ramp through the note, every 25 ms.
-                        let off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
+                        let off_sec = perf.tempo.seconds_at(last.on_q) + (perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(last.on_q)) * last.gate;
                         let steps = (((off_sec - on_sec) / 0.025).ceil() as i64).clamp(1, 400);
                         for k in 1..=steps {
                             let x = k as f32 / steps as f32;

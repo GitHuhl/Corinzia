@@ -6,11 +6,13 @@ use super::*;
 fn plays_the_score_and_follows_the_playhead() {
     let mut a = app(View::Page);
     let _ = a.update(Message::Act(Action::PlayStop));
-    assert!(render(&mut a, 4800) > 0.005, "the flute and cello sound");
+    // (a flute speaks in about a fifth of a second)
+    let level = render(&mut a, 9600);
+    assert!(level > 0.001, "the flute and cello sound: {level}");
     assert!(a.playback.is_playing());
     // Andante 84: a quarter is 60/84 s; after 1.6 s (76 800 samples) the
     // playhead is 1.6 · 84/60 = 2.24 quarters in.
-    render(&mut a, 72000);
+    render(&mut a, 67200);
     let (m, q) = a.playback.playhead().unwrap();
     assert_eq!(m, a.editor.project.movements[0].id);
     assert!((q - 2.24).abs() < 0.01, "playhead at {q}");

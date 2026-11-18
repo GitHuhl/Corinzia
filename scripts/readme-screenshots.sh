@@ -16,6 +16,7 @@ if [ ! -f "$cache/movement1.mxl" ]; then
 fi
 shots() {
     shot() { local name=$1; shift; "$here/scripts/screenshot.sh" "$out/$name.png" "$@" | tail -n 1; }
+    shot orchestra
     shot quartet "$cache/movement1.mxl"
     shot quartet-panorama "$cache/movement1.mxl" --view panorama
     shot quartet-part "$cache/movement1.mxl" --part 1

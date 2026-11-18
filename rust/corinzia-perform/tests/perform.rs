@@ -114,7 +114,8 @@ fn unrolls_repeats() {
     // Bar 2 twice: the a'' note-on at q5 and again at q9.
     let ons: Vec<f64> = perf.notes.iter().filter(|n| n.key == 81).map(|n| n.on_q).collect();
     assert_eq!(ons, vec![5.0, 9.0]);
-    assert!(perf.notes.iter().filter(|n| n.key == 81).all(|n| n.gate == 0.5), "staccato");
+    // Staccato: 0.2 s of the quarter's half second at 120.
+    assert!(perf.notes.iter().filter(|n| n.key == 81).all(|n| (n.gate - 0.4).abs() < 1e-9), "staccato");
     assert!((perf.written_quarter(9.0) - 5.0).abs() < 1e-9);
     assert!((perf.written_quarter(3.0) - 3.0).abs() < 1e-9);
 }
@@ -165,7 +166,8 @@ fn ties_merge() {
     let b = make_event(&mut ids, f(1, 2), f(1, 2), &[p(0, 0, 4)], art::STACCATO);
     let perf = perform(&movement(F::int(1), vec![a, b]));
     assert_eq!(perf.notes.len(), 1);
-    assert!((perf.notes[0].full_off_q - 4.0).abs() < 1e-9 && perf.notes[0].gate == 0.5, "the last note's articulation decides");
+    // Staccato on the tied note: its 2 s sound 0.2.
+    assert!((perf.notes[0].full_off_q - 4.0).abs() < 1e-9 && (perf.notes[0].gate - 0.1).abs() < 1e-9, "the last note's articulation decides");
 }
 
 #[test]
@@ -422,4 +424,27 @@ fn a_hairpin_carries_through_a_held_note_and_slurs_are_marked() {
     let n = &perf.notes;
     assert!(n[3].end_velocity > n[3].velocity, "rising through f': {} {}", n[3].velocity, n[3].end_velocity);
     assert_eq!(n.iter().map(|x| x.slurred).collect::<Vec<_>>(), [true, true, false, false, false], "joined into the slur's last note");
+}
+
+#[test]
+fn short_and_accented_notes_are_played_as_players_do() {
+    // At 60: a staccato quarter is short in seconds, not half its length;
+    // a staccatissimo shorter; a marcato apart and heavy; an sfz attacks
+    // loud and holds at the prevailing dynamic.
+    let mut m = line();
+    m.tempo[0].bpm = 60.0;
+    let mut evs = (*m.lanes[0].voices[0].events).clone();
+    evs[0].articulations = art::STACCATO;
+    evs[1].articulations = art::STACCATISSIMO;
+    evs[2].articulations = art::MARCATO;
+    evs[3].dynamic = Some(DYNAMICS.iter().position(|d| *d == "sfz").unwrap() as u8);
+    m.lanes[0].voices[0].events = Arc::new(evs);
+    let perf = perform(&m);
+    let n = &perf.notes;
+    let secs = |k: usize| (n[k].full_off_q - n[k].on_q) * n[k].gate; // quarters at 60 = seconds
+    assert!((secs(0) - STACCATO_SECONDS.0).abs() < 1e-6, "{}", secs(0));
+    assert!((secs(1) - STACCATISSIMO_SECONDS.0).abs() < 1e-6, "{}", secs(1));
+    assert!((n[2].gate - 0.75).abs() < 1e-9 && n[2].velocity > n[2].sustain * 1.2);
+    assert!(n[3].velocity > n[3].sustain + 0.1, "sfz: {} over {}", n[3].velocity, n[3].sustain);
+    assert!((n[0].velocity - n[0].sustain).abs() < 1e-6, "no accent: no difference");
 }

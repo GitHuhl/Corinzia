@@ -8,10 +8,13 @@ use std::sync::Arc;
 
 const SR: f64 = 48000.0;
 
-/// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on beat 4.
+/// One flute, 4/4 at 120 bpm: c'' on beat 1 (a quarter), rest, rest, a'' on
+/// beat 4. Played by the built-in sine (General MIDI 79): these tests are
+/// about the engine, and it speaks at once and the same every time (a
+/// flute takes a fifth of a second).
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
-    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
+    p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: Some(79), bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -105,8 +108,12 @@ fn renders_the_score_sample_accurately() {
     assert_eq!(played.len(), 4);
     let beat = (SR * 0.5) as i64; // 120 bpm
     assert_eq!(played[0].at, 0);
-    // The flute's sound, its dynamic (f) as CC1, the normal technique.
-    assert_eq!(snap.nodes[0].program, Some((0, 73, Some(0))));
+    // The track's program; without one, the flute's sound.
+    assert_eq!(snap.nodes[0].program, Some((0, 79, None)));
+    let mut flute = p.clone();
+    flute.tracks[0].program = None;
+    assert_eq!(snapshot::builtin_program(&flute, 1), Some((0, 73, Some(0))));
+    // Its dynamic (f) as CC1, the normal technique.
     assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(1) && (n.velocity - 0.75).abs() < 0.01));
     assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(3) && n.velocity == 0.0));
     assert_eq!(snap.notes.iter().find(|n| n.on && n.key == 81).unwrap().at, 3 * beat);
@@ -278,7 +285,9 @@ fn effect_parameters_set_while_idle_and_while_playing() {
 #[test]
 fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
     let beat = (SR * 0.5) as usize;
-    let flute = render(&project(), beat);
+    let mut f = project();
+    f.tracks[0].program = None; // the flute's own sound
+    let flute = render(&f, beat);
     let mut p = project();
     p.tracks[0].program = Some(56); // General MIDI: trumpet
     let trumpet = render(&p, beat);
@@ -839,4 +848,47 @@ fn the_engine_reports_its_load_and_late_blocks() {
     assert!(load > 0.0 && load < 1.0, "{load}");
     assert_eq!(ui.take_load(), 0.0, "taken");
     assert_eq!(ui.late(), 0);
+}
+
+#[test]
+fn notes_tell_the_builtin_instruments_how_they_speak() {
+    use corinzia_ensemble::voice::articulation as a;
+    use corinzia_score::score::art;
+    // c'' staccato, then a'' marcato with a down-bow; then eight quick
+    // sixteenths at 120 (an eighth of a second each): spiccato.
+    let mut p = project();
+    p.tracks[0].program = None;
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = art::STACCATO;
+    evs[2].articulations = art::MARCATO | art::DOWN_BOW;
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let codes: Vec<u8> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(9)).map(|e| (e.velocity * 127.0).round() as u8).collect();
+    assert_eq!(codes, [a::STACCATO, a::MARCATO | a::DOWN_BOW]);
+    let mut q = project();
+    q.tracks[0].program = None;
+    let sixteenth = |id: u64, k: i64| Event { id, kind: EventKind::Note, start: Frac::new(k, 16), duration: Frac::new(1, 16), heads: vec![Head { id: id + 1, pitch: Pitch { step: 0, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
+    q.movements[0].lanes[0].voices[0].events = Arc::new((0..8).map(|k| sixteenth(100 + 2 * k as u64, k)).collect());
+    let snap = snapshot::build_from_pool(&q, SR, 1, &[0], &mut pool);
+    let codes: Vec<u8> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(9)).map(|e| (e.velocity * 127.0).round() as u8).collect();
+    assert_eq!(codes, [a::SPICCATO], "quick unslurred notes: off the string");
+}
+
+#[test]
+fn a_tremolo_is_one_note_in_the_tremolo_technique_on_the_builtin_instruments() {
+    use corinzia_score::score::art;
+    let mut p = project();
+    p.tracks[0].program = None;
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = art::TREMOLO; // c'' a quarter: eight 32nds written out
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let ons: Vec<i16> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Note && e.on).map(|e| e.key).collect();
+    assert_eq!(ons, [72, 81], "one c'', one a''");
+    assert!(snap.notes.iter().any(|e| e.kind == snapshot::Kind::Cc(3) && (e.velocity * 127.0).round() as u8 == corinzia_ensemble::voice::tech::TREM));
+    // Exported MIDI keeps the written-out notes.
+    let doc = corinzia_perform::document(&p, &p.movements[0]);
+    assert!(doc.performance.tracks[0].notes.iter().filter(|n| n.key == 72).count() >= 8);
 }

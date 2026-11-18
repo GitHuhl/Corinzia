@@ -11,7 +11,8 @@
 //! is balanced with every fader at 0 dB ([`patches::trims`]).
 //!
 //! Controllers: CC1 the dynamic of held notes (hairpins), CC3 the playing
-//! technique ([`voice::tech`]), CC7 volume, CC11 expression, CC68 legato
+//! technique ([`voice::tech`]), CC9 the articulation ([`voice::articulation`]),
+//! CC7 volume, CC11 expression, CC68 legato
 //! (slurred notes join), CC120/123 all sound/notes off, pitch bend ±2
 //! semitones.
 
@@ -56,7 +57,7 @@ static DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(clap_plugin_descriptor {
     url: c"".as_ptr(),
     manual_url: c"".as_ptr(),
     support_url: c"".as_ptr(),
-    version: c"0.2.0".as_ptr(),
+    version: c"0.3.0".as_ptr(),
     description: c"Synthesized orchestral, keyboard and percussion instruments".as_ptr(),
     features: &FEATURES.0 as *const _ as *const *const c_char,
 });
@@ -76,6 +77,9 @@ struct Channel {
     /// CC1 once received: held notes follow it.
     dynamic: Option<f32>,
     technique: u8,
+    /// The articulation controller (CC9), and a bowed line's next stroke.
+    articulation: u8,
+    down_bow: bool,
     legato: bool,
     expression: f32,
     volume: f32,
@@ -85,7 +89,7 @@ struct Channel {
 
 impl Default for Channel {
     fn default() -> Self {
-        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, legato: false, expression: 1.0, volume: 1.0, bend: 0.0 }
+        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0 }
     }
 }
 
@@ -141,6 +145,17 @@ impl Synth {
         // bow change or a new breath, not a start from silence.
         let follows = self.voices.iter().any(|v| v.is_ringing() && v.channel as usize == ch && v.patch == c.patch);
         self.voices[i].start(c.patch, c.technique, note_id, port, channel, key, velocity, c.dynamic, self.clock, seed);
+        // The stroke: as written, else down and up by turns.
+        use voice::articulation as a;
+        let down = if c.articulation & a::DOWN_BOW != 0 {
+            true
+        } else if c.articulation & a::UP_BOW != 0 {
+            false
+        } else {
+            c.down_bow
+        };
+        self.channels[ch].down_bow = !down;
+        self.voices[i].articulate(c.articulation, down);
         if follows && self.voices[i].sustained {
             self.voices[i].connect();
         }
@@ -176,6 +191,7 @@ impl Synth {
             }
             7 => c.volume = x,
             11 => c.expression = x,
+            9 => c.articulation = value,
             68 => c.legato = value >= 64,
             120 | 123 => {
                 for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
@@ -189,6 +205,8 @@ impl Synth {
             121 => {
                 c.dynamic = None;
                 c.technique = 0;
+                c.articulation = 0;
+                c.down_bow = true;
                 c.legato = false;
                 c.expression = 1.0;
                 c.bend = 0.0;
@@ -306,6 +324,8 @@ unsafe extern "C" fn reset(p: *const clap_plugin) {
         c.dynamic = None;
         c.legato = false;
         c.technique = 0;
+        c.articulation = 0;
+        c.down_bow = true;
     }
 }
 
@@ -522,7 +542,13 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         channels: [Channel::default(); 16],
         voices: Vec::new(),
         clock: 0,
-        trims: patches::trims(),
+        trims: {
+            // Made here, on the main thread, never on the audio thread.
+            for b in 0..body::BODIES as u8 {
+                body::ready(b, false);
+            }
+            patches::trims()
+        },
         scratch: Vec::new(),
     }));
     (*synth).new_voices();

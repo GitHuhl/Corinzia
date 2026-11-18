@@ -35,6 +35,22 @@ pub mod tech {
     pub const FLUTTER: u8 = 8;
 }
 
+/// How a note speaks, as the articulation controller (CC9) gives it: a
+/// kind, and the bowing (written, else alternating) in the high bits.
+pub mod articulation {
+    pub const NORMAL: u8 = 0;
+    pub const STACCATO: u8 = 1;
+    pub const STACCATISSIMO: u8 = 2;
+    /// A short unslurred note in a quick passage: off the string, lightly
+    /// tongued.
+    pub const SPICCATO: u8 = 3;
+    pub const TENUTO: u8 = 4;
+    pub const MARCATO: u8 = 5;
+    pub const KIND: u8 = 0x0f;
+    pub const DOWN_BOW: u8 = 0x10;
+    pub const UP_BOW: u8 = 0x20;
+}
+
 /// What drives a hybrid's waveguide.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Exciter {
@@ -182,6 +198,10 @@ pub struct Voice {
     /// 1, or less for a note taken up from a still-ringing one (a bow
     /// change, a new breath): its attack is quicker.
     attack_scale: f32,
+    /// The articulation's bite (a bright, noisy start, 0..1) and how much
+    /// shorter the release is (short notes: the bow lifts, the tongue stops).
+    bite: f32,
+    release_scale: f32,
     /// The waveguide's and the noise's gains as they sound (smoothed).
     phys_g: f32,
     noise_g: f32,
@@ -222,6 +242,7 @@ pub struct Voice {
     phys_lp: f32,
     /// The body's gains for the current dynamic and technique.
     curve: Box<[f32; crate::body::FINE]>,
+    curve_even: Box<[f32; crate::body::FINE]>,
     curve_key: (f32, u8),
     // oscillators of the subtractive parts and exciters
     phases: [f32; 6],
@@ -271,6 +292,8 @@ impl Voice {
             accent: 0.0,
             join: 0.0,
             attack_scale: 1.0,
+            bite: 0.0,
+            release_scale: 1.0,
             phys_g: 0.0,
             noise_g: 0.0,
             scoop: 0.0,
@@ -306,6 +329,7 @@ impl Voice {
             pl_colour: [[1.0; MAX_HARMONICS]; PLAYERS],
             phys_lp: 0.0,
             curve: Box::new([0.0; crate::body::FINE]),
+            curve_even: Box::new([0.0; crate::body::FINE]),
             curve_key: (-1.0, 255),
             phases: [0.0; 6],
             line: vec![0.0; len].into_boxed_slice(),
@@ -347,8 +371,11 @@ impl Voice {
         };
         let percussive = matches!(self.model, Model::Pluck(_) | Model::Piano | Model::Mallet(_) | Model::Timpani | Model::Kit);
         self.sustained = !percussive;
-        self.dynamic = if percussive { self.vel } else { dynamic.unwrap_or(self.vel) };
-        self.dyn_target = self.dynamic;
+        // A held sound starts at its attack level (an accent, an sfz) and
+        // settles to the prevailing dynamic.
+        let settled = if percussive { self.vel } else { dynamic.unwrap_or(self.vel) };
+        self.dynamic = if percussive { self.vel } else { settled.max(self.vel.min(settled + 0.4)) };
+        self.dyn_target = settled;
         self.accent = if percussive { 0.0 } else { (self.vel - self.dynamic).max(0.0) * 2.5 + if self.vel > 0.8 { (self.vel - 0.8) * 1.5 } else { 0.0 } };
         self.freq = key_hz(key as f32);
         self.cur = self.freq;
@@ -356,6 +383,8 @@ impl Voice {
         self.t = 0.0;
         self.join = 0.0;
         self.attack_scale = 1.0;
+        self.bite = 0.0;
+        self.release_scale = 1.0;
         self.phys_g = 0.0;
         self.noise_g = 0.0;
         self.env = 0.0;
@@ -445,11 +474,34 @@ impl Voice {
             _ => 0.022,
         };
         let leap = ((self.freq / self.cur).log2().abs() * 12.0).min(12.0);
-        self.glide = dsp::smoothing(time * (0.5 + leap / 12.0), self.sr);
+        // A string player's finger slides on a wide leap, audibly.
+        let time = if self.model == Model::Bowed && leap >= 3.0 { 0.035 + 0.075 * leap / 12.0 } else { time * (0.5 + leap / 12.0) };
+        self.glide = dsp::smoothing(time, self.sr);
         self.join = 0.35 + 0.3 * velocity;
         if let Some(s) = crate::patches::spectrum(self.patch) {
             self.tune_waveguide(s);
         }
+    }
+
+    /// How the note speaks ([`articulation`]): its attack, its bite and its
+    /// release; `down_bow`: a bowed note's stroke (a little heavier).
+    pub fn articulate(&mut self, code: u8, down_bow: bool) {
+        use articulation as a;
+        let (attack, bite, release): (f32, f32, f32) = match code & a::KIND {
+            a::STACCATO => (0.45, 0.5, 0.5),
+            a::STACCATISSIMO => (0.3, 0.7, 0.35),
+            a::SPICCATO => (0.4, 0.35, 0.55),
+            a::TENUTO => (1.25, 0.0, 1.0),
+            a::MARCATO => (0.5, 1.0, 0.8),
+            _ => (1.0, 0.0, 1.0),
+        };
+        let bow: f32 = if self.model == Model::Bowed && down_bow { 0.2 } else { 0.0 };
+        self.attack_scale *= attack;
+        self.bite = (bite + bow).min(1.0);
+        self.release_scale = release;
+        let p = self.p();
+        let time = (p.attack * (1.5 - self.vel) * self.attack_scale).max(0.002);
+        self.env_rate = dsp::smoothing(time / 3.0, self.sr);
     }
 
     /// Still sounding after its note ended (a bow change can take it up).
@@ -484,7 +536,10 @@ impl Voice {
             // A string's damper, or the top of the piano without dampers.
             Model::Piano if self.key >= 89 => return,
             Model::Pluck(_) if PATCHES[self.patch].model == Model::Bowed => 0.6,
-            _ => p.release,
+            // A short stroke: the bow lifts, the tongue stops (a string
+            // still rings a little).
+            Model::Bowed => (p.release * self.release_scale).max(0.12),
+            _ => p.release * self.release_scale,
         };
         self.releasing = true;
         self.rel_mul = dsp::decay(time, self.sr);
@@ -752,7 +807,7 @@ impl Voice {
             Model::Pluck(_) => self.render_pluck(out, bend, trims),
             Model::Piano | Model::Mallet(_) | Model::Timpani => self.render_modes(out, trims),
             Model::Kit => self.render_kit(out, trims),
-            Model::Bowed if crate::patches::spectrum(self.patch).is_some_and(|s| s.body.is_some()) => self.render_bowed(out, bend, trims),
+            _ if crate::patches::spectrum(self.patch).is_some_and(|s| s.body.is_some()) => self.render_measured(out, bend, trims),
             Model::Bowed | Model::Reed(_) | Model::Flute | Model::Brass if crate::patches::spectrum(self.patch).is_some() => self.render_hybrid(out, bend, trims),
             _ => self.render_simple(out, bend, trims),
         }
@@ -947,11 +1002,13 @@ impl Voice {
         }
     }
 
-    // ------------------------------------------------------- bowed strings --
-    /// A bowed string on a measured body: each player's harmonics at the
-    /// body's level for their frequency (so vibrato moves them through its
-    /// resonances), bow noise, and the waveguide for the attack and joins.
-    fn render_bowed(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) {
+    // ------------------------------------ strings, woodwinds, brass, measured --
+    /// An instrument on its measured spectrum: each player's harmonics at
+    /// the level the recordings give for their frequency and parity (so
+    /// vibrato moves them through the resonances), bow or breath noise, and
+    /// the waveguide with its exciter (bow, reed, lips, air jet) for the
+    /// attack and the joins.
+    fn render_measured(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) {
         let s = *crate::patches::spectrum(self.patch).unwrap();
         let mut p = *self.p();
         p.attack *= self.attack_scale;
@@ -962,7 +1019,7 @@ impl Voice {
         let solo = players == 1;
         let dyn_rate = dsp::smoothing(0.04, sr);
         let amp_rate = dsp::smoothing(0.006, sr);
-        let (mut noise_gain, mut phys_gain, mut gain, mut tech_amp, mut period, mut f_main) = (0.0, 0.0, 0.0, 1.0, 100.0f32, self.freq);
+        let (mut noise_gain, mut phys_gain, mut gain, mut tech_amp, mut period, mut f_main, mut exc_shape) = (0.0, 0.0, 0.0, 1.0, 100.0f32, self.freq, 0.5f32);
         let len = self.line.len();
         let phys_k = 1.0 - (-TAU * 2500.0 / sr).exp();
         let glide_k = dsp::smoothing(0.005, sr);
@@ -970,7 +1027,11 @@ impl Voice {
             if self.ctl == 0 {
                 self.ctl = CONTROL;
                 let blocks = CONTROL as f32 / sr;
-                self.dynamic += (self.dyn_target - self.dynamic) * (1.0 - (1.0 - dyn_rate).powi(CONTROL as i32));
+                // An accent or an fp holds its attack level until the note has
+                // spoken, then settles.
+                if self.t > (p.attack * (1.5 - self.vel) * 1.5).max(0.06) || self.dyn_target > self.dynamic {
+                    self.dynamic += (self.dyn_target - self.dynamic) * (1.0 - (1.0 - dyn_rate).powi(CONTROL as i32));
+                }
                 self.cur += (self.freq - self.cur) * (1.0 - (1.0 - self.glide).powi(CONTROL as i32));
                 self.scoop *= dsp::decay(0.08, sr / CONTROL as f32);
                 let d = self.dynamic;
@@ -979,21 +1040,37 @@ impl Voice {
                 period = (sr / base).clamp(2.0, len as f32 - 2.0);
                 // The body's curve for this dynamic and technique (made
                 // again only when they change).
-                if (d - self.curve_key.0).abs() > 0.004 || self.tech != self.curve_key.1 {
+                // (An accent settles quickly: steps of 0.02 are enough, the
+                // harmonics glide between them.)
+                if (d - self.curve_key.0).abs() > 0.02 || self.tech != self.curve_key.1 {
                     self.curve_key = (d, self.tech);
-                    let t = self.tech;
+                    let (t, bowed, brass) = (self.tech, self.model == Model::Bowed, self.model == Model::Brass);
                     let shape = move |hz: f32| match t {
                         // Bowing near the bridge or over the fingerboard.
-                        tech::SUL_PONT => 6.0 * (hz / 1000.0).log2().max(-2.0),
-                        tech::SUL_TASTO => -6.0 * (hz / 600.0).log2().max(0.0),
-                        // A mute: the bridge's high resonances damped.
-                        tech::CON_SORD => -9.0 * (hz / 1200.0).log2().clamp(0.0, 2.0),
+                        tech::SUL_PONT if bowed => 6.0 * (hz / 1000.0).log2().max(-2.0),
+                        tech::SUL_TASTO if bowed => -6.0 * (hz / 600.0).log2().max(0.0),
+                        // A string mute: the bridge's high resonances damped.
+                        tech::CON_SORD if bowed => -9.0 * (hz / 1200.0).log2().clamp(0.0, 2.0),
+                        // A straight mute in the bell: the lows gone, a
+                        // nasal peak near 2 kHz, the top cut.
+                        tech::CON_SORD if brass => {
+                            let o = (hz / 2000.0).log2();
+                            -12.0 * (-o).clamp(0.0, 1.5) + 6.0 * (-o * o * 4.0).exp() - 6.0 * (o - 1.3).max(0.0)
+                        }
                         _ => 0.0,
                     };
-                    crate::body::fine_curve(body, d, !solo, shape, &mut self.curve);
+                    let shaped = matches!(t, tech::SUL_PONT | tech::SUL_TASTO | tech::CON_SORD) && (bowed || brass);
+                    if shaped {
+                        crate::body::fine_curves(body, d, !solo, shape, &mut self.curve, &mut self.curve_even);
+                    } else {
+                        // The usual case: blended from the curves made ready.
+                        crate::body::blend(body, d, !solo, &mut self.curve, &mut self.curve_even);
+                    }
                 }
                 tech_amp = match self.tech {
                     tech::TREM => 0.45 + 0.55 * (self.t * 7.5 * std::f32::consts::PI).sin().abs(),
+                    tech::FLUTTER => 0.65 + 0.35 * (self.t * 24.0 * TAU).sin(),
+                    tech::CON_SORD if self.model == Model::Brass => 0.5,
                     tech::CON_SORD => 0.6,
                     tech::SUL_PONT | tech::SUL_TASTO => 0.8,
                     tech::HARMONICS => 0.5,
@@ -1004,7 +1081,7 @@ impl Voice {
                 let depth = if self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) };
                 // The measured strings lie 35 dB and more under their 1 kHz region
                 // past 10 kHz: harmonics up to there (a soloist to 12 kHz).
-                let limit = (sr * 0.45).min(if solo { 12000.0 } else { 10000.0 });
+                let limit = (sr * 0.45).min(if self.model != Model::Bowed { 14000.0 } else if solo { 12000.0 } else { 10000.0 });
                 for q in 0..players {
                     self.pl_vib[q] = (self.pl_vib[q] + self.pl_rate[q] * blocks).fract();
                     // Intonation wanders a little, slowly.
@@ -1023,7 +1100,8 @@ impl Voice {
                         let a = if self.tech == tech::HARMONICS {
                             if h == 0 { 1.0 } else { 0.0 }
                         } else {
-                            crate::body::at(&self.curve, log2_f + LOG2[h + 1]) * self.pl_colour[q][h]
+                            let curve = if h % 2 == 1 { &self.curve_even } else { &self.curve };
+                            crate::body::at(curve, log2_f + LOG2[h + 1]) * self.pl_colour[q][h]
                         };
                         power += a * a;
                         self.pl_target[q][h] = a;
@@ -1037,12 +1115,17 @@ impl Voice {
                         self.pl_im[q][h] *= k;
                     }
                     let norm = if power > 0.0 { entry / (power.sqrt() * (players as f32).sqrt()) } else { 0.0 };
+                    // An articulation's bite: the start brighter (up to 6 dB
+                    // an octave of harmonics), fading in 60 ms.
+                    let bite = self.bite * (-self.t / 0.06).exp();
                     for h in 0..n_h {
                         // The bow's start: the upper harmonics settle a little
                         // after the fundamental.
-                        let rise_t = p.attack * (1.0 + s.rise * LOG2[h + 1]);
+                        // (A bitten start sets them going sooner.)
+                        let rise_t = p.attack * (1.0 + s.rise * LOG2[h + 1]) / (1.0 + 2.0 * self.bite);
                         let rise = (self.t / rise_t.max(1e-3)).min(1.0);
-                        self.pl_target[q][h] *= norm * rise;
+                        let bright = if bite > 0.01 { (bite * LOG2[h + 1]).exp2() } else { 1.0 };
+                        self.pl_target[q][h] *= norm * rise * bright;
                     }
                     for h in n_h..MAX_HARMONICS {
                         self.pl_target[q][h] = 0.0;
@@ -1078,14 +1161,16 @@ impl Voice {
                 }
                 let attack_noise = (1.0 - self.t / (p.attack * 2.0 + 0.02)).max(0.0);
                 noise_gain = db(s.noise_db + 4.0 * (0.62 - d))
-                    * (1.0 + 3.0 * attack_noise + 2.0 * self.join)
+                    * (1.0 + 3.0 * attack_noise * (1.0 + 2.0 * self.bite) + 2.0 * self.join)
                     * match self.tech {
                         tech::SUL_PONT => 2.5,
                         tech::HARMONICS => 1.5,
+                        tech::FLUTTER => 3.0,
                         _ => 1.0,
                     };
                 let attack_phys = (1.0 - self.t / (p.attack * 3.0 + 0.03)).max(0.0);
-                phys_gain = s.physical + 0.5 * attack_phys + 0.5 * self.join;
+                phys_gain = s.physical + 0.5 * attack_phys * (1.0 + self.bite) + 0.5 * self.join;
+                exc_shape = 0.3 + 0.6 * d;
                 self.join *= dsp::decay(0.12, sr / CONTROL as f32);
                 self.lp.set(base * (p.dark + (p.bright - p.dark) * d.powf(1.4)), 0.7, sr);
                 gain = self.gain(trims) * (1.0 + self.accent * (-self.t / 0.09).exp());
@@ -1115,10 +1200,18 @@ impl Voice {
             self.noise_g += (noise_gain - self.noise_g) * glide_k;
             self.phys_g += (phys_gain - self.phys_g) * glide_k;
             noise *= self.noise_g * 0.25;
-            // The waveguide: a bowed sawtooth into the tuned string.
+            // The waveguide: the exciter into the tuned string or tube.
             let step = f_main / sr;
             self.phases[0] = (self.phases[0] + step).fract();
-            let exc = self.lp.tick(saw(self.phases[0], step) * (1.0 + 0.05 * n)).low;
+            let ph = self.phases[0];
+            let raw = match s.exciter {
+                Exciter::Bow => saw(ph, step) * (1.0 + 0.05 * n),
+                Exciter::Reed(w) if w <= 0.0 => saw(ph, step),
+                Exciter::Reed(w) => pulse(ph, step, w),
+                Exciter::Lip => pulse(ph, step, 0.5 - 0.25 * exc_shape),
+                Exciter::Jet => dsp::sine(ph) + 0.3 * n,
+            };
+            let exc = self.lp.tick(raw).low;
             let rd = self.pos as f32 + len as f32 - period;
             let i0 = rd as usize;
             let fr = rd - i0 as f32;
