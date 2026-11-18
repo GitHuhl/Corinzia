@@ -189,7 +189,9 @@ pub fn parse_instrument_list(text: &str) -> Result<Vec<crate::editor::Instrument
 pub fn new_project(title: &str, instruments: &str, bars: i64) -> Result<Project, String> {
     let list = parse_instruments(instruments)?;
     let refs: Vec<(&str, &str, &str, Interval)> = list.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str(), transposition_of(a))).collect();
-    Ok(crate::demo::blank_with(title, &refs, bars))
+    let mut p = crate::demo::blank_with(title, &refs, bars);
+    p.phrasing = true; // new scores play phrased; older ones as they were
+    Ok(p)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

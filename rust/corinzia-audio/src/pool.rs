@@ -38,7 +38,7 @@ impl PluginPool {
         let node = project.track(track).and_then(|t| t.instrument_node).and_then(|n| project.node(n)).filter(|n| n.kind == NodeKind::Plugin && !n.bypassed && !n.bundle.is_empty());
         match node {
             Some(n) => Key { bundle: n.bundle.clone(), plugin_id: n.plugin_id.clone(), node: Some(n.id) },
-            None => Key { bundle: BUILTIN.into(), plugin_id: corinzia_sine::PLUGIN_ID.to_string_lossy().into_owned(), node: None },
+            None => Key { bundle: BUILTIN.into(), plugin_id: corinzia_ensemble::PLUGIN_ID.to_string_lossy().into_owned(), node: None },
         }
     }
 
@@ -90,7 +90,7 @@ impl PluginPool {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 self.errors.push(e);
-                let fallback = Key { bundle: BUILTIN.into(), plugin_id: corinzia_sine::PLUGIN_ID.to_string_lossy().into_owned(), node: None };
+                let fallback = Key { bundle: BUILTIN.into(), plugin_id: corinzia_ensemble::PLUGIN_ID.to_string_lossy().into_owned(), node: None };
                 let p = self.instantiate(&fallback).ok()?;
                 p.activate(self.sample_rate, self.max_frames).ok()?;
                 Arc::new(p)

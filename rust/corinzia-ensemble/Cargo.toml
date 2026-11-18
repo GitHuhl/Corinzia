@@ -1,0 +1,12 @@
+[package]
+name = "corinzia-ensemble"
+description = "Corinzia Ensemble: the built-in synthesized instruments (strings, winds, brass, voices, keyboards, percussion) and effects, as a CLAP plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clap-sys = "0.5"

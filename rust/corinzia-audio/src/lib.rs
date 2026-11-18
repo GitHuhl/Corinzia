@@ -1,7 +1,7 @@
 //! Corinzia's audio engine in Rust.
 //!
 //! * [`host`]: plugin hosting (CLAP bundles, VST3 bundles through [`vst3`],
-//!   and the built-in Corinzia Sine);
+//!   and the built-in Corinzia Ensemble);
 //! * [`gui`]: plugin editor windows and the run loop their GUIs need;
 //! * [`pool`]: plugin instances per track, on the main thread;
 //! * [`media`]: sound files for audio tracks, decoded and resampled;

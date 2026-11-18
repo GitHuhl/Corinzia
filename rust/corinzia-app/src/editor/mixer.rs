@@ -159,6 +159,16 @@ impl Editor {
         self.commit_with(before, label, false, merge.then_some(bus));
     }
 
+    /// Playback with or without the phrasing rules.
+    pub fn set_phrasing(&mut self, on: bool) {
+        if self.project.phrasing == on {
+            return;
+        }
+        let before = self.snapshot();
+        self.project.phrasing = on;
+        self.commit_with(before, if on { "Phrasing on" } else { "Phrasing off" }, false, None);
+    }
+
     pub fn set_master_gain(&mut self, db: f64) {
         let before = self.snapshot();
         self.project.master.gain_db = db;

@@ -124,6 +124,9 @@ pub fn load(path: &Path) -> Result<Project> {
     if let Some(c) = setting("chants")? {
         p.chants = serde_json::from_value(c)?;
     }
+    if let Some(v) = setting("performance")? {
+        p.phrasing = v["phrasing"].as_bool().unwrap_or(false);
+    }
     if let Some(t) = setting("texts")? {
         let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
         (p.subtitle, p.lyricist, p.arranger, p.copyright) = (s("subtitle"), s("lyricist"), s("arranger"), s("copyright"));
@@ -672,7 +675,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?)] {
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?), ("performance", json!({"phrasing": project.phrasing}))] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

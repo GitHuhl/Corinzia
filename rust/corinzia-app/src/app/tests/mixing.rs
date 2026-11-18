@@ -36,7 +36,7 @@ fn effects_buses_and_sends_from_the_mix_tab() {
     assert_eq!(a.editor.project.master.gain_db, -6.0);
     a.sync();
     let _ = a.update(Message::Act(Action::PlayStop));
-    assert!(render(&mut a, 9600) > 0.001, "heard through the bus");
+    assert!(render(&mut a, 9600) > 0.0003, "heard through the bus");
     // Bypass and removal; one undo brings the bus back.
     let _ = a.update(mx(mix::MixMsg::Bypass(node)));
     assert!(a.editor.project.node(node).unwrap().bypassed);
@@ -252,13 +252,27 @@ fn strips_meter_their_levels_and_latch_a_clip() {
     assert_eq!(a.playback.level(master), (0.0, 0.0));
     assert!(!a.playback.busy(), "no more frames needed");
     // Too loud: the master's light latches until clicked.
-    let _ = a.update(Message::Mix(mix::MixMsg::Gain(first, 12.0)));
+    let tracks: Vec<_> = a.editor.project.tracks.iter().map(|t| t.id).collect();
+    for t in tracks {
+        let _ = a.update(Message::Mix(mix::MixMsg::Gain(t, 12.0)));
+    }
     let _ = a.update(Message::Mix(mix::MixMsg::Gain(master, 12.0)));
+    // The instruments leave an orchestra's headroom: two gain inserts more.
+    if a.playback.plugins.is_empty() {
+        a.playback.scan();
+    }
+    let gain = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.gain").unwrap();
+    for _ in 0..2 {
+        let _ = a.update(Message::Mix(mix::MixMsg::AddEffect(master, gain)));
+        let node = a.fx.unwrap();
+        a.sync();
+        let _ = a.update(Message::Mix(mix::MixMsg::Param(node, 0, 12.0)));
+    }
     a.sync();
     a.playback.play_from(a.editor.project.movements[0].id, 0.0);
     render(&mut a, 24000);
     a.playback.tick();
-    assert!(a.playback.clipped(master));
+    assert!(a.playback.clipped(master), "{:?}", a.playback.level(master));
     let _ = a.update(Message::Mix(mix::MixMsg::ClearClip(master)));
     assert!(!a.playback.clipped(master));
 }
@@ -267,8 +281,8 @@ fn strips_meter_their_levels_and_latch_a_clip() {
 fn a_track_shares_another_tracks_instrument_on_a_free_channel() {
     let mut a = app(View::Page);
     let (t0, t1) = (a.editor.project.tracks[0].id, a.editor.project.tracks[1].id);
-    a.editor.set_track_plugin(t0, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
-    a.editor.set_track_plugin(t1, Some(("Corinzia Sine", corinzia_audio::host::BUILTIN, "org.corinzia.sine")));
+    a.editor.set_track_plugin(t0, Some(("Corinzia Ensemble", corinzia_audio::host::BUILTIN, "org.corinzia.ensemble")));
+    a.editor.set_track_plugin(t1, Some(("Corinzia Ensemble", corinzia_audio::host::BUILTIN, "org.corinzia.ensemble")));
     let own = a.editor.project.track(t1).unwrap().instrument_node.unwrap();
     let ch0 = a.editor.project.track(t0).unwrap().midi_channel;
     let _ = a.update(Message::Mix(mix::MixMsg::Share(t1, t0)));
@@ -442,7 +456,7 @@ fn a_strip_click_shows_the_plugin_editor() {
     let _ = a.update(Message::Mix(mix::MixMsg::Editor(track)));
     assert_eq!(a.strip, Some(track), "the click selects the strip");
     assert!(!a.playback.pool.editor_is_open(track));
-    assert_eq!(a.editor.status, "Corinzia Sine has no editor of its own");
+    assert_eq!(a.editor.status, "Corinzia Ensemble has no editor of its own");
     assert!(!a.playback.editors_busy());
     // Selecting by name leaves editors alone.
     let cello = a.editor.project.tracks[1].id;
@@ -454,7 +468,7 @@ fn a_strip_click_shows_the_plugin_editor() {
 fn mixer_edits_are_live_and_undoable() {
     let mut a = app(View::Page);
     let _ = a.update(Message::Act(Action::ShowMix));
-    assert!(a.playback.plugins.iter().any(|p| p.id == "org.corinzia.sine"));
+    assert!(a.playback.plugins.iter().any(|p| p.id == "org.corinzia.ensemble"));
     let (engraved, track) = (a.engraved, a.editor.project.tracks[0].id);
     for db in [-1.0, -2.5, -4.0] {
         let _ = a.update(Message::Mix(mix::MixMsg::Gain(track, db)));
@@ -474,8 +488,8 @@ fn mixer_edits_are_live_and_undoable() {
     let _ = a.update(Message::Mix(mix::MixMsg::Solo(cello)));
     assert!(a.editor.project.tracks[1].solo);
     // Choose the built-in instrument explicitly: no node needed.
-    let sine = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.sine").unwrap();
+    let sine = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.ensemble").unwrap();
     let _ = a.update(Message::Mix(mix::MixMsg::Assign(track, sine)));
     assert_eq!(a.editor.project.tracks[0].instrument_node, None);
-    assert_eq!(a.playback.plugin_name(track), "Corinzia Sine");
+    assert_eq!(a.playback.plugin_name(track), "Corinzia Ensemble");
 }

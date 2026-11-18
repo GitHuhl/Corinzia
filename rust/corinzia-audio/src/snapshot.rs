@@ -398,6 +398,56 @@ pub fn mix(project: &Project) -> Vec<(Id, f32, f32, bool, bool)> {
         .collect()
 }
 
+/// Whether a track plays the built-in instruments (no plugin, a bypassed
+/// one, or Corinzia Ensemble itself).
+pub fn plays_builtin(project: &Project, track: Id) -> bool {
+    let Some(t) = project.track(track) else { return false };
+    if t.audio {
+        return false;
+    }
+    match t.instrument_node.and_then(|n| project.node(n)) {
+        None => true,
+        Some(n) => n.bypassed || n.bundle.is_empty() || crate::host::is_builtin(&n.bundle) && (n.plugin_id == corinzia_ensemble::PLUGIN_ID.to_str().unwrap_or_default() || n.plugin_id == corinzia_ensemble::OLD_PLUGIN_ID.to_str().unwrap_or_default()),
+    }
+}
+
+/// Whether the score is for orchestra (its strings play as sections): it
+/// has a double bass, or five string staves or more.
+pub fn orchestral(project: &Project) -> bool {
+    let names: Vec<String> = project.instruments.iter().map(|i| i.name.to_lowercase()).collect();
+    let strings = names.iter().filter(|n| ["violin", "viola", "cello", "celli", "bass"].iter().any(|w| n.contains(w)) && !n.contains("guitar") && !n.contains("clarinet") && !n.contains("trombone")).count();
+    names.iter().any(|n| n.contains("double bass") || n.contains("contrabass") || n.contains("basses")) || strings >= 5
+}
+
+/// The sound the built-in instruments give a track: its own program if it
+/// has one, else the one its (first) instrument's name chooses.
+pub fn builtin_program(project: &Project, track: Id) -> Option<(u8, u8, Option<u16>)> {
+    let t = project.track(track)?;
+    let ch = t.midi_channel & 15;
+    if let Some(p) = t.program {
+        return Some((ch, p, t.bank));
+    }
+    let inst = project.instruments.iter().find(|i| i.track == Some(track))?;
+    let (program, bank) = corinzia_ensemble::patches::program_for(&inst.name, !inst.drums.is_empty(), orchestral(project));
+    Some((ch, program, Some(bank)))
+}
+
+/// The technique controller's value (CC3) for a technique.
+pub fn technique_value(t: Option<&str>) -> u8 {
+    use corinzia_ensemble::voice::tech;
+    match t {
+        Some("pizz.") => tech::PIZZ,
+        Some("trem.") => tech::TREM,
+        Some("con sord.") => tech::CON_SORD,
+        Some("sul pont.") => tech::SUL_PONT,
+        Some("sul tasto") => tech::SUL_TASTO,
+        Some("col legno") => tech::COL_LEGNO,
+        Some("harmonics") => tech::HARMONICS,
+        Some("flutter") => tech::FLUTTER,
+        _ => tech::ORD,
+    }
+}
+
 /// Builds the plan. `plugins(track)` gives the activated plugin of a track.
 pub fn build(project: &Project, sample_rate: f64, generation: u64, movements: &[usize], mut plugins: impl FnMut(Id) -> Option<Arc<Plugin>>) -> Snapshot {
     build_with(project, sample_rate, generation, movements, &mut |w| match w {
@@ -442,7 +492,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let out = t.and_then(|t| t.output_bus).and_then(bus_index);
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
             let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db), s.pre)).collect()).unwrap_or_default();
-            let program = t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank)));
+            let program = if plays_builtin(project, track) { builtin_program(project, track) } else { t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank))) };
             // An instance an earlier track plays already: this one is a guest.
             let host = plugin.as_ref().and_then(|p| nodes.iter().position(|n| n.host.is_none() && n.plugin.as_ref().is_some_and(|q| Arc::ptr_eq(p, q)))).map(|i| i as u32);
             let plugin = if host.is_some() { None } else { plugin };
@@ -462,7 +512,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
     let mut note_id = 0i32;
     for &mi in movements {
         let Some(m) = project.movements.get(mi) else { continue };
-        let perf = corinzia_perform::perform(m);
+        let perf = corinzia_perform::perform_with(m, corinzia_perform::Style::of(project));
         let to_sample = |q: f64| start + (perf.tempo.seconds_at(q) * sample_rate).round() as i64;
         // Expression maps: per track, its notes in time order.
         let mut by_track: std::collections::HashMap<Id, Vec<usize>> = Default::default();
@@ -472,6 +522,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             }
         }
         let mut channels: Vec<Option<u8>> = vec![None; perf.notes.len()];
+        let builtin: Vec<Id> = nodes.iter().filter(|n| n.plugin.is_some() || n.host.is_some()).map(|n| n.track).filter(|&t| plays_builtin(project, t)).collect();
         for (track, mut idx) in by_track {
             let (Some(t), Some(node)) = (project.track(track), node_of(track)) else { continue };
             if t.techniques.is_empty() {
@@ -504,7 +555,12 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let channel = channels[ni].map(|c| c as i16).unwrap_or_else(|| project.track(track).map(|t| t.midi_channel as i16 & 15).unwrap_or(0));
             let port = project.track(track).map(|t| t.note_port as i16).unwrap_or(0);
             let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
-            let off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
+            let mut off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
+            // Slurred on the built-in instruments: held into the next note,
+            // which joins it (CC68).
+            if n.slurred && builtin.contains(&track) {
+                off_sec += 0.012;
+            }
             let on = start + (on_sec * sample_rate).round() as i64;
             let off = (start + (off_sec * sample_rate).round() as i64).max(on + 1);
             let key = project.sounding_key(n.instrument, n.key).clamp(0, 127) as i16;
@@ -513,12 +569,67 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             notes.push(ScheduledNote { at: off, on: false, ..base });
             note_id = note_id.wrapping_add(1) & 0x7fff_ffff;
         }
+        // The built-in instruments: the dynamic as CC1 (following hairpins
+        // through held notes), the technique as CC3, slurs as CC68.
+        for &track in &builtin {
+            let Some(node) = node_of(track) else { continue };
+            let Some(t) = project.track(track) else { continue };
+            let channel = t.midi_channel as i16 & 15;
+            let mut list: Vec<&corinzia_perform::PerformedNote> = perf.notes.iter().filter(|n| project.instrument(n.instrument).and_then(|i| i.track) == Some(track)).collect();
+            list.sort_by(|a, b| a.on_q.total_cmp(&b.on_q).then(b.key.cmp(&a.key)));
+            let at = |sec: f64| start + (sec * sample_rate).round() as i64;
+            let cc = |notes: &mut Vec<ScheduledNote>, at: i64, cc: u8, v: f32| notes.push(ScheduledNote { kind: Kind::Cc(cc), at: at.max(0), node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: v.clamp(0.0, 1.0), element: 0 });
+            let (mut technique, mut legato, mut last_on) = (None::<u8>, false, f64::NAN);
+            let mut level: Option<f32> = None;
+            for n in list {
+                let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
+                let on = at(on_sec);
+                let chord = (n.on_q - last_on).abs() < 1e-9;
+                last_on = n.on_q;
+                // An accent is in the attack, not in the dynamic.
+                let accent = if n.arts & corinzia_score::score::art::ACCENT != 0 { 1.15 } else { 1.0 };
+                let (d0, d1) = (n.velocity / accent, n.end_velocity / accent);
+                if !chord {
+                    if t.techniques.is_empty() {
+                        let tv = technique_value(n.technique);
+                        if technique != Some(tv) {
+                            technique = Some(tv);
+                            cc(&mut notes, on - 4, 3, tv as f32 / 127.0);
+                        }
+                    }
+                    if level.is_none_or(|l| (l - d0).abs() > 0.004) {
+                        cc(&mut notes, on - 2, 1, d0);
+                    }
+                    level = Some(d0);
+                    if (d1 - d0).abs() > 0.004 {
+                        // A ramp through the note, every 25 ms.
+                        let off_sec = on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate;
+                        let steps = (((off_sec - on_sec) / 0.025).ceil() as i64).clamp(1, 400);
+                        for k in 1..=steps {
+                            let x = k as f32 / steps as f32;
+                            cc(&mut notes, at(on_sec + (off_sec - on_sec) * x as f64) - 1, 1, d0 + (d1 - d0) * x);
+                        }
+                        level = Some(d1);
+                    }
+                }
+                if n.slurred != legato {
+                    legato = n.slurred;
+                    cc(&mut notes, on + 1, 68, if legato { 1.0 } else { 0.0 });
+                }
+            }
+            if legato {
+                cc(&mut notes, to_sample(perf.length_q), 68, 0.0);
+            }
+        }
         // Dynamics as a controller, where a track asks for it: at each onset.
         // By track: tracks sharing an instance each have their channel.
         let mut last_cc: std::collections::HashMap<Id, u8> = Default::default();
         for n in &perf.notes {
             let Some(t) = project.instrument(n.instrument).and_then(|i| i.track).and_then(|t| project.track(t)) else { continue };
             let (Some(cc), Some(node)) = (t.dynamics_cc, node_of(t.id)) else { continue };
+            if builtin.contains(&t.id) && cc == 1 {
+                continue; // the curve above has it
+            }
             let value = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
             if last_cc.insert(t.id, value) == Some(value) {
                 continue;

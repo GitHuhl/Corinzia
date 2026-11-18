@@ -67,8 +67,8 @@ the output), automation playback and saving plugin settings.
   match it is named in the status bar. Export → PDF prints the chant shown;
   `--chant N` opens on chant N. Space sings the chant from the caret on
   the first player's instrument, every note at its pitch in moria (the
-  nearest key, pitch-bent; Corinzia Sine follows the usual ±2 semitone
-  bend), with the ison held an octave under the mode's base note (Shift+D
+  nearest key, pitch-bent; the built-in instruments follow the usual ±2
+  semitone bend), with the ison held an octave under the mode's base note (Shift+D
   turns it off); the neume being sung is highlighted. Chants are saved
   with the project.
 * **Players** (toolbar): add instruments (quick-add buttons, or a list
@@ -163,8 +163,9 @@ the output), automation playback and saving plugin settings.
   Presets live in `presets/<plugin>/` beside the preferences. VST3 plugins
   now keep their state too. A track's MIDI program (General MIDI names,
   optional bank) is sent to its instrument when playback starts, and is
-  written into exported MIDI files. Corinzia Sine has three programs: soft
-  organ, pure sine and bright.
+  written into exported MIDI files. The built-in instruments take General
+  MIDI programs (bank 1: string sections and choir; bank 128: drums), so a
+  track's program can choose another of their sounds.
 * **Cycle:** ⟲ in the toolbar (Alt+L) cycles the selected passage, or
   turns the cycle on and off; Shift+drag along the arrange view's ruler
   sets it. Playback goes round it, notes released at each turn.
@@ -190,7 +191,7 @@ the output), automation playback and saving plugin settings.
   Automation follows repeats and is picked up when playback starts
   mid-piece. A track's "Dynamics" can also send the performed dynamics and
   hairpins as CC1 or CC11 for sample libraries, during playback and in
-  exported MIDI files (Corinzia Sine follows CC11 and CC7).
+  exported MIDI files (the built-in instruments follow CC1, CC7 and CC11).
 * **Playing techniques (expression maps):** a track's "Playing techniques"
   table (Mix tab, select the strip) maps techniques to a keyswitch, a program
   change, a controller value or a MIDI channel. The techniques are technique
@@ -219,10 +220,33 @@ the output), automation playback and saving plugin settings.
   engraved as F♯m7♭5/E). Staves move apart where they need the room.
 * **Playback:** Space plays from the selection or caret with a playhead in
   the score; repeats, endings, ties, ornaments, dynamics and hairpins are
-  performed. Tracks without a plugin play through **Corinzia Sine**, a
-  small built-in CLAP instrument (also installed as
-  `lib/clap/Corinzia Sine.clap` for other hosts). Entered notes are
+  performed. Tracks without a plugin play through **Corinzia Ensemble**,
+  the built-in instruments (also installed as
+  `lib/clap/Corinzia Ensemble.clap` for other hosts). Entered notes are
   auditioned.
+* **Built-in instruments:** every staff plays a sound chosen by its
+  instrument's name: strings (sections in an orchestral score, soloists in
+  chamber music), woodwinds, brass, voices and choir, piano, harpsichord,
+  organ, harp, guitar, tuned percussion, timpani and drums: 47 sounds.
+  Strings, woodwinds and brass combine each instrument's spectrum (how its
+  harmonics sit at each dynamic and register), a physical model of the
+  bow, reed or lips and the tube or string they drive, and filtered noise
+  for bow and breath. They are balanced as an orchestra is: with every
+  fader at 0 dB a trumpet's ff is far louder than a flute's, a solo violin
+  sits under a section, and there is headroom for a full tutti. They play
+  what the score asks: hairpins through held notes, slurred notes joined
+  (legato, no new attack), accents, and the techniques pizz., trem., con
+  sord., sul pont., sul tasto, col legno, harmonics and flutter-tonguing.
+  Fermatas are held.
+* **Phrasing:** the toolbar's Phrasing button (or `phrasing on|off`) plays
+  the score as players shape it, after the KTH rules for music
+  performance: each phrase swells and relaxes, the last bar slows like a
+  runner stopping, the beat before a fermata broadens, downbeats and
+  melodic peaks are leant on, higher notes of a line are a little louder,
+  short notes lighter, a wide unslurred leap gets a small break, and the
+  top of a chord sings over the rest. Off, the score plays as written. New
+  scores start with it on; the choice is saved with the project, and
+  applies to exported MIDI and audio too.
 * **Shared instruments:** a track can play through another track's plugin
   instance (Mix tab, the track's panel: "Share an instrument"), each on a
   MIDI channel of its own: one multi-timbral sampler for a section rather

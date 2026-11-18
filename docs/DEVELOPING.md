@@ -40,7 +40,7 @@ the music21 corpus and the demo project.
 | `rust/corinzia-layout` | the engraver: display lists, page layout, PDF |
 | `rust/corinzia-perform` | performance: repeats, ties, ornaments, dynamics; tempo maps; export documents |
 | `rust/corinzia-audio` | CLAP and VST3 host, plugin editors, realtime engine, PipeWire output |
-| `rust/corinzia-sine` | Corinzia Sine, the built-in CLAP instrument |
+| `rust/corinzia-ensemble` | Corinzia Ensemble, the built-in instruments and effects (CLAP) |
 | `rust/corinzia-export` | MIDI and MusicXML writers |
 | `rust/corinzia-score` | exact fractions, note values, the engraver's input types |
 | `assets/fonts/bravura` | Bravura (SIL OFL) and its SMuFL metadata |

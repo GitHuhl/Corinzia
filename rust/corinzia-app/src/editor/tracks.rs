@@ -135,7 +135,7 @@ impl Editor {
                 self.project.tracks[ti].instrument_node = Some(node);
                 name.to_string()
             }
-            None => "Corinzia Sine".to_string(),
+            None => "Corinzia Ensemble".to_string(),
         };
         self.status = format!("{} plays {name}", self.project.tracks[ti].name);
         self.commit_with(before, "Instrument plugin", true, None);

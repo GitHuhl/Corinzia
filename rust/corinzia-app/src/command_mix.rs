@@ -17,7 +17,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("get mixer", "Every strip: tracks, buses and the master, with their instruments, effects, levels, outputs and sends"),
     ("get plugins [instruments|effects] | get params <strip> <effect n>", "The plugins installed, and an effect's parameters"),
     ("gain <strip> <dB> | pan <strip> <-1..1, L30, R30, C> | mute|solo <strip> [on|off]", "A strip's fader, pan, mute and solo"),
-    ("plugin <track> <plugin>", "The track's instrument plugin (\"Corinzia Sine\" is the built-in one)"),
+    ("plugin <track> <plugin>", "The track's instrument plugin (\"Corinzia Ensemble\" is the built-in one)"),
     ("effect add <strip> <plugin> | effect remove|bypass <strip> <n> | effect move <strip> <n> up|down", "A strip's effects, numbered from 1"),
     ("param <strip> <effect n> <parameter> <value>", "An effect's parameter, by name or id"),
     ("bus add <name> | bus remove <name> | output <strip> <master|bus>", "Buses and where strips go"),
@@ -351,7 +351,7 @@ impl App {
                 Some(Ok(json!({
                     "tracks": p.tracks.iter().enumerate().map(|(i, t)| json!({
                         "number": i + 1, "name": t.name, "id": t.id, "audio": t.audio,
-                        "instrument": if t.audio { None } else { Some(t.instrument_node.and_then(|n| p.node(n)).map_or("Corinzia Sine".to_string(), |n| n.name.clone())) },
+                        "instrument": if t.audio { None } else { Some(t.instrument_node.and_then(|n| p.node(n)).map_or("Corinzia Ensemble".to_string(), |n| n.name.clone())) },
                         "gain_db": t.gain_db, "pan": t.pan, "mute": t.mute, "solo": t.solo,
                         "output": bus_name(t.output_bus),
                         "sends": t.sends.iter().map(|s| json!({"bus": bus_name(Some(s.bus)), "db": s.gain_db, "pre": s.pre})).collect::<Vec<_>>(),

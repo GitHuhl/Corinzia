@@ -1,12 +1,19 @@
-//! Corinzia Sine: a small polyphonic CLAP instrument.
+//! Corinzia Ensemble: Corinzia's built-in instruments, as a CLAP plugin.
 //!
-//! It is Corinzia's built-in sound (tracks without a plugin play through it,
-//! in-process via [`entry`]) and the test plugin of the CLAP host. As a
-//! cdylib it is also a regular `.clap` bundle any host can load.
+//! Tracks without a plugin play through it, in-process via [`entry`]; as a
+//! cdylib it is also a regular `.clap` bundle any host can load, and the
+//! test plugin of Corinzia's CLAP host. It also holds the built-in effects
+//! ([`effects`]).
 //!
-//! A soft organ-like tone (fundamental plus a quiet octave), a short attack
-//! and release, 32 voices with voice stealing, one stereo output, one note
-//! input (CLAP and MIDI dialects), and state: the output gain.
+//! Sixteen MIDI channels, each with its own sound, chosen by General MIDI
+//! program (bank 1: string sections and choir; bank 128: the drum kit; see
+//! [`patches`]). The sounds are calibrated against each other, so a score
+//! is balanced with every fader at 0 dB ([`patches::trims`]).
+//!
+//! Controllers: CC1 the dynamic of held notes (hairpins), CC3 the playing
+//! technique ([`voice::tech`]), CC7 volume, CC11 expression, CC68 legato
+//! (slurred notes join), CC120/123 all sound/notes off, pitch bend ±2
+//! semitones.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -24,9 +31,16 @@ use clap_sys::version::CLAP_VERSION;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
 
+pub mod dsp;
 pub mod effects;
+pub mod patches;
+pub mod voice;
 
-pub const PLUGIN_ID: &CStr = c"org.corinzia.sine";
+use voice::Voice;
+
+pub const PLUGIN_ID: &CStr = c"org.corinzia.ensemble";
+/// The id of the instrument this one replaced; projects that name it get this.
+pub const OLD_PLUGIN_ID: &CStr = c"org.corinzia.sine";
 
 pub struct Sync<T>(pub T);
 unsafe impl<T> std::marker::Sync for Sync<T> {}
@@ -36,53 +50,54 @@ static FEATURES: Sync<[*const c_char; 4]> = Sync([c"instrument".as_ptr(), c"synt
 static DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
     id: PLUGIN_ID.as_ptr(),
-    name: c"Corinzia Sine".as_ptr(),
+    name: c"Corinzia Ensemble".as_ptr(),
     vendor: c"Corinzia".as_ptr(),
     url: c"".as_ptr(),
     manual_url: c"".as_ptr(),
     support_url: c"".as_ptr(),
-    version: c"0.1.0".as_ptr(),
-    description: c"A soft polyphonic sine instrument".as_ptr(),
+    version: c"0.2.0".as_ptr(),
+    description: c"Synthesized orchestral, keyboard and percussion instruments".as_ptr(),
     features: &FEATURES.0 as *const _ as *const *const c_char,
 });
 
-const VOICES: usize = 32;
-const STATE_MAGIC: &[u8; 4] = b"CZS1";
+/// The name the built-in instruments go by.
+pub const NAME: &str = "Corinzia Ensemble";
 
-#[derive(Clone, Copy, Default)]
-struct Voice {
-    active: bool,
-    releasing: bool,
-    note_id: i32,
-    port: i16,
-    channel: i16,
-    key: i16,
-    /// The key's frequency (Hz), before the channel's pitch bend.
-    freq: f64,
-    phase: f64,
-    step: f64,
-    level: f32, // envelope
-    velocity: f32,
-    age: u64,
+const VOICES: usize = 48;
+const STATE_MAGIC: &[u8; 4] = b"CZE1";
+
+#[derive(Clone, Copy)]
+struct Channel {
+    program: u8,
+    bank_msb: u8,
+    bank_lsb: u8,
+    patch: usize,
+    /// CC1 once received: held notes follow it.
+    dynamic: Option<f32>,
+    technique: u8,
+    legato: bool,
+    expression: f32,
+    volume: f32,
+    /// Pitch bend in semitones (the usual ±2 range).
+    bend: f32,
 }
 
-/// The sounds a MIDI program change selects: (name, octave, twelfth) levels
-/// over the fundamental.
-pub const PROGRAMS: [(&str, f64, f64); 3] = [("Soft organ", 0.18, 0.0), ("Pure sine", 0.0, 0.0), ("Bright", 0.45, 0.25)];
+impl Default for Channel {
+    fn default() -> Self {
+        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, legato: false, expression: 1.0, volume: 1.0, bend: 0.0 }
+    }
+}
 
 struct Synth {
     plugin: clap_plugin,
     host: *const clap_host,
     sample_rate: f64,
     gain: f32,
-    program: u8,
-    /// MIDI expression (CC11) and volume (CC7), 0..1.
-    expression: f32,
-    volume: f32,
-    /// Each MIDI channel's pitch bend, in semitones (the usual ±2 range).
-    bend: [f64; 16],
-    voices: [Voice; VOICES],
+    channels: [Channel; 16],
+    voices: Vec<Voice>,
     clock: u64,
+    trims: &'static [f32; patches::COUNT],
+    scratch: Vec<f32>,
 }
 
 impl Synth {
@@ -90,41 +105,38 @@ impl Synth {
         &mut *((*p).plugin_data as *mut Synth)
     }
 
-    fn note_on(&mut self, note_id: i32, port: i16, channel: i16, key: i16, velocity: f64) {
-        self.clock += 1;
-        // A free voice, else the oldest releasing one, else the oldest.
-        let i = (0..VOICES)
-            .find(|&i| !self.voices[i].active)
-            .or_else(|| (0..VOICES).filter(|&i| self.voices[i].releasing).min_by_key(|&i| self.voices[i].age))
-            .unwrap_or_else(|| (0..VOICES).min_by_key(|&i| self.voices[i].age).unwrap());
-        let freq = 440.0 * 2f64.powf((key as f64 - 69.0) / 12.0);
-        let bend = self.bend[(channel & 15).max(0) as usize];
-        self.voices[i] = Voice {
-            active: true,
-            releasing: false,
-            note_id,
-            port,
-            channel,
-            key,
-            freq,
-            phase: 0.0,
-            step: freq * 2f64.powf(bend / 12.0) / self.sample_rate,
-            level: 0.0,
-            velocity: velocity.clamp(0.0, 1.0) as f32,
-            age: self.clock,
-        };
+    fn new_voices(&mut self) {
+        self.voices = (0..VOICES).map(|_| Voice::new(self.sample_rate)).collect();
+        self.scratch = vec![0.0; 1024];
     }
 
-    /// Pitch bend on a channel (0..16383, 8192 = none; ±2 semitones):
-    /// its sounding voices follow.
-    fn pitch_bend(&mut self, channel: i16, value: u16) {
-        let semitones = (value as f64 - 8192.0) / 8192.0 * 2.0;
-        let ch = (channel & 15) as usize;
-        self.bend[ch] = semitones;
-        let k = 2f64.powf(semitones / 12.0) / self.sample_rate;
-        for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
-            v.step = v.freq * k;
+    fn note_on(&mut self, note_id: i32, port: i16, channel: i16, key: i16, velocity: f64) {
+        self.clock += 1;
+        let ch = (channel & 15).max(0) as usize;
+        let c = self.channels[ch];
+        let velocity = velocity.clamp(0.0, 1.0) as f32;
+        // A slur: the line's held note moves on instead of a new attack.
+        if c.legato {
+            if let Some(v) = self.voices.iter_mut().filter(|v| v.active && !v.releasing && v.sustained && v.channel as usize == ch && v.patch == c.patch && v.key != key).max_by_key(|v| v.age) {
+                if patches::PATCHES[c.patch].legato {
+                    v.legato_to(note_id, key, velocity, self.clock);
+                    return;
+                }
+            }
         }
+        // A closed hi-hat stops an open one.
+        if c.patch == patches::KIT && matches!(key, 42 | 44) {
+            for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch && v.key == 46) {
+                v.active = false;
+            }
+        }
+        // A free voice, else the oldest releasing one, else the oldest.
+        let i = (0..self.voices.len())
+            .find(|&i| !self.voices[i].active)
+            .or_else(|| (0..self.voices.len()).filter(|&i| self.voices[i].releasing).min_by_key(|&i| self.voices[i].age))
+            .unwrap_or_else(|| (0..self.voices.len()).min_by_key(|&i| self.voices[i].age).unwrap());
+        let seed = self.clock as u32;
+        self.voices[i].start(c.patch, c.technique, note_id, port, channel, key, velocity, c.dynamic, self.clock, seed);
     }
 
     fn note_off(&mut self, note_id: i32, channel: i16, key: i16) {
@@ -132,9 +144,57 @@ impl Synth {
             let by_id = note_id >= 0 && v.note_id == note_id;
             let by_key = note_id < 0 && (key < 0 || v.key == key) && (channel < 0 || v.channel == channel);
             if by_id || by_key {
-                v.releasing = true;
+                v.release();
             }
         }
+    }
+
+    fn control(&mut self, ch: usize, cc: u8, value: u8) {
+        let x = value as f32 / 127.0;
+        let c = &mut self.channels[ch];
+        match cc {
+            0 => c.bank_msb = value,
+            32 => c.bank_lsb = value,
+            1 => {
+                c.dynamic = Some(x);
+                for v in self.voices.iter_mut().filter(|v| v.active && v.sustained && v.channel as usize == ch) {
+                    v.dyn_target = x;
+                }
+            }
+            3 => {
+                c.technique = value;
+                for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
+                    v.set_technique(value);
+                }
+            }
+            7 => c.volume = x,
+            11 => c.expression = x,
+            68 => c.legato = value >= 64,
+            120 | 123 => {
+                for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
+                    if cc == 120 {
+                        v.active = false;
+                    } else {
+                        v.release();
+                    }
+                }
+            }
+            121 => {
+                c.dynamic = None;
+                c.technique = 0;
+                c.legato = false;
+                c.expression = 1.0;
+                c.bend = 0.0;
+            }
+            _ => {}
+        }
+    }
+
+    fn program(&mut self, ch: usize, program: u8) {
+        let c = &mut self.channels[ch];
+        c.program = program & 0x7f;
+        let bank = ((c.bank_msb as u16) << 7) | c.bank_lsb as u16;
+        c.patch = patches::patch_for(c.program, bank);
     }
 
     fn event(&mut self, h: *const clap_event_header) {
@@ -154,14 +214,16 @@ impl Synth {
                 CLAP_EVENT_MIDI => {
                     let m = &*(h as *const clap_event_midi);
                     let (status, key, vel) = (m.data[0] & 0xF0, m.data[1] as i16, m.data[2]);
-                    let ch = (m.data[0] & 0x0F) as i16;
+                    let ch = (m.data[0] & 0x0F) as usize;
                     match (status, vel) {
-                        (0x90, v) if v > 0 => self.note_on(-1, m.port_index as i16, ch, key, v as f64 / 127.0),
-                        (0x80, _) | (0x90, _) => self.note_off(-1, ch, key),
-                        (0xB0, v) if key == 11 => self.expression = v as f32 / 127.0,
-                        (0xB0, v) if key == 7 => self.volume = v as f32 / 127.0,
-                        (0xE0, msb) => self.pitch_bend(ch, (key as u16 & 0x7f) | ((msb as u16 & 0x7f) << 7)),
-                        (0xC0, _) => self.program = (key as u8).min(PROGRAMS.len() as u8 - 1),
+                        (0x90, v) if v > 0 => self.note_on(-1, m.port_index as i16, ch as i16, key, v as f64 / 127.0),
+                        (0x80, _) | (0x90, _) => self.note_off(-1, ch as i16, key),
+                        (0xB0, v) => self.control(ch, key as u8, v),
+                        (0xE0, msb) => {
+                            let value = (key as u16 & 0x7f) | ((msb as u16 & 0x7f) << 7);
+                            self.channels[ch].bend = (value as f32 - 8192.0) / 8192.0 * 2.0;
+                        }
+                        (0xC0, _) => self.program(ch, key as u8),
                         _ => {}
                     }
                 }
@@ -170,29 +232,23 @@ impl Synth {
         }
     }
 
-    /// Renders `[from, to)` frames into the output buffers.
+    /// Renders frames into the output buffers (mono, both sides).
     fn render(&mut self, left: &mut [f32], right: &mut [f32], out: *const clap_output_events, time: u32) {
-        let attack = (1.0 / (0.006 * self.sample_rate)) as f32;
-        let release = (1.0 / (0.15 * self.sample_rate)) as f32;
-        let (_, octave, twelfth) = PROGRAMS[self.program as usize];
+        let n = left.len();
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+        let trims = self.trims;
         for v in self.voices.iter_mut().filter(|v| v.active) {
-            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-                if v.releasing {
-                    v.level -= release;
-                    if v.level <= 0.0 {
-                        v.active = false;
-                        break;
-                    }
-                } else if v.level < 1.0 {
-                    v.level = (v.level + attack).min(1.0);
-                }
-                let ph = v.phase * std::f64::consts::TAU;
-                let s = (ph.sin() + octave * (2.0 * ph).sin() + twelfth * (3.0 * ph).sin()) as f32 * v.level * v.velocity * 0.18 * self.gain * self.expression * self.volume;
-                v.phase = (v.phase + v.step).fract();
-                *l += s;
-                *r += s;
+            let c = self.channels[(v.channel & 15).max(0) as usize];
+            let buf = &mut self.scratch[..n];
+            buf.fill(0.0);
+            let alive = v.render(buf, c.bend, trims);
+            let g = self.gain * c.expression * c.volume;
+            for (l, x) in left.iter_mut().zip(buf.iter()) {
+                *l += x * g;
             }
-            if !v.active && !out.is_null() {
+            if !alive && !out.is_null() {
                 // Tell the host the voice is gone.
                 let end = clap_event_note {
                     header: clap_event_header { size: std::mem::size_of::<clap_event_note>() as u32, time, space_id: CLAP_CORE_EVENT_SPACE_ID, type_: CLAP_EVENT_NOTE_END, flags: 0 },
@@ -209,6 +265,7 @@ impl Synth {
                 }
             }
         }
+        right.copy_from_slice(left);
     }
 }
 
@@ -222,7 +279,7 @@ unsafe extern "C" fn destroy(p: *const clap_plugin) {
 unsafe extern "C" fn activate(p: *const clap_plugin, sr: f64, _min: u32, _max: u32) -> bool {
     let s = Synth::from(p);
     s.sample_rate = sr;
-    s.voices = [Voice::default(); VOICES];
+    s.new_voices();
     true
 }
 unsafe extern "C" fn deactivate(_p: *const clap_plugin) {}
@@ -232,8 +289,15 @@ unsafe extern "C" fn start_processing(_p: *const clap_plugin) -> bool {
 unsafe extern "C" fn stop_processing(_p: *const clap_plugin) {}
 unsafe extern "C" fn reset(p: *const clap_plugin) {
     let s = Synth::from(p);
-    s.voices = [Voice::default(); VOICES];
-    s.bend = [0.0; 16];
+    for v in s.voices.iter_mut() {
+        v.active = false;
+    }
+    for c in s.channels.iter_mut() {
+        c.bend = 0.0;
+        c.dynamic = None;
+        c.legato = false;
+        c.technique = 0;
+    }
 }
 
 unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
@@ -321,7 +385,9 @@ unsafe extern "C" fn state_save(p: *const clap_plugin, stream: *const clap_ostre
     let s = Synth::from(p);
     let mut bytes = STATE_MAGIC.to_vec();
     bytes.extend_from_slice(&s.gain.to_le_bytes());
-    bytes.push(s.program);
+    for c in &s.channels {
+        bytes.extend_from_slice(&[c.program, c.bank_msb, c.bank_lsb]);
+    }
     write_all(stream, &bytes)
 }
 
@@ -358,12 +424,18 @@ pub(crate) unsafe fn read_all(stream: *const clap_istream) -> Option<Vec<u8>> {
 
 unsafe extern "C" fn state_load(p: *const clap_plugin, stream: *const clap_istream) -> bool {
     let Some(bytes) = read_all(stream) else { return false };
-    if bytes.len() < 8 || &bytes[..4] != STATE_MAGIC {
+    // Corinzia Sine's state ("CZS1": its gain) is taken too.
+    if bytes.len() < 8 || (&bytes[..4] != STATE_MAGIC && &bytes[..4] != b"CZS1") {
         return false;
     }
-    Synth::from(p).gain = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    if let Some(&program) = bytes.get(8) {
-        Synth::from(p).program = program.min(PROGRAMS.len() as u8 - 1);
+    let s = Synth::from(p);
+    s.gain = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    if &bytes[..4] == STATE_MAGIC {
+        for (ch, c) in bytes[8..].chunks_exact(3).take(16).enumerate() {
+            s.channels[ch].bank_msb = c[1] & 0x7f;
+            s.channels[ch].bank_lsb = c[2] & 0x7f;
+            s.program(ch, c[0]);
+        }
     }
     true
 }
@@ -416,8 +488,9 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
     if id.is_null() {
         return ptr::null();
     }
-    if CStr::from_ptr(id) != PLUGIN_ID {
-        return effects::create(host, CStr::from_ptr(id));
+    let wanted = CStr::from_ptr(id);
+    if wanted != PLUGIN_ID && wanted != OLD_PLUGIN_ID {
+        return effects::create(host, wanted);
     }
     let synth = Box::into_raw(Box::new(Synth {
         plugin: clap_plugin {
@@ -437,13 +510,13 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         host,
         sample_rate: 48000.0,
         gain: 1.0,
-        program: 0,
-        expression: 1.0,
-        volume: 1.0,
-        bend: [0.0; 16],
-        voices: [Voice::default(); VOICES],
+        channels: [Channel::default(); 16],
+        voices: Vec::new(),
         clock: 0,
+        trims: patches::trims(),
+        scratch: Vec::new(),
     }));
+    (*synth).new_voices();
     (*synth).plugin.plugin_data = synth as *mut c_void;
     let _ = (*synth).host;
     &(*synth).plugin

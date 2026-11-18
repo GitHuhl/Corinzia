@@ -15,7 +15,7 @@ vst3 = "0.3"
 corinzia-score.workspace = true
 corinzia-model.workspace = true
 corinzia-perform.workspace = true
-corinzia-sine.workspace = true
+corinzia-ensemble.workspace = true
 rubato = "0.16"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "vorbis", "ogg"] }
 

@@ -6,6 +6,7 @@
 //! It feeds both MIDI export (`document`) and the audio engine
 //! (`corinzia-audio`'s snapshots).
 
+pub mod phrasing;
 pub mod tempo;
 
 use corinzia_edit as edit;
@@ -289,6 +290,8 @@ fn navigate(m: &Movement, first: Vec<(Frac, Frac)>) -> Vec<(Frac, Frac)> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EventShape {
     pub velocity: f32,
+    /// The level reached by the event's end (a hairpin under a held note).
+    pub end_velocity: f32,
     pub legato: bool,
 }
 
@@ -296,7 +299,7 @@ pub struct EventShape {
 /// next dynamic, or ±2 steps), and legato inside slurs (but the last note).
 /// `slurs`: the [first note, last note) times of the slurs in the voice.
 pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape> {
-    let mut out = vec![EventShape { velocity: 0.0, legato: false }; evs.len()];
+    let mut out = vec![EventShape { velocity: 0.0, end_velocity: 0.0, legato: false }; evs.len()];
     // The level each event is played at, and the level the music is at after it.
     let mut cur = 4u8;
     let mut attack = vec![4u8; evs.len()];
@@ -313,6 +316,7 @@ pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape
         attack[i] = a;
         after[i] = cur;
         out[i].velocity = velocity_for_dynamic(Some(a));
+        out[i].end_velocity = out[i].velocity;
         out[i].legato = slurs.iter().any(|&(from, to)| from <= e.start && e.start < to);
     }
     for i in 0..evs.len() {
@@ -332,14 +336,18 @@ pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape
         let (v0, v1) = (velocity_for_dynamic(Some(attack[i])), velocity_for_dynamic(Some(target)));
         let (t0, t1) = (q(evs[i].start), q(evs[j].start));
         for k in i..=j {
-            let f = if t1 > t0 { (q(evs[k].start) - t0) / (t1 - t0) } else { 1.0 };
-            out[k].velocity = v0 + (v1 - v0) * f as f32;
+            let at = |t: f64| if t1 > t0 { ((t - t0) / (t1 - t0)).clamp(0.0, 1.0) } else { 1.0 };
+            out[k].velocity = v0 + (v1 - v0) * at(q(evs[k].start)) as f32;
+            // Held through the hairpin's end: it gets there (but not past
+            // the arrival note's own start).
+            out[k].end_velocity = if k < j { v0 + (v1 - v0) * at(q(evs[k].end())) as f32 } else { out[k].velocity };
         }
         for k in j + 1..evs.len() {
             if evs[k].dynamic.is_some() {
                 break;
             }
             out[k].velocity = v1;
+            out[k].end_velocity = v1;
         }
     }
     out
@@ -360,6 +368,14 @@ pub struct PerformedNote {
     /// ("staccato", "legato"…), for expression maps.
     pub technique: Option<&'static str>,
     pub articulation: Option<&'static str>,
+    /// The staff (lane) and voice it is in: `lane << 8 | voice`.
+    pub voice: u32,
+    /// Slurred to the next note of its voice (played joined).
+    pub slurred: bool,
+    /// The dynamic it reaches by its end (a hairpin), 0..1 like `velocity`.
+    pub end_velocity: f32,
+    /// Its written articulations (`art::*`).
+    pub arts: u16,
 }
 
 /// Technique texts Corinzia understands, by how they begin: (prefix, canonical).
@@ -427,7 +443,26 @@ impl Performance {
     }
 }
 
+/// How a movement is performed beyond what is written: see [`phrasing`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Style {
+    /// The phrasing rules (phrase arches, the final ritardando, metrical
+    /// and melodic accents...). Off: the score as written, with fermatas held.
+    pub phrasing: bool,
+}
+
+impl Style {
+    pub fn of(project: &Project) -> Style {
+        Style { phrasing: project.phrasing }
+    }
+}
+
+/// The movement as written (fermatas held), without the phrasing rules.
 pub fn perform(m: &Movement) -> Performance {
+    perform_with(m, Style::default())
+}
+
+pub fn perform_with(m: &Movement, style: Style) -> Performance {
     let order = playback_order(m);
     // Tempo and meter maps over performed time.
     let (mut tempo_points, mut meter_points, mut spans) = (Vec::new(), Vec::new(), Vec::new());
@@ -462,6 +497,7 @@ pub fn perform(m: &Movement) -> Performance {
         }
     }
     let mut notes = Vec::new();
+    let mut fermatas: Vec<(f64, f64)> = Vec::new();
     for (si, &(a, b)) in order.iter().enumerate() {
         let base = spans[si].performed_q;
         let to_q = |f: Frac| base + q(f - a);
@@ -471,6 +507,9 @@ pub fn perform(m: &Movement) -> Performance {
                 let mut consumed: HashSet<Id> = HashSet::new(); // tie continuations
                 let shape = expressive_shape(evs, voice_slurs.get(&(li, vi)).map(Vec::as_slice).unwrap_or(&[]));
                 for (ei, ev) in evs.iter().enumerate() {
+                    if ev.articulations & art::FERMATA != 0 && ev.start >= a && ev.start < b {
+                        fermatas.push((to_q(ev.start), to_q(ev.end().min(b))));
+                    }
                     if ev.is_rest() || ev.articulations & art::CUE != 0 || ev.start < a || ev.start >= b {
                         continue;
                     }
@@ -509,6 +548,10 @@ pub fn perform(m: &Movement) -> Performance {
                                     roll_sec: 0.0,
                                     technique,
                                     articulation: None,
+                                    voice: (li as u32) << 8 | vi as u32,
+                                    slurred: true,
+                                    end_velocity: (vel_main * 0.9).min(1.0),
+                                    arts: 0,
                                 });
                             }
                         }
@@ -572,6 +615,10 @@ pub fn perform(m: &Movement) -> Performance {
                                 roll_sec: if fi == 0 { roll } else { 0.0 },
                                 technique,
                                 articulation,
+                                voice: (li as u32) << 8 | vi as u32,
+                                slurred: fi + 1 < n || (shape[ei].legato && last_art & (art::STACCATO | art::STACCATISSIMO) == 0),
+                                end_velocity: if fi + 1 == n { (vel * shape[ei].end_velocity / shape[ei].velocity.max(1e-3)).min(1.0) } else { vel.min(1.0) },
+                                arts: ev.articulations,
                             });
                         }
                     }
@@ -580,7 +627,9 @@ pub fn perform(m: &Movement) -> Performance {
         }
     }
     let notes = apply_tweaks(m, notes);
-    Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes }
+    let mut perf = Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes };
+    phrasing::apply(&mut perf, &fermatas, style);
+    perf
 }
 
 /// Audio clips' cues for the score: on the staves of the player each clip
@@ -593,7 +642,7 @@ pub fn clip_cues(project: &Project, m: &Movement) -> Vec<(Id, corinzia_score::sc
     if clips.is_empty() {
         return vec![];
     }
-    let perf = perform(m);
+    let perf = perform_with(m, Style::of(project));
     // Seconds -> a written position, to the 1/64 of a quarter, inside the movement.
     let written = |s: f64| -> Frac {
         let w = perf.written_quarter(perf.tempo.quarter_at(s.max(0.0))).clamp(0.0, q(m.length));
@@ -672,7 +721,7 @@ fn apply_tweaks(m: &Movement, mut notes: Vec<PerformedNote>) -> Vec<PerformedNot
 /// time, as in playback.
 pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Document {
     use corinzia_export::doc;
-    let perf = perform(m);
+    let perf = perform_with(m, Style::of(project));
     let mut by_track: BTreeMap<Id, Vec<&PerformedNote>> = BTreeMap::new();
     for n in &perf.notes {
         if let Some(t) = project.instrument(n.instrument).and_then(|i| i.track) {

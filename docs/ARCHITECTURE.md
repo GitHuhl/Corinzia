@@ -14,7 +14,7 @@ rust/
   corinzia-layout    the engraver: display lists, pages, PDF (Western and Byzantine)
   corinzia-perform   the performance of a movement; tempo maps; export documents
   corinzia-audio     CLAP and VST3 host, plugin editors, realtime engine, PipeWire output
-  corinzia-sine      Corinzia Sine, the built-in CLAP instrument
+  corinzia-ensemble  Corinzia Ensemble, the built-in instruments and effects (CLAP)
   corinzia-export    MIDI and MusicXML writers
   corinzia-import    MusicXML reader (.musicxml, .xml, compressed .mxl)
   corinzia-score     fractions, note values, the engraver's input types
@@ -371,7 +371,7 @@ Every example score in the W3C MusicXML repository imports and engraves
 * **`host`** loads plugin bundles with `libloading`. It scans `CLAP_PATH`,
   `~/.clap`, `/usr/lib/clap`, `VST3_PATH`, `~/.vst3`, `/usr/lib/vst3`, the
   Nix profiles and `/run/current-system/sw/lib/{clap,vst3}`. A `Library` is
-  a `.clap` bundle (`clap-sys`), a `.vst3` bundle (`vst3`), or Corinzia Sine,
+  a `.clap` bundle (`clap-sys`), a `.vst3` bundle (`vst3`), or Corinzia Ensemble,
   hosted in-process through the same CLAP entry point. A `Plugin` is one
   instance of either format; the engine sees CLAP only.
   * Lifecycle follows the formats' thread rules:

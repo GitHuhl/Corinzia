@@ -44,6 +44,24 @@ ready to hand out.
 
 ![The first violin's part](docs/screenshots/quartet-part.png)
 
+## An orchestra in the box
+
+Press Space and your score plays straight away, with no sample libraries
+to install. Corinzia's own instruments cover the orchestra and more:
+string sections and soloists, woodwinds, brass, choir and solo voices,
+piano, organ, harp, guitar, tuned percussion, timpani and drums. Each
+staff picks its sound from the instrument's name.
+
+* **Balanced like a real orchestra:** with every fader at 0 dB, the brass
+  can drown the flutes at ff, a solo violin sits under the section, and a
+  pianissimo clarinet fades to almost nothing.
+* **Played the way it's written:** hairpins swell through held notes,
+  slurred notes join without a new attack, accents bite, and pizz., trem.,
+  con sord., sul pont., col legno and flutter-tonguing change the sound.
+* **Phrased like a musician (optional):** one click shapes each phrase,
+  leans on downbeats and melodic peaks, and slows the final bar. Turn it
+  off to hear exactly what's on the page.
+
 ## A real mixing desk behind the score
 
 Switch to the Mix tab and your score becomes a session. Each player is a
