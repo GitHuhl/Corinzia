@@ -244,7 +244,14 @@ the output), automation playback and saving plugin settings.
   what the score asks: hairpins through held notes, slurred notes joined
   (legato, no new attack), accents, and the techniques pizz., trem., con
   sord., sul pont., sul tasto, col legno, harmonics and flutter-tonguing.
-  Fermatas are held.
+  Fermatas are held. Articulations change how each note speaks: staccato
+  lasts about a fifth of a second and staccatissimo a tenth, whatever the
+  tempo; quick unslurred notes (under a fifth of a second) are played off
+  the string or lightly tongued; accents and marcato start brighter and
+  louder and settle to the dynamic, as an *sfz* or *fp* does; tenuto
+  starts gently; unslurred string notes alternate down-bows and up-bows
+  (or follow the bowing marks); a wide slurred leap on a string slides;
+  a tremolo is one bowed note, not repeated notes.
 * **Phrasing:** the toolbar's Phrasing button (or `phrasing on|off`) plays
   the score as players shape it, after the KTH rules for music
   performance: each phrase swells and relaxes, the last bar slows like a

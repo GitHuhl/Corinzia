@@ -41,10 +41,13 @@ plays in real time on an ordinary four-core computer.
 * **Balanced like a real orchestra.** With every fader at 0 dB, the brass can
   drown the flutes at fortissimo, a solo violin sits under the section, and
   a pianissimo clarinet fades to almost nothing.
-* **Played the way it's written.** Hairpins swell through held notes, slurs
-  join without a new attack, accents bite, fermatas are held, and pizz.,
-  tremolo, con sordino, sul ponticello, col legno and flutter-tonguing
-  change the sound.
+* **Played the way it's written.** Staccato is short whatever the tempo,
+  quick passages go off the string, accents and marcato bite and then
+  settle, an *sfz* or *fp* strikes and falls away, and down-bows and
+  up-bows alternate. Hairpins swell through held notes, slurs join without
+  a new attack (with a slide on a wide leap), fermatas are held, and
+  pizz., tremolo, con sordino, sul ponticello, col legno and
+  flutter-tonguing change the sound.
 * **Phrased like a musician.** Turn on Phrasing and Corinzia shapes each
   phrase, leans on downbeats and melodic peaks, and slows the final bar, as
   players do. Turn it off to hear exactly what's on the page.
