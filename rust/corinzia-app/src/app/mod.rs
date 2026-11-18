@@ -230,7 +230,7 @@ impl App {
                 Ok(loaded) => loaded,
                 Err(e) => (demo::project(), None, format!("Could not open {}: {e} — showing the demo", f.display())),
             },
-            None => (demo::project(), None, "Demo project · N starts note input · drag selects · right-drag pans · Ctrl+wheel zooms".to_string()),
+            None => (demo::orchestra(), None, "A Festival Prelude (demo) · Space plays · N starts note input · drag selects · right-drag pans · Ctrl+wheel zooms".to_string()),
         };
         let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
