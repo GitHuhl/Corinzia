@@ -813,10 +813,10 @@ name = "corinzia-audio"
 version = "0.2.9"
 dependencies = [
  "clap-sys",
+ "corinzia-ensemble",
  "corinzia-model",
  "corinzia-perform",
  "corinzia-score",
- "corinzia-sine",
  "cpal",
  "libc",
  "libloading",
@@ -845,6 +845,13 @@ version = "0.2.9"
 dependencies = [
  "corinzia-model",
  "corinzia-score",
+]
+
+[[package]]
+name = "corinzia-ensemble"
+version = "0.2.9"
+dependencies = [
+ "clap-sys",
 ]
 
 [[package]]
@@ -904,13 +911,6 @@ dependencies = [
 [[package]]
 name = "corinzia-score"
 version = "0.2.9"
-
-[[package]]
-name = "corinzia-sine"
-version = "0.2.9"
-dependencies = [
- "clap-sys",
-]
 
 [[package]]
 name = "cosmic-text"

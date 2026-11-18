@@ -100,6 +100,8 @@ pub enum Action {
     PlayStop,
     /// Cycle the selected passage, or turn the cycle on or off.
     Cycle,
+    /// Playback with the phrasing rules, on or off.
+    Phrasing(bool),
     /// Lyrics popover for a verse.
     Lyrics(u8),
     ShowScore,

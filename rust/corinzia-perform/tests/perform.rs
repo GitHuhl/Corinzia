@@ -359,3 +359,67 @@ fn tweaks_change_how_notes_play_not_how_they_are_written() {
     // The score is untouched.
     assert_eq!(m.lanes[0].voices[0].events[1].duration, f(1, 4));
 }
+
+/// Four quarters c' d' e' f' then a whole g' (bar 2), at 120 bpm.
+fn line() -> Movement {
+    let mut ids = Ids(300);
+    let mut evs: Vec<Event> = (0..4).map(|i| make_event(&mut ids, f(i, 4), f(1, 4), &[p(i as i8, 0, 4)], 0)).collect();
+    evs.push(make_event(&mut ids, F::int(1), F::int(1), &[p(4, 0, 4)], 0));
+    evs[0].dynamic = Some(4);
+    movement(F::int(2), evs)
+}
+
+#[test]
+fn a_fermata_is_held_about_twice_as_long() {
+    let plain = perform(&line());
+    let mut m = line();
+    let mut evs = (*m.lanes[0].voices[0].events).clone();
+    evs[1].articulations = art::FERMATA; // on d'
+    m.lanes[0].voices[0].events = Arc::new(evs);
+    let held = perform(&m);
+    let secs = |p: &Performance, q: f64| p.tempo.seconds_at(q);
+    // d' (from 0.5 s) lasts a second; everything after it is half a second later.
+    assert!((secs(&held, 1.0) - 0.5).abs() < 1e-6);
+    assert!((secs(&held, 2.0) - secs(&held, 1.0) - 1.0).abs() < 1e-3, "{}", secs(&held, 2.0) - secs(&held, 1.0));
+    assert!((secs(&held, 8.0) - secs(&plain, 8.0) - 0.5).abs() < 1e-3);
+    // Notes keep their written places (performed quarters).
+    assert_eq!(held.notes.iter().map(|n| n.on_q).collect::<Vec<_>>(), plain.notes.iter().map(|n| n.on_q).collect::<Vec<_>>());
+}
+
+#[test]
+fn phrasing_shapes_the_line_and_slows_the_end() {
+    let m = line();
+    let plain = perform(&m);
+    let shaped = perform_with(&m, Style { phrasing: true });
+    // Off: as written (every note mf).
+    assert!(plain.notes.iter().all(|n| (n.velocity - velocity_for_dynamic(Some(4))).abs() < 1e-6));
+    // On: the downbeat leant on, the phrase swelling then easing, and the
+    // last bar slowing (the whole note takes longer than 2 s, and slows).
+    let v: Vec<f32> = shaped.notes.iter().map(|n| n.velocity).collect();
+    assert!(v[0] > v[1], "downbeat over the second beat: {v:?}");
+    assert!(v.iter().any(|&x| (x - v[0]).abs() > 0.01));
+    let last = shaped.tempo.seconds_at(8.0) - shaped.tempo.seconds_at(4.0);
+    assert!(last > 2.1 && last < 3.2, "{last}");
+    assert!(shaped.tempo.tempo_at(7.9) < shaped.tempo.tempo_at(4.1));
+    assert!((shaped.tempo.seconds_at(4.0) - plain.tempo.seconds_at(4.0)).abs() < 1e-9, "the first bar as written");
+    // Round trips still hold on the warped map.
+    for q in [0.5, 4.3, 6.0, 7.99] {
+        assert!((shaped.tempo.quarter_at(shaped.tempo.seconds_at(q)) - q).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn a_hairpin_carries_through_a_held_note_and_slurs_are_marked() {
+    let mut m = line();
+    let mut evs = (*m.lanes[0].voices[0].events).clone();
+    // A crescendo from the fourth quarter to the whole note's f.
+    evs[3].spans = span::CRESC_START;
+    evs[4].dynamic = Some(5);
+    m.lanes[0].voices[0].events = Arc::new(evs);
+    let ids: Vec<Id> = m.lanes[0].voices[0].events.iter().map(|e| e.id).collect();
+    m.slurs.push(Slur { id: 900, from: ids[0], to: ids[2], dir: 0 });
+    let perf = perform(&m);
+    let n = &perf.notes;
+    assert!(n[3].end_velocity > n[3].velocity, "rising through f': {} {}", n[3].velocity, n[3].end_velocity);
+    assert_eq!(n.iter().map(|x| x.slurred).collect::<Vec<_>>(), [true, true, false, false, false], "joined into the slur's last note");
+}

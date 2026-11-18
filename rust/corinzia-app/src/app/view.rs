@@ -103,6 +103,10 @@ impl App {
                 button(text("⟲").size(14)).padding([4, 8]).style(theme::tool(self.playback.cycling)).on_press(Message::Act(Action::Cycle)),
                 "Cycle: the selected passage, or the cycle on or off (Alt+L; Shift+drag along the arrange view's ruler to set it)",
             ),
+            panels::tip(
+                button(text("Phrasing").size(13)).padding([5, 10]).style(theme::tool(ed.project.phrasing)).on_press(Message::Act(Action::Phrasing(!ed.project.phrasing))),
+                "Phrasing: play with phrase arches, a final ritardando and accents, as players do (off: as written)",
+            ),
             panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
             panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
         ]

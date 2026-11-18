@@ -302,3 +302,16 @@ fn files_of_another_format_or_kind_are_refused_untouched() {
     assert_eq!(std::fs::read_to_string(&text).unwrap(), "not a database, just some notes that should stay");
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
 }
+
+#[test]
+fn the_phrasing_choice_is_saved() {
+    let dir = std::env::temp_dir().join(format!("corinzia-phrasing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.project");
+    for on in [true, false] {
+        let p = corinzia_model::Project { phrasing: on, ..Default::default() };
+        corinzia_model::store::save(&p, &path).unwrap();
+        assert_eq!(corinzia_model::store::load(&path).unwrap().phrasing, on);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

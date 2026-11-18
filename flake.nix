@@ -28,7 +28,7 @@
         buildAndTestSubdir = "rust";
         cargoLock.lockFile = ./rust/Cargo.lock;
         # The app, and the built-in instrument as a standalone CLAP bundle.
-        cargoBuildFlags = [ "-p" "corinzia-app" "-p" "corinzia-sine" ];
+        cargoBuildFlags = [ "-p" "corinzia-app" "-p" "corinzia-ensemble" ];
         # Every crate's tests. The live PipeWire test is opt-in
         # (CORINZIA_PW=1, see scripts/run_with_pipewire.sh).
         cargoTestFlags = [ "--workspace" ];
@@ -44,9 +44,9 @@
         postInstall = ''
           # The built-in instrument as a regular CLAP bundle, for other hosts too.
           mkdir -p $out/lib/clap
-          sine=$(find $out/lib target -name libcorinzia_sine.so | head -n1)
-          install -m755 "$sine" "$out/lib/clap/Corinzia Sine.clap"
-          rm -f $out/lib/libcorinzia_sine.so
+          ensemble=$(find $out/lib target -name libcorinzia_ensemble.so | head -n1)
+          install -m755 "$ensemble" "$out/lib/clap/Corinzia Ensemble.clap"
+          rm -f $out/lib/libcorinzia_ensemble.so
           wrapProgram $out/bin/corinzia \
             --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath (guiLibs pkgs)} \
             --set-default CORINZIA_TEXT_FONT ${textFont pkgs}

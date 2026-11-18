@@ -788,7 +788,7 @@ pub struct AudioNode {
     pub id: Id,
     pub kind: NodeKind,
     pub name: String,
-    pub bundle: String,    // .clap or .vst3 path ("builtin:corinzia-sine" for the built-in instrument)
+    pub bundle: String,    // .clap or .vst3 path ("builtin:corinzia-ensemble" for the built-in instruments)
     pub plugin_id: String, // clap_plugin_descriptor.id, or the VST3 class id in hex
     pub bypassed: bool,
 }
@@ -830,6 +830,9 @@ pub struct Project {
     pub nodes: Vec<AudioNode>,
     pub edges: Vec<AudioEdge>,
     pub plugin_state: std::collections::BTreeMap<Id, Arc<Vec<u8>>>,
+    /// Playback with the phrasing rules (corinzia-perform's `phrasing`):
+    /// phrase arches, the final ritardando, accents. Off: as written.
+    pub phrasing: bool,
 }
 
 impl Default for Project {
@@ -855,6 +858,7 @@ impl Default for Project {
             nodes: vec![],
             edges: vec![],
             plugin_state: Default::default(),
+            phrasing: false,
         }
     }
 }

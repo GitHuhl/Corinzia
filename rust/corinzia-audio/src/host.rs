@@ -1,5 +1,5 @@
 //! Plugin hosting: loading bundles (`.clap` shared objects, `.vst3` bundles
-//! through [`crate::vst3`], or the built-in Corinzia Sine in-process),
+//! through [`crate::vst3`], or the built-in Corinzia Ensemble in-process),
 //! creating plugin instances, driving their lifecycle on the right threads,
 //! and their editors (in windows of [`crate::gui`]).
 //!
@@ -125,8 +125,15 @@ pub fn param_event(id: u32, value: f64, time: u32) -> clap_event_param_value {
     }
 }
 
-/// Bundle path of the built-in instrument.
-pub const BUILTIN: &str = "builtin:corinzia-sine";
+/// Bundle path of the built-in instruments and effects.
+pub const BUILTIN: &str = "builtin:corinzia-ensemble";
+/// The path projects saved before Corinzia Ensemble name it by.
+pub const OLD_BUILTIN: &str = "builtin:corinzia-sine";
+
+/// The built-in bundle, by either of its names.
+pub fn is_builtin(bundle: &str) -> bool {
+    bundle == BUILTIN || bundle == OLD_BUILTIN
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PluginInfo {
@@ -158,7 +165,7 @@ impl Library {
     /// Loads a `.clap` bundle (a shared object) and initialises its entry,
     /// or a `.vst3` bundle and its factory.
     pub fn load(path: &Path) -> Result<Arc<Library>, String> {
-        if path.as_os_str() == BUILTIN {
+        if path.to_str().is_some_and(is_builtin) {
             return Ok(Self::builtin());
         }
         if Format::of(path) == Format::Vst3 {
@@ -173,9 +180,9 @@ impl Library {
         }
     }
 
-    /// Corinzia Sine, linked into the application.
+    /// Corinzia Ensemble, linked into the application.
     pub fn builtin() -> Arc<Library> {
-        unsafe { Self::init(None, corinzia_sine::entry(), Path::new(BUILTIN)).expect("built-in instrument") }
+        unsafe { Self::init(None, corinzia_ensemble::entry(), Path::new(BUILTIN)).expect("built-in instrument") }
     }
 
     unsafe fn init(lib: Option<libloading::Library>, entry: *const clap_plugin_entry, path: &Path) -> Result<Arc<Library>, String> {
@@ -461,6 +468,8 @@ fn clap_window(h: gui::Handle) -> clap_window {
 
 impl Plugin {
     pub fn create(lib: &Arc<Library>, id: &str) -> Result<Plugin, String> {
+        // The instrument the built-in one replaced.
+        let id = if id == corinzia_ensemble::OLD_PLUGIN_ID.to_str().unwrap_or_default() && lib.path.as_os_str() == BUILTIN { corinzia_ensemble::PLUGIN_ID.to_str().unwrap_or_default() } else { id };
         let info = lib.plugins().into_iter().find(|p| p.id == id).ok_or_else(|| format!("{}: no plugin {id}", lib.path.display()))?;
         if info.bundle.as_os_str() != BUILTIN {
             // Some toolkits look the display over when the plugin is made,

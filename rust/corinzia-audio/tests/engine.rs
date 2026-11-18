@@ -52,17 +52,20 @@ fn builtin_instrument_is_a_clap_plugin() {
     let lib = Library::builtin();
     let infos = lib.plugins();
     let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(ids, ["org.corinzia.sine", "org.corinzia.gain", "org.corinzia.reverb", "org.corinzia.eq", "org.corinzia.limiter"]);
+    assert_eq!(ids, ["org.corinzia.ensemble", "org.corinzia.gain", "org.corinzia.reverb", "org.corinzia.eq", "org.corinzia.limiter"]);
     assert!(infos[0].is_instrument() && !infos[1].is_instrument());
-    let p = Plugin::create(&lib, "org.corinzia.sine").unwrap();
+    // Projects saved with Corinzia Sine get the ensemble.
+    assert_eq!(Plugin::create(&lib, "org.corinzia.sine").unwrap().info.id, "org.corinzia.ensemble");
+    assert!(Library::load(std::path::Path::new(host::OLD_BUILTIN)).is_ok());
+    let p = Plugin::create(&lib, "org.corinzia.ensemble").unwrap();
     assert!(!p.midi_dialect && p.output_channels == 2);
     p.activate(SR, 256).unwrap();
     let state = p.save_state().unwrap();
-    assert_eq!(&state[..4], b"CZS1");
-    unsafe { corinzia_sine::set_gain(p.raw(), 0.25) };
+    assert_eq!(&state[..4], b"CZE1");
+    unsafe { corinzia_ensemble::set_gain(p.raw(), 0.25) };
     let changed = p.save_state().unwrap();
     assert_ne!(state, changed);
-    let q = Plugin::create(&lib, "org.corinzia.sine").unwrap();
+    let q = Plugin::create(&lib, "org.corinzia.ensemble").unwrap();
     assert!(q.load_state(&changed));
     assert_eq!(q.save_state().unwrap(), changed, "state round-trips");
     assert!(!q.load_state(b"junk"));
@@ -72,22 +75,22 @@ fn builtin_instrument_is_a_clap_plugin() {
 fn loads_the_bundle_from_disk() {
     // The same plugin as a real .clap shared object, through dlopen.
     let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
-    let so = ["debug", "release"].iter().map(|d| target.join(d).join("libcorinzia_sine.so")).find(|p| p.exists());
+    let so = ["debug", "release"].iter().map(|d| target.join(d).join("libcorinzia_ensemble.so")).find(|p| p.exists());
     let Some(so) = so else {
-        eprintln!("libcorinzia_sine.so not built; skipping");
+        eprintln!("libcorinzia_ensemble.so not built; skipping");
         return;
     };
     let dir = std::env::temp_dir().join(format!("corinzia-clap-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("vendor")).unwrap();
-    let bundle = dir.join("vendor/Corinzia Sine.clap");
+    let bundle = dir.join("vendor/Corinzia Ensemble.clap");
     std::fs::copy(&so, &bundle).unwrap();
     std::fs::write(dir.join("not-a-plugin.clap"), b"nope").unwrap();
     assert_eq!(host::find_bundles(&[dir.clone()]).len(), 2);
     let (infos, errors) = host::scan(&[dir.clone()]);
-    assert_eq!(infos.iter().filter(|i| i.id == "org.corinzia.sine").count(), 2, "built-in + bundle: {infos:?}");
+    assert_eq!(infos.iter().filter(|i| i.id == "org.corinzia.ensemble").count(), 2, "built-in + bundle: {infos:?}");
     assert_eq!(errors.len(), 1, "{errors:?}");
     let lib = Library::load(&bundle).unwrap();
-    let p = Plugin::create(&lib, "org.corinzia.sine").unwrap();
+    let p = Plugin::create(&lib, "org.corinzia.ensemble").unwrap();
     p.activate(SR, 128).unwrap();
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -98,9 +101,14 @@ fn renders_the_score_sample_accurately() {
     let mut pool = PluginPool::new(SR, 256);
     let snap = snapshot::build(&p, SR, 1, &[0], |t| pool.plugin_for(&p, t));
     assert_eq!(snap.nodes.len(), 1);
-    assert_eq!(snap.notes.len(), 4);
+    let played: Vec<&snapshot::ScheduledNote> = snap.notes.iter().filter(|n| n.kind == snapshot::Kind::Note).collect();
+    assert_eq!(played.len(), 4);
     let beat = (SR * 0.5) as i64; // 120 bpm
-    assert_eq!(snap.notes[0].at, 0);
+    assert_eq!(played[0].at, 0);
+    // The flute's sound, its dynamic (f) as CC1, the normal technique.
+    assert_eq!(snap.nodes[0].program, Some((0, 73, Some(0))));
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(1) && (n.velocity - 0.75).abs() < 0.01));
+    assert!(snap.notes.iter().any(|n| n.kind == snapshot::Kind::Cc(3) && n.velocity == 0.0));
     assert_eq!(snap.notes.iter().find(|n| n.on && n.key == 81).unwrap().at, 3 * beat);
     assert_eq!(snap.end(), 4 * beat);
     let timeline = snap.timeline();
@@ -270,15 +278,15 @@ fn effect_parameters_set_while_idle_and_while_playing() {
 #[test]
 fn a_tracks_program_reaches_the_instrument_when_playing_starts() {
     let beat = (SR * 0.5) as usize;
-    let organ = render(&project(), beat);
+    let flute = render(&project(), beat);
     let mut p = project();
-    p.tracks[0].program = Some(1); // Corinzia Sine: pure sine
-    let pure = render(&p, beat);
-    // The same note, without the octave partial: a different waveform, less energy.
-    assert!(rms(&pure[1000..beat / 2]) < rms(&organ[1000..beat / 2]) * 0.995, "{} {}", rms(&pure[1000..beat / 2]), rms(&organ[1000..beat / 2]));
+    p.tracks[0].program = Some(56); // General MIDI: trumpet
+    let trumpet = render(&p, beat);
+    // The same note, louder and another sound.
+    assert!(rms(&trumpet[2000..beat / 2]) > rms(&flute[2000..beat / 2]) * 1.5, "{} {}", rms(&trumpet[2000..beat / 2]), rms(&flute[2000..beat / 2]));
     let mut pool = PluginPool::new(SR, 256);
     let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
-    assert_eq!(snap.nodes[0].program, Some((0, 1, None)));
+    assert_eq!(snap.nodes[0].program, Some((0, 56, None)));
 }
 
 #[test]
@@ -313,7 +321,7 @@ fn automation_and_dynamics_as_a_controller() {
     let after = rms(&step[2 * beat + 2000..3 * beat]) / rms(&flat[2 * beat + 2000..3 * beat]);
     assert!((before - 1.0).abs() < 0.02 && (after - 0.1).abs() < 0.02, "{before} {after}");
 
-    // Dynamics as CC11: the sine follows expression, so p (CC11 ≈ velocity) is softer twice over.
+    // Dynamics as CC11: the instrument follows expression, so p (CC11 ≈ velocity) is softer twice over.
     let mut p = long();
     p.movements[0].lanes[0].voices[0].events = Arc::new({
         let mut e = (*p.movements[0].lanes[0].voices[0].events).clone();
@@ -595,7 +603,7 @@ fn a_movement_is_exported_as_a_wav_file_like_it_plays() {
     assert!(steps >= 8, "two seconds and the tail, half a second at a time");
     let summary = b.finish().unwrap();
     assert!((summary.seconds - (2.0 + corinzia_audio::bounce::TAIL_SECONDS)).abs() < 0.01);
-    assert!(summary.peak_db < 0.0 && summary.peak_db > -30.0 && summary.clipped == 0, "{summary:?}");
+    assert!(summary.peak_db < 0.0 && summary.peak_db > -40.0 && summary.clipped == 0, "{summary:?}");
     // The file reads back as what playback renders (to 24 bits).
     let (ch, rate) = corinzia_audio::media::decode(&path).unwrap();
     assert_eq!((ch.len(), rate), (2, SR as u32));
@@ -634,7 +642,7 @@ fn peaks_are_metered_per_track_and_at_the_master() {
 
 #[test]
 fn tracks_sharing_a_plugin_node_play_through_one_instance_on_their_channels() {
-    // Two flutes, one Corinzia Sine node between them (channels 0 and 5).
+    // Two flutes, one Corinzia Ensemble node between them (channels 0 and 5).
     let mut p = ensemble(2);
     p.nodes.push(AudioNode { id: 700, kind: NodeKind::Plugin, name: "Sine".into(), bundle: host::BUILTIN.into(), plugin_id: "org.corinzia.sine".into(), bypassed: false });
     for (k, t) in p.tracks.iter_mut().enumerate() {
@@ -673,7 +681,8 @@ fn frequency(x: &[f32]) -> f64 {
 
 #[test]
 fn tones_play_at_their_bent_pitch_with_a_drone_unbent() {
-    let p = project();
+    let mut p = project();
+    p.tracks[0].program = Some(79); // the built-in sine: one zero crossing a period
     let mut pool = PluginPool::new(SR, 256);
     // A' (69) bent up a semitone on channel 0 = 466.16 Hz; nothing else for
     // the first beat, then a drone on channel 1 joins, its own bend at 0.
@@ -693,4 +702,42 @@ fn tones_play_at_their_bent_pitch_with_a_drone_unbent() {
     let (l, _) = eng.render_offline((2.0 * SR) as usize);
     let f = frequency(&l[4800..43200]);
     assert!((f - 466.16).abs() < 3.0, "the bent A sounds as B flat: {f}");
+}
+
+#[test]
+fn the_builtin_instruments_get_slurs_hairpins_and_techniques() {
+    // The flute's c'' and a'' slurred, with a crescendo from c''; "pizz."
+    // is not a flute's, but the controller goes the same way.
+    let mut p = project();
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].duration = Frac::new(3, 4); // c'' held to a''
+    evs.remove(1); // no rest between
+    evs[0].spans = corinzia_score::score::span::CRESC_START;
+    evs[1].dynamic = Some(7);
+    let (a, b) = (evs[0].id, evs[1].id);
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    p.movements[0].slurs.push(corinzia_score::score::Slur { id: 99, from: a, to: b, dir: 0 });
+    p.movements[0].lanes[0].texts.push(TextItem { id: 70, at: Frac::new(3, 4), text: "pizz.".into(), kind: TextKind::Technique, shown: Shown::Both });
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let beat = (SR * 0.5) as i64;
+    let cc = |n: u8| snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(n)).map(|e| (e.at, e.velocity)).collect::<Vec<_>>();
+    // Legato on after c'' starts, off after a'' starts.
+    assert_eq!(cc(68), [(1, 1.0), (3 * beat + 1, 0.0)]);
+    // c'' rises through the hairpin to fff: many CC1 steps, upwards.
+    let dynamics = cc(1);
+    assert!(dynamics.len() > 20 && dynamics.windows(2).all(|w| w[1].1 >= w[0].1 - 1e-6), "{dynamics:?}");
+    assert!(dynamics.last().unwrap().1 > 0.95);
+    // The technique just before a''.
+    assert_eq!(cc(3), [(0, 0.0), (3 * beat - 4, 1.0 / 127.0)]);
+    // c'' held into a'' so they join.
+    let off = snap.notes.iter().find(|e| e.kind == snapshot::Kind::Note && !e.on && e.key == 72).unwrap().at;
+    assert!(off > 3 * beat);
+    // And it renders: one sound throughout, no gap at the join.
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snap);
+    ui.play();
+    let (l, _) = eng.render_offline((4 * beat) as usize);
+    let b = beat as usize;
+    assert!(rms(&l[3 * b - 2000..3 * b + 2000]) > 0.5 * rms(&l[2 * b..2 * b + 4000]), "joined");
 }

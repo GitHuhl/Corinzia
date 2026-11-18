@@ -26,6 +26,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("get project|selection|notes [bar A[-B]] [staff S]|chant|status", "Queries, answered with JSON"),
     ("open <file> | save [file] | export <file.pdf|mid|musicxml|wav>", "Files"),
     ("undo | redo", "Undo or redo the last edit"),
+    ("phrasing on|off", "Playback with the phrasing rules (phrase arches, final ritardando, accents) or as written"),
     ("movement <n> | chant <n|off>", "Show movement n or chant n (from 1)"),
     ("select all | select none | select bar <a>[-<b>] [staff <s>[-<t>]]", "Select (bars as numbered in the score, staves from 1)"),
     ("input on|off", "Note input"),
@@ -117,6 +118,11 @@ impl App {
                 Value::Null
             }
             "get" => return self.query(&args),
+            "phrasing" => match arg(0) {
+                "on" => self.run_action(Action::Phrasing(true)),
+                "off" => self.run_action(Action::Phrasing(false)),
+                _ => return Err("phrasing on|off".into()),
+            },
             "undo" => self.run_action(Action::Undo),
             "redo" => self.run_action(Action::Redo),
             "movement" => {
@@ -270,6 +276,7 @@ impl App {
                 "movements": p.movements.iter().enumerate().map(|(i, m)| json!({"number": i + 1, "title": m.title, "bars": edit::bar_starts(m).len(), "shown": i == ed.movement && ed.chant.is_none()})).collect::<Vec<_>>(),
                 "players": p.players.iter().map(|pl| json!({"name": pl.name, "instruments": pl.instruments.iter().filter_map(|i| p.instrument(*i)).map(|i| i.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
                 "chants": p.chants.iter().enumerate().map(|(i, c)| json!({"number": i + 1, "title": c.title, "mode": c.mode.echos.greek(), "shown": ed.chant == Some(i)})).collect::<Vec<_>>(),
+                "phrasing": p.phrasing,
                 "modified": ed.modified,
             }),
             "status" => json!({"status": ed.status, "at": ed.caret_label(), "input": ed.input_mode}),

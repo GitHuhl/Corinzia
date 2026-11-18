@@ -83,6 +83,10 @@ impl App {
                     _ => self.playback.toggle_cycle(),
                 }
             }
+            Action::Phrasing(on) => {
+                ed.set_phrasing(on);
+                ed.status = if on { "Phrasing on: phrases shaped, the end slowing, accents" } else { "Phrasing off: played as written" }.into();
+            }
             Action::Lyrics(v) => {
                 ed.lyric_verse = v;
                 let t = self.open_popover(PopoverKind::Lyrics);
