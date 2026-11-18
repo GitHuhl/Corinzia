@@ -23,12 +23,15 @@ pub(crate) enum PrefsMsg {
     Device(String),
     Rate(u32),
     Buffer(u32),
+    CountIn(u8),
     Midi(String),
     Paths(String),
     DefaultPaths(bool),
     Cancel,
     Apply,
 }
+
+const COUNT_INS: [&str; 3] = ["None", "One bar", "Two bars"];
 
 /// The Preferences card.
 pub(crate) fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
@@ -55,6 +58,7 @@ pub(crate) fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
             column![label("Buffer (frames)"), pick(buffers, d.draft.buffer.to_string(), |v| PrefsMsg::Buffer(v.parse().unwrap_or(2048)))].spacing(3).width(Length::Fill),
         ]
         .spacing(10),
+        column![label("Count-in before playing (with or without the metronome)"), pick(COUNT_INS.map(String::from).to_vec(), COUNT_INS[d.draft.count_in.min(2) as usize].to_string(), |v| PrefsMsg::CountIn(COUNT_INS.iter().position(|x| *x == v).unwrap_or(0) as u8))].spacing(3),
         column![
             label("More plugin folders (separated by ;)"),
             text_input("/path/to/plugins", &d.paths).on_input(move |v| pm(PrefsMsg::Paths(v))).padding(5).size(14),
@@ -99,6 +103,7 @@ impl App {
             PrefsMsg::Rate(r) => d.draft.sample_rate = r,
             PrefsMsg::Midi(label) => d.draft.midi_input = d.midi_ports.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
             PrefsMsg::Buffer(b) => d.draft.buffer = b,
+            PrefsMsg::CountIn(n) => d.draft.count_in = n.min(2),
             PrefsMsg::Paths(t) => d.paths = t,
             PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
             PrefsMsg::Cancel => {
@@ -117,6 +122,7 @@ impl App {
                 }
                 self.prefs_dialog = None;
                 theme::set(&next.theme);
+                self.playback.set_metronome(next.metronome, next.count_in);
                 if self.prefs.audio_differs(&next) {
                     // A new engine at the new rate: plugins come back with their state.
                     self.playback.stop();

@@ -17,6 +17,13 @@ impl App {
             Message::Roll(RollMsg::Close) => self.roll = None,
             Message::Roll(RollMsg::Reset) => self.roll_reset(),
             Message::Arrange(e) => self.arrange_event(e),
+            Message::SplitMixer(Some(d)) => {
+                // Dragged down: the mixer gets smaller.
+                let l = &mut self.prefs.layout;
+                l.mixer_height = (l.mixer_height - d).clamp(crate::prefs::Layout::MIXER.0, crate::prefs::Layout::MIXER.1);
+            }
+            Message::SplitMixer(None) => self.save_prefs(),
+            Message::OpenRecent(path) => self.open(path),
             Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
             Message::ExportMenu(open) => self.export_menu = open,

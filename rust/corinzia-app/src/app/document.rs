@@ -88,10 +88,19 @@ impl App {
         match files::load(&path) {
             Ok((p, kept, status)) => {
                 let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
+                let prefs = self.prefs.clone();
                 *self = App::with_playback(p, kept, view, status, pb);
+                self.prefs = prefs;
+                self.remember(&path);
             }
             Err(e) => self.editor.status = format!("Could not open {}: {e}", path.display()),
         }
+    }
+
+    /// A score into the recent list (kept with the preferences).
+    pub(crate) fn remember(&mut self, path: &std::path::Path) {
+        self.prefs.remember(path);
+        self.save_prefs();
     }
 
     /// Starts a background save when one is due.
@@ -111,6 +120,7 @@ impl App {
         self.editor.status = match corinzia_model::store::save(&self.editor.project, &path) {
             Ok(()) => {
                 self.path = Some(path.clone());
+                self.remember(&path);
                 self.saved_revision = self.editor.revision;
                 self.autosave_at = None;
                 self.editor.saved();

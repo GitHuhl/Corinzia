@@ -21,11 +21,48 @@ pub struct Prefs {
     pub default_plugin_paths: bool,
     /// The MIDI input port for note entry; empty for none.
     pub midi_input: String,
+    /// The sizes of the window's panes, as last dragged.
+    pub layout: Layout,
+    /// The metronome while playing, and the bars of clicks counted in
+    /// before playback starts (0..=2).
+    pub metronome: bool,
+    pub count_in: u8,
+    /// Scores opened or saved lately, the latest first.
+    pub recent: Vec<String>,
+}
+
+/// The Mix tab's panes: the mixer's height, the side panel's width, the
+/// arrange view's track height and header width (pixels).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    pub mixer_height: f32,
+    pub side_width: f32,
+    pub lane_height: f32,
+    pub header_width: f32,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout { mixer_height: 420.0, side_width: 300.0, lane_height: 56.0, header_width: crate::arrange::HEADER }
+    }
+}
+
+impl Layout {
+    pub const MIXER: (f32, f32) = (140.0, 1200.0);
+    pub const SIDE: (f32, f32) = (200.0, 700.0);
+    pub fn sane(mut self) -> Layout {
+        self.mixer_height = self.mixer_height.clamp(Self::MIXER.0, Self::MIXER.1);
+        self.side_width = self.side_width.clamp(Self::SIDE.0, Self::SIDE.1);
+        self.lane_height = self.lane_height.clamp(crate::arrange::LANE_HEIGHTS.0, crate::arrange::LANE_HEIGHTS.1);
+        self.header_width = self.header_width.clamp(crate::arrange::HEADER_WIDTHS.0, crate::arrange::HEADER_WIDTHS.1);
+        self
+    }
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new() }
+        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new(), layout: Layout::default(), metronome: false, count_in: 0, recent: vec![] }
     }
 }
 
@@ -62,7 +99,17 @@ impl Prefs {
     pub fn sane(mut self) -> Prefs {
         self.sample_rate = self.sample_rate.clamp(22050, 192000);
         self.buffer = self.buffer.clamp(64, 8192);
+        self.layout = self.layout.sane();
+        self.count_in = self.count_in.min(2);
         self
+    }
+
+    /// A score opened or saved: first in the recent list (at most eight).
+    pub fn remember(&mut self, path: &std::path::Path) {
+        let p = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned();
+        self.recent.retain(|r| *r != p);
+        self.recent.insert(0, p);
+        self.recent.truncate(8);
     }
 
     /// Where plugins are looked for.

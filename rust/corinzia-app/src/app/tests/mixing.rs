@@ -370,7 +370,7 @@ fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
-    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
+    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
     let r = v.clip_rect(&clips[0]);
     let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
     let mid_y = r.y + r.height / 2.0;
@@ -492,4 +492,50 @@ fn mixer_edits_are_live_and_undoable() {
     let _ = a.update(Message::Mix(mix::MixMsg::Assign(track, sine)));
     assert_eq!(a.editor.project.tracks[0].instrument_node, None);
     assert_eq!(a.playback.plugin_name(track), "Corinzia Ensemble");
+}
+
+#[test]
+fn the_mix_tab_panes_scroll_and_resize() {
+    let mut a = App::new(crate::demo::orchestra(), None, View::Page, String::new());
+    let _ = a.update(Message::Act(Action::ShowMix));
+    a.sync();
+    let rows = a.arrange.rows.len();
+    assert!(rows >= 14, "the orchestra's tracks (and the master)");
+    // The tracks scroll down, no further than the last one at the top.
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(120.0)));
+    assert_eq!(a.arrange_scroll_y, 120.0);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(1.0e6)));
+    assert_eq!(a.arrange_scroll_y, (rows - 1) as f32 * a.prefs.layout.lane_height);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(-1.0e6)));
+    assert_eq!(a.arrange_scroll_y, 0.0);
+    // Taller tracks, within limits; a wider header.
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(90.0)));
+    assert_eq!(a.prefs.layout.lane_height, 90.0);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(5.0)));
+    assert_eq!(a.prefs.layout.lane_height, arrange::LANE_HEIGHTS.0);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::HeaderWidth(260.0)));
+    assert_eq!(a.prefs.layout.header_width, 260.0);
+    // The dividers: the mixer taller when dragged up, the side panel wider
+    // when dragged left; both within limits.
+    let h = a.prefs.layout.mixer_height;
+    let _ = a.update(Message::SplitMixer(Some(-100.0)));
+    assert_eq!(a.prefs.layout.mixer_height, h + 100.0);
+    let _ = a.update(Message::SplitMixer(Some(1.0e6)));
+    assert_eq!(a.prefs.layout.mixer_height, crate::prefs::Layout::MIXER.0);
+    let w = a.prefs.layout.side_width;
+    let _ = a.update(Message::Mix(mix::MixMsg::SplitSide(Some(-50.0))));
+    assert_eq!(a.prefs.layout.side_width, w + 50.0);
+    let _ = a.update(Message::SplitMixer(None));
+    // Kept with the preferences, sane when read back.
+    let saved = serde_json::to_string(&a.prefs).unwrap();
+    let back: crate::prefs::Prefs = serde_json::from_str(&saved).unwrap();
+    assert_eq!(back.layout, a.prefs.layout);
+    // A header's mute and solo buttons: the track's own.
+    let t = a.editor.project.tracks[0].id;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Mute(t)));
+    assert!(a.editor.project.tracks[0].mute);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Solo(t)));
+    assert!(a.editor.project.tracks[0].solo);
+    let old: crate::prefs::Prefs = serde_json::from_str(r#"{"theme": "Dark"}"#).unwrap();
+    assert_eq!(old.layout, crate::prefs::Layout::default(), "preferences from before keep the defaults");
 }

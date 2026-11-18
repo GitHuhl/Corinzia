@@ -686,6 +686,8 @@ pub enum PopoverKind {
     /// A Byzantine chant's mode.
     ChantMode,
     ChantTitle,
+    /// Go to a bar (a number) or a rehearsal mark (its letter).
+    GoTo,
 }
 impl PopoverKind {
     pub fn title(self) -> &'static str {
@@ -711,6 +713,7 @@ impl PopoverKind {
             PopoverKind::Instrument => "Instrument change",
             PopoverKind::Transpose => "Transpose",
             PopoverKind::Filter => "Select only",
+            PopoverKind::GoTo => "Go to",
             PopoverKind::ChantLyric => "Syllables",
             PopoverKind::ChantMode => "Mode (ἦχος)",
             PopoverKind::ChantTitle => "Chant title",
@@ -742,6 +745,7 @@ impl PopoverKind {
             PopoverKind::ChantLyric => "Syllable; space = next neume, - = the word goes on",
             PopoverKind::ChantMode => "1–8, α΄, πλ. β΄, βαρύς, plagal 4",
             PopoverKind::ChantTitle => "Κύριε ἐκέκραξα",
+            PopoverKind::GoTo => "a bar number (25), or a rehearsal mark (B)",
         }
     }
 }

@@ -201,6 +201,31 @@ impl Editor {
         Ok(())
     }
 
+    /// Goes to a bar (its number) or a rehearsal mark (its letter: the
+    /// marks are lettered in order): the bar selected on the caret's staff,
+    /// the caret at its start.
+    pub fn go_to(&mut self, text: &str) -> Result<(), String> {
+        let t = text.trim();
+        let m = self.movement().ok_or("No movement")?;
+        let bar = if let Ok(n) = t.parse::<usize>() {
+            n
+        } else if t.len() == 1 && t.chars().all(|c| c.is_ascii_alphabetic()) {
+            let mut marks: Vec<Frac> = m.rehearsal.iter().map(|r| r.at).collect();
+            marks.sort();
+            let i = (t.to_ascii_uppercase().as_bytes()[0] - b'A') as usize;
+            let at = *marks.get(i).ok_or_else(|| format!("No rehearsal mark {}: there are {}", t.to_ascii_uppercase(), marks.len()))?;
+            edit::bar_number(m, at).0
+        } else {
+            return Err("A bar number (25) or a rehearsal mark's letter (B)".into());
+        };
+        let lane = self.caret_lane.min(m.lanes.len().saturating_sub(1));
+        self.select_bars(bar, bar, lane..=lane)?;
+        if let Some(r) = self.range {
+            self.caret = r.from;
+        }
+        Ok(())
+    }
+
     /// The union of the staves and time spans of these notes and rests (plus
     /// the current selection when extending): marquee and shift-click.
     pub fn select_elements(&mut self, ids: &[Id], extend: bool) {

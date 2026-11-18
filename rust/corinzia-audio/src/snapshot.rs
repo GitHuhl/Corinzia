@@ -223,6 +223,14 @@ impl Timeline {
     pub fn end(&self) -> i64 {
         self.sections.last().map(|s| s.end).unwrap_or(0)
     }
+    /// At a timeline sample: the movement, the written quarter, the seconds
+    /// since the movement began, and the tempo (quarters a minute).
+    pub fn clock(&self, sample: i64) -> Option<(Id, f64, f64, f64)> {
+        let s = self.sections.iter().find(|x| sample < x.end).or(self.sections.last())?;
+        let at = sample.clamp(s.start, s.end);
+        let performed = s.performed_quarter(at);
+        Some((s.movement, s.written_quarter(performed), (at - s.start) as f64 / s.sample_rate, s.tempo.tempo_at(performed)))
+    }
 }
 
 /// Mixer settings -> (linear gain, pan, audible) per track, solo aware.

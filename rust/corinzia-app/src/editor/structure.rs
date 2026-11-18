@@ -270,6 +270,9 @@ impl Editor {
         if kind == PopoverKind::Filter {
             return self.filter(&text);
         }
+        if kind == PopoverKind::GoTo {
+            return self.go_to(&text);
+        }
         if kind == PopoverKind::MovementTitle {
             self.rename_movement(&text);
             return Ok(());
@@ -425,7 +428,7 @@ impl Editor {
                 };
                 return self.enter_lyric(verse, word.trim_end(), hyphen, extend).map(|_| ());
             }
-            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter | PopoverKind::ChantLyric | PopoverKind::ChantMode | PopoverKind::ChantTitle => unreachable!(),
+            PopoverKind::Ornament | PopoverKind::Tuplet | PopoverKind::MovementTitle | PopoverKind::Fingering | PopoverKind::Dynamic | PopoverKind::Title | PopoverKind::Composer | PopoverKind::Instrument | PopoverKind::Transpose | PopoverKind::Filter | PopoverKind::ChantLyric | PopoverKind::ChantMode | PopoverKind::ChantTitle | PopoverKind::GoTo => unreachable!(),
         };
         self.transact(&label, |m, ids| {
             change(m, ids);

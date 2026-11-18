@@ -29,6 +29,7 @@ mod prefs;
 mod presets;
 mod roll;
 mod score_view;
+mod splitter;
 mod theme;
 
 use app::*;

@@ -97,3 +97,51 @@ fn entering_a_note_auditions_it() {
     assert!(render(&mut a, 2048) > 0.005, "the new note sounds");
     assert!(!a.playback.is_playing(), "without starting playback");
 }
+
+#[test]
+fn go_to_a_bar_or_a_rehearsal_mark_and_the_metronome() {
+    let mut a = App::new(crate::demo::orchestra(), None, View::Page, String::new());
+    a.sync();
+    // Ctrl+G: the go-to popover; "17" and "B" (the Allegro) are the same bar.
+    let ctrl_g = keys::map(&iced::keyboard::Key::Character("g".into()), iced::keyboard::Modifiers::CTRL, false);
+    assert_eq!(ctrl_g, Some(Action::Popover(PopoverKind::GoTo)));
+    let _ = a.update(Message::Act(Action::Popover(PopoverKind::GoTo)));
+    type_into_popover(&mut a, "B");
+    let _ = a.update(Message::Popover(PopoverMsg::Submit));
+    assert!(a.popover.is_none(), "{:?}", a.popover.as_ref().and_then(|p| p.error.clone()));
+    let at_b = a.editor.caret;
+    assert_eq!(corinzia_edit::bar_number(a.editor.movement().unwrap(), at_b).0, 17);
+    assert_eq!(a.command("goto 1").unwrap(), serde_json::Value::Null);
+    assert_eq!(a.editor.caret, corinzia_score::Frac::ZERO);
+    assert_eq!(a.command("goto 17").unwrap(), serde_json::Value::Null);
+    assert_eq!(a.editor.caret, at_b);
+    assert!(a.command("goto 99").is_err() && a.command("goto Q").is_err());
+    // The metronome: Alt+M toggles it, remembered with the preferences.
+    let alt_m = keys::map(&iced::keyboard::Key::Character("m".into()), iced::keyboard::Modifiers::ALT, false);
+    assert_eq!(alt_m, Some(Action::Metronome));
+    let _ = a.update(Message::Act(Action::Metronome));
+    assert!(a.prefs.metronome);
+    let _ = a.update(Message::Act(Action::Metronome));
+    assert!(!a.prefs.metronome);
+}
+
+#[test]
+fn scores_saved_and_opened_are_remembered() {
+    let dir = std::env::temp_dir().join(format!("corinzia-recent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut a = app(View::Page);
+    let (one, two) = (dir.join("one.project"), dir.join("two.project"));
+    a.save(one.clone());
+    a.save(two.clone());
+    a.save(one.clone());
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().to_string_lossy().into_owned();
+    assert_eq!(a.prefs.recent, [canon(&one), canon(&two)], "the latest first, once each");
+    let _ = a.update(Message::OpenRecent(two.clone()));
+    assert_eq!(a.path.as_deref(), Some(two.as_path()));
+    assert_eq!(a.prefs.recent[0], canon(&two), "opened: first again");
+    for k in 0..10 {
+        a.prefs.remember(&dir.join(format!("{k}.project")));
+    }
+    assert_eq!(a.prefs.recent.len(), 8);
+    std::fs::remove_dir_all(&dir).ok();
+}

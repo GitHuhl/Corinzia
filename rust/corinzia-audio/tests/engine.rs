@@ -892,3 +892,34 @@ fn a_tremolo_is_one_note_in_the_tremolo_technique_on_the_builtin_instruments() {
     let doc = corinzia_perform::document(&p, &p.movements[0]);
     assert!(doc.performance.tracks[0].notes.iter().filter(|n| n.key == 72).count() >= 8);
 }
+
+#[test]
+fn the_metronome_clicks_on_the_beats_and_counts_in() {
+    // The flute muted: only the clicks. 120 bpm, 4/4: a beat is 24 000 samples.
+    let mut p = project();
+    p.tracks[0].mute = true;
+    let beat = (SR * 0.5) as usize;
+    let mut pool = PluginPool::new(SR, 256);
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.metronome(true, 0);
+    ui.play();
+    let (l, _) = eng.render_offline(2 * beat);
+    let at = |x: &[f32], k: usize| rms(&x[k * beat..k * beat + 400]);
+    assert!(at(&l, 0) > 0.05 && at(&l, 1) > 0.05, "a click on beats 1 and 2: {} {}", at(&l, 0), at(&l, 1));
+    assert!(rms(&l[beat / 4..3 * beat / 4]) < 1e-4, "silence between");
+    assert!(at(&l, 0) > at(&l, 1) * 1.2, "the downbeat louder");
+    // Counted in: a bar of clicks (4 beats) with the transport still, then playing.
+    let mut p = project();
+    p.tracks[0].mute = false;
+    let (mut ui, mut eng) = engine::new(SR, 256);
+    ui.swap(snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool));
+    ui.metronome(false, 1);
+    ui.play();
+    let (l, _) = eng.render_offline(4 * beat - 1000);
+    assert_eq!(ui.position(), 0, "not moving while counting in");
+    assert!((0..4).all(|k| at(&l, k) > 0.05), "four clicks");
+    let (l, _) = eng.render_offline(beat);
+    assert!(ui.is_playing() && ui.position() > 0);
+    assert!(rms(&l[2000..]) > 0.01, "then the music (c''): {} at {}", rms(&l[2000..]), ui.position());
+}

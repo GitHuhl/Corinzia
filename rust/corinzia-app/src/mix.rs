@@ -46,6 +46,8 @@ pub enum MixMsg {
     Solo(Id),
     Assign(Id, usize), // plugin index in Playback::plugins
     Rescan,
+    /// The divider before the side panel dragged (none: let go).
+    SplitSide(Option<f32>),
     /// An effect from `Playback::plugins` at the end of a strip's chain.
     AddEffect(Id, usize),
     /// Selects an effect (its parameters show beside the strips).
@@ -276,6 +278,50 @@ fn inserts<'a>(p: &'a Project, owner: Id, list: &'a [Id], fx: Option<Id>) -> Ele
         .into()
 }
 
+/// What a strip needs besides its fader (name, instrument, effects,
+/// output, level and pan, padding): the fader gets the panel's height less
+/// this, so a whole strip fits.
+const STRIP_CONTROLS: f32 = 300.0;
+
+/// A track's dynamics controller and the automation lane it shows (in the
+/// side panel, the strip selected).
+fn track_controls<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, shown: Option<corinzia_model::AutoTarget>) -> Element<'a, MixMsg> {
+    let track = t.id;
+    let options = auto_options(p, play, t.id);
+    let shown = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
+    let autos: Vec<String> = options.into_iter().map(|o| o.0).collect();
+    let dynamics = match t.dynamics_cc {
+        Some(1) => DYNAMICS_CC[1],
+        Some(11) => DYNAMICS_CC[2],
+        _ => DYNAMICS_CC[0],
+    };
+    column![
+        row![
+            text("Automation lane").size(12).style(crate::theme::dim).width(110),
+            crate::panels::tip(pick_list(autos, shown, move |l| MixMsg::AutoShow(track, l)).placeholder("Show…").text_size(12).padding([3, 6]).width(Length::Fill), "Show a curve on the track's lane in the arrange view: gain, pan or a plugin parameter"),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+        row![
+            text("Dynamics").size(12).style(crate::theme::dim).width(110),
+            crate::panels::tip(pick_list(DYNAMICS_CC.map(String::from).to_vec(), Some(dynamics.to_string()), move |l| MixMsg::DynamicsCc(track, l)).text_size(12).padding([3, 6]).width(Length::Fill), "Send the dynamics and hairpins as a controller too (sample libraries)"),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(6)
+    .into()
+}
+
+thread_local! {
+    /// The faders' height for the strips being built (from the panel's).
+    static FADER: std::cell::Cell<f32> = const { std::cell::Cell::new(160.0) };
+}
+
+fn fader_height() -> f32 {
+    FADER.with(|f| f.get())
+}
+
 fn fader_block<'a>(play: &Playback, id: Id, db: f64, pan: Option<f64>, mute: Option<bool>, solo: Option<bool>) -> Element<'a, MixMsg> {
     let toggle = |label: &'a str, on: bool, m: MixMsg| button(text(label).size(12)).padding([3, 8]).style(crate::theme::tool(on)).on_press(m);
     let mut levels = row![text(db_label(db)).size(12).width(Length::Fill)].spacing(4).align_y(Alignment::Center);
@@ -287,8 +333,8 @@ fn fader_block<'a>(play: &Playback, id: Id, db: f64, pan: Option<f64>, mute: Opt
     }
     let mut col = column![
         row![
-            crate::panels::tip(canvas(Fader { track: id, db }).width(Length::Fill).height(160), "Drag (Shift: fine), click to jump, double-click: 0 dB, wheel: ±0.5 dB"),
-            crate::panels::tip(canvas(Meter { id, level: play.level(id), clipped: play.clipped(id) }).width(11).height(160), "Peak level (the light on top: it went over 0 dB; click to put it out)"),
+            crate::panels::tip(canvas(Fader { track: id, db }).width(Length::Fill).height(fader_height()), "Drag (Shift: fine), click to jump, double-click: 0 dB, wheel: ±0.5 dB"),
+            crate::panels::tip(canvas(Meter { id, level: play.level(id), clipped: play.clipped(id) }).width(11).height(fader_height()), "Peak level (the light on top: it went over 0 dB; click to put it out)"),
         ]
         .spacing(4),
         levels,
@@ -335,23 +381,9 @@ fn strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Track, s
     if !p.buses.is_empty() {
         body = body.push(sends_block(p, t));
     }
-    let options = auto_options(p, play, t.id);
-    let shown = options.iter().find(|o| o.1.is_some() && o.1 == shown).map(|o| o.0.clone());
-    let autos: Vec<String> = options.into_iter().map(|o| o.0).collect();
-    let dynamics = match t.dynamics_cc {
-        Some(1) => DYNAMICS_CC[1],
-        Some(11) => DYNAMICS_CC[2],
-        _ => DYNAMICS_CC[0],
-    };
-    body = body.push(
-        column![
-            text("Dynamics").size(10).style(crate::theme::faint),
-            crate::panels::tip(pick_list(DYNAMICS_CC.map(String::from).to_vec(), Some(dynamics.to_string()), move |l| MixMsg::DynamicsCc(track, l)).text_size(11).padding([2, 5]).width(Length::Fill), "Send the dynamics and hairpins as a controller too (sample libraries)"),
-            text("Automation lane").size(10).style(crate::theme::faint),
-            crate::panels::tip(pick_list(autos, shown, move |l| MixMsg::AutoShow(track, l)).placeholder("Show…").text_size(11).padding([2, 5]).width(Length::Fill), "Show a curve on the track's lane above: gain, pan or a plugin parameter"),
-        ]
-        .spacing(2),
-    );
+    // (The dynamics controller and the automation lane shown are in the
+    // side panel when the strip is selected: the strips stay short.)
+    let _ = shown;
     body = body.push(fader_block(play, t.id, t.gain_db, Some(t.pan), Some(t.mute), Some(t.solo)));
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
@@ -591,7 +623,12 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
     col.into()
 }
 
-pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>) -> Element<'a, MixMsg> {
+pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>, layout: crate::prefs::Layout) -> Element<'a, MixMsg> {
+    let shown_lane = shown;
+    // The faders take what the panel's height leaves after the strips'
+    // controls.
+    let fader = (layout.mixer_height - STRIP_CONTROLS).clamp(60.0, 900.0);
+    FADER.with(|f| f.set(fader));
     let mut strips = row(p.tracks.iter().map(|t| if t.audio { audio_strip(p, play, t, selected == Some(t.id), fx) } else { strip(p, play, t, selected == Some(t.id), fx, shown.get(&t.id).copied()) })).spacing(8).padding(12);
     for b in &p.buses {
         strips = strips.push(bus_strip(p, play, b, selected == Some(b.id), fx, shown.get(&b.id).copied()));
@@ -599,7 +636,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     strips = strips.push(crate::panels::tip(button(text("+ Audio track").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddAudioTrack), "A track for sound files (tape, electronics, a click), placed in time in the arrange view"));
     strips = strips.push(crate::panels::tip(button(text("+ Bus").size(12)).padding([6, 10]).style(crate::theme::tool(false)).on_press(MixMsg::AddBus), "A bus: send tracks to it for shared effects (a reverb)"));
     strips = strips.push(master_strip(p, play, selected == Some(MASTER), fx, shown.get(&MASTER).copied()));
-    let mut browser = column![].spacing(6).padding(12).width(300);
+    let mut browser = column![].spacing(6).padding(12).width(layout.side_width);
     if let Some(c) = clip.and_then(|(t, c)| p.track(t)?.clips.iter().find(|x| x.id == c)) {
         browser = browser.push(clip_panel(p, c)).push(Space::new().height(12));
     }
@@ -655,6 +692,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
                 .spacing(6)
                 .align_y(Alignment::Center),
             );
+            browser = browser.push(track_controls(p, play, t, shown_lane.get(&t.id).copied()));
             if fx.is_none() && play.pool.plugin_of_track(t.id).is_some() {
                 browser = browser.push(presets_block(Target::Track(t.id), &ps));
             }
@@ -692,6 +730,7 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     }
     row![
         scrollable(strips).direction(scrollable::Direction::Both { vertical: scrollable::Scrollbar::default(), horizontal: scrollable::Scrollbar::default() }).width(Length::Fill).height(Length::Fill),
+        crate::splitter::view(true, MixMsg::SplitSide),
         container(scrollable(browser).height(Length::Fill)).padding(10).height(Length::Fill).style(crate::theme::strip(false)),
     ]
     .into()

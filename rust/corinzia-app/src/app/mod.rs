@@ -106,6 +106,7 @@ pub(crate) struct App {
     pub(crate) arrange_cache: canvas::Cache,
     pub(crate) arrange_ppq: f32,
     pub(crate) arrange_scroll: f32,
+    pub(crate) arrange_scroll_y: f32,
     /// Autosave (projects with a file): the revision on disk, and when the
     /// next coalesced save is due.
     pub(crate) saved_revision: u64,
@@ -162,6 +163,11 @@ pub(crate) enum Message {
     SetPanel(Panel),
     Mix(mix::MixMsg),
     Arrange(arrange::ArrangeEvent),
+    /// A score from the recent list.
+    OpenRecent(std::path::PathBuf),
+    /// The divider between the arrange view and the mixer dragged (pixels;
+    /// none: let go).
+    SplitMixer(Option<f32>),
     ZoomBy(f32),
     Canvas(ViewEvent),
     Key(iced::keyboard::Event),
@@ -298,6 +304,7 @@ impl App {
             arrange_cache: canvas::Cache::new(),
             arrange_ppq: 40.0,
             arrange_scroll: 0.0,
+            arrange_scroll_y: 0.0,
             saved_revision: 0,
             autosave_at: None,
             saving: false,
