@@ -226,6 +226,11 @@ the output), automation playback and saving plugin settings.
   auditioned. If the computer cannot render a block in time (a click or a
   gap), the status bar says so, with the peak load; a larger buffer in the
   preferences gives it more time. `get status` reports the count too.
+* **The demo:** `corinzia` without a file opens *A Festival Prelude*, an
+  original piece for full orchestra (made by `scripts/festival-prelude.py`)
+  that shows the built-in instruments: long string lines, woodwind solos
+  over pizzicato, fast staccato strings with brass fanfares, and a brass
+  chorale. Its master has a little gain off, a hall and a limiter.
 * **Built-in instruments:** every staff plays a sound chosen by its
   instrument's name: strings (sections in an orchestral score, soloists in
   chamber music), woodwinds, brass, voices and choir, piano, harpsichord,

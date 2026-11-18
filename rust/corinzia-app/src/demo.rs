@@ -145,3 +145,66 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
     });
     p
 }
+
+/// The piece the app opens on: "A Festival Prelude", an original piece
+/// for full orchestra (assets/demo, written by scripts/festival-prelude.py)
+/// that shows the built-in instruments: long and short string writing,
+/// woodwind solos, brass fanfares and chorale. Phrasing on; the sections
+/// seated across the stereo field; on the master a little gain off, a
+/// hall and a limiter (an orchestra's ff, summed, goes past full scale).
+pub fn orchestra() -> Project {
+    const XML: &str = include_str!("../../../assets/demo/festival-prelude.musicxml");
+    let mut p = corinzia_import::musicxml_str(XML).expect("the demo piece");
+    p.sample_rate = 48000.0;
+    p.phrasing = true;
+    // Seating: violins left, violas and cellos right, basses behind them;
+    // woodwinds in the middle, horns left, brass right.
+    for t in p.tracks.iter_mut() {
+        t.pan = match t.name.as_str() {
+            "Violins I" => -0.5,
+            "Violins II" => -0.25,
+            "Violas" => 0.15,
+            "Cellos" => 0.35,
+            "Basses" => 0.5,
+            "Flutes" => -0.15,
+            "Oboes" => 0.1,
+            "Clarinets" => -0.1,
+            "Bassoons" => 0.15,
+            "Horns" => -0.35,
+            "Trumpets" => 0.2,
+            "Trombones" => 0.35,
+            "Tuba" => 0.45,
+            _ => 0.0,
+        };
+    }
+    // The master: gain, hall, limiter (built-in effects, their parameters
+    // as their state stores them: "CZF1" and each value).
+    let effect = |p: &mut Project, name: &str, id: &str, params: &[f64]| {
+        let node = p.allocate_id();
+        p.nodes.push(corinzia_model::AudioNode { id: node, kind: corinzia_model::NodeKind::Plugin, name: name.into(), bundle: "builtin:corinzia-ensemble".into(), plugin_id: id.into(), bypassed: false });
+        let mut state = b"CZF1".to_vec();
+        for v in params {
+            state.extend_from_slice(&v.to_le_bytes());
+        }
+        p.plugin_state.insert(node, std::sync::Arc::new(state));
+        p.master.inserts.push(node);
+    };
+    effect(&mut p, "Gain", "org.corinzia.gain", &[-3.0, 0.0]);
+    effect(&mut p, "Hall", "org.corinzia.reverb", &[0.2, 0.8, 0.45]);
+    effect(&mut p, "Limiter", "org.corinzia.limiter", &[0.0, -1.0, 120.0]);
+    p
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_orchestral_demo_loads_whole() {
+        let p = super::orchestra();
+        assert_eq!(p.title, "A Festival Prelude");
+        let names: Vec<&str> = p.players.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, ["Flutes", "Oboes", "Clarinets", "Bassoons", "Horns", "Trumpets", "Trombones", "Tuba", "Timpani", "Violins I", "Violins II", "Violas", "Cellos", "Basses"]);
+        assert_eq!(corinzia_edit::bar_starts(&p.movements[0]).len(), 40);
+        assert!(p.phrasing && p.master.inserts.len() == 3);
+        assert!(p.tracks.iter().any(|t| t.pan < 0.0) && p.tracks.iter().any(|t| t.pan > 0.0));
+    }
+}
