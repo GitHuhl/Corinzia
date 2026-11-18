@@ -691,12 +691,7 @@ pub fn clip_cues(project: &Project, m: &Movement) -> Vec<(Id, corinzia_score::sc
     if clips.is_empty() {
         return vec![];
     }
-    let perf = perform_with(m, Style::of(project));
-    // Seconds -> a written position, to the 1/64 of a quarter, inside the movement.
-    let written = |s: f64| -> Frac {
-        let w = perf.written_quarter(perf.tempo.quarter_at(s.max(0.0))).clamp(0.0, q(m.length));
-        Frac::new((w * 256.0).round() as i64, 1024).min(m.length)
-    };
+    let written = written_at(project, m);
     clips
         .into_iter()
         .filter_map(|c| {
@@ -709,6 +704,73 @@ pub fn clip_cues(project: &Project, m: &Movement) -> Vec<(Id, corinzia_score::sc
             let to = if c.length > 0.0 { written(c.at + c.length) } else { m.length };
             let line = (c.cue_line && to > from).then_some(LineSpan { id: c.id, from, to, kind: LineKind::Cue });
             Some((c.cue?, text, line))
+        })
+        .collect()
+}
+
+/// Seconds after the movement's start -> where that is written (through
+/// the tempo and the performance rules), to the 1/64 of a quarter, inside
+/// the movement.
+fn written_at(project: &Project, m: &Movement) -> impl Fn(f64) -> Frac {
+    let perf = perform_with(m, Style::of(project));
+    let length = m.length;
+    move |s: f64| {
+        let w = perf.written_quarter(perf.tempo.quarter_at(s.max(0.0))).clamp(0.0, q(length));
+        Frac::new((w * 256.0).round() as i64, 1024).min(length)
+    }
+}
+
+/// The file's name, as a clip is labelled in the score.
+pub fn clip_label(c: &corinzia_model::AudioClip) -> String {
+    std::path::Path::new(&c.file).file_name().map(|f| f.to_string_lossy().into_owned()).filter(|f| !f.is_empty()).unwrap_or_else(|| c.name.clone())
+}
+
+/// A staff for each audio track with clips sounding in the movement, below
+/// the players': named after the track, one line, each clip its file's
+/// name where it starts and a line to where it ends (the rest of the staff
+/// empty, as a part that is tacet).
+pub fn audio_staves(project: &Project, m: &Movement) -> Vec<corinzia_score::score::Part> {
+    use corinzia_score::score::{LineKind, LineSpan, Part, Text};
+    let tracks: Vec<&corinzia_model::Track> = project.tracks.iter().filter(|t| t.audio && t.clips.iter().any(|c| c.movement == m.id && !c.mute)).collect();
+    if tracks.is_empty() {
+        return vec![];
+    }
+    let written = written_at(project, m);
+    tracks
+        .into_iter()
+        .filter_map(|t| {
+            let mut texts = Vec::new();
+            let mut lines = Vec::new();
+            for c in t.clips.iter().filter(|c| c.movement == m.id && !c.mute) {
+                let from = written(c.at);
+                if from >= m.length {
+                    continue;
+                }
+                let to = if c.length > 0.0 { written(c.at + c.length) } else { m.length };
+                texts.push(Text { id: c.id, at: from, text: clip_label(c), technique: true });
+                lines.push(LineSpan { id: c.id, from, to: to.max(from), kind: LineKind::Cue });
+            }
+            (!texts.is_empty()).then(|| Part {
+                name: t.name.clone(),
+                abbr: t.name.clone(),
+                clef: "percussion".into(),
+                clefs: vec![],
+                texts,
+                chords: vec![],
+                voices: vec![],
+                brace: false,
+                key_shift: 0,
+                key_shifts: vec![],
+                group: 0,
+                lines,
+                head_shapes: vec![],
+                cross: vec![],
+                tab: vec![],
+                drums: vec![],
+                instruments: vec![],
+                transposition: (0, 0),
+                audio: true,
+            })
         })
         .collect()
 }
@@ -729,6 +791,7 @@ pub fn score_as(project: &Project, m: &Movement, transposed: bool) -> corinzia_s
     let mut s = corinzia_model::notation::score_as(project, m, transposed);
     let players: Vec<Id> = m.lanes.iter().map(|l| l.player).collect();
     add_cues(project, m, &mut s, &players);
+    s.parts.extend(audio_staves(project, m));
     s
 }
 

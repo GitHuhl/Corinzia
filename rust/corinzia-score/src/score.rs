@@ -259,6 +259,10 @@ pub struct Part {
     /// The instrument's transposition as (diatonic steps, semitones),
     /// written minus sounding: (1, 2) for a B♭ clarinet.
     pub transposition: (i32, i32),
+    /// An audio track's staff: one line, no clef, key or time signature;
+    /// its clips are its texts (each a file's name, boxed, where the clip
+    /// starts) with a [`LineKind::Cue`] line each to where it ends.
+    pub audio: bool,
 }
 
 /// A line over `[from, to)` of a staff.

@@ -756,9 +756,9 @@ fn draw_page(frame: &mut Frame, page: &DisplayList, origin: Vector, selected: &s
         f.fill_rectangle(Point::ORIGIN, Size::new(page.width, page.height), Color::WHITE);
         for st in &page.staves {
             let lines = Path::new(|b| {
-                for k in 0..5 {
-                    b.move_to(Point::new(st.left, st.top + k as f32));
-                    b.line_to(Point::new(st.right, st.top + k as f32));
+                for y in st.line_ys() {
+                    b.move_to(Point::new(st.left, y));
+                    b.line_to(Point::new(st.right, y));
                 }
             });
             f.stroke(&lines, Stroke::default().with_width(st.line_width * px).with_color(INK));

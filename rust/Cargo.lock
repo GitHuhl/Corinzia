@@ -800,12 +800,15 @@ dependencies = [
  "corinzia-perform",
  "corinzia-score",
  "iced",
+ "libc",
  "midir",
  "png",
  "rfd",
  "serde",
  "serde_json",
  "ttf-parser",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]

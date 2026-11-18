@@ -905,3 +905,35 @@ fn guitar_tablature_under_the_staff() {
     assert!(l.staves[1].top > frets[0].1 + 1.0, "{} {:?}", l.staves[1].top, frets);
     assert_eq!(glyphs(&l, Glyph::TabClef6).len(), 1);
 }
+
+#[test]
+fn an_audio_staff_is_one_line_with_its_clips_boxed() {
+    use corinzia_score::score::{LineKind, LineSpan, Text};
+    use corinzia_score::Frac;
+    let mut s = score(&[("treble", &["c''4 d'' e'' f'' | g''1"]), ("treble", &[""])], (4, 4), 2);
+    let tape = &mut s.parts[1];
+    (tape.name, tape.audio, tape.voices) = ("Tape".into(), true, vec![]);
+    tape.texts = vec![Text { id: 700, at: Frac::new(1, 2), text: "Rain.wav".into(), technique: true }];
+    tape.lines = vec![LineSpan { id: 700, from: Frac::new(1, 2), to: Frac::new(5, 4), kind: LineKind::Cue }];
+    let l = layout_line(&s, &Options::default());
+    preview("audio", &l);
+    let (music, audio) = (&l.staves[0], &l.staves[1]);
+    assert!(!music.single && audio.single);
+    assert_eq!(audio.line_ys().collect::<Vec<_>>(), [audio.top + 2.0]);
+    // No rests on it; one clef, one key signature, one time signature (the music's).
+    assert!(glyphs(&l, Glyph::RestWhole).iter().all(|g| g.1 < music.top + 5.0));
+    assert_eq!(glyphs(&l, Glyph::GClef).len(), 1);
+    assert_eq!(glyphs(&l, Glyph::Sharp).iter().filter(|g| g.1 < music.top + 5.0).count(), glyphs(&l, Glyph::Sharp).len());
+    assert_eq!(glyphs(&l, Glyph::TimeSigDigit(4)).len(), 2);
+    // The file's name in bold, boxed above the line, and the clip's line along it.
+    let label = l.items.iter().find_map(|i| match i {
+        Item::Text { text, at, bold: true, id: 700, .. } if text == "Rain.wav" => Some(*at),
+        _ => None,
+    });
+    let label = label.expect("the file's name");
+    assert!(label.y < audio.top + 2.0 && label.y > audio.top - 2.0, "just above the line: {label:?}");
+    let along = l.items.iter().filter(|i| matches!(i, Item::Line { from, to, id: 700, .. } if from.y == to.y && (from.y - audio.top - 2.0).abs() < 1e-4 && to.x > from.x + 2.0)).count();
+    assert_eq!(along, 1, "the clip's line along the staff");
+    // The barlines cross the one line a space each way.
+    assert!(l.items.iter().any(|i| matches!(i, Item::Line { from, to, id: 0, .. } if from.x == to.x && (from.y - audio.top - 1.0).abs() < 1e-4 && (to.y - audio.top - 3.0).abs() < 1e-4)));
+}

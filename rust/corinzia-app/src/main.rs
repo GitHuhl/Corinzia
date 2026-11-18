@@ -30,6 +30,8 @@ mod presets;
 mod roll;
 mod score_view;
 mod splitter;
+#[cfg(target_os = "linux")]
+mod wayland_dnd;
 mod theme;
 
 use app::*;

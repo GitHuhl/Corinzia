@@ -57,6 +57,16 @@ pub struct StaffGeom {
     pub right: f32,
     pub line_width: f32,
     pub system: u32, // index of the system on its page
+    /// One line (an audio track's staff, on the middle line) rather than five.
+    pub single: bool,
+}
+
+impl StaffGeom {
+    /// The heights of the staff's lines.
+    pub fn line_ys(&self) -> impl Iterator<Item = f32> + '_ {
+        let ys: &[f32] = if self.single { &[2.0] } else { &[0.0, 1.0, 2.0, 3.0, 4.0] };
+        ys.iter().map(|k| self.top + k)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

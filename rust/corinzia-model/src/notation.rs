@@ -269,6 +269,7 @@ fn score_for(project: &Project, m: &Movement, transposed: bool, part: bool) -> s
                 group: groups[li],
                 lines: lane.lines.clone(),
                 transposition: first.map(|i| (i.transposition.steps, i.transposition.semitones)).unwrap_or((0, 0)),
+                audio: false,
             }
         })
         .collect();
@@ -350,7 +351,7 @@ pub fn condense(s: &mut sc::Score) -> Vec<usize> {
         let pair = i + 1 < old.len() && {
             let (a, b) = (&old[i], &old[i + 1]);
             let (na, nb) = (numbered(&a.name), numbered(&b.name));
-            na.0 == nb.0 && !na.0.is_empty() && a.clef == b.clef && a.transposition == b.transposition && a.group == b.group && single(i) && single(i + 1)
+            na.0 == nb.0 && !na.0.is_empty() && a.clef == b.clef && a.transposition == b.transposition && a.group == b.group && !a.audio && !b.audio && single(i) && single(i + 1)
         };
         if !pair {
             parts.push(old[i].clone());

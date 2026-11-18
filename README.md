@@ -102,7 +102,9 @@ export the whole thing as a finished WAV.
   pitch bend.
 * **Expression maps:** pizz., arco, con sord. and staccato switch your
   sample library's articulations automatically.
-* **Audio tracks:** clips you can trim, fade and cue in the score.
+* **Audio tracks:** drag sounds in from your file manager, then trim,
+  fade and move them. Each audio track gets its own staff in the score,
+  showing each clip by its file's name.
 
 ## Byzantine chant, sung in tune
 

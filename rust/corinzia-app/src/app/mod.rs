@@ -25,7 +25,7 @@ mod document;
 mod midi_keys;
 mod mixing;
 mod piano_roll;
-mod update;
+pub(crate) mod update;
 mod view;
 
 use actions::*;
@@ -141,6 +141,8 @@ pub(crate) struct App {
     pub(crate) frames: u32,
     /// The window's size (logical pixels), for keeping the selection in view.
     pub(crate) window: Size,
+    /// Files being dragged over the window, there (Wayland).
+    pub(crate) drag_over: Option<iced::Point>,
     /// The keyboard shortcut overview (F1).
     pub(crate) help: bool,
     /// The Export menu is open.
@@ -195,6 +197,12 @@ pub(crate) enum Message {
     Browser(browser::BrowserMsg),
     /// A file dropped on the window.
     Dropped(PathBuf),
+    /// Files dropped at a point of the window (Wayland, where the drop's
+    /// place is known), and files dragged over it (none: gone).
+    DroppedAt(Vec<PathBuf>, iced::Point),
+    DragOver(Option<iced::Point>),
+    /// The window's native handles came: (Wayland display, surface).
+    NativeWindow(Option<(usize, usize)>),
     ExportMenu(bool),
     /// Show a player's part (None: the full score).
     SetPart(Option<corinzia_model::Id>),
@@ -220,7 +228,7 @@ pub(crate) fn quarters(f: Frac) -> f64 {
 
 impl App {
     pub(crate) fn boot() -> (App, Task<Message>) {
-        (App::from_args(args()), Task::none())
+        (App::from_args(args()), native_window())
     }
 
     /// The app as the command line asks for it (file, view, scripted keys);
@@ -335,6 +343,7 @@ impl App {
             screenshot: None,
             frames: 0,
             window: Size::new(1280.0, 860.0),
+            drag_over: None,
             help: false,
             export_menu: false,
             part: None,
@@ -595,7 +604,7 @@ impl App {
             iced::Event::Window(iced::window::Event::Resized(s)) => Some(Message::Resized(s)),
             _ => None,
         });
-        let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window]);
+        let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window, Subscription::run(dnd_events)]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
         let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
         if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() || self.bounce.is_some() {
@@ -604,6 +613,53 @@ impl App {
             keys
         }
     }
+}
+
+/// The main window's Wayland display and surface, for the file drops winit
+/// does not take there (none on X11 and Windows: winit takes them).
+fn native_window() -> Task<Message> {
+    use iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    iced::window::oldest().then(|id| match id {
+        Some(id) => iced::window::run(id, |w| {
+            let display = w.display_handle().ok().and_then(|d| match d.as_raw() {
+                RawDisplayHandle::Wayland(h) => Some(h.display.as_ptr() as usize),
+                _ => None,
+            });
+            let surface = w.window_handle().ok().and_then(|h| match h.as_raw() {
+                RawWindowHandle::Wayland(h) => Some(h.surface.as_ptr() as usize),
+                _ => None,
+            });
+            display.zip(surface)
+        })
+        .map(Message::NativeWindow),
+        None => Task::none(),
+    })
+}
+
+/// Where the Wayland listener's events go: the subscription's channel.
+static DND: std::sync::Mutex<Option<iced::futures::channel::mpsc::Sender<Message>>> = std::sync::Mutex::new(None);
+
+/// The Wayland listener's events, as messages.
+pub(crate) fn dnd_events() -> impl iced::futures::Stream<Item = Message> {
+    let (tx, rx) = iced::futures::channel::mpsc::channel(32);
+    *DND.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+    rx
+}
+
+/// Starts listening for files dropped on a Wayland window.
+#[cfg(target_os = "linux")]
+pub(crate) fn listen_for_drops(display: usize, surface: usize) -> Result<(), String> {
+    let send = |e: crate::wayland_dnd::DndEvent| {
+        let m = match e {
+            crate::wayland_dnd::DndEvent::Hover(p) => Message::DragOver(p.map(|(x, y)| iced::Point::new(x, y))),
+            crate::wayland_dnd::DndEvent::Drop(paths, (x, y)) => Message::DroppedAt(paths, iced::Point::new(x, y)),
+        };
+        if let Some(tx) = DND.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            let _ = tx.try_send(m);
+        }
+    };
+    // The window lives as long as the app.
+    unsafe { crate::wayland_dnd::start(display, surface, send) }
 }
 
 /// Ticks for plugin editors (their timers, descriptors and windows), about

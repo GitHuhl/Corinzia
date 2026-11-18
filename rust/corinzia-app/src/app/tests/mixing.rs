@@ -175,20 +175,72 @@ fn a_clip_cued_on_a_staff_is_engraved_there() {
     let (_, clip) = a.selected_clip.unwrap();
     let drawn = |a: &App| a.pages.iter().flat_map(|p| p.items.iter()).filter(|i| i.id() == clip).cloned().collect::<Vec<Item>>();
     a.sync();
-    assert!(drawn(&a).is_empty(), "not cued: not in the score");
+    // Not cued: only on its track's own staff, as the file's name.
+    let texts = |a: &App| drawn(a).into_iter().filter_map(|i| match i { Item::Text { text, .. } => Some(text), _ => None }).collect::<Vec<_>>();
+    assert_eq!(texts(&a), ["rain.wav"]);
+    let lines = |a: &App| drawn(a).iter().filter(|i| matches!(i, Item::Line { .. })).count();
+    let on_its_staff = lines(&a);
     let player = a.editor.project.players[1].name.clone();
     let _ = a.update(Message::Mix(mix::MixMsg::ClipCue(player)));
     a.sync();
     let items = drawn(&a);
     assert!(items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "rain ▸")), "{items:?}");
-    assert!(!items.iter().any(|i| matches!(i, Item::Line { .. })), "no line yet");
+    assert_eq!(lines(&a), on_its_staff, "no cue line yet");
     let _ = a.update(Message::Mix(mix::MixMsg::ClipCueLine));
     a.sync();
-    assert!(drawn(&a).iter().filter(|i| matches!(i, Item::Line { .. })).count() >= 2, "a line and its hook");
+    assert!(lines(&a) >= on_its_staff + 2, "a line and its hook besides the clip's own staff");
     // On the second player's staff: below the first staff's top.
     let first = a.pages[0].staves.iter().find(|s| s.part == 0).unwrap().top;
-    let y = drawn(&a).iter().find_map(|i| match i { Item::Text { at, .. } => Some(at.y), _ => None }).unwrap();
+    let y = drawn(&a).iter().find_map(|i| match i { Item::Text { at, text, .. } if text == "rain ▸" => Some(at.y), _ => None }).unwrap();
     assert!(y > first + 4.0, "{y} under the first staff ({first})");
+}
+
+#[test]
+fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
+    let mut a = app(View::Page);
+    let rate = a.playback.sample_rate;
+    // Decoded already (files no clip uses are let go at each sync).
+    let load = |a: &mut App, f: &str| a.playback.pool.media.insert(f, corinzia_audio::media::AudioData::from_channels(vec![vec![0.2; (rate * 2.0) as usize]], rate));
+    load(&mut a, "a.wav");
+    let tracks = |a: &App| a.editor.project.tracks.iter().filter(|t| t.audio).count();
+    // On the score: a new track, at the caret.
+    a.editor.caret = Frac::int(1);
+    let _ = a.update(Message::DroppedAt(vec!["a.wav".into()], iced::Point::new(300.0, 300.0)));
+    assert_eq!(tracks(&a), 1);
+    let (track, _) = a.selected_clip.expect("the clip, selected");
+    let _ = a.update(Message::Act(Action::ShowMix));
+    a.sync();
+    let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
+    assert!((a.editor.project.track(track).unwrap().clips[0].at - sec(&a, 4.0)).abs() < 1e-9);
+    // Over the arrange view: onto the audio track under the pointer, at
+    // the beat under it; a second file on a track of its own.
+    let layout = a.prefs.layout;
+    let row = a.arrange.rows.iter().position(|r| matches!(r, arrange::Row::Lane(l) if a.arrange.lanes[*l].track == track)).unwrap();
+    let at = iced::Point::new(layout.header_width + 12.0 * a.arrange_ppq - a.arrange_scroll + 1.0, 47.0 + arrange::RULER + (row as f32 + 0.5) * layout.lane_height - a.arrange_scroll_y);
+    assert_eq!(a.drop_target(at), Some((Some(track), 12.0)));
+    let _ = a.update(Message::DragOver(Some(at)));
+    assert!(a.drag_over.is_some() && a.editor.status == "Drop to add the sound to a", "{}", a.editor.status);
+    load(&mut a, "b.wav");
+    load(&mut a, "c.flac");
+    let _ = a.update(Message::DroppedAt(vec!["b.wav".into(), "c.flac".into(), "notes.txt".into()], at));
+    assert!(a.drag_over.is_none());
+    let clips = &a.editor.project.track(track).unwrap().clips;
+    assert_eq!(clips.len(), 2);
+    assert!(clips.iter().any(|c| c.file == "b.wav" && (c.at - sec(&a, 12.0)).abs() < 1e-9));
+    assert_eq!(tracks(&a), 2, "c.flac on a new track");
+    assert!(a.editor.status.contains("notes.txt"), "the rest is not added: {}", a.editor.status);
+    // In the score: a staff for each audio track, its clips by file name.
+    let _ = a.update(Message::Act(Action::ShowScore));
+    a.sync();
+    let texts: Vec<String> = a.pages.iter().flat_map(|p| p.items.iter()).filter_map(|i| match i { Item::Text { text, bold: true, .. } => Some(text.clone()), _ => None }).collect();
+    for f in ["a.wav", "b.wav", "c.flac"] {
+        assert!(texts.iter().any(|t| t == f), "{f} in {texts:?}");
+    }
+    assert!(a.pages[0].staves.iter().filter(|s| s.single).count() >= 2);
+    // A click on an audio staff is no player's.
+    let audio = a.pages[0].staves.iter().find(|s| s.single).unwrap().part;
+    assert_eq!(a.lane_of_staff(audio), None);
+    assert_eq!(a.lane_of_staff(0), Some(0));
 }
 
 #[test]

@@ -292,6 +292,7 @@ pub fn score(staves: &[(&str, &[&str])], meter: (i64, i64), fifths: i32) -> Scor
             group: 0,
             lines: vec![],
             transposition: (0, 0),
+            audio: false,
             voices: voices
                 .iter()
                 .enumerate()
