@@ -1,23 +1,58 @@
 # Corinzia
 
-### Write it like a score. Hear it like a record.
+### Write it like a score. Hear it like a recording.
 
 [![Listed on Remade](https://remade.wiki/badges/listed-on-remade.svg)](https://remade.wiki/projects/corinzia/)
 
-Corinzia is a music notation program and a DAW in one window. Write your
-music on beautifully engraved pages, then play it back through your own
-CLAP and VST3 instruments and effects, mixed like a production. It doesn't
-convert between two programs or round-trip through MIDI: it's one piece of
-music, on the page and in the mix.
+Corinzia is a music notation program with its own orchestra inside. Write
+your music on beautifully engraved pages, press Space, and hear it played
+back with the expression of a finished mockup: phrased, balanced and
+alive, with nothing to download, set up or route. When you want more, it is
+also a full DAW for your own CLAP and VST3 instruments and effects.
 
 It also writes **Byzantine chant** alongside Western music, and sings it
 back in the true intervals of each mode.
 
-![A Beethoven string quartet engraved in Corinzia](docs/screenshots/quartet.png)
+![A Festival Prelude for full orchestra, the piece Corinzia opens with](docs/screenshots/orchestra.png)
 
 > **Alpha.** Corinzia is under active development and moving fast. It's great
 > for trying out and for real sketches, but keep MusicXML exports of
 > anything important while the file format settles.
+
+## An orchestra that plays what you write
+
+Corinzia's playback engine was built for one job: making a score sound like
+an orchestra the moment you write it. There are no sample libraries to
+install, no gigabytes to download and no articulations to wire up. Every
+staff finds its sound from the instrument's name, and the whole orchestra
+plays in real time on an ordinary four-core computer.
+
+* **Real instruments, measured.** Each string, woodwind and brass sound is
+  shaped by measurements of real players: how bright a trumpet gets as it
+  swells to fortissimo, why a clarinet sounds hollow in its low register,
+  the resonances of a violin's body that make its vibrato shimmer.
+* **Synthesis that breathes.** A blend of efficient techniques does the
+  playing: the measured tone colours, a physical model of the bow, reed or
+  lips for each attack and every slurred join, and the breath and bow noise
+  of a real player. Notes speak, connect and fade the way instruments do.
+* **Sections, not single instruments.** A violin section is several players, each
+  slightly different in tuning and vibrato, so a held chord glows the way a
+  real section does. Chamber music gets soloists.
+* **Balanced like a real orchestra.** With every fader at 0 dB, the brass can
+  drown the flutes at fortissimo, a solo violin sits under the section, and
+  a pianissimo clarinet fades to almost nothing.
+* **Played the way it's written.** Hairpins swell through held notes, slurs
+  join without a new attack, accents bite, fermatas are held, and pizz.,
+  tremolo, con sordino, sul ponticello, col legno and flutter-tonguing
+  change the sound.
+* **Phrased like a musician.** Turn on Phrasing and Corinzia shapes each
+  phrase, leans on downbeats and melodic peaks, and slows the final bar, as
+  players do. Turn it off to hear exactly what's on the page.
+
+Open Corinzia and it greets you with *A Festival Prelude*, a short original
+piece for full orchestra: long string lines, woodwind solos over
+pizzicato, racing strings under brass fanfares, and a brass chorale to
+finish. Press Space.
 
 ## Engraving you'd be proud to print
 
@@ -25,6 +60,8 @@ Corinzia sets music the way a professional engraver would. Slurs curve
 around the notes, beams follow the meter, lyrics and chord symbols find
 their room, and every page is crisp at any zoom. PDFs come straight from
 the same engraver, so what you see is exactly what prints.
+
+![A Beethoven string quartet engraved in Corinzia](docs/screenshots/quartet.png)
 
 ![Handel's "Lascia ch'io pianga": voice and piano, with two verses of lyrics](docs/screenshots/aria.png)
 
@@ -44,28 +81,11 @@ ready to hand out.
 
 ![The first violin's part](docs/screenshots/quartet-part.png)
 
-## An orchestra in the box
-
-Press Space and your score plays straight away, with no sample libraries
-to install. Corinzia's own instruments cover the orchestra and more:
-string sections and soloists, woodwinds, brass, choir and solo voices,
-piano, organ, harp, guitar, tuned percussion, timpani and drums. Each
-staff picks its sound from the instrument's name.
-
-* **Balanced like a real orchestra:** with every fader at 0 dB, the brass
-  can drown the flutes at ff, a solo violin sits under the section, and a
-  pianissimo clarinet fades to almost nothing.
-* **Played the way it's written:** hairpins swell through held notes,
-  slurred notes join without a new attack, accents bite, and pizz., trem.,
-  con sord., sul pont., col legno and flutter-tonguing change the sound.
-* **Phrased like a musician (optional):** one click shapes each phrase,
-  leans on downbeats and melodic peaks, and slows the final bar. Turn it
-  off to hear exactly what's on the page.
-
 ## A real mixing desk behind the score
 
 Switch to the Mix tab and your score becomes a session. Each player is a
-track with its own instrument plugin, effects, sends, buses and automation.
+track with Corinzia's own instrument or a plugin of yours, with effects,
+sends, buses and automation.
 Drop in audio files, shape how notes are played in the piano roll, and
 export the whole thing as a finished WAV.
 
@@ -150,5 +170,7 @@ Corinzia is free and open source, under the
 Found a bug or missing something? Please
 [open an issue](https://github.com/githuhl/corinzia/issues).
 
-*Screenshots show public-domain works (Beethoven, Handel, Stephen Foster)
-from the music21 corpus.*
+*Screenshots show A Festival Prelude and public-domain works (Beethoven,
+Handel, Stephen Foster) from the music21 corpus. The built-in instruments'
+tone colours were measured from the University of Iowa Musical Instrument
+Samples.*
