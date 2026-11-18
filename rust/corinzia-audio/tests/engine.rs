@@ -849,3 +849,46 @@ fn the_engine_reports_its_load_and_late_blocks() {
     assert_eq!(ui.take_load(), 0.0, "taken");
     assert_eq!(ui.late(), 0);
 }
+
+#[test]
+fn notes_tell_the_builtin_instruments_how_they_speak() {
+    use corinzia_ensemble::voice::articulation as a;
+    use corinzia_score::score::art;
+    // c'' staccato, then a'' marcato with a down-bow; then eight quick
+    // sixteenths at 120 (an eighth of a second each): spiccato.
+    let mut p = project();
+    p.tracks[0].program = None;
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = art::STACCATO;
+    evs[2].articulations = art::MARCATO | art::DOWN_BOW;
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let codes: Vec<u8> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(9)).map(|e| (e.velocity * 127.0).round() as u8).collect();
+    assert_eq!(codes, [a::STACCATO, a::MARCATO | a::DOWN_BOW]);
+    let mut q = project();
+    q.tracks[0].program = None;
+    let sixteenth = |id: u64, k: i64| Event { id, kind: EventKind::Note, start: Frac::new(k, 16), duration: Frac::new(1, 16), heads: vec![Head { id: id + 1, pitch: Pitch { step: 0, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
+    q.movements[0].lanes[0].voices[0].events = Arc::new((0..8).map(|k| sixteenth(100 + 2 * k as u64, k)).collect());
+    let snap = snapshot::build_from_pool(&q, SR, 1, &[0], &mut pool);
+    let codes: Vec<u8> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(9)).map(|e| (e.velocity * 127.0).round() as u8).collect();
+    assert_eq!(codes, [a::SPICCATO], "quick unslurred notes: off the string");
+}
+
+#[test]
+fn a_tremolo_is_one_note_in_the_tremolo_technique_on_the_builtin_instruments() {
+    use corinzia_score::score::art;
+    let mut p = project();
+    p.tracks[0].program = None;
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].articulations = art::TREMOLO; // c'' a quarter: eight 32nds written out
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let ons: Vec<i16> = snap.notes.iter().filter(|e| e.kind == snapshot::Kind::Note && e.on).map(|e| e.key).collect();
+    assert_eq!(ons, [72, 81], "one c'', one a''");
+    assert!(snap.notes.iter().any(|e| e.kind == snapshot::Kind::Cc(3) && (e.velocity * 127.0).round() as u8 == corinzia_ensemble::voice::tech::TREM));
+    // Exported MIDI keeps the written-out notes.
+    let doc = corinzia_perform::document(&p, &p.movements[0]);
+    assert!(doc.performance.tracks[0].notes.iter().filter(|n| n.key == 72).count() >= 8);
+}

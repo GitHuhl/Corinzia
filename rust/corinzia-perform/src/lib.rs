@@ -24,6 +24,11 @@ fn q(f: Frac) -> f64 {
 /// bow change or a tonguing, not a silence.
 pub const NOTE_BREAK: f64 = 0.03;
 
+/// How long short notes sound, in seconds, whatever the tempo (players
+/// keep a staccato short on a slow quarter too): at most, and at least.
+pub const STACCATO_SECONDS: (f64, f64) = (0.2, 0.06);
+pub const STACCATISSIMO_SECONDS: (f64, f64) = (0.09, 0.04);
+
 /// Fraction of the written length that sounds.
 pub fn gate_factor(a: u16) -> f64 {
     if a & art::STACCATISSIMO != 0 {
@@ -32,10 +37,23 @@ pub fn gate_factor(a: u16) -> f64 {
         0.5
     } else if a & (art::BREATH | art::CAESURA) != 0 {
         0.7 // leave room to breathe
+    } else if a & art::MARCATO != 0 {
+        0.75 // heavy, and apart
     } else if a & art::TENUTO != 0 {
         1.0
     } else {
         0.9
+    }
+}
+
+/// How much an accent lifts the attack (the note then settles back).
+pub fn accent_factor(a: u16) -> f32 {
+    if a & art::MARCATO != 0 {
+        1.25
+    } else if a & art::ACCENT != 0 {
+        1.15
+    } else {
+        1.0
     }
 }
 
@@ -296,6 +314,9 @@ pub struct EventShape {
     pub velocity: f32,
     /// The level reached by the event's end (a hairpin under a held note).
     pub end_velocity: f32,
+    /// The level the note settles to after its attack: the prevailing
+    /// dynamic (an sfz or fp attacks louder than it holds).
+    pub sustain: f32,
     pub legato: bool,
 }
 
@@ -303,7 +324,7 @@ pub struct EventShape {
 /// next dynamic, or ±2 steps), and legato inside slurs (but the last note).
 /// `slurs`: the [first note, last note) times of the slurs in the voice.
 pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape> {
-    let mut out = vec![EventShape { velocity: 0.0, end_velocity: 0.0, legato: false }; evs.len()];
+    let mut out = vec![EventShape { velocity: 0.0, end_velocity: 0.0, sustain: 0.0, legato: false }; evs.len()];
     // The level each event is played at, and the level the music is at after it.
     let mut cur = 4u8;
     let mut attack = vec![4u8; evs.len()];
@@ -320,7 +341,8 @@ pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape
         attack[i] = a;
         after[i] = cur;
         out[i].velocity = velocity_for_dynamic(Some(a));
-        out[i].end_velocity = out[i].velocity;
+        out[i].end_velocity = velocity_for_dynamic(Some(cur));
+        out[i].sustain = out[i].end_velocity;
         out[i].legato = slurs.iter().any(|&(from, to)| from <= e.start && e.start < to);
     }
     for i in 0..evs.len() {
@@ -342,6 +364,7 @@ pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape
         for k in i..=j {
             let at = |t: f64| if t1 > t0 { ((t - t0) / (t1 - t0)).clamp(0.0, 1.0) } else { 1.0 };
             out[k].velocity = v0 + (v1 - v0) * at(q(evs[k].start)) as f32;
+            out[k].sustain = out[k].velocity;
             // Held through the hairpin's end: it gets there (but not past
             // the arrival note's own start).
             out[k].end_velocity = if k < j { v0 + (v1 - v0) * at(q(evs[k].end())) as f32 } else { out[k].velocity };
@@ -352,6 +375,7 @@ pub fn expressive_shape(evs: &[Event], slurs: &[(Frac, Frac)]) -> Vec<EventShape
             }
             out[k].velocity = v1;
             out[k].end_velocity = v1;
+            out[k].sustain = v1;
         }
     }
     out
@@ -378,6 +402,9 @@ pub struct PerformedNote {
     pub slurred: bool,
     /// The dynamic it reaches by its end (a hairpin), 0..1 like `velocity`.
     pub end_velocity: f32,
+    /// The dynamic it settles to after its attack (below `velocity` for an
+    /// accent, an sfz or an fp).
+    pub sustain: f32,
     /// Its written articulations (`art::*`).
     pub arts: u16,
 }
@@ -555,6 +582,7 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                                     voice: (li as u32) << 8 | vi as u32,
                                     slurred: true,
                                     end_velocity: (vel_main * 0.9).min(1.0),
+                                    sustain: (vel_main * 0.9).min(1.0),
                                     arts: 0,
                                 });
                             }
@@ -585,17 +613,24 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                         // Unmarked notes: players leave a short break, not a
                         // tenth of every note (a half note at 72 would lose
                         // 170 ms): at most 30 ms, at most a tenth.
-                        if gate == gate_factor(0) {
-                            let secs = tempo.seconds_at(to_q(end)) - tempo.seconds_at(to_q(ev.start));
-                            if secs > 0.0 {
+                        let secs = tempo.seconds_at(to_q(end)) - tempo.seconds_at(to_q(ev.start));
+                        if secs > 0.0 {
+                            if gate == gate_factor(0) {
                                 gate = 1.0 - (1.0 - gate_factor(0)).min(NOTE_BREAK / secs);
+                            } else if last_art & art::STACCATISSIMO != 0 {
+                                gate = gate.min(STACCATISSIMO_SECONDS.0 / secs).max(STACCATISSIMO_SECONDS.1 / secs).min(gate_factor(art::STACCATISSIMO));
+                            } else if last_art & art::STACCATO != 0 && !(shape[ei].legato && gate == 1.0) {
+                                gate = gate.min(STACCATO_SECONDS.0 / secs).max(STACCATO_SECONDS.1 / secs).min(gate_factor(art::STACCATO));
                             }
                         }
                         let vel = if h.velocity > 0 {
                             h.velocity as f32 / 127.0
                         } else {
-                            shape[ei].velocity * if ev.articulations & art::ACCENT != 0 { 1.15 } else { 1.0 }
+                            shape[ei].velocity * accent_factor(ev.articulations)
                         };
+                        // The level the held note settles to: an accent's or an
+                        // sfz's is the prevailing dynamic, not its attack.
+                        let sustain = if h.velocity > 0 { vel } else { shape[ei].sustain };
                         // A rolled chord starts each head a little later, bottom up.
                         let mut roll = 0.0;
                         if ev.articulations & art::ARPEGGIO != 0 && ev.heads.len() > 1 {
@@ -630,7 +665,8 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                                 articulation,
                                 voice: (li as u32) << 8 | vi as u32,
                                 slurred: fi + 1 < n || (shape[ei].legato && last_art & (art::STACCATO | art::STACCATISSIMO) == 0),
-                                end_velocity: if fi + 1 == n { (vel * shape[ei].end_velocity / shape[ei].velocity.max(1e-3)).min(1.0) } else { vel.min(1.0) },
+                                end_velocity: if fi + 1 == n { shape[ei].end_velocity.min(1.0) } else { sustain.min(1.0) },
+                                sustain: sustain.min(1.0),
                                 arts: ev.articulations,
                             });
                         }

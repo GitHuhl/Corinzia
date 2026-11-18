@@ -369,3 +369,42 @@ pub fn at(curve: &[f32; FINE], log2_hz: f32) -> f32 {
     let t = x - i as f32;
     curve[i] + (curve[i + 1] - curve[i]) * t
 }
+
+/// The dynamics the curves are made ready at: 0, 1/8 .. 1.
+pub const LEVELS: usize = 9;
+
+/// A body's curves, ready: [dynamic level][odd, even], a soloist's (with
+/// the instrument's ripple) and a section's, made once (the main thread,
+/// when the plugin is made), so that a note only blends two of them.
+pub type Ready = [[[f32; FINE]; 2]; LEVELS];
+
+pub fn ready(body: u8, section: bool) -> &'static Ready {
+    static READY: std::sync::OnceLock<Vec<Box<Ready>>> = std::sync::OnceLock::new();
+    let all = READY.get_or_init(|| {
+        let mut v = Vec::with_capacity(BODIES * 2);
+        for b in 0..BODIES as u8 {
+            for s in [false, true] {
+                let mut r: Box<Ready> = Box::new([[[0.0; FINE]; 2]; LEVELS]);
+                for (l, level) in r.iter_mut().enumerate() {
+                    let (odd, even) = level.split_at_mut(1);
+                    fine_curves(b, l as f32 / (LEVELS - 1) as f32, s, |_| 0.0, &mut odd[0], &mut even[0]);
+                }
+                v.push(r);
+            }
+        }
+        v
+    });
+    &all[body as usize * 2 + section as usize]
+}
+
+/// A body's curves at dynamic `d`, blended from the ready ones.
+pub fn blend(body: u8, d: f32, section: bool, odd: &mut [f32; FINE], even: &mut [f32; FINE]) {
+    let r = ready(body, section);
+    let x = (d.clamp(0.0, 1.0) * (LEVELS - 1) as f32).min((LEVELS - 1) as f32 - 1e-4);
+    let i = x as usize;
+    let t = x - i as f32;
+    for k in 0..FINE {
+        odd[k] = r[i][0][k] + (r[i + 1][0][k] - r[i][0][k]) * t;
+        even[k] = r[i][1][k] + (r[i + 1][1][k] - r[i][1][k]) * t;
+    }
+}

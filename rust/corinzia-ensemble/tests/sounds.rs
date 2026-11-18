@@ -314,3 +314,73 @@ fn split_blocks_play_like_whole_ones() {
         assert!(jump(&split[4800..]) < 2.0 * jump(&whole[4800..]) + 1e-4, "{}", PATCHES[patch].name);
     }
 }
+
+/// A note with an articulation: velocity `vel`, settling at `dynamic`.
+fn articulated(patch: usize, key: i16, vel: f32, dynamic: f32, code: u8, hold: f32) -> Vec<f32> {
+    let mut v = Voice::new(SR);
+    v.start(patch, tech::ORD, 0, 0, 0, key, vel, Some(dynamic), 0, 7);
+    v.articulate(code, true);
+    let n = (1.2 * SR as f32) as usize;
+    let mut out = vec![0.0; n];
+    let off = (hold * SR as f32) as usize;
+    let trims = patches::trims();
+    let mut at = 0;
+    while at < n {
+        let end = (at + 64).min(n);
+        if at <= off && off < end {
+            v.release();
+        }
+        v.render(&mut out[at..end], 0.0, trims);
+        at = end;
+    }
+    out
+}
+
+/// The time (s) the 5 ms level takes to reach 90 % of its 0.3-0.4 s level.
+fn rise_time(x: &[f32]) -> f32 {
+    let w = (0.005 * SR) as usize;
+    let steady = rms(&x[(0.3 * SR) as usize..(0.4 * SR) as usize]);
+    (0..x.len() / w).find(|&k| rms(&x[k * w..(k + 1) * w]) > 0.9 * steady).map_or(1.0, |k| (k * w) as f32 / SR as f32)
+}
+
+#[test]
+fn articulations_change_how_notes_speak() {
+    use voice::articulation as a;
+    for (patch, key) in [(5usize, 69i16), (13, 74), (23, 72), (0, 69)] {
+        let name = PATCHES[patch].name;
+        // Staccato speaks quicker than a plain note.
+        let plain = articulated(patch, key, 0.62, 0.62, a::NORMAL, 1.0);
+        let short = articulated(patch, key, 0.62, 0.62, a::STACCATO, 1.0);
+        assert!(rise_time(&short) < rise_time(&plain) * 0.8, "{name}: {} vs {}", rise_time(&short), rise_time(&plain));
+        // A marcato's start is brighter than a plain one's.
+        let marc = articulated(patch, key, 0.62, 0.62, a::MARCATO, 1.0);
+        let bright = |x: &[f32]| {
+            let s = &x[(0.03 * SR) as usize..(0.03 * SR) as usize + 2048];
+            let d: Vec<f32> = s.windows(2).map(|w| w[1] - w[0]).collect();
+            rms(&d) / rms(s) // the slope's share: the high harmonics
+        };
+        if PATCHES[patch].model == Model::Flute {
+            // A flute's start is mostly breath: a marcato's chiff is louder.
+            let start = |x: &[f32]| rms(&x[..(0.04 * SR) as usize]);
+            assert!(start(&marc) > start(&plain) * 1.3, "{name}: {} vs {}", start(&marc), start(&plain));
+        } else {
+            assert!(bright(&marc) > bright(&plain) * 1.15, "{name}: {} vs {}", bright(&marc), bright(&plain));
+        }
+        // A staccato's release is shorter: less left 80 ms after the end.
+        let tail = |x: &[f32]| rms(&x[(0.58 * SR) as usize..(0.62 * SR) as usize]);
+        let plain_short = articulated(patch, key, 0.62, 0.62, a::NORMAL, 0.5);
+        assert!(tail(&short_held(patch, key)) < tail(&plain_short) * 0.8, "{name}");
+    }
+    // An fp: forte as it speaks, piano soon after.
+    for (patch, key) in [(5usize, 69i16), (13, 74), (23, 72)] {
+        let fp = articulated(patch, key, 0.75, 0.38, a::NORMAL, 1.0);
+        let w = (0.01 * SR) as usize;
+        let early = (0..30).map(|k| rms(&fp[k * w..(k + 1) * w])).fold(0.0f32, f32::max);
+        let late = rms(&fp[(0.6 * SR) as usize..(0.7 * SR) as usize]);
+        assert!(20.0 * (early / late).log10() > 6.0, "{}: {early} {late}", PATCHES[patch].name);
+    }
+}
+
+fn short_held(patch: usize, key: i16) -> Vec<f32> {
+    articulated(patch, key, 0.62, 0.62, voice::articulation::STACCATO, 0.5)
+}

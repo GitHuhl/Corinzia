@@ -236,6 +236,7 @@ fn dynamics_and_articulation(perf: &mut Performance) {
         let d = db[i] * PER_DB;
         note.velocity = (note.velocity + d).clamp(0.02, 1.0);
         note.end_velocity = (note.end_velocity + d).clamp(0.02, 1.0);
+        note.sustain = (note.sustain + d).clamp(0.02, 1.0);
         note.gate *= gate[i];
     }
 }
