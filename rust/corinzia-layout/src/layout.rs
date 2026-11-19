@@ -823,9 +823,11 @@ fn tie_shape(width: f32) -> (f32, f32) {
 
 /// How far above a dynamic's baseline its letters' middle (an 'm') sits:
 /// hairpins are centred there (LilyPond's DynamicText Y-offset).
-const DYN_CENTRE: f32 = 0.55;
+const DYN_CENTRE: f32 = 0.6;
 /// DynamicLineSpanner `padding`.
 const DYN_PAD: f32 = 0.6;
+/// The least room between a dynamic and a barline beside it.
+const DYN_BAR_PAD: f32 = 0.4;
 
 /// A brace from `top` to `bottom` whose right edge is at `right`: two
 /// filled halves meeting at a point in the middle, thickest half-way along
@@ -3235,6 +3237,26 @@ impl<'a> Engraver<'a> {
     fn draw_dynamics_and_hairpins(&mut self) {
         let d = self.font.defaults;
         let dyn_width = |s: &Self, text: &str| Self::dynamic_glyphs(text).iter().map(|g| s.width(*g) - 0.05).sum::<f32>();
+        // A dynamic's left edge: centred on its note's head (LilyPond's
+        // DynamicText), but kept inside its bar. LilyPond leaves dynamics out
+        // of the horizontal spacing and relies on the gap after a barline;
+        // a squeezed system, or a wide dynamic, would run over the barline
+        // (or the clef and key at a system's start), so it moves right to
+        // clear it, or left to clear the next barline.
+        let dyn_left = |s: &Self, n: &Note, text: &str| -> f32 {
+            let w = dyn_width(s, text);
+            let x = n.x + HEAD_W / 2.0 - w / 2.0;
+            let Some(m) = s.ms.get(n.measure) else { return x };
+            let lo = m.x0 + DYN_BAR_PAD;
+            let hi = m.x1 - DYN_BAR_PAD - w;
+            if x < lo {
+                lo
+            } else if x > hi {
+                hi.max(lo)
+            } else {
+                x
+            }
+        };
         let mut baseline_for: std::collections::HashMap<usize, f32> = Default::default();
         let (r0, r1) = self.range;
         let (left, right) = self.system_edges();
@@ -3264,7 +3286,7 @@ impl<'a> Engraver<'a> {
                 Some(i) => {
                     let n = &self.notes[i];
                     match &n.dynamic {
-                        Some(t) => n.x + HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + PIN_PAD,
+                        Some(t) => dyn_left(self, n, t) + dyn_width(self, t) + PIN_PAD,
                         None if handed_from => n.x + HEAD_W / 2.0 + PIN_PAD / 3.0,
                         None => n.x,
                     }
@@ -3274,7 +3296,7 @@ impl<'a> Engraver<'a> {
             let x1 = match ei {
                 Some(k) => {
                     let o = &self.notes[k];
-                    let at_dynamic = o.dynamic.as_ref().map(|t| o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - PIN_PAD);
+                    let at_dynamic = o.dynamic.as_ref().map(|t| dyn_left(self, o, t) - PIN_PAD);
                     if self.is_bar_start(sp.to) && sp.to > sp.from {
                         // LilyPond's to-barline: a hairpin ending on a bar's
                         // first note is bound to the barline before it, and
@@ -3332,6 +3354,21 @@ impl<'a> Engraver<'a> {
                         + DYN_CENTRE
                 })
                 .fold(f32::MIN, f32::max);
+            // The dynamics at the hairpins' ends are on the same line
+            // (LilyPond's DynamicLineSpanner holds them all): the line goes
+            // as low as the lowest of them needs.
+            let base = placed[k..end]
+                .iter()
+                .flat_map(|p| [p.si, p.ei])
+                .flatten()
+                .filter_map(|i| {
+                    let n = &self.notes[i];
+                    let t = n.dynamic.as_ref().filter(|_| n.first)?;
+                    let (x, w) = (dyn_left(self, n, t), dyn_width(self, t));
+                    let ascent = Self::dynamic_glyphs(t).iter().map(|g| self.font.bbox(*g).ne.1).fold(0.0f32, f32::max);
+                    Some(self.dynamic_clearance(part, x - 0.2, x + w + 0.2) + ascent)
+                })
+                .fold(base, f32::max);
             for p in &placed[k..end] {
                 let sp = &p.sp;
                 let c = base - DYN_CENTRE;
@@ -3369,13 +3406,16 @@ impl<'a> Engraver<'a> {
                 continue;
             }
             let w = dyn_width(self, &text);
-            let mut x = n.x + HEAD_W / 2.0 - w / 2.0;
-            // Its top clear of the staff by 0.1, of the notes by 0.6.
+            let mut x = dyn_left(self, &n, &text);
+            // Its top clear of the staff and the notes by padding 0.6.
             let ascent = Self::dynamic_glyphs(&text).iter().map(|g| self.font.bbox(*g).ne.1).fold(0.0f32, f32::max);
             let own = self.dynamic_clearance(n.part, x - 0.2, x + w + 0.2) + ascent;
             let y = baseline_for.get(&i).map_or(own, |&b| b.max(own));
             for g in Self::dynamic_glyphs(&text) {
-                self.place(n.part, Item::glyph(g, x, y, ids::dynamic(n.id)));
+                // Bravura's letters reach left of their origin (p by 0.36,
+                // f by 0.56): set the ink, not the origin, at `x`.
+                let sw = self.font.bbox(g).sw.0;
+                self.place(n.part, Item::glyph(g, x - sw, y, ids::dynamic(n.id)));
                 x += self.width(g) - 0.05;
             }
         }
