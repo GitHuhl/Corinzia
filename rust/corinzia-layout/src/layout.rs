@@ -178,6 +178,74 @@ fn stretch_at(breaks: &[(f32, f32)], x: f32) -> f32 {
     }
 }
 
+/// The rows of a chord's dots, in staff positions (half spaces up from the
+/// middle line), as LilyPond's Dot_configuration sets them: one dot per
+/// head (at most `chord-dots-limit` 3 more than the chord's span leaves
+/// room for), each in a space; when two would meet, the one in the way and
+/// those beyond it shift up or down, whichever moves them least (moving
+/// down costs a little, moving against `dir`, a voice's side, more).
+fn dot_rows(positions: &[i32], dir: i32) -> Vec<i32> {
+    use std::collections::BTreeMap;
+    let mut heads: Vec<i32> = positions.to_vec();
+    heads.sort();
+    if let (Some(&lo), Some(&hi)) = (heads.first(), heads.last()) {
+        let room = ((hi - lo) as usize + 2 + 3) / 2;
+        let mut total = heads.len();
+        let mut first = 0;
+        while total > room {
+            if (total - room) % 2 == 0 {
+                first += 1;
+            }
+            total -= 1;
+        }
+        heads = heads[first..first + total].to_vec();
+    }
+    let on_line = |p: i32| p % 2 == 0;
+    // Position -> the head position it belongs to.
+    type Cfg = BTreeMap<i32, i32>;
+    let badness = |c: &Cfg| -> i32 {
+        c.iter()
+            .map(|(&p, &o)| {
+                let mv = (p - o).signum();
+                2 * (p - o) * (p - o) + if dir != 0 && mv != dir { 2 } else if mv != 1 { 1 } else { 0 }
+            })
+            .sum()
+    };
+    let shifted = |c: &Cfg, k: i32, d: i32| -> Cfg {
+        let mut out = Cfg::new();
+        let mut offset = 0;
+        let entries: Vec<(i32, i32)> = if d > 0 { c.iter().map(|(&a, &b)| (a, b)).collect() } else { c.iter().rev().map(|(&a, &b)| (a, b)).collect() };
+        for (p, o) in entries {
+            if p == k {
+                let q = if on_line(p) { p + d } else { p + 2 * d };
+                offset = 2 * d;
+                out.insert(q, o);
+            } else {
+                if !out.contains_key(&p) {
+                    offset = 0;
+                }
+                out.insert(p + offset, o);
+            }
+        }
+        out
+    };
+    let remove_collision = |c: &mut Cfg, p: i32| {
+        if c.contains_key(&p) {
+            let (up, down) = (shifted(c, p, 1), shifted(c, p, -1));
+            *c = if badness(&up) < badness(&down) { up } else { down };
+        }
+    };
+    let mut cfg = Cfg::new();
+    for p in heads {
+        remove_collision(&mut cfg, p);
+        cfg.insert(p, p);
+        if on_line(p) {
+            remove_collision(&mut cfg, p);
+        }
+    }
+    cfg.keys().copied().collect()
+}
+
 fn spacing_head_width(g: Glyph) -> Option<f32> {
     SPACING_HEAD_WIDTHS.iter().find(|h| h.0 == g).map(|h| h.1)
 }
@@ -1782,14 +1850,15 @@ impl<'a> Engraver<'a> {
         if n.value.dots == 0 {
             return;
         }
-        let mut done = Vec::new();
-        for &p in positions {
-            // On a line: the dot goes in the space above (below in voice 2).
-            let dp = if p % 2 == 0 { if n.voice % 2 == 0 && !n.rest { p - 1 } else { p + 1 } } else { p };
-            if done.contains(&dp) {
-                continue;
-            }
-            done.push(dp);
+        let rows = if n.rest {
+            positions.first().map(|&p| vec![p]).unwrap_or_default()
+        } else {
+            // A voice in polyphony prefers its own side (Dots.direction).
+            let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
+            let dir = if !poly { 0 } else if n.voice % 2 == 0 { -1 } else { 1 };
+            dot_rows(positions, dir)
+        };
+        for dp in rows {
             for k in 0..n.value.dots {
                 let x = right + 0.25 + k as f32 * 0.5;
                 let y = if n.rest { self.top(n.part) + 1.5 } else { self.y(n.part, dp) };
@@ -3974,6 +4043,23 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         p.items.push(Item::Text { text: score.copyright.clone(), at: pt(page.width / 2.0, page.height - page.margin_y * 0.45), size: 1.6, italic: false, bold: false, anchor: 1, id: ids::COPYRIGHT });
     }
     pages
+}
+
+#[cfg(test)]
+mod dot_tests {
+    #[test]
+    fn chord_dots_as_lilypond_sets_them() {
+        use super::dot_rows;
+        // A line note's dot goes up; a voice 2 note's down.
+        assert_eq!(dot_rows(&[-2], 0), vec![-1]);
+        assert_eq!(dot_rows(&[-2], -1), vec![-3]);
+        // c' e' g' (lines -6 -4 -2): a dot each, all in spaces.
+        assert_eq!(dot_rows(&[-6, -4, -2], 0), vec![-5, -3, -1]);
+        // A second: e' f' a' share no space, so one moves.
+        let r = dot_rows(&[-4, -3, -1], 0);
+        assert_eq!(r.len(), 3);
+        assert!(r.iter().all(|p| p % 2 != 0), "{r:?}");
+    }
 }
 
 #[cfg(test)]
