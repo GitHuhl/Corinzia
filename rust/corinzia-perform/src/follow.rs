@@ -43,7 +43,7 @@ pub struct Followed {
 
 /// The movement's tempo following `beats` (seconds after its start,
 /// ascending), each `unit` quarters long (1: crotchets; 1.5: dotted).
-pub fn follow(m: &Movement, style: Style, beats: &[f64], unit: f64, how: Follow) -> Result<Followed, String> {
+pub fn follow(m: &Movement, style: &Style, beats: &[f64], unit: f64, how: Follow) -> Result<Followed, String> {
     if !(unit > 0.0 && unit.is_finite()) {
         return Err("no beat length".into());
     }
@@ -55,7 +55,7 @@ pub fn follow(m: &Movement, style: Style, beats: &[f64], unit: f64, how: Follow)
         return Err("too few beats found to follow".into());
     }
     let length = crate::q(m.length);
-    let perf = perform_with(m, style);
+    let perf = perform_with(m, style.clone());
     // The grid: the score's beat nearest the first recorded one.
     let mut q0 = (perf.tempo.quarter_at(beats[0]) / unit).round() * unit;
     let mut shift = 0.0;

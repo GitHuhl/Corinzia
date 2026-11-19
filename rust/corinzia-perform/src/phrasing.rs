@@ -20,7 +20,8 @@
 //!   ones a little louder;
 //! - **leap articulation**: a small break before a wide leap that is not
 //!   slurred;
-//! - **melodic lead**: the top note of a chord sings over the others.
+//! - **melodic lead**: the top note of a chord sings over the others;
+//! - **timing**: no player exactly on the beat (see [`crate::timing`]).
 //!
 //! Dynamic changes are in decibels of an instrument's typical range
 //! (about 30 dB from ppp to fff over velocity 0.16..1), a few dB at most,
@@ -41,7 +42,7 @@ const FERMATA_HOLD: f64 = 0.5;
 /// `followed`: from here (quarters) the tempo follows a recording (see
 /// [`crate::follow`]), which already has its holds and slowings: no
 /// tempo rule changes it.
-pub fn apply(perf: &mut Performance, fermatas: &[(f64, f64)], style: Style, followed: Option<f64>) {
+pub fn apply(perf: &mut Performance, fermatas: &[(f64, f64)], style: &Style, followed: Option<f64>) {
     // Tempo regions: (from, to, factor at from, factor at to, curve).
     let mut regions: Vec<Region> = Vec::new();
     for (a, b) in merge(fermatas) {

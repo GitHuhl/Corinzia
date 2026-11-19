@@ -51,7 +51,10 @@ plays in real time on an ordinary four-core computer.
   flutter-tonguing change the sound.
 * **Phrased like a musician.** Turn on Phrasing and Corinzia shapes each
   phrase, leans on downbeats and melodic peaks, and slows the final bar, as
-  players do. Turn it off to hear exactly what's on the page.
+  players do. No player sits exactly on the beat: each one drifts a little
+  ahead and behind, in the way of their instrument, from a string
+  section's breadth to a drummer's tight hi-hat and laid-back snare. Turn
+  it off to hear exactly what's on the page.
 
 Open Corinzia and it greets you with *A Festival Prelude*, a short original
 piece for full orchestra: long string lines, woodwind solos over

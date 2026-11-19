@@ -9,6 +9,7 @@
 pub mod follow;
 pub mod phrasing;
 pub mod tempo;
+pub mod timing;
 
 use corinzia_edit as edit;
 use corinzia_model::*;
@@ -408,6 +409,22 @@ pub struct PerformedNote {
     pub sustain: f32,
     /// Its written articulations (`art::*`).
     pub arts: u16,
+    /// Where the player puts it against the beat, seconds: + behind, −
+    /// ahead (see [`timing`]); the whole note moves, its length kept.
+    pub timing_sec: f64,
+}
+
+impl PerformedNote {
+    /// When it sounds, seconds from the movement's start: its beat, its
+    /// arpeggio roll and its player's timing.
+    pub fn on_sec(&self, tempo: &TempoMap) -> f64 {
+        tempo.seconds_at(self.on_q) + self.roll_sec + self.timing_sec
+    }
+    /// When it is let go: its gated length after `on_sec`.
+    pub fn off_sec(&self, tempo: &TempoMap) -> f64 {
+        let on = self.on_sec(tempo);
+        on + (tempo.seconds_at(self.full_off_q) + self.timing_sec - on) * self.gate
+    }
 }
 
 /// Technique texts Corinzia understands, by how they begin: (prefix, canonical).
@@ -476,16 +493,33 @@ impl Performance {
 }
 
 /// How a movement is performed beyond what is written: see [`phrasing`].
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Style {
     /// The phrasing rules (phrase arches, the final ritardando, metrical
-    /// and melodic accents...). Off: the score as written, with fermatas held.
+    /// and melodic accents, players' timing...). Off: the score as written,
+    /// with fermatas held, every note on its beat.
     pub phrasing: bool,
+    /// Each instrument's timing feel (see [`timing`]); one missing plays
+    /// with [`timing::Feel::DEFAULT`].
+    pub feels: timing::Feels,
 }
 
 impl Style {
     pub fn of(project: &Project) -> Style {
-        Style { phrasing: project.phrasing }
+        let feels = project
+            .instruments
+            .iter()
+            .map(|i| {
+                let drums: Vec<(i32, i32)> = i.drums.iter().map(|d| (d.position.midi_key(), d.key as i32)).collect();
+                (i.id, timing::PlayerFeel::for_instrument(&i.name, &drums))
+            })
+            .collect();
+        Style { phrasing: project.phrasing, feels }
+    }
+
+    /// The phrasing rules on or off, with every instrument's default feel.
+    pub fn phrasing(on: bool) -> Style {
+        Style { phrasing: on, ..Style::default() }
     }
 }
 
@@ -578,6 +612,7 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                                     full_off_q: to_q(on + one),
                                     gate: 0.95,
                                     roll_sec: 0.0,
+                                    timing_sec: 0.0,
                                     technique,
                                     articulation: None,
                                     voice: (li as u32) << 8 | vi as u32,
@@ -662,6 +697,7 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                                 },
                                 gate: if fi + 1 < n { 0.95 } else if held.is_some() { 1.0 } else { gate },
                                 roll_sec: if fi == 0 { roll } else { 0.0 },
+                                timing_sec: 0.0,
                                 technique,
                                 articulation,
                                 voice: (li as u32) << 8 | vi as u32,
@@ -679,7 +715,8 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
     let notes = apply_tweaks(m, notes);
     let mut perf = Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes };
     let followed = m.tempo.iter().filter(|t| t.hidden).map(|t| q(t.at)).reduce(f64::min);
-    phrasing::apply(&mut perf, &fermatas, style, followed);
+    phrasing::apply(&mut perf, &fermatas, &style, followed);
+    timing::apply(&mut perf, &style);
     perf
 }
 
@@ -887,8 +924,7 @@ pub fn document(project: &Project, m: &Movement) -> corinzia_export::doc::Docume
                 notes: notes
                     .iter()
                     .map(|n| {
-                        let on = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
-                        let off = on + (perf.tempo.seconds_at(n.full_off_q) - on) * n.gate;
+                        let (on, off) = (n.on_sec(&perf.tempo), n.off_sec(&perf.tempo));
                         doc::Note { on: perf.tempo.quarter_at(on), off: perf.tempo.quarter_at(off), key: project.sounding_key(n.instrument, n.key).clamp(0, 127) as u8, vel: n.velocity }
                     })
                     .chain(keyswitches)

@@ -339,7 +339,11 @@ the output), automation playback and saving plugin settings.
   runner stopping, the beat before a fermata broadens, downbeats and
   melodic peaks are leant on, higher notes of a line are a little louder,
   short notes lighter, a wide unslurred leap gets a small break, and the
-  top of a chord sings over the rest. Off, the score plays as written. New
+  top of a chord sings over the rest. No player is exactly on the beat:
+  each drifts a little ahead and behind as real players do, by
+  instrument (strings the loosest, a drum kit's hi-hat the steadiest, its
+  snare a touch laid back, a pianist's melody a little ahead of the
+  chord), the same every time it plays. Off, the score plays as written. New
   scores start with it on; the choice is saved with the project, and
   applies to exported MIDI and audio too.
 * **Shared instruments:** a track can play through another track's plugin

@@ -386,6 +386,19 @@ Every example score in the W3C MusicXML repository imports and engraves
   * accents add weight.
 * **Tempo map:** constant segments and linear ramps; seconds ↔ performed
   quarters; bars and beats.
+* **Timing** (`timing`, with phrasing on): every note moves a little off
+  its beat by its player's `Feel`, mostly close, never far. A slow,
+  correlated drift (smooth noise over 0.5–16 s, a 1/f^0.8 spectrum, as
+  measured in human playing) plus note-to-note jitter, shared by one
+  player's chord. Feels by family (`PlayerFeel::for_instrument`, chosen in
+  `Style::of`): strings 14/8 ms (drift/jitter), winds and brass 12/7,
+  voices 16/10, keyboards 9/5 with a 15 ms melody lead and a 4 ms chord
+  spread, plucked 10/6, percussion 8/5. A drum kit (three or more drum
+  sounds) is placed per sound: hi-hat and ride 5/3, the snare 6 ms behind,
+  the bass drum 2 ms ahead, toms and crashes looser. Deterministic: drawn
+  from the instrument and the note's time, so playback and exports repeat
+  and an edit moves no other note. A note's `on_sec`/`off_sec` apply it
+  (with the arpeggio roll) for playback and MIDI export alike.
 * `document` builds the export document: the notation plus one MIDI track
   per sounding DAW track, with gate and roll applied in time as in
   playback.

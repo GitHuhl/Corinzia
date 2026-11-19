@@ -520,12 +520,12 @@ impl App {
         let (a, b) = ((c.offset * sr) as usize, ((c.offset + played) * sr) as usize);
         let part: Vec<Vec<f32>> = data.channels.iter().map(|ch| ch[a.min(ch.len())..b.min(ch.len())].to_vec()).collect();
         let style = corinzia_perform::Style::of(&self.editor.project);
-        let tempo = corinzia_perform::perform_with(&m, style).tempo;
+        let tempo = corinzia_perform::perform_with(&m, style.clone()).tempo;
         let q = tempo.quarter_at(c.at);
         let unit = self.follow.unit.unwrap_or_else(|| beat_unit(&m, q));
         let guess = unit * 60.0 / tempo.tempo_at(q).max(1.0);
         let beats: Vec<f64> = corinzia_audio::analysis::track_beats(&part, sr, Some(guess)).into_iter().map(|t| t + c.at).collect();
-        match follow(&m, style, &beats, unit, if self.follow.bars { Follow::Bars } else { Follow::Beats }) {
+        match follow(&m, &style, &beats, unit, if self.follow.bars { Follow::Bars } else { Follow::Beats }) {
             Ok(r) => {
                 self.editor.follow_tempo(track, clip, r.tempo, r.shift);
                 let bar = corinzia_perform::perform_with(self.editor.movement().unwrap_or(&m), style).tempo.bar_at(r.first_q).bar;

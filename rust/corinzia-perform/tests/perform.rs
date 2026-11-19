@@ -418,7 +418,7 @@ fn a_fermata_is_held_about_twice_as_long() {
 fn phrasing_shapes_the_line_and_slows_the_end() {
     let m = line();
     let plain = perform(&m);
-    let shaped = perform_with(&m, Style { phrasing: true });
+    let shaped = perform_with(&m, Style::phrasing(true));
     // Off: as written (every note mf).
     assert!(plain.notes.iter().all(|n| (n.velocity - velocity_for_dynamic(Some(4))).abs() < 1e-6));
     // On: the downbeat leant on, the phrase swelling then easing, and the
@@ -485,12 +485,12 @@ fn the_tempo_follows_a_recordings_beats() {
     for g in [0.5, 0.55, 0.6, 0.65, 0.62, 0.58, 0.52, 0.5, 0.49] {
         beats.push(beats.last().unwrap() + g);
     }
-    for style in [Style { phrasing: false }, Style { phrasing: true }] {
-        let r = follow(&m, style, &beats, 1.0, Follow::Beats).unwrap();
+    for style in [Style::phrasing(false), Style::phrasing(true)] {
+        let r = follow(&m, &style, &beats, 1.0, Follow::Beats).unwrap();
         assert_eq!((r.first_q, r.beats, r.shift), (2.0, 10, 0.0));
         let mut n = m.clone();
         n.tempo = r.tempo.clone();
-        let perf = perform_with(&n, style);
+        let perf = perform_with(&n, style.clone());
         for (i, b) in beats.iter().enumerate() {
             let t = perf.tempo.seconds_at(2.0 + i as f64);
             assert!((t - b).abs() < 1e-6, "beat {i}: {t} for {b} (phrasing {})", style.phrasing);
@@ -505,18 +505,18 @@ fn the_tempo_follows_a_recordings_beats() {
         assert_eq!(s.tempo.len(), 2, "the opening tempo and the mark only");
     }
     // Bar by bar: the downbeats (quarters 4 and 8) and the ends land.
-    let r = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Bars).unwrap();
+    let r = follow(&m, &Style::phrasing(false), &beats, 1.0, Follow::Bars).unwrap();
     let mut n = m.clone();
     n.tempo = r.tempo.clone();
-    let perf = perform_with(&n, Style { phrasing: false });
+    let perf = perform_with(&n, Style::phrasing(false));
     for (q, b) in [(2.0, beats[0]), (4.0, beats[2]), (8.0, beats[6]), (11.0, beats[9])] {
         assert!((perf.tempo.seconds_at(q) - b).abs() < 1e-6, "{q}");
     }
     assert!(r.tempo.iter().filter(|t| t.hidden).count() < 6);
     // Following again replaces what the first one put there.
     let mut again = m.clone();
-    again.tempo = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap().tempo;
-    let twice = follow(&again, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap();
+    again.tempo = follow(&m, &Style::phrasing(false), &beats, 1.0, Follow::Beats).unwrap().tempo;
+    let twice = follow(&again, &Style::phrasing(false), &beats, 1.0, Follow::Beats).unwrap();
     assert_eq!(twice.tempo.len(), again.tempo.len());
 }
 
@@ -525,7 +525,7 @@ fn a_recording_that_starts_on_the_downbeat_moves_there() {
     use corinzia_perform::follow::{beat_unit, follow, Follow};
     let m = movement(F::int(2), vec![]);
     let beats = [0.12, 0.62, 1.12, 1.62];
-    let r = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap();
+    let r = follow(&m, &Style::phrasing(false), &beats, 1.0, Follow::Beats).unwrap();
     assert_eq!((r.first_q, r.shift), (0.0, -0.12));
     assert!((r.bpm - 120.0).abs() < 1e-6);
     // The beat of 6/8 is a dotted crotchet; of 2/2, a minim.
@@ -535,5 +535,5 @@ fn a_recording_that_starts_on_the_downbeat_moves_there() {
     c.meter[0].num = 2;
     c.meter[0].den = 2;
     assert_eq!(beat_unit(&c, 0.0), 2.0);
-    assert!(follow(&m, Style { phrasing: false }, &[1.0], 1.0, Follow::Beats).is_err());
+    assert!(follow(&m, &Style::phrasing(false), &[1.0], 1.0, Follow::Beats).is_err());
 }
