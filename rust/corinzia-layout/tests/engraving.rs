@@ -1173,3 +1173,17 @@ fn tuplet_brackets_follow_lilypond() {
     assert!(lines.iter().all(|l| l.1 > 4.25 && l.3 > 4.25));
     preview("tuplet-brackets", &l);
 }
+
+#[test]
+fn grace_notes_on_a_beat_end_an_automatic_beam() {
+    // As LilyPond: graces on beat 2 split c d | e f; graces off the beat
+    // leave the beam whole.
+    let count = |src: &str| {
+        let s = score(&[("treble", &[src])], (4, 4), 0);
+        let l = layout_line(&s, &Options::default());
+        // Main-size beams only (grace beams are thinner).
+        l.items.iter().filter(|i| matches!(i, Item::Quad { p, .. } if (p[3].y - p[0].y).abs() > 0.4)).count()
+    };
+    assert_eq!(count("c''8 d'' \\grace { e''16 f'' } e''8 f'' g''2"), 2);
+    assert_eq!(count("c''8 d'' e'' \\grace f''16 g''8 a''2"), 1);
+}

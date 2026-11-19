@@ -1006,8 +1006,26 @@ impl<'a> Engraver<'a> {
         for g in wide {
             if g.iter().any(|&i| self.notes[i].beams() > 1) {
                 groups.extend(group(self, &g, &beat_of));
-            } else {
-                groups.push(g);
+                continue;
+            }
+            // Grace notes on a beat end the beam there, as LilyPond's
+            // auto-beamer ends a beam at a beat where graces come between.
+            let mut cur: Vec<usize> = Vec::new();
+            for &i in &g {
+                let n = &self.notes[i];
+                let m = &self.ms[n.measure];
+                let beat = beat_of(m);
+                let on_beat = (n.start - m.start + m.phase) * Frac::new(beat.den, beat.num);
+                if !cur.is_empty() && !n.graces.is_empty() && on_beat.den == 1 {
+                    if cur.len() >= 2 {
+                        groups.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                }
+                cur.push(i);
+            }
+            if cur.len() >= 2 {
+                groups.push(cur);
             }
         }
         for g in &groups {
