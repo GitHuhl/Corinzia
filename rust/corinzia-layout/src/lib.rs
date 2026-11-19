@@ -13,6 +13,7 @@ pub mod font;
 pub mod layout;
 pub mod notation;
 pub mod skyline;
+pub mod slur;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 #[cfg(feature = "raster")]

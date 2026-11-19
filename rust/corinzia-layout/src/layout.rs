@@ -672,88 +672,9 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
     a.brace || a.group != 0 && a.group == b.group
 }
 
-/// A slur end's distance from its head's centre (LilyPond's).
-const SLUR_HEAD_GAP: f32 = 1.05;
-/// The least gap between a slur end and a staff line inside the staff.
-const SLUR_LINE_GAP: f32 = 0.2;
-/// A slur end's distance past the tip of a stem pointing into it.
-const SLUR_STEM_GAP: f32 = 0.2;
-/// What the slur keeps clear of the notes it passes over.
-const SLUR_FREE: f32 = 0.3;
-
-/// A slur end inside the staff moved off a line (outwards, `dir`).
-fn off_lines(y: f32, top: f32, dir: f32) -> f32 {
-    let rel = y - top;
-    if (-0.01..=4.01).contains(&rel) {
-        let line = rel.round();
-        if (rel - line).abs() < SLUR_LINE_GAP && (0.0..=4.0).contains(&line) {
-            return top + line + dir * SLUR_LINE_GAP;
-        }
-    }
-    y
-}
-
-/// LilyPond's slur height law: the control points' height over a slur of
-/// width `w` (height limit 2, ratio 1/4).
-fn slur_height(w: f32) -> f32 {
-    const LIMIT: f32 = 2.0;
-    const RATIO: f32 = 0.25;
-    2.0 * LIMIT / std::f32::consts::PI * (std::f32::consts::PI * RATIO / (2.0 * LIMIT) * w).atan()
-}
-
-/// The slur from (x0, b0) to (x1, b1) (the ends' bases), on the side
-/// `dir` (-1 above): ends tried from their bases outwards in quarter
-/// spaces, each with the least height that clears the obstacles (x0, x1,
-/// y), scored as LilyPond scores slurs: the ends' distance from their
-/// bases, height beyond the law, and a slope steeper than the music's.
-/// Returns (y0, y1, control height).
-fn best_slur(x0: f32, b0: f32, x1: f32, b1: f32, dir: f32, top: f32, obstacles: &[(f32, f32, f32)]) -> (f32, f32, f32) {
-    const EDGE_ATTRACTION: f32 = 4.0;
-    const EDGE_EXPONENT: f32 = 1.7;
-    const HEIGHT_FACTOR: f32 = 20.0;
-    const STEEPER_SLOPE: f32 = 50.0;
-    const MAX_SLOPE: f32 = 1.1;
-    const MAX_SLOPE_FACTOR: f32 = 10.0;
-    let dx = (x1 - x0).max(0.5);
-    let law = slur_height(dx);
-    let music = (b1 - b0) / dx;
-    // The height needed over an obstacle at t, for ends y0, y1.
-    let need = |y0: f32, y1: f32| -> f32 {
-        let mut h = law;
-        for &(ox0, ox1, oy) in obstacles {
-            for ox in [ox0, ox1] {
-                let t = (ox - x0) / dx;
-                if t <= 0.05 || t >= 0.95 {
-                    continue;
-                }
-                let line = y0 + (y1 - y0) * t;
-                // > 0: the chord runs into it; the curve's rise at t is 3t(1-t)h.
-                let poke = (line - (oy + dir * SLUR_FREE)) * -dir;
-                if poke > 0.0 {
-                    h = h.max(poke / (3.0 * t * (1.0 - t)));
-                }
-            }
-        }
-        h
-    };
-    let mut best = (f32::MAX, b0, b1, law);
-    for k0 in 0..=20 {
-        let y0 = off_lines(b0 + dir * 0.25 * k0 as f32, top, dir);
-        for k1 in 0..=20 {
-            let y1 = off_lines(b1 + dir * 0.25 * k1 as f32, top, dir);
-            let h = need(y0, y1).min(6.0);
-            let slope = (y1 - y0) / dx;
-            let mut cost = EDGE_ATTRACTION * ((y0 - b0).abs().powf(EDGE_EXPONENT) + (y1 - b1).abs().powf(EDGE_EXPONENT));
-            cost += HEIGHT_FACTOR * (h - law).max(0.0);
-            cost += STEEPER_SLOPE * (slope.abs() - music.abs()).max(0.0);
-            cost += MAX_SLOPE_FACTOR * (slope.abs() - MAX_SLOPE).max(0.0);
-            if cost < best.0 {
-                best = (cost, y0, y1, h);
-            }
-        }
-    }
-    (best.1, best.2, best.3)
-}
+/// How far above a dynamic's baseline its letters' middle (an 'm') sits:
+/// hairpins are centred there (LilyPond's DynamicText Y-offset).
+const DYN_CENTRE: f32 = 0.55;
 
 /// A brace from `top` to `bottom` whose right edge is at `right`: two
 /// filled halves meeting at a point in the middle, thickest half-way along
@@ -2180,84 +2101,108 @@ impl<'a> Engraver<'a> {
             };
             let dir = if above { -1.0 } else { 1.0 };
             let top = self.top(sp.part);
-            // A stem pointing into the slur: the slur leaves the first note
-            // beside it, and goes over the tip of the last note's.
-            let stem_side = |n: &Note| n.has_stem() && n.stem_up == above;
-            let end_x = |n: &Note| if stem_side(n) { n.stem_x } else { n.x + HEAD_W / 2.0 };
-            // An end's base: clear of its outer head (LilyPond's 1.05 spaces
-            // from the head's centre), kept off the staff lines.
-            // (A slur to another staff ends off that staff's lines.)
-            let base_y = |n: &Note, s: &Self, last: bool| -> f32 {
-                let top = s.top(n.part);
-                if stem_side(n) && last {
-                    return off_lines(n.stem_end + dir * SLUR_STEM_GAP, top, dir);
+            // The problem as LilyPond's slur scorer sees it (see `crate::slur`):
+            // the ends' heads and stems, the note columns under it, what
+            // else lies there, the slurs inside it.
+            use crate::slur;
+            let th = d.stem_thickness;
+            let toward = |n: &Note| n.has_stem() && n.stem_up == above;
+            let head_y = |n: &Note, s: &Self| if above { s.y(n.part, n.heads[n.heads.len() - 1].pos) } else { s.y(n.part, n.heads[0].pos) };
+            let stem_of = |n: &Note, s: &Self| -> Option<slur::Stem> {
+                if !n.has_stem() {
+                    return None;
                 }
-                let h = if above { s.y(n.part, n.heads[n.heads.len() - 1].pos) } else { s.y(n.part, n.heads[0].pos) };
-                off_lines(h + dir * SLUR_HEAD_GAP, top, dir)
+                let ys = n.heads.iter().map(|h| s.y(n.part, h.pos)).chain(std::iter::once(n.stem_end));
+                let (lo, hi) = ys.fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+                Some(slur::Stem { x: (n.stem_x - th / 2.0, n.stem_x + th / 2.0), y: (lo, hi), toward: toward(n), beamed_inward: n.beamed, beamed: n.beamed })
             };
-            // The obstacles: what the notes between show on the slur's side
-            // (heads, stems, flags, beams, marks), as (x0, x1, extreme y).
-            let ids: std::collections::HashSet<u64> = between.iter().flat_map(|n| std::iter::once(n.id).chain(n.heads.iter().map(|h| h.id))).collect();
-            let firsts = (si.map(|i| self.notes[i].id), ei.map(|i| self.notes[i].id));
-            let mut obstacles: Vec<(f32, f32, f32)> = self
+            let column = |n: &Note, s: &Self| -> slur::Column {
+                let head = head_y(n, s) + dir * 0.5;
+                if toward(n) {
+                    let beam = if n.beamed { dir * 0.25 } else { 0.0 };
+                    slur::Column { x: n.stem_x, head, stem: n.stem_end + beam }
+                } else {
+                    slur::Column { x: n.x + HEAD_W / 2.0, head, stem: head }
+                }
+            };
+            let end = |n: &Note, s: &Self| -> slur::End {
+                let c = column(n, s);
+                let edge = if above { c.head.min(c.stem) } else { c.head.max(c.stem) };
+                slur::End { head: Some(((n.x, n.x + HEAD_W), head_y(n, s))), stem: stem_of(n, s), column_edge: edge, broken_at: (0.0, 0.0) }
+            };
+            let broken = |x: f32, n: &Note, s: &Self| -> slur::End {
+                let y = head_y(n, s) + dir * 1.6;
+                slur::End { head: None, stem: None, column_edge: y, broken_at: (x, y) }
+            };
+            let ends = match (si, ei) {
+                (Some(a), Some(b)) => [end(&self.notes[a], self), end(&self.notes[b], self)],
+                (Some(a), None) => [end(&self.notes[a], self), broken(right, between.last().unwrap(), self)],
+                (None, Some(b)) => [broken(left, between.first().unwrap(), self), end(&self.notes[b], self)],
+                (None, None) => {
+                    let n = between.iter().copied().max_by(|x, y| (head_y(x, self) * -dir).total_cmp(&(head_y(y, self) * -dir))).unwrap();
+                    [broken(left, n, self), broken(right, n, self)]
+                }
+            };
+            // The columns in order: the left end, the notes between by x, the right end.
+            let end_ids = (si.map(|i| self.notes[i].id), ei.map(|i| self.notes[i].id));
+            let mut inner: Vec<&Note> = between.iter().copied().filter(|n| Some(n.id) != end_ids.0 && Some(n.id) != end_ids.1).collect();
+            inner.sort_by(|a, b| a.x.total_cmp(&b.x));
+            let columns: Vec<slur::Column> = si
+                .map(|i| column(&self.notes[i], self))
+                .into_iter()
+                .chain(inner.iter().map(|n| column(n, self)))
+                .chain(ei.map(|i| column(&self.notes[i], self)))
+                .collect();
+            // What else hangs off these notes: accidentals to go around,
+            // articulations to keep inside, words around.
+            let heads: std::collections::HashSet<u64> = between.iter().flat_map(|n| n.heads.iter().map(|h| h.id)).collect();
+            let ids: std::collections::HashSet<u64> = between.iter().map(|n| n.id).chain(heads.iter().copied()).collect();
+            let accidentals = [Glyph::Sharp, Glyph::Flat, Glyph::Natural, Glyph::DoubleSharp, Glyph::DoubleFlat].map(|g| g.codepoint());
+            let skip = [Glyph::NoteheadBlack, Glyph::NoteheadHalf, Glyph::NoteheadWhole, Glyph::Dot, Glyph::Flag8thUp, Glyph::Flag8thDown, Glyph::Flag16thUp, Glyph::Flag16thDown, Glyph::Flag32ndUp, Glyph::Flag32ndDown, Glyph::Flag64thUp, Glyph::Flag64thDown].map(|g| g.codepoint());
+            let mut extra: Vec<slur::Extra> = self
                 .out
                 .items
                 .iter()
-                .filter(|it| ids.contains(&it.id()) && !matches!(it, Item::Crescent { .. }))
+                .filter(|it| ids.contains(&it.id()))
                 .filter_map(|it| {
                     let r = it.bounds(self.font);
-                    // The end notes' own stems and beams don't count.
-                    let own = Some(it.id()) == firsts.0 || Some(it.id()) == firsts.1;
-                    if own && matches!(it, Item::Line { .. } | Item::Quad { .. }) {
-                        return None;
-                    }
-                    Some((r[0], r[2], if above { r[1] } else { r[3] }))
+                    let (inside, penalty) = match it {
+                        Item::Glyph { glyph, .. } if skip.contains(glyph) || heads.contains(&it.id()) => return None,
+                        Item::Glyph { glyph, .. } if accidentals.contains(glyph) => (false, 3.0),
+                        Item::Glyph { .. } => (true, 50.0),
+                        Item::Text { .. } => (false, 50.0),
+                        _ => return None,
+                    };
+                    Some(slur::Extra { x: (r[0], r[2]), y: (r[1], r[3]), inside, penalty })
                 })
                 .collect();
-            let edge_y = |n: &Note, s: &Self| base_y(n, s, false) + dir * 0.6;
-            let (x0, b0, x1, b1) = match (si, ei) {
-                (Some(a), Some(b)) => {
-                    let (a, b) = (&self.notes[a], &self.notes[b]);
-                    (end_x(a), base_y(a, self, false), end_x(b), base_y(b, self, true))
-                }
-                (Some(a), None) => {
-                    let a = &self.notes[a];
-                    (end_x(a), base_y(a, self, false), right, edge_y(between.last().unwrap(), self))
-                }
-                (None, Some(b)) => {
-                    let b = &self.notes[b];
-                    (left, edge_y(between.first().unwrap(), self), end_x(b), base_y(b, self, true))
-                }
-                (None, None) => {
-                    let y = between.iter().map(|n| edge_y(n, self)).fold(if above { f32::MAX } else { f32::MIN }, |a, b| if above { a.min(b) } else { a.max(b) });
-                    (left, y, right, y)
-                }
-            };
-            // Slurs inside this one on its side, cleared by a slur's thickness.
+            // Slurs inside this one on its side: their middles to clear, their
+            // ends and middles to go around.
+            let (x0, x1) = (ends[0].head.map(|h| h.0 .0).unwrap_or(left), ends[1].head.map(|h| h.0 .1).unwrap_or(right));
+            let mut avoid_slurs = Vec::new();
             for (_, _, line) in drawn.iter().filter(|(p, a, line)| *p == sp.part && *a == above && line.first().is_some_and(|f| f.0 >= x0 - 0.1) && line.last().is_some_and(|l| l.0 <= x1 + 0.1)) {
-                obstacles.extend(line.iter().map(|&(x, y)| (x - 0.2, x + 0.2, y + dir * 0.25)));
+                if let Some(&m) = line.get(line.len() / 2) {
+                    avoid_slurs.push(m);
+                }
+                for &(x, y) in [line.first(), line.get(line.len() / 2), line.last()].into_iter().flatten() {
+                    extra.push(slur::Extra { x: (x - 0.3, x + 0.3), y: (y - 0.2, y + 0.2), inside: false, penalty: 50.0 });
+                }
             }
-            let dx = (x1 - x0).max(0.5);
-            let (y0, y1, h) = best_slur(x0, b0, x1, b1, dir, top, &obstacles);
-            let c = |f: f32, hh: f32| pt(x0 + dx * f, y0 + (y1 - y0) * f + dir * hh);
+            let pb = slur::Problem { dir, staff_top: top, ends, columns, extra, avoid_slurs, cross_staff: sp.part != sp.to_part };
+            let bez = slur::solve(&pb);
+            let [p0, p1, p2, p3] = bez.0;
+            let (x0, y0, x1, y1) = (p0.0, p0.1, p3.0, p3.1);
             // The control points are the midline; the thickness is split around it.
             let t = d.slur_midpoint_thickness / 2.0;
-            // Its midline, sampled (control points at 3/4 of the height).
-            let mid = |f: f32| {
-                let (u, v) = (1.0 - f, f);
-                let (p1, p2) = (c(1.0 / 3.0, h), c(2.0 / 3.0, h));
-                let x = u * u * u * x0 + 3.0 * u * u * v * p1.x + 3.0 * u * v * v * p2.x + v * v * v * x1;
-                let y = u * u * u * y0 + 3.0 * u * u * v * p1.y + 3.0 * u * v * v * p2.y + v * v * v * y1;
-                (x, y)
-            };
+            let mid = |f: f32| bez.point(f);
             drawn.push((sp.part, above, (0..=12).map(|k| mid(k as f32 / 12.0)).collect()));
             items.push(Item::Crescent {
                 from: pt(x0, y0),
-                c1: c(1.0 / 3.0, h + t),
-                c2: c(2.0 / 3.0, h + t),
+                c1: pt(p1.0, p1.1 + dir * t),
+                c2: pt(p2.0, p2.1 + dir * t),
                 to: pt(x1, y1),
-                d1: c(1.0 / 3.0, h - t),
-                d2: c(2.0 / 3.0, h - t),
+                d1: pt(p1.0, p1.1 - dir * t),
+                d2: pt(p2.0, p2.1 - dir * t),
                 id: sp.id,
             });
         }
@@ -2765,16 +2710,19 @@ impl<'a> Engraver<'a> {
                 end += 1;
             }
             let part = placed[k].sp.part;
+            // LilyPond's DynamicLineSpanner: the hairpin's open end clear of
+            // the staff by 0.1 and of what hangs below it by 0.6, on the
+            // line its dynamics are centred on.
             let base = placed[k..end]
                 .iter()
                 .map(|p| {
                     let hi = p.ei.map(|e| self.notes[e].x + 2.5).unwrap_or(p.x1);
-                    self.sky[part].bottom_over(p.x0 - 0.5, hi) + 2.0
+                    self.dynamic_clearance(part, p.x0 - 0.5, hi) + 2.0 / 3.0 + DYN_CENTRE
                 })
-                .fold(self.top(part) + 6.5, f32::max);
+                .fold(f32::MIN, f32::max);
             for p in &placed[k..end] {
                 let sp = &p.sp;
-                let c = base - 0.55;
+                let c = base - DYN_CENTRE;
                 // The opening grows (or shrinks) with time, so the parts of a
                 // hairpin cut by a system break continue each other; at its
                 // widest, LilyPond's 1⅓ spaces.
@@ -2810,12 +2758,27 @@ impl<'a> Engraver<'a> {
             }
             let w = dyn_width(self, &text);
             let mut x = n.x + HEAD_W / 2.0 - w / 2.0;
-            let own = (self.sky[n.part].bottom_over(x, x + w) + 2.0).max(self.top(n.part) + 6.5);
+            // Its top clear of the staff by 0.1, of the notes by 0.6.
+            let ascent = Self::dynamic_glyphs(&text).iter().map(|g| self.font.bbox(*g).ne.1).fold(0.0f32, f32::max);
+            let own = self.dynamic_clearance(n.part, x - 0.2, x + w + 0.2) + ascent;
             let y = baseline_for.get(&i).map_or(own, |&b| b.max(own));
             for g in Self::dynamic_glyphs(&text) {
                 self.place(n.part, Item::glyph(g, x, y, ids::dynamic(n.id)));
                 x += self.width(g) - 0.05;
             }
+        }
+    }
+
+    /// Where something under staff `part` over [x0, x1] may start (its
+    /// top edge): LilyPond's DynamicLineSpanner `staff-padding` (0.1) under
+    /// the staff, `padding` (0.6) under the notes, slurs and marks there.
+    fn dynamic_clearance(&self, part: usize, x0: f32, x1: f32) -> f32 {
+        let staff = self.top(part) + 4.0;
+        let below = self.sky[part].bottom_over(x0, x1);
+        if below <= staff + 1e-3 {
+            staff + 0.1
+        } else {
+            (below + 0.6).max(staff + 0.1)
         }
     }
 

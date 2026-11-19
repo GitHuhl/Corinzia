@@ -689,7 +689,9 @@ fn nested_and_cross_staff_slurs() {
     preview("slurs-cross-staff", &l);
     let c = curve(&l, 9999).expect("drawn from staff to staff");
     let (top0, top1) = (l.staves.iter().find(|x| x.part == 0).unwrap().top, l.staves.iter().find(|x| x.part == 1).unwrap().top);
-    assert!(c.0.y > top1 - 3.0 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
+    // (A steep slur's low end rises towards the other, as LilyPond's
+    // edge scoring lets it: within its region of four spaces.)
+    assert!(c.0.y > top1 - 4.5 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
 }
 
 #[test]
