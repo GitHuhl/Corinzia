@@ -88,7 +88,22 @@ pub fn voice_and_slurs(text: &str, index: u8, next_id: &mut u64) -> (Voice, Vec<
     let mut at = Frac::ZERO;
     let mut dur = Frac::new(1, 4);
     let mut last_chord: Vec<Pitch> = Vec::new();
-    let spaced = text.replace('\\', " \\").replace('<', " < ").replace('>', " > ").replace('{', " { ").replace('}', " } ");
+    // `>` closes a chord, except in the accent `->`.
+    let mut spaced = String::with_capacity(text.len() * 2);
+    let mut prev = ' ';
+    for c in text.chars() {
+        match c {
+            '\\' => spaced.push_str(" \\"),
+            '>' if prev == '-' => spaced.push('>'),
+            '<' | '>' | '{' | '}' => {
+                spaced.push(' ');
+                spaced.push(c);
+                spaced.push(' ');
+            }
+            _ => spaced.push(c),
+        }
+        prev = c;
+    }
     let mut tuplets: Vec<Tuplet> = Vec::new();
     let mut open: Vec<(Frac, i64, i64)> = Vec::new(); // (start, actual, normal)
     let mut pending: Option<(i64, i64)> = None;

@@ -178,6 +178,74 @@ fn stretch_at(breaks: &[(f32, f32)], x: f32) -> f32 {
     }
 }
 
+/// The rows of a chord's dots, in staff positions (half spaces up from the
+/// middle line), as LilyPond's Dot_configuration sets them: one dot per
+/// head (at most `chord-dots-limit` 3 more than the chord's span leaves
+/// room for), each in a space; when two would meet, the one in the way and
+/// those beyond it shift up or down, whichever moves them least (moving
+/// down costs a little, moving against `dir`, a voice's side, more).
+fn dot_rows(positions: &[i32], dir: i32) -> Vec<i32> {
+    use std::collections::BTreeMap;
+    let mut heads: Vec<i32> = positions.to_vec();
+    heads.sort();
+    if let (Some(&lo), Some(&hi)) = (heads.first(), heads.last()) {
+        let room = ((hi - lo) as usize + 2 + 3) / 2;
+        let mut total = heads.len();
+        let mut first = 0;
+        while total > room {
+            if (total - room).is_multiple_of(2) {
+                first += 1;
+            }
+            total -= 1;
+        }
+        heads = heads[first..first + total].to_vec();
+    }
+    let on_line = |p: i32| p % 2 == 0;
+    // Position -> the head position it belongs to.
+    type Cfg = BTreeMap<i32, i32>;
+    let badness = |c: &Cfg| -> i32 {
+        c.iter()
+            .map(|(&p, &o)| {
+                let mv = (p - o).signum();
+                2 * (p - o) * (p - o) + if dir != 0 && mv != dir { 2 } else if mv != 1 { 1 } else { 0 }
+            })
+            .sum()
+    };
+    let shifted = |c: &Cfg, k: i32, d: i32| -> Cfg {
+        let mut out = Cfg::new();
+        let mut offset = 0;
+        let entries: Vec<(i32, i32)> = if d > 0 { c.iter().map(|(&a, &b)| (a, b)).collect() } else { c.iter().rev().map(|(&a, &b)| (a, b)).collect() };
+        for (p, o) in entries {
+            if p == k {
+                let q = if on_line(p) { p + d } else { p + 2 * d };
+                offset = 2 * d;
+                out.insert(q, o);
+            } else {
+                if !out.contains_key(&p) {
+                    offset = 0;
+                }
+                out.insert(p + offset, o);
+            }
+        }
+        out
+    };
+    let remove_collision = |c: &mut Cfg, p: i32| {
+        if c.contains_key(&p) {
+            let (up, down) = (shifted(c, p, 1), shifted(c, p, -1));
+            *c = if badness(&up) < badness(&down) { up } else { down };
+        }
+    };
+    let mut cfg = Cfg::new();
+    for p in heads {
+        remove_collision(&mut cfg, p);
+        cfg.insert(p, p);
+        if on_line(p) {
+            remove_collision(&mut cfg, p);
+        }
+    }
+    cfg.keys().copied().collect()
+}
+
 fn spacing_head_width(g: Glyph) -> Option<f32> {
     SPACING_HEAD_WIDTHS.iter().find(|h| h.0 == g).map(|h| h.1)
 }
@@ -938,8 +1006,26 @@ impl<'a> Engraver<'a> {
         for g in wide {
             if g.iter().any(|&i| self.notes[i].beams() > 1) {
                 groups.extend(group(self, &g, &beat_of));
-            } else {
-                groups.push(g);
+                continue;
+            }
+            // Grace notes on a beat end the beam there, as LilyPond's
+            // auto-beamer ends a beam at a beat where graces come between.
+            let mut cur: Vec<usize> = Vec::new();
+            for &i in &g {
+                let n = &self.notes[i];
+                let m = &self.ms[n.measure];
+                let beat = beat_of(m);
+                let on_beat = (n.start - m.start + m.phase) * Frac::new(beat.den, beat.num);
+                if !cur.is_empty() && !n.graces.is_empty() && on_beat.den == 1 {
+                    if cur.len() >= 2 {
+                        groups.push(std::mem::take(&mut cur));
+                    }
+                    cur.clear();
+                }
+                cur.push(i);
+            }
+            if cur.len() >= 2 {
+                groups.push(cur);
             }
         }
         for g in &groups {
@@ -1782,14 +1868,15 @@ impl<'a> Engraver<'a> {
         if n.value.dots == 0 {
             return;
         }
-        let mut done = Vec::new();
-        for &p in positions {
-            // On a line: the dot goes in the space above (below in voice 2).
-            let dp = if p % 2 == 0 { if n.voice % 2 == 0 && !n.rest { p - 1 } else { p + 1 } } else { p };
-            if done.contains(&dp) {
-                continue;
-            }
-            done.push(dp);
+        let rows = if n.rest {
+            positions.first().map(|&p| vec![p]).unwrap_or_default()
+        } else {
+            // A voice in polyphony prefers its own side (Dots.direction).
+            let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
+            let dir = if !poly { 0 } else if n.voice % 2 == 0 { -1 } else { 1 };
+            dot_rows(positions, dir)
+        };
+        for dp in rows {
             for k in 0..n.value.dots {
                 let x = right + 0.25 + k as f32 * 0.5;
                 let y = if n.rest { self.top(n.part) + 1.5 } else { self.y(n.part, dp) };
@@ -2238,36 +2325,65 @@ impl<'a> Engraver<'a> {
                 continue;
             }
             let top = self.top(n.part);
-            let center = |g: Glyph, s: &Self| n.x + HEAD_W / 2.0 - s.width(g) / 2.0;
             let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
             if !n.rest {
-                // Close articulations on the notehead side away from the stem, in spaces;
-                // in polyphony on the stem side, away from the other voice.
+                // Close articulations as LilyPond's Script: on the notehead
+                // side (side-relative-direction DOWN), or for the voice in
+                // polyphony; stacked outwards by script-priority, each
+                // `padding` clear of the note and of the scripts before it.
+                // Staccato, staccatissimo, tenuto and marcato are quantized
+                // into the staff's spaces; the rest keep clear of the staff
+                // too (it joins their support), by at least staff-padding.
                 let below = if poly { n.voice % 2 == 0 } else { n.stem_up };
+                let dir = if below { 1.0 } else { -1.0 }; // y down
+                let stem_side = n.has_stem() && n.stem_up != below;
                 let outer = if below { n.heads[0].pos } else { n.heads[n.heads.len() - 1].pos };
-                let mut pos = outer + if below { -2 } else { 2 };
-                for (bit, up_g, down_g) in [
-                    (art::STACCATO, Glyph::StaccatoAbove, Glyph::StaccatoBelow),
-                    (art::STACCATISSIMO, Glyph::StaccatissimoAbove, Glyph::StaccatissimoBelow),
-                    (art::TENUTO, Glyph::TenutoAbove, Glyph::TenutoBelow),
-                    (art::ACCENT, Glyph::AccentAbove, Glyph::AccentBelow),
-                    (art::MARCATO, Glyph::MarcatoAbove, Glyph::MarcatoBelow),
-                ] {
+                let mut edge = self.y(n.part, outer) + dir * 0.5;
+                if stem_side {
+                    let stem = self.notes[i].stem_end + if n.beamed { dir * 0.25 } else { 0.0 };
+                    edge = if below { edge.max(stem) } else { edge.min(stem) };
+                }
+                let staff_edge = if below { top + 4.0 } else { top };
+                // (bit, above, below, script-priority, padding, quantized)
+                let mut list = [
+                    (art::STACCATO, Glyph::StaccatoAbove, Glyph::StaccatoBelow, -100, 0.2, true),
+                    (art::TENUTO, Glyph::TenutoAbove, Glyph::TenutoBelow, -50, 0.2, true),
+                    (art::STACCATISSIMO, Glyph::StaccatissimoAbove, Glyph::StaccatissimoBelow, 0, 0.2, true),
+                    (art::ACCENT, Glyph::AccentAbove, Glyph::AccentBelow, 0, 0.2, false),
+                    (art::MARCATO, Glyph::MarcatoAbove, Glyph::MarcatoBelow, 0, 0.2, true),
+                ];
+                list.sort_by_key(|e| e.3);
+                for (bit, up_g, down_g, _, padding, quantized) in list {
                     if n.art & bit == 0 {
                         continue;
                     }
-                    if poly && below == !n.stem_up && n.has_stem() {
-                        // Stem side: beyond the stem end.
-                        let end_pos = ((self.top(n.part) + 2.0 - self.notes[i].stem_end) * 2.0).round() as i32;
-                        pos = if below { pos.min(end_pos - 1) } else { pos.max(end_pos + 1) };
-                    }
-                    if pos.abs() <= 4 && pos % 2 == 0 {
-                        pos += if below { -1 } else { 1 }; // into the space
-                    }
                     let g = if below { down_g } else { up_g };
-                    let y = self.y(n.part, pos);
-                    self.push(Item::glyph(g, center(g, self), y, n.id));
-                    pos += if below { -2 } else { 2 };
+                    let bb = self.font.bbox(g);
+                    // Glyph extent below and above its origin (y down).
+                    let (asc, desc) = (bb.ne.1, -bb.sw.1);
+                    let half = (asc + desc) / 2.0;
+                    let mut near = edge + dir * padding;
+                    if !quantized {
+                        near = if below { near.max(staff_edge + 0.25) } else { near.min(staff_edge - 0.25) };
+                    }
+                    let mut centre = near + dir * half;
+                    if quantized {
+                        // Side_position_interface's quantize-position.
+                        let p = (top + 2.0 - centre) * 2.0;
+                        if p.abs() <= 5.0 {
+                            let mut r = if below { p.floor() } else { p.ceil() };
+                            if (r as i32) % 2 == 0 && r.abs() <= 4.0 {
+                                r -= dir;
+                            }
+                            centre = top + 2.0 - r / 2.0;
+                        }
+                    }
+                    // Toward the stem when on its side (toward-stem-shift).
+                    let cx = if stem_side && matches!(bit, art::STACCATO | art::STACCATISSIMO) { n.stem_x } else { n.x + HEAD_W / 2.0 };
+                    let x = cx - (bb.sw.0 + bb.ne.0) / 2.0;
+                    let y = centre + (asc - desc) / 2.0; // origin from centre
+                    self.push(Item::glyph(g, x, y, n.id));
+                    edge = centre + dir * half;
                 }
                 if n.art & art::TREMOLO != 0 && n.has_stem() {
                     let g = Glyph::Tremolo3;
@@ -2665,49 +2781,152 @@ impl<'a> Engraver<'a> {
                 min_plain = Frac::int(4);
             }
         }
+        // What each note column covers: its heads, stem, flag, ledger
+        // lines and articulations (LilyPond's note column with its scripts).
+        let mut owner: std::collections::HashMap<u64, usize> = Default::default();
+        for (i, n) in self.notes.iter().enumerate() {
+            owner.insert(n.id, i);
+            for h in &n.heads {
+                owner.insert(h.id, i);
+            }
+        }
+        let mut ext: Vec<Option<[f32; 4]>> = vec![None; self.notes.len()];
+        for it in &self.out.items {
+            if let Some(&i) = owner.get(&it.id()) {
+                let r = it.bounds(self.font);
+                ext[i] = Some(match ext[i] {
+                    Some(e) => [e[0].min(r[0]), e[1].min(r[1]), e[2].max(r[2]), e[3].max(r[3])],
+                    None => r,
+                });
+            }
+        }
+        let th = d.stem_thickness;
+        // Brackets already drawn (inner ones first): (x0, x1, top, bottom).
+        let mut drawn: Vec<(usize, [f32; 4])> = Vec::new();
         for (_, number, g) in groups {
-            let (first, last) = (&self.notes[g[0]], &self.notes[*g.last().unwrap()]);
+            let notes: Vec<&Note> = g.iter().map(|&i| &self.notes[i]).collect();
+            let (first, last) = (notes[0], notes[notes.len() - 1]);
             let part = first.part;
-            let above = g.iter().all(|&i| self.notes[i].stem_up || self.notes[i].rest);
-            // The number alone over one beam that spans exactly the tuplet;
-            // otherwise a bracket (LilyPond's if-no-beam).
+            let top = self.top(part);
+            let id = first.id;
+            // LilyPond's get_default_dir: the side most stems point to; on a
+            // tie, the side whose outermost head lies further out. A voice
+            // in polyphony keeps its own side.
+            let poly = self.notes.iter().any(|o| o.part == part && o.measure == first.measure && o.voice != first.voice && !o.whole_bar);
+            let sounding: Vec<&Note> = notes.iter().copied().filter(|n| !n.rest).collect();
+            let up = sounding.iter().filter(|n| n.stem_up).count();
+            let down = sounding.len() - up;
+            let above = if poly {
+                first.voice % 2 == 1
+            } else if up != down {
+                up > down
+            } else if up == 0 {
+                true
+            } else {
+                let hi = sounding.iter().filter(|n| n.stem_up).map(|n| n.heads[n.heads.len() - 1].pos).max().unwrap_or(0) as f32;
+                let lo = sounding.iter().filter(|n| !n.stem_up).map(|n| n.heads[0].pos).min().unwrap_or(0) as f32;
+                hi - 2.0 <= -2.0 - lo
+            };
+            let s = if above { -1.0 } else { 1.0 }; // outwards, y down
+            let out = |r: [f32; 4]| if above { r[1] } else { r[3] };
+            let further = |a: f32, b: f32| if above { a.min(b) } else { a.max(b) };
+            // The bounds: the stem when it points the bracket's way, else
+            // the column; shorten-pair -0.2 lengthens both ends.
+            let stem_side = |n: &Note| n.has_stem() && !n.rest && n.stem_up == above;
+            let col = |i: usize| ext[i].unwrap_or([self.notes[i].x, top + 2.0, self.notes[i].x + HEAD_W, top + 2.0]);
+            let x0 = if stem_side(first) { first.stem_x - th / 2.0 } else { col(g[0])[0] } - 0.2;
+            let x1 = if stem_side(last) { last.stem_x + th / 2.0 } else { col(*g.last().unwrap())[2] } + 0.2;
+            let staff = (top - 0.25, top + 4.25); // staff-padding
+            let staff_out = if above { staff.0 } else { staff.1 };
+            // The number alone over one beam that spans exactly the tuplet
+            // (bracket-visibility if-no-beam); the line then follows the beam.
             let beamed = g.iter().all(|&i| self.notes[i].beamed) && self.beam_spans(&g);
-            let (x0, x1) = (first.x - 0.2, last.x + HEAD_W + 0.2);
+            let follow_beam = beamed && sounding.iter().all(|n| n.stem_up == above) && !sounding.is_empty();
+            let mut points: Vec<(f32, f32)> = Vec::new();
+            let mut dy = 0.0;
+            if follow_beam {
+                let (f, l) = (sounding[0], sounding[sounding.len() - 1]);
+                let (yl, yr) = (f.stem_end + s * 0.25, l.stem_end + s * 0.25);
+                dy = yr - yl;
+                points.push((f.stem_x - x0, yl));
+                points.push((l.stem_x - x0, yr));
+            } else {
+                // The slope of the outer sounding columns, if their heads
+                // agree on it, at most max-slope-factor (0.5) per space.
+                if let (Some(l), Some(r)) = (g.iter().position(|&i| !self.notes[i].rest), g.iter().rposition(|&i| !self.notes[i].rest)) {
+                    let (ln, rn) = (&self.notes[g[l]], &self.notes[g[r]]);
+                    let unite = |e: [f32; 4]| [e[0], e[1].min(staff.0), e[2], e[3].max(staff.1)];
+                    let graphical = out(unite(col(g[r]))) - out(unite(col(g[l])));
+                    let sg = |v: f32| if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 };
+                    let mu = rn.heads[rn.heads.len() - 1].pos - ln.heads[ln.heads.len() - 1].pos;
+                    let md = rn.heads[0].pos - ln.heads[0].pos;
+                    // Head positions count up, y down.
+                    dy = if mu.signum() != md.signum() || sg(-graphical) != md.signum() { 0.0 } else { graphical };
+                }
+                let mut last_x = 0.0;
+                for &i in &g {
+                    let n = &self.notes[i];
+                    last_x = n.x - x0;
+                    points.push((last_x, out(col(i))));
+                }
+                let max_dy = 0.5 * last_x;
+                if dy.abs() > max_dy {
+                    dy = max_dy * dy.signum();
+                }
+                points.push((0.0, staff_out));
+                points.push((x1 - x0, staff_out));
+            }
+            // Inner tuplets' brackets and numbers.
+            for (p, r) in &drawn {
+                if *p == part && r[0] >= x0 - 0.1 && r[1] <= x1 + 0.1 {
+                    let y = if above { r[2] } else { r[3] };
+                    points.push((r[0] - x0, y));
+                    points.push((r[1] - x0, y));
+                }
+            }
+            let factor = if g.len() > 1 { 1.0 / (x1 - x0) } else { 1.0 };
+            let mut offset = points.iter().map(|&(x, y)| y - dy * x * factor).fold(if above { f32::MAX } else { f32::MIN }, further);
+            offset += s * 1.1; // padding
+            if dy.abs() < 0.01 {
+                // Level brackets keep off the staff lines.
+                let mut p = (top + 2.0 - offset) * 2.0;
+                if p.abs() <= 6.0 {
+                    p = p.round();
+                    if (p as i32) % 2 == 0 && p.abs() <= 4.0 {
+                        p -= s;
+                    }
+                    offset = top + 2.0 - p / 2.0;
+                }
+            }
+            let (yl, yr) = (offset, offset + dy);
+            let y_at = |x: f32| yl + (yr - yl) * (x - x0) / (x1 - x0).max(1e-3);
+            // The number, centred on the bracket (font-size -2 in LilyPond:
+            // SMuFL's tuplet digits here).
             let digits: Vec<Glyph> = number.to_string().bytes().map(|c| Glyph::TupletDigit(c - b'0')).collect();
             let boxes: Vec<_> = digits.iter().map(|&g| self.font.bbox(g)).collect();
             let nw: f32 = boxes.iter().map(|b| b.width()).sum();
             let (sw, ne) = (boxes.iter().map(|b| b.sw.1).fold(0.0f32, f32::min), boxes.iter().map(|b| b.ne.1).fold(0.0f32, f32::max));
             let xm = (x0 + x1) / 2.0;
-            let id = first.id;
-            let put_number = |me: &mut Self, y: f32| {
-                let mut x = xm - nw / 2.0;
-                for (g, b) in digits.iter().zip(&boxes) {
-                    me.place(part, Item::glyph(*g, x, y, id));
-                    x += b.width();
-                }
-            };
-            if beamed {
-                // Just past the beam, at its height in the middle (LilyPond's
-                // number follows the beam rather than the staff).
-                let (f, l) = (&self.notes[g[0]], &self.notes[*g.last().unwrap()]);
-                let beam_at = |x: f32| if (l.stem_x - f.stem_x).abs() < 1e-3 { f.stem_end } else { f.stem_end + (l.stem_end - f.stem_end) * (x - f.stem_x) / (l.stem_x - f.stem_x) };
-                let up = f.stem_up;
-                let y = if up { beam_at(xm) - 0.5 + sw } else { beam_at(xm) + 0.5 + ne };
-                put_number(self, y);
-            } else {
-                let (line, hook) = if above {
-                    (self.sky[part].top_over(x0, x1) - 1.0, 0.6)
-                } else {
-                    (self.sky[part].bottom_over(x0, x1) + 1.0, -0.6)
-                };
-                let gap = nw / 2.0 + 0.3;
-                let w = d.tuplet_bracket_thickness;
-                self.place(part, Item::line(x0, line + hook, x0, line, w, id));
-                self.place(part, Item::line(x0, line, xm - gap, line, w, id));
-                self.place(part, Item::line(xm + gap, line, x1, line, w, id));
-                self.place(part, Item::line(x1, line, x1, line + hook, w, id));
-                put_number(self, line + 0.75);
+            let ym = (yl + yr) / 2.0;
+            let gap = nw + 1.0;
+            let bracket = !beamed && g.len() > 1 && gap <= x1 - x0;
+            let mut x = xm - nw / 2.0;
+            for (gl, b) in digits.iter().zip(&boxes) {
+                self.place(part, Item::glyph(*gl, x, ym + (ne + sw) / 2.0, id));
+                x += b.width();
             }
+            let mut bb = [xm - nw / 2.0, ym - (ne - sw) / 2.0, xm + nw / 2.0, ym + (ne - sw) / 2.0];
+            if bracket {
+                let w = d.tuplet_bracket_thickness;
+                let hook = -s * 0.7; // edge-height, towards the notes
+                let (ga, gb) = (xm - gap / 2.0 + 0.1, xm + gap / 2.0 + 0.1);
+                self.place(part, Item::line(x0, yl + hook, x0, yl, w, id));
+                self.place(part, Item::line(x0, yl, ga, y_at(ga), w, id));
+                self.place(part, Item::line(gb, y_at(gb), x1, yr, w, id));
+                self.place(part, Item::line(x1, yr, x1, yr + hook, w, id));
+                bb = [x0, bb[1].min(yl.min(yr)), x1, bb[3].max(yl.max(yr))];
+            }
+            drawn.push((part, bb));
         }
     }
 
@@ -2754,20 +2973,28 @@ impl<'a> Engraver<'a> {
             if !n.first || n.rest {
                 continue;
             }
-            for (bit, g) in [
-                (art::DOWN_BOW, Glyph::DownBow),
-                (art::UP_BOW, Glyph::UpBow),
-                (art::FERMATA, Glyph::FermataAbove),
-                (art::TRILL, Glyph::Trill),
-                (art::MORDENT, Glyph::Mordent),
-                (art::TURN, Glyph::Turn),
+            // LilyPond's script-priority order outwards (turn and mordent
+            // 0, trill 150, fermata 175, bowings 180), each `padding` above
+            // what is there (0.4 for the fermata, 0.2 for the rest) and
+            // staff-padding (0.25) above the staff.
+            for (bit, g, padding) in [
+                (art::MORDENT, Glyph::Mordent, 0.2),
+                (art::TURN, Glyph::Turn, 0.2),
+                (art::TRILL, Glyph::Trill, 0.2),
+                (art::FERMATA, Glyph::FermataAbove, 0.4),
+                (art::DOWN_BOW, Glyph::DownBow, 0.2),
+                (art::UP_BOW, Glyph::UpBow, 0.2),
             ] {
                 if n.art & bit == 0 {
                     continue;
                 }
                 let b = self.font.bbox(g);
-                let x = n.x + HEAD_W / 2.0 - b.width() / 2.0;
-                let y = self.sky[n.part].top_over(x, x + b.width()) - 0.4 + b.sw.1;
+                let x = n.x + HEAD_W / 2.0 - (b.sw.0 + b.ne.0) / 2.0;
+                let (x0, x1) = (x + b.sw.0, x + b.ne.0);
+                let top = self.top(n.part);
+                let objects = self.sky[n.part].objects_over(x0, x1).map(|r| r[1]).fold(f32::MAX, f32::min);
+                let bottom = (objects - padding).min(top - padding.max(0.25));
+                let y = bottom + b.sw.1;
                 self.place(n.part, Item::glyph(g, x, y, n.id));
             }
         }
@@ -3590,9 +3817,6 @@ fn system(score: &Score, opt: &Options, ms: &[Measure], notes: &[Note], a: usize
     engrave_spaced(score, opt, sm, sn, a == 0, width)
 }
 
-/// The most a full page's systems are moved apart to reach its bottom.
-const MAX_EXTRA_SYSTEM_GAP: f32 = 12.0;
-
 /// Page geometry in staff spaces (A4 at an 18 pt staff: 132.3 × 187.1).
 #[derive(Clone, Debug)]
 pub struct PageSpec {
@@ -3600,7 +3824,8 @@ pub struct PageSpec {
     pub height: f32,
     pub margin_x: f32,
     pub margin_y: f32,
-    /// Space between systems (between their outermost marks).
+    /// The least space between systems' outermost marks (LilyPond's
+    /// `system-system-spacing` padding; its other distances apply too).
     pub system_gap: f32,
     /// The number of the first page (a later movement goes on counting).
     pub first_page: usize,
@@ -3613,7 +3838,7 @@ pub struct PageSpec {
 }
 impl Default for PageSpec {
     fn default() -> Self {
-        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 4.0, first_page: 1, bars_per_system: 0, page_numbers: true, space_pt: 0.0 }
+        PageSpec { width: 132.3, height: 187.1, margin_x: 8.0, margin_y: 8.0, system_gap: 1.0, first_page: 1, bars_per_system: 0, page_numbers: true, space_pt: 0.0 }
     }
 }
 
@@ -3754,63 +3979,168 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         }
         y += 2.0;
     }
-    // Where each system's items and staves start on the current page, and
-    // how far down the page is used: full pages are justified vertically.
-    let mut starts: Vec<(usize, usize)> = Vec::new();
-    let mut used = y;
-    let fill = |page_list: &mut DisplayList, starts: &[(usize, usize)], used: f32| {
-        if starts.len() < 2 {
-            return;
+    // Engrave every system, then break pages and space the systems with
+    // LilyPond's flexible vertical spacing (in staff spaces, between the
+    // systems' nearest staves' middle lines):
+    //   top-system-spacing    basic 6,  minimum 0, padding 1
+    //   system-system-spacing basic 12, minimum 8, padding 1, stretch 60
+    //   last-bottom-spacing   basic 1,  minimum 0, padding 1, stretch 30
+    // and, below the title block, markup-system-spacing (padding 0.5,
+    // stretch 30). `system_gap` is the padding between systems.
+    let font = Font::bravura();
+    struct Sys {
+        list: DisplayList,
+        boxes: Vec<[f32; 4]>,
+        top_ref: f32, // the top staff's middle line, system y
+        bot_ref: f32, // the bottom staff's middle line
+        y0: f32,      // highest ink
+        y1: f32,      // lowest ink
+    }
+    let built: Vec<(usize, Sys)> = systems
+        .iter()
+        .map(|&(a, b)| {
+            let list = system(score, opt, &ms, &notes, a, b, Some(line + opt.margin));
+            let mut boxes: Vec<[f32; 4]> = list.items.iter().map(|it| it.bounds(font)).filter(|r| r.iter().all(|v| v.is_finite())).collect();
+            boxes.extend(list.staves.iter().map(|st| [st.left, st.top, st.right, st.top + if st.single { 2.0 } else { 4.0 }]));
+            let y0 = boxes.iter().map(|r| r[1]).fold(0.0f32, f32::min);
+            let y1 = boxes.iter().map(|r| r[3]).fold(list.height, f32::max);
+            let top_ref = list.staves.first().map(|st| st.top + 2.0).unwrap_or(0.0);
+            let bot_ref = list.staves.last().map(|st| st.top + 2.0).unwrap_or(top_ref);
+            (a, Sys { list, boxes, top_ref, bot_ref, y0, y1 })
+        })
+        .collect();
+    // How far apart two systems' reference points must be for their ink to
+    // keep `padding` apart where it overlaps horizontally.
+    let skyline = |u: &Sys, l: &Sys, padding: f32| -> f32 {
+        let mut need = f32::MIN;
+        for p in &u.boxes {
+            for q in &l.boxes {
+                if p[0] < q[2] && q[0] < p[2] {
+                    need = need.max((p[3] - u.bot_ref) - (q[1] - l.top_ref) + padding);
+                }
+            }
         }
-        let extra = (page.height - page.margin_y - used).max(0.0);
-        let gap = (extra / (starts.len() - 1) as f32).min(MAX_EXTRA_SYSTEM_GAP);
-        for (k, w) in starts.iter().enumerate().skip(1) {
-            let end = starts.get(k + 1).copied().unwrap_or((page_list.items.len(), page_list.staves.len()));
-            let dy = gap * k as f32;
-            for it in &mut page_list.items[w.0..end.0] {
-                *it = it.clone().translated(0.0, dy);
-            }
-            for st in &mut page_list.staves[w.1..end.1] {
-                st.top += dy;
-            }
+        need
+    };
+    // A spring: (minimum, ideal, stretchability).
+    let between = |u: &Sys, l: &Sys| {
+        let min = skyline(u, l, page.system_gap).max(8.0);
+        (min, min.max(12.0), 60.0)
+    };
+    let header_bottom = y; // below the title block, first page only
+    let top_spring = |sys: &Sys, first: bool| {
+        if first && header_bottom > page.margin_y {
+            let min = header_bottom + 0.5 - page.margin_y + (sys.top_ref - sys.y0);
+            (min, min, 30.0)
+        } else {
+            let min = (sys.top_ref - sys.y0 + 1.0).max(0.0);
+            (min, min.max(6.0), 0.0)
         }
     };
-    for &(a, b) in &systems {
-        let sys = system(score, opt, &ms, &notes, a, b, Some(line + opt.margin));
-        let font = Font::bravura();
-        let (mut y0, mut y1) = (0.0f32, sys.height);
-        for it in &sys.items {
-            let r = it.bounds(font);
-            y0 = y0.min(r[1]);
-            y1 = y1.max(r[3]);
+    let bottom_spring = |sys: &Sys| {
+        let min = (sys.y1 - sys.bot_ref + 1.0).max(0.0);
+        (min, min.max(1.0), 30.0)
+    };
+    let avail = page.height - 2.0 * page.margin_y;
+    // The springs and fixed heights of systems lo..hi on one page.
+    let springs_of = |lo: usize, hi: usize, first: bool| -> (Vec<(f32, f32, f32)>, f32) {
+        let mut sp = vec![top_spring(&built[lo].1, first)];
+        for k in lo + 1..hi {
+            sp.push(between(&built[k - 1].1, &built[k].1));
         }
-        let mut offset = y - y0;
-        let page_break = page_breaks.contains(&a);
-        if (page_break || offset + y1 > page.height - page.margin_y) && !cur.staves.is_empty() {
-            fill(&mut cur, &starts, used);
-            starts.clear();
+        sp.push(bottom_spring(&built[hi - 1].1));
+        let fixed = (lo..hi).map(|k| built[k].1.bot_ref - built[k].1.top_ref).sum::<f32>();
+        (sp, fixed)
+    };
+    // The force that fills `room` (positive: stretched, negative: pressed
+    // towards the minima; None: the minima don't fit).
+    let force = |sp: &[(f32, f32, f32)], room: f32| -> Option<f32> {
+        let min: f32 = sp.iter().map(|s| s.0).sum();
+        if min > room + 1e-3 {
+            return None;
+        }
+        let ideal: f32 = sp.iter().map(|s| s.1).sum();
+        let stretch: f32 = sp.iter().map(|s| s.2).sum();
+        Some(if ideal <= room { if stretch > 0.0 { (room - ideal) / stretch } else { 0.0 } } else { -(ideal - room) / (ideal - min).max(1e-3) })
+    };
+    let length = |s: (f32, f32, f32), f: f32| if f >= 0.0 { s.1 + f * s.2 } else { s.1 + f * (s.1 - s.0) };
+    // Page breaks as LilyPond's optimal page breaker weighs them: each page
+    // costs its force squared, stretched or squeezed (the last page only if
+    // squeezed: it may stay short), and the cheapest set of pages wins.
+    let starts_page = |k: usize| k > 0 && page_breaks.contains(&built[k].0);
+    let n = built.len();
+    let fits = |lo: usize, hi: usize| -> Option<f32> {
+        if (lo + 1..hi).any(starts_page) {
+            return None;
+        }
+        let (sp, fixed) = springs_of(lo, hi, lo == 0);
+        force(&sp, avail - fixed)
+    };
+    // best[k] = (pages, cost) for systems 0..k, from[k] = where its last page starts.
+    let mut best = vec![(usize::MAX, f32::INFINITY); n + 1];
+    let mut from = vec![0usize; n + 1];
+    best[0] = (0, 0.0);
+    for hi in 1..=n {
+        for lo in (0..hi).rev() {
+            if best[lo].0 == usize::MAX {
+                continue;
+            }
+            let f = match fits(lo, hi) {
+                Some(f) => f,
+                None if hi - lo == 1 => 0.0, // a system taller than the page
+                None => break,
+            };
+            // The last page may stay short, but not be squeezed for free.
+            let cost = if hi == n { f.min(0.0).powi(2) } else { f * f };
+            let cand = (best[lo].0 + 1, best[lo].1 + cost);
+            if cand.1 < best[hi].1 || cand.1 == best[hi].1 && cand.0 < best[hi].0 {
+                best[hi] = cand;
+                from[hi] = lo;
+            }
+            if starts_page(lo) {
+                break;
+            }
+        }
+    }
+    let mut ranges = Vec::new();
+    let mut hi = n;
+    while hi > 0 {
+        ranges.push((from[hi], hi));
+        hi = from[hi];
+    }
+    ranges.reverse();
+    for (pi, &(lo, hi)) in ranges.iter().enumerate() {
+        if pi > 0 {
             pages.push(std::mem::replace(&mut cur, new_page()));
-            y = page.margin_y;
-            offset = y - y0;
         }
-        starts.push((cur.items.len(), cur.staves.len()));
-        let (dx, dy) = (page.margin_x - opt.margin, offset);
-        let sys_index = cur.staves.last().map(|s| s.system + 1).unwrap_or(0);
-        cur.items.extend(sys.items.into_iter().map(|i| i.translated(dx, dy)));
-        cur.staves.extend(sys.staves.into_iter().map(|mut st| {
-            st.top += dy;
-            st.left += dx;
-            st.right += dx;
-            st.system = sys_index;
-            st
-        }));
-        cur.columns.extend(sys.columns.into_iter().map(|mut c| {
-            c.x += dx;
-            c.system = sys_index;
-            c
-        }));
-        used = offset + y1;
-        y = used + page.system_gap;
+        let (sp, fixed) = springs_of(lo, hi, lo == 0);
+        let last = pi + 1 == ranges.len();
+        // The last page stays ragged at the bottom (ragged-last-bottom),
+        // pressed only if it must be.
+        let f = force(&sp, avail - fixed).unwrap_or(-1.0);
+        let f = if last { f.min(0.0) } else { f };
+        let mut y = page.margin_y;
+        for (k, idx) in (lo..hi).enumerate() {
+            y += length(sp[k], f);
+            let sys = &built[idx].1;
+            let dy = y - sys.top_ref;
+            let dx = page.margin_x - opt.margin;
+            let sys_index = cur.staves.last().map(|s| s.system + 1).unwrap_or(0);
+            cur.items.extend(sys.list.items.iter().cloned().map(|i| i.translated(dx, dy)));
+            cur.staves.extend(sys.list.staves.iter().cloned().map(|mut st| {
+                st.top += dy;
+                st.left += dx;
+                st.right += dx;
+                st.system = sys_index;
+                st
+            }));
+            cur.columns.extend(sys.list.columns.iter().cloned().map(|mut c| {
+                c.x += dx;
+                c.system = sys_index;
+                c
+            }));
+            y = dy + sys.bot_ref;
+        }
     }
     // (The last page stays ragged at the bottom, as in LilyPond.)
     pages.push(cur);
@@ -3833,6 +4163,23 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         p.items.push(Item::Text { text: score.copyright.clone(), at: pt(page.width / 2.0, page.height - page.margin_y * 0.45), size: 1.6, italic: false, bold: false, anchor: 1, id: ids::COPYRIGHT });
     }
     pages
+}
+
+#[cfg(test)]
+mod dot_tests {
+    #[test]
+    fn chord_dots_as_lilypond_sets_them() {
+        use super::dot_rows;
+        // A line note's dot goes up; a voice 2 note's down.
+        assert_eq!(dot_rows(&[-2], 0), vec![-1]);
+        assert_eq!(dot_rows(&[-2], -1), vec![-3]);
+        // c' e' g' (lines -6 -4 -2): a dot each, all in spaces.
+        assert_eq!(dot_rows(&[-6, -4, -2], 0), vec![-5, -3, -1]);
+        // A second: e' f' a' share no space, so one moves.
+        let r = dot_rows(&[-4, -3, -1], 0);
+        assert_eq!(r.len(), 3);
+        assert!(r.iter().all(|p| p % 2 != 0), "{r:?}");
+    }
 }
 
 #[cfg(test)]

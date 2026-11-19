@@ -207,7 +207,7 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   rests fill whole dotted beats.
 * Tuplets: their notes are written by the ratio, and beams break at their
   edges (LilyPond beams 4/4 triplet eighths in threes). One beam over a
-  whole tuplet carries just the number, next to the beam; otherwise a
+  whole tuplet carries just the number, following the beam; otherwise a
   bracket with the number in a gap. Spacing uses sounding time, and
   matches LilyPond's for triplets, quintuplets and sextuplets.
 * Bar numbers start every system but the first.
@@ -236,7 +236,20 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
 * Grace notes are drawn at LilyPond's grace size (0.707) left of their
   note and its accidentals, with their own accidentals and ledger lines,
   stems up in voices 1 and 3, a flag or a beam over a group, and the
-  acciaccatura's slash; the spacing keeps room for them.
+  acciaccatura's slash; the spacing keeps room for them, and compression
+  never squeezes them into the note before. Slurs encompass the graces
+  inside them; graces on a beat end an automatic beam.
+* Articulations follow LilyPond's Script settings: on the head side,
+  stacked by script-priority, padding 0.2 from the note; staccato,
+  staccatissimo, tenuto and marcato quantized into spaces; accents clear of
+  the staff by staff-padding 0.25. Fermatas, trills, turns, mordents and
+  bowings stack above in script-priority order (fermata padding 0.4).
+* Chord dots follow LilyPond's dot configuration: one per head, each in a
+  space, shifted up or down at the least cost when two would meet.
+* Tuplet brackets follow `tuplet-bracket.cc`: the side most stems point to,
+  sloped by the outer notes (at most 0.5), padding 1.1 from every column,
+  staff-padding 0.25, level ones kept off staff lines, the number centred
+  on the bracket.
 
 **Marks around the staff.** Each staff has a skyline: the boxes of
 everything drawn so far. Outer marks are placed against it from the staff
@@ -275,7 +288,18 @@ Items that join staves (barlines) belong to no staff's skyline.
 * `tests/lilypond.rs` also checks justified lines and system breaks against
   LilyPond. The breaks match at 23 of 30 line widths.
 * Ties and endings that cross a break are split.
-* Systems are stacked by their real extents onto pages, by default A4
+* Systems are spaced on pages by LilyPond's flexible vertical spacing,
+  between the middle lines of the nearest staves: `top-system-spacing`
+  (6, padding 1), `system-system-spacing` (12, at least 8, padding 1 between
+  the two systems' skylines, stretchability 60), `last-bottom-spacing`
+  (1, padding 1, stretchability 30), and below the title block padding 0.5.
+  The layout's system gap is the padding between systems.
+* Page breaks follow LilyPond's optimal page breaker: each page costs the
+  square of the force that fills it (stretched or squeezed towards the
+  minima), the last page only if squeezed, and the cheapest set wins. Every
+  page but the last is filled to its bottom margin (`ragged-bottom = ##f`,
+  `ragged-last-bottom = ##t`).
+* Pages are by default A4
   (132.3 × 187.1 staff spaces at an 18 pt staff), with the title block on
   page 1: title, subtitle, the movement's title; the instrument and the
   lyricist flush left; the composer and the arranger flush right. The

@@ -456,12 +456,13 @@ fn tuplets_show_their_number_and_a_bracket_without_a_beam() {
     // Beams: one per triplet and two (8th + 16th levels) for the quintuplet.
     let beams = l.items.iter().filter(|i| matches!(i, Item::Quad { .. })).count();
     assert_eq!(beams, 1 + 1 + 2);
-    // The quarter triplet is bracketed: four lines (two hooks, two halves).
+    // The quarter triplet is bracketed: four lines (two hooks, two halves,
+    // sloped with the notes as LilyPond slopes them).
     let digit3 = glyphs(&l, Glyph::TupletDigit(3)).into_iter().map(|g| g.0).fold(0.0f32, f32::max);
     let bracket = l
         .items
         .iter()
-        .filter(|i| matches!(i, Item::Line { from, to, .. } if from.y == to.y && (from.x - digit3).abs() < 8.0 && from.y.fract() != 0.0))
+        .filter(|i| matches!(i, Item::Line { from, to, .. } if (to.x - from.x).abs() > 0.5 && (from.x - digit3).abs() < 8.0))
         .count();
     assert!(bracket >= 2, "a bracket around the quarter triplet");
     // Quarter-triplet heads are half the width of a 3/2 quarter: written as quarters.
@@ -1114,4 +1115,75 @@ fn a_tie_keeps_clear_of_its_notes_dot() {
 
 fn pt_mid(a: corinzia_layout::display::Point, b: corinzia_layout::display::Point) -> corinzia_layout::display::Point {
     corinzia_layout::display::Point { x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0 }
+}
+
+#[test]
+fn articulations_sit_as_lilypond_places_its_scripts() {
+    let font = corinzia_layout::font::Font::bravura();
+    let centre = |g: Glyph, y: f32| {
+        let b = font.bbox(g);
+        y - (b.ne.1 + b.sw.1) / 2.0
+    };
+    // Stem-down c'' (third space): the staccato above, centred in the space
+    // over the next line (y 0.5); stem-up g': below, in the space under it.
+    let s = score(&[("treble", &["c''4-. g'-. g'-> c''->"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let above = glyphs(&l, Glyph::StaccatoAbove);
+    let below = glyphs(&l, Glyph::StaccatoBelow);
+    assert_eq!(above.len(), 1);
+    assert_eq!(below.len(), 1);
+    assert!((centre(Glyph::StaccatoAbove, above[0].1) - 0.5).abs() < 1e-3, "{above:?}");
+    assert!((centre(Glyph::StaccatoBelow, below[0].1) - 4.5).abs() < 1e-3, "{below:?}");
+    // Accents are not quantized: the staff joins their support, so they
+    // sit outside it, staff-padding (0.25) away.
+    let acc_below = glyphs(&l, Glyph::AccentBelow);
+    let acc_above = glyphs(&l, Glyph::AccentAbove);
+    assert_eq!((acc_below.len(), acc_above.len()), (1, 1), "single-note accents are drawn");
+    let b = font.bbox(Glyph::AccentBelow);
+    assert!(acc_below[0].1 - b.ne.1 >= 4.25 - 1e-3, "{acc_below:?}");
+    let b = font.bbox(Glyph::AccentAbove);
+    assert!(acc_above[0].1 - b.sw.1 <= -0.25 + 1e-3, "{acc_above:?}");
+}
+
+#[test]
+fn tuplet_brackets_follow_lilypond() {
+    // Up, up, down: most stems point up, so the bracket goes above (LilyPond's
+    // get_default_dir); here the staff holds it level.
+    let s = score(&[("treble", &["\\tuplet 3/2 { e'4 g' c'' } c''2"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let above = l.items.iter().filter(|i| matches!(i, Item::Line { from, to, .. } if (to.x - from.x).abs() > 0.5 && from.y < -0.25 && (from.y - to.y).abs() < 1e-4)).count();
+    assert_eq!(above, 2, "a level bracket above");
+    // Stems down and rising: below, sloping up with the notes.
+    let s = score(&[("treble", &["\\tuplet 3/2 { c''4 d'' e'' } c''2"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let digit = glyphs(&l, Glyph::TupletDigit(3));
+    assert_eq!(digit.len(), 1);
+    let lines: Vec<(f32, f32, f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Line { from, to, .. } if (to.x - from.x).abs() > 0.5 && from.y > 4.0 => Some((from.x, from.y, to.x, to.y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines.len(), 2, "two halves below the staff: {lines:?}");
+    // Rising to the right (y down).
+    assert!(lines[1].3 < lines[0].1, "{lines:?}");
+    // Clear of the staff by more than staff-padding.
+    assert!(lines.iter().all(|l| l.1 > 4.25 && l.3 > 4.25));
+    preview("tuplet-brackets", &l);
+}
+
+#[test]
+fn grace_notes_on_a_beat_end_an_automatic_beam() {
+    // As LilyPond: graces on beat 2 split c d | e f; graces off the beat
+    // leave the beam whole.
+    let count = |src: &str| {
+        let s = score(&[("treble", &[src])], (4, 4), 0);
+        let l = layout_line(&s, &Options::default());
+        // Main-size beams only (grace beams are thinner).
+        l.items.iter().filter(|i| matches!(i, Item::Quad { p, .. } if (p[3].y - p[0].y).abs() > 0.4)).count()
+    };
+    assert_eq!(count("c''8 d'' \\grace { e''16 f'' } e''8 f'' g''2"), 2);
+    assert_eq!(count("c''8 d'' e'' \\grace f''16 g''8 a''2"), 1);
 }
