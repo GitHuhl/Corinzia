@@ -672,6 +672,17 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
     a.brace || a.group != 0 && a.group == b.group
 }
 
+/// A tie's indent and height for its width: LilyPond's slur shape law
+/// with the Tie's details (height limit 1, ratio 1/3).
+fn tie_shape(width: f32) -> (f32, f32) {
+    const H_INF: f32 = 1.0;
+    const RATIO: f32 = 0.333;
+    let max_fraction = 1.0 / 3.1;
+    let height = 2.0 / std::f32::consts::PI * (std::f32::consts::PI / 2.0 * width * RATIO / H_INF).atan() * H_INF;
+    let q = 2.0 * H_INF / max_fraction;
+    (2.0 * H_INF - q * q * max_fraction / (width + q), height)
+}
+
 /// How far above a dynamic's baseline its letters' middle (an 'm') sits:
 /// hairpins are centred there (LilyPond's DynamicText Y-offset).
 const DYN_CENTRE: f32 = 0.55;
@@ -1839,21 +1850,59 @@ impl<'a> Engraver<'a> {
         }
     }
 
+    /// Ties, shaped and placed as LilyPond places a single tie
+    /// (`lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc`, the
+    /// Tie details in `scm/define-grobs.scm`; GNU LilyPond, GPL-3.0-or-later):
+    /// LilyPond's slur shape with the tie's height limit (1) and ratio
+    /// (1/3); ends 0.2 from the heads (0.35 past a stem in the way); a short
+    /// tie in a space centred on its heads' middle, on a line moved off it,
+    /// a tall one with its peak kept clear of the staff lines.
     fn draw_ties(&mut self) {
+        const NOTE_HEAD_GAP: f32 = 0.2;
+        const INTRA_SPACE_THRESHOLD: f32 = 1.25;
+        const TIP_STAFF_LINE_CLEARANCE: f32 = 0.45;
+        const CENTER_STAFF_LINE_CLEARANCE: f32 = 0.6;
         let d = self.font.defaults;
         let system_end = self.ms.last().map(|m| m.x1).unwrap_or(self.left);
         let mut items = Vec::new();
-        let tie = |x0: f32, x1: f32, y: f32, dir: f32, id: u64| {
+        // The tie at head height `y` (staff `top`) from x0 to x1, on side `dir`.
+        let tie = |x0: f32, x1: f32, y: f32, top: f32, dir: f32, id: u64| {
             let x1 = x1.max(x0 + 0.6);
-            let height = (0.35 + (x1 - x0) * 0.06).min(1.1);
-            let c = |frac: f32, h: f32| pt(x0 + (x1 - x0) * frac, y + dir * h);
+            let w = x1 - x0;
+            let (indent, h) = {
+                let (i, h) = tie_shape(w);
+                (i.min(w / 3.1), h)
+            };
+            let pos = (y - top) * 2.0;
+            let on_line = |p: f32| {
+                let r = p.round();
+                (p - r).abs() < 1e-3 && (0.0..=8.0).contains(&r) && (r as i32) % 2 == 0
+            };
+            let within_staff = (1.0..=7.0).contains(&pos);
+            let mut dy = 0.0;
+            if h < INTRA_SPACE_THRESHOLD * 0.5 {
+                if on_line(pos) {
+                    dy = dir * TIP_STAFF_LINE_CLEARANCE * 0.5;
+                } else if within_staff {
+                    // Its ends and its peak either side of the heads' middle.
+                    dy = -dir * 0.375 * h;
+                }
+            } else {
+                let top_pos = (y + dir * h - top) * 2.0;
+                let r = top_pos.round();
+                if (top_pos - r).abs() < CENTER_STAFF_LINE_CLEARANCE && on_line(r) {
+                    dy = (r + CENTER_STAFF_LINE_CLEARANCE * dir) * 0.5 + top - (y + dir * h);
+                }
+            }
+            let y = y + dy;
+            let c = |x: f32, hh: f32| pt(x, y + dir * hh);
             Item::Crescent {
                 from: pt(x0, y),
-                c1: c(0.25, height + d.tie_midpoint_thickness),
-                c2: c(0.75, height + d.tie_midpoint_thickness),
+                c1: c(x0 + indent, h + d.tie_midpoint_thickness / 2.0),
+                c2: c(x1 - indent, h + d.tie_midpoint_thickness / 2.0),
                 to: pt(x1, y),
-                d1: c(0.25, height),
-                d2: c(0.75, height),
+                d1: c(x0 + indent, h - d.tie_midpoint_thickness / 2.0),
+                d2: c(x1 - indent, h - d.tie_midpoint_thickness / 2.0),
                 id,
             }
         };
@@ -1868,18 +1917,22 @@ impl<'a> Engraver<'a> {
             };
             // The next piece of the same voice (in this system).
             let next = self.notes[i + 1..].iter().find(|o| o.part == n.part && o.voice == n.voice && o.start >= n.start + n.dur);
+            let top = self.top(n.part);
             for h in n.heads.iter().filter(|h| h.tie_out) {
                 let dir = side(h);
-                let y = self.y(n.part, h.pos) + dir * 0.35;
-                let x0 = n.x + h.shift + HEAD_W + 0.1;
+                let y = self.y(n.part, h.pos);
+                // Past the left note's stem when the stem is on the tie's right
+                // and reaches its height.
+                let stem_in_way = n.has_stem() && n.stem_up && (n.stem_end.min(y)..=n.stem_end.max(y)).contains(&(y - dir * 0.1));
+                let x0 = if stem_in_way { n.stem_x + 0.35 } else { n.x + h.shift + HEAD_W + NOTE_HEAD_GAP };
                 match next {
                     Some(nx) if nx.start == n.start + n.dur => {
                         if let Some(h2) = nx.heads.iter().find(|x| x.dia == h.dia && x.alter == h.alter) {
-                            items.push(tie(x0, nx.x + h2.shift - 0.1, y, dir, h.id));
+                            items.push(tie(x0, nx.x + h2.shift - NOTE_HEAD_GAP, y, top, dir, h.id));
                         }
                     }
                     // Continues in the next system: to the end of this one.
-                    None if n.start + n.dur >= self.range.1 => items.push(tie(x0, system_end - 0.3, y, dir, h.id)),
+                    None if n.start + n.dur >= self.range.1 => items.push(tie(x0, system_end - 0.3, y, top, dir, h.id)),
                     _ => {}
                 }
             }
@@ -1888,8 +1941,8 @@ impl<'a> Engraver<'a> {
             if first_here && n.start == self.range.0 {
                 for h in n.heads.iter().filter(|h| h.tied_in) {
                     let dir = side(h);
-                    let y = self.y(n.part, h.pos) + dir * 0.35;
-                    items.push(tie(n.x + h.shift - 2.2, n.x + h.shift - 0.1, y, dir, h.id));
+                    let y = self.y(n.part, h.pos);
+                    items.push(tie(n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, y, self.top(n.part), dir, h.id));
                 }
             }
         }
