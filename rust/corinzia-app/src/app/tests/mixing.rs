@@ -472,7 +472,7 @@ fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
-    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None, drop_at: None };
+    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None, drop_at: None, selected_track: None, levels: vec![] };
     let r = v.clip_rect(&clips[0]);
     let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
     let mid_y = r.y + r.height / 2.0;
@@ -700,4 +700,74 @@ fn the_score_follows_a_recordings_tempo() {
     a.editor.redo();
     let _ = a.update(Message::Mix(mix::MixMsg::ForgetFollowed));
     assert_eq!(a.editor.movement().unwrap().tempo, m.tempo);
+}
+
+#[test]
+fn the_mix_tab_answers_daw_keys_and_wheel() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    a.sync();
+    let press = |a: &mut App, k: Key, m: Modifiers| {
+        if let Some(t) = a.press(&k, m) {
+            drop(t);
+        }
+        a.sync();
+    };
+    let ch = |c: &str| Key::Character(c.into());
+    // Ctrl+T: a new track; double-clicking below the tracks does the same.
+    let tracks = a.editor.project.tracks.len();
+    let _ = a.mix_key(&ch("t"), Modifiers::CTRL);
+    assert_eq!(a.editor.project.tracks.len(), tracks + 1);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::AddTrack));
+    assert_eq!(a.editor.project.tracks.len(), tracks + 2);
+    assert_eq!(a.strip, a.editor.project.tracks.last().map(|t| t.id), "the new one selected");
+    // Ctrl+M hides the mixer, and back.
+    let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
+    assert!(a.mixer_hidden);
+    let _ = a.view();
+    let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
+    assert!(!a.mixer_hidden);
+    // + and − zoom along time; PageUp and PageDown the tracks' height.
+    let ppq = a.arrange_ppq;
+    press(&mut a, ch("+"), Modifiers::default());
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Zoom(1.25)));
+    assert!(a.arrange_ppq > ppq);
+    let h = a.prefs.layout.lane_height;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(h * 1.25)));
+    assert!(a.prefs.layout.lane_height > h);
+    assert!(a.mix_key(&Key::Named(Named::PageUp), Modifiers::default()).is_some());
+    // Ctrl+PageDown: the whole movement in view.
+    let _ = a.mix_key(&Key::Named(Named::PageDown), Modifiers::CTRL);
+    let width = a.window.width - a.prefs.layout.header_width;
+    assert!((a.arrange.length_q as f32 * a.arrange_ppq - width).abs() < 1.0 || a.arrange_ppq == 2.0);
+    // Ctrl+Alt+Down selects the next track.
+    a.strip = a.arrange.lanes.first().map(|l| l.track);
+    let _ = a.mix_key(&Key::Named(Named::ArrowDown), Modifiers::CTRL | Modifiers::ALT);
+    assert_eq!(a.strip, a.arrange.lanes.get(1).map(|l| l.track));
+    // The wheel zooms around the pointer: the beat under it stays there.
+    a.arrange_ppq = 20.0;
+    a.arrange_scroll = 100.0;
+    let header = a.prefs.layout.header_width;
+    let x = header + 300.0;
+    let q = (x - header + a.arrange_scroll) / a.arrange_ppq;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ZoomAt { factor: 1.5, x }));
+    assert!((a.arrange_ppq - 30.0).abs() < 1e-4);
+    assert!(((x - header + a.arrange_scroll) / a.arrange_ppq - q).abs() < 1e-3, "the beat under the pointer stays");
+}
+
+#[test]
+fn notes_gather_into_items_split_by_a_bar_of_rest() {
+    let a = app(View::Page);
+    let c = &a.arrange;
+    // Every note lies inside an item of its lane, and items start and end
+    // on bar lines.
+    for b in &c.blocks {
+        assert!(c.items.iter().any(|&(l, x, y)| l == b.lane && x <= b.start_q + 1e-9 && b.start_q + b.length_q <= y + 1e-9), "{b:?}");
+    }
+    for &(_, x, y) in &c.items {
+        assert!(x < y && c.bars.iter().any(|b| (b - x).abs() < 1e-9) && c.bars.iter().any(|b| (b - y).abs() < 1e-9));
+    }
+    // Beats include every bar line.
+    assert!(c.bars[..c.bars.len() - 1].iter().all(|b| c.beats.iter().any(|x| (x - b).abs() < 1e-9)));
 }

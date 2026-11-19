@@ -335,12 +335,18 @@ impl App {
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                     mute_solo,
                     drop_at,
+                    selected_track: self.strip,
+                    levels: self.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill))
                     .map(Message::Arrange),
                 };
                 let layout = self.prefs.layout;
+                // Ctrl+M hides the mixer: the arrange view takes it all.
+                if self.mixer_hidden {
+                    top
+                } else {
                 column![
                     top,
                     crate::splitter::view(false, Message::SplitMixer),
@@ -348,6 +354,7 @@ impl App {
                 ]
                 .height(Length::Fill)
                 .into()
+                }
             }
         };
         let window = column![toolbar, hline(), body, hline(), status];

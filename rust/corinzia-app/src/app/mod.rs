@@ -100,6 +100,8 @@ pub(crate) struct App {
     pub(crate) selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
     /// How "Follow this clip" reads a recording's beats.
     pub(crate) follow: mix::FollowOptions,
+    /// The Mix tab's mixer hidden (Ctrl+M): the arrange view takes its room.
+    pub(crate) mixer_hidden: bool,
     pub(crate) clip_origin: Option<corinzia_model::AudioClip>,
     pub(crate) clip_dragged: bool,
     /// Ctrl was held at the press: the first drag step makes the copy.
@@ -308,6 +310,7 @@ impl App {
             folded: HashSet::new(),
             selected_clip: None,
             follow: Default::default(),
+            mixer_hidden: false,
             clip_origin: None,
             clip_dragged: false,
             clip_copy: false,

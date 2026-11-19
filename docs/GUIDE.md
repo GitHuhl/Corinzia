@@ -179,14 +179,35 @@ the output), automation playback and saving plugin settings.
   mark, in the score and the arrange view.
 * **Recent scores:** the Recent menu beside Open lists the last eight
   scores opened or saved.
-* **The Mix tab's panes:** the wheel scrolls the arrange view's tracks,
-  Shift+wheel along time, Ctrl+wheel zooms; Alt+wheel or dragging a
-  track's bottom edge (in the headers) makes the tracks taller or
-  shorter; drag the headers' edge to widen them. Each header has mute (M)
-  and solo (S) buttons. Drag the bar between the arrange view and the
-  mixer, or before the side panel, to resize them; the faders grow with
-  the mixer. The sizes are remembered. A strip's automation lane and
-  dynamics controller are in the side panel when the strip is selected.
+* **The Mix tab's panes:** the arrange view's tracks have numbered
+  headers (name, kind, mute and solo, a level meter along the foot), and
+  each track's notes are items in its colour, with the notes inside; the
+  ruler has the bars and their beats. The mouse and keys work as
+  in the common DAW layout:
+  - the wheel zooms along time around the pointer; Ctrl+wheel makes the
+    tracks taller or shorter; Alt+wheel (or Shift+wheel, or a sideways
+    swipe) scrolls along time; Ctrl+Alt+wheel scrolls up and down;
+  - + and − zoom along time, PageUp and PageDown the tracks' height,
+    Ctrl+PageDown shows the whole movement;
+  - Space plays and stops, Home or W goes to the start, End to the end,
+    R turns the loop (the cycle) on or off;
+  - Ctrl+T adds a track, as does a double-click below the last track or
+    in the empty space after the mixer's strips; Ctrl+M hides or shows
+    the mixer; Ctrl+Alt+Up and Down select the track above or below;
+  - S splits the selected clip, Delete removes it.
+
+  Dragging a track's bottom edge (in the headers) also sets the tracks'
+  height; drag the headers' edge to widen them. Drag the bar between the
+  arrange view and the mixer, or before the side panel, to resize them;
+  the faders grow with the mixer. The sizes are remembered.
+* **The mixer:** the master first, then a narrow strip per track and
+  bus, top to bottom: the rack (the instrument, or an audio track's
+  sound, then the effects, each with its on/off light, then an empty
+  slot to add one), the output, the sends, a pan knob (drag up or down,
+  double-click to centre), the fader beside its meter, the level, mute
+  and solo, and the track's number and name on its colour (click it to
+  select the strip). A strip's automation lane and dynamics controller
+  are in the side panel when the strip is selected.
 * **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" puts a
   clip at the caret. Or drag WAV, FLAC, MP3 or Ogg files in from your
   file manager (Wayland and X11 alike): dropped on an audio track in the

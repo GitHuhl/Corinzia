@@ -54,7 +54,8 @@ fn snap_db(db: f64) -> f64 {
 }
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
-const CAP_H: f32 = 22.0;
+const CAP_H: f32 = 26.0;
+const CAP_W: f32 = 18.0;
 const MARGIN: f32 = 12.0; // above and below the travel
 
 #[derive(Default)]
@@ -63,10 +64,6 @@ pub struct State {
     drag: Option<(f32, f64)>,
     last_click: Option<Instant>,
     fine: bool,
-}
-
-fn accent() -> Color {
-    crate::theme::palette().accent
 }
 
 /// The gain fader of track `track`, at `db`.
@@ -149,36 +146,37 @@ impl canvas::Program<MixMsg> for Fader {
     fn draw(&self, state: &State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, cursor: mouse::Cursor) -> Vec<Geometry> {
         let mut f = Frame::new(renderer, bounds.size());
         let (t, b) = Self::travel(bounds);
-        let cx = bounds.width / 2.0 + 8.0;
-        // The slot.
-        f.fill(&Path::rectangle(Point::new(cx - 2.0, t), Size::new(4.0, b - t)), crate::theme::palette().base);
-        // The scale, labelled on the left.
-        for (db, label) in [(12.0, "+12"), (6.0, "+6"), (0.0, "0"), (-6.0, "-6"), (-12.0, "-12"), (-24.0, "-24"), (-36.0, "-36"), (MIN_DB, "−∞")] {
+        let pal = crate::theme::palette();
+        // The scale on the left, the groove and its cap on the right.
+        let cx = bounds.width - CAP_W / 2.0 - 1.0;
+        f.fill(&Path::rectangle(Point::new(cx - 1.5, t), Size::new(3.0, b - t)), pal.base);
+        f.stroke(&Path::rectangle(Point::new(cx - 1.5, t), Size::new(3.0, b - t)), Stroke::default().with_width(1.0).with_color(pal.line));
+        for (db, label) in [(12.0, "+12"), (6.0, "+6"), (0.0, "0"), (-6.0, "-6"), (-12.0, "-12"), (-24.0, "-24"), (-36.0, "-36"), (-48.0, "-48"), (MIN_DB, "-∞")] {
             let y = self.y_of(bounds, db_to_pos(db));
             let unity = db == 0.0;
             f.stroke(
-                &Path::line(Point::new(cx - 12.0, y), Point::new(cx - 6.0, y)),
-                Stroke::default().with_width(if unity { 1.5 } else { 1.0 }).with_color(if unity { crate::theme::palette().text } else { crate::theme::palette().faint }),
+                &Path::line(Point::new(cx - CAP_W / 2.0 - 4.0, y), Point::new(cx - CAP_W / 2.0 - 1.0, y)),
+                Stroke::default().with_width(1.0).with_color(if unity { pal.dim } else { pal.faint }),
             );
             f.fill_text(Text {
                 content: label.into(),
-                position: Point::new(cx - 15.0, y),
-                color: if unity { crate::theme::palette().text } else { crate::theme::palette().dim },
-                size: 10.0.into(),
+                position: Point::new(cx - CAP_W / 2.0 - 6.0, y),
+                color: if unity { pal.dim } else { pal.faint },
+                size: 9.0.into(),
                 align_x: iced::alignment::Horizontal::Right.into(),
                 align_y: iced::alignment::Vertical::Center,
                 ..Text::default()
             });
         }
-        // The level below the cap.
         let y = self.y_of(bounds, db_to_pos(self.db));
-        f.fill(&Path::rectangle(Point::new(cx - 2.0, y), Size::new(4.0, b - y)), accent());
-        // The cap: a ridged block, lighter when held or hovered.
         let hot = state.drag.is_some() || cursor.position_in(bounds).is_some_and(|p| (p.y - y).abs() <= CAP_H / 2.0 + 2.0);
-        let cap = Path::rounded_rectangle(Point::new(cx - 13.0, y - CAP_H / 2.0), Size::new(26.0, CAP_H), 3.0.into());
-        f.fill(&cap, if hot { Color::from_rgb8(0xf2, 0xf2, 0xf0) } else { Color::from_rgb8(0xc9, 0xcb, 0xcf) });
-        f.stroke(&cap, Stroke::default().with_width(1.0).with_color(crate::theme::palette().base));
-        f.stroke(&Path::line(Point::new(cx - 10.0, y), Point::new(cx + 10.0, y)), Stroke::default().with_width(2.0).with_color(accent()));
+        let cap = Path::rounded_rectangle(Point::new(cx - CAP_W / 2.0, y - CAP_H / 2.0), Size::new(CAP_W, CAP_H), 2.0.into());
+        f.fill(&cap, if hot { Color::from_rgb8(0x6a, 0x6e, 0x76) } else { Color::from_rgb8(0x52, 0x56, 0x5d) });
+        f.stroke(&cap, Stroke::default().with_width(1.0).with_color(Color::from_rgb8(0x14, 0x15, 0x17)));
+        for dy in [-4.0, 4.0] {
+            f.stroke(&Path::line(Point::new(cx - CAP_W / 2.0 + 3.0, y + dy), Point::new(cx + CAP_W / 2.0 - 3.0, y + dy)), Stroke::default().with_width(1.0).with_color(Color::from_rgb8(0x3c, 0x3f, 0x45)));
+        }
+        f.stroke(&Path::line(Point::new(cx - CAP_W / 2.0 + 2.0, y), Point::new(cx + CAP_W / 2.0 - 2.0, y)), Stroke::default().with_width(1.5).with_color(Color::WHITE));
         vec![f.into_geometry()]
     }
 
@@ -193,14 +191,14 @@ impl canvas::Program<MixMsg> for Fader {
     }
 }
 
-/// The pan bar: drag (Shift for fine), click to jump, double-click to
-/// centre, wheel to nudge.
-pub struct PanBar {
+/// A pan knob: an arc from the top (centre) towards the side panned to;
+/// drag up or down (Shift: fine), wheel, double-click to centre.
+pub struct PanKnob {
     pub track: Id,
     pub pan: f64,
 }
 
-impl canvas::Program<MixMsg> for PanBar {
+impl canvas::Program<MixMsg> for PanKnob {
     type State = State;
 
     fn update(&self, state: &mut State, event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<canvas::Action<MixMsg>> {
@@ -208,7 +206,6 @@ impl canvas::Program<MixMsg> for PanBar {
             let v = v.clamp(-1.0, 1.0);
             MixMsg::Pan(self.track, if v.abs() < 0.02 { 0.0 } else { (v * 100.0).round() / 100.0 })
         };
-        let w = (bounds.width - 16.0).max(1.0);
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
                 state.fine = m.shift();
@@ -223,15 +220,13 @@ impl canvas::Program<MixMsg> for PanBar {
                     return Some(canvas::Action::publish(MixMsg::Pan(self.track, 0.0)).and_capture());
                 }
                 state.last_click = Some(now);
-                let v = ((p.x - 8.0) / w * 2.0 - 1.0) as f64;
-                state.drag = Some((p.x, v));
-                Some(canvas::Action::publish(pan(v)).and_capture())
+                state.drag = Some((p.y, self.pan));
+                Some(canvas::Action::capture())
             }
             Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                let (x0, v0) = state.drag?;
-                let k = if state.fine { 0.15 } else { 1.0 };
-                let v = v0 + (((position.x - bounds.x) - x0) / w * 2.0 * k) as f64;
-                Some(canvas::Action::publish(pan(v)).and_capture())
+                let (y0, v0) = state.drag?;
+                let k = if state.fine { 0.002 } else { 0.012 };
+                Some(canvas::Action::publish(pan(v0 + ((y0 - (position.y - bounds.y)) * k) as f64)).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                 state.drag.take()?;
@@ -243,28 +238,36 @@ impl canvas::Program<MixMsg> for PanBar {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
                     mouse::ScrollDelta::Pixels { y, .. } => *y / 30.0,
                 };
-                Some(canvas::Action::publish(pan(self.pan + lines as f64 * 0.05)).and_capture())
+                Some(canvas::Action::publish(pan(self.pan + lines as f64 * if state.fine { 0.01 } else { 0.05 })).and_capture())
             }
             _ => None,
         }
     }
 
     fn draw(&self, _state: &State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
+        use std::f32::consts::PI;
         let mut f = Frame::new(renderer, bounds.size());
-        let (l, r, y) = (8.0, bounds.width - 8.0, bounds.height / 2.0);
-        f.fill(&Path::rectangle(Point::new(l, y - 2.0), Size::new(r - l, 4.0)), crate::theme::palette().base);
-        let mid = (l + r) / 2.0;
-        let x = mid + self.pan as f32 * (r - l) / 2.0;
-        // From the centre to the position.
-        f.fill(&Path::rectangle(Point::new(mid.min(x), y - 2.0), Size::new((x - mid).abs(), 4.0)), accent());
-        f.stroke(&Path::line(Point::new(mid, y - 6.0), Point::new(mid, y + 6.0)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().faint));
-        f.fill(&Path::circle(Point::new(x, y), 6.0), crate::theme::palette().text);
+        let pal = crate::theme::palette();
+        let c = Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let r = (bounds.width.min(bounds.height) / 2.0 - 2.0).max(4.0);
+        // 135° each way from the top.
+        let angle = |v: f64| -PI / 2.0 + v as f32 * PI * 0.75;
+        let arc = |from: f32, to: f32| Path::new(|b| b.arc(canvas::path::Arc { center: c, radius: r, start_angle: iced::Radians(from.min(to)), end_angle: iced::Radians(from.max(to)) }));
+        f.stroke(&arc(angle(-1.0), angle(1.0)), Stroke::default().with_width(3.0).with_color(pal.base));
+        if self.pan.abs() > 0.004 {
+            f.stroke(&arc(angle(0.0), angle(self.pan)), Stroke::default().with_width(3.0).with_color(Color::from_rgb8(0x6f, 0xb3, 0xe8)));
+        }
+        f.fill(&Path::circle(c, r - 3.0), Color::from_rgb8(0x4a, 0x4e, 0x55));
+        let a = angle(self.pan);
+        f.stroke(&Path::line(c, Point::new(c.x + a.cos() * (r - 4.0), c.y + a.sin() * (r - 4.0))), Stroke::default().with_width(1.5).with_color(Color::WHITE));
         vec![f.into_geometry()]
     }
 
     fn mouse_interaction(&self, state: &State, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        if state.drag.is_some() || cursor.is_over(bounds) {
-            mouse::Interaction::ResizingHorizontally
+        if state.drag.is_some() {
+            mouse::Interaction::ResizingVertically
+        } else if cursor.is_over(bounds) {
+            mouse::Interaction::Pointer
         } else {
             mouse::Interaction::default()
         }

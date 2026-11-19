@@ -272,6 +272,12 @@ impl App {
                 _ => {}
             }
         }
+        // The Mix tab's own keys (see `mix_key`).
+        if self.tab == Tab::Mix && self.roll.is_none() {
+            if let Some(t) = self.mix_key(key, mods) {
+                return Some(t);
+            }
+        }
         // The selected clip in the arrange view: S splits it at the playhead.
         if let (Tab::Mix, Some((track, clip)), Key::Character(c)) = (self.tab, self.selected_clip, key) {
             if c.as_str().eq_ignore_ascii_case("s") && !mods.control() && !mods.alt() && !mods.logo() && self.roll.is_none() {

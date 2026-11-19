@@ -108,11 +108,7 @@ impl App {
                 let id = self.editor.add_bus("");
                 self.strip = Some(id);
             }
-            AddAudioTrack => {
-                let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
-                let id = self.editor.add_audio_track(&format!("Audio {n}"));
-                self.strip = Some(id);
-            }
+            AddAudioTrack => self.new_audio_track(),
             RemoveTrack(t) => {
                 self.editor.remove_audio_track(t);
                 if self.strip == Some(t) {
@@ -374,7 +370,7 @@ impl App {
         }
         let layout = self.prefs.layout;
         let top = 47.0;
-        let bottom = self.window.height - 28.0 - layout.mixer_height - crate::splitter::SIZE;
+        let bottom = self.window.height - 28.0 - if self.mixer_hidden { 0.0 } else { layout.mixer_height + crate::splitter::SIZE };
         if p.y < top + arrange::RULER || p.y > bottom {
             return None;
         }
@@ -415,6 +411,63 @@ impl App {
             }
             None => Task::none(),
         }
+    }
+
+    /// The Mix tab's own keys, in the common DAW layout: + and − zoom along time, PageUp and PageDown the
+    /// tracks' height, Ctrl+PageDown shows the whole movement; Home or W
+    /// go to the start, End to the end; R turns the loop on or off; Ctrl+T
+    /// adds a track; Ctrl+M shows or hides the mixer; Ctrl+Alt+Up and Down
+    /// select the track above or below. (Space plays and stops, S splits
+    /// and Delete removes a clip, as everywhere.)
+    pub(crate) fn mix_key(&mut self, key: &iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Task<Message>> {
+        use iced::keyboard::{key::Named, Key};
+        let (ctrl, alt) = (mods.control() || mods.logo(), mods.alt());
+        let ar = |e: arrange::ArrangeEvent| Some(Task::done(Message::Arrange(e)));
+        let h = self.prefs.layout.lane_height;
+        match key {
+            Key::Character(c) if !ctrl && !alt && (c.as_str() == "+" || c.as_str() == "=") => ar(arrange::ArrangeEvent::Zoom(1.25)),
+            Key::Character(c) if !ctrl && !alt && c.as_str() == "-" => ar(arrange::ArrangeEvent::Zoom(0.8)),
+            Key::Named(Named::PageUp) if !ctrl => ar(arrange::ArrangeEvent::LaneHeight(h * 1.25)),
+            Key::Named(Named::PageDown) if !ctrl => ar(arrange::ArrangeEvent::LaneHeight(h / 1.25)),
+            Key::Named(Named::PageDown) => {
+                // The whole movement in view.
+                let width = (self.window.width - self.prefs.layout.header_width).max(100.0);
+                self.arrange_ppq = (width / self.arrange.length_q.max(1.0) as f32).clamp(2.0, 400.0);
+                self.arrange_scroll = 0.0;
+                Some(Task::none())
+            }
+            Key::Named(Named::Home) => ar(arrange::ArrangeEvent::Locate(0.0)),
+            Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("w") => ar(arrange::ArrangeEvent::Locate(0.0)),
+            Key::Named(Named::End) => ar(arrange::ArrangeEvent::Locate(self.arrange.length_q)),
+            Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("r") => Some(self.act(Action::Cycle)),
+            Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("t") => {
+                self.new_audio_track();
+                Some(Task::none())
+            }
+            Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("m") => {
+                self.mixer_hidden = !self.mixer_hidden;
+                Some(Task::none())
+            }
+            Key::Named(n @ (Named::ArrowUp | Named::ArrowDown)) if ctrl && alt => {
+                let ids: Vec<corinzia_model::Id> = self.arrange.lanes.iter().map(|l| l.track).collect();
+                let at = self.strip.and_then(|s| ids.iter().position(|t| *t == s));
+                let next = match (at, n) {
+                    (None, _) => 0,
+                    (Some(i), Named::ArrowUp) => i.saturating_sub(1),
+                    (Some(i), _) => (i + 1).min(ids.len().saturating_sub(1)),
+                };
+                self.strip = ids.get(next).copied();
+                Some(Task::none())
+            }
+            _ => None,
+        }
+    }
+
+    /// A new audio track ("Audio n"), selected.
+    pub(crate) fn new_audio_track(&mut self) {
+        let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
+        let id = self.editor.add_audio_track(&format!("Audio {n}"));
+        self.strip = Some(id);
     }
 
     /// Splits a clip at `q` (quarters into the movement): two clips that
@@ -618,6 +671,13 @@ impl App {
         arrange::ArrangeEvent::Mute(t) => self.mix(mix::MixMsg::Mute(t)),
         arrange::ArrangeEvent::Solo(t) => self.mix(mix::MixMsg::Solo(t)),
         arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+        arrange::ArrangeEvent::ZoomAt { factor, x } => {
+            let header = self.prefs.layout.header_width;
+            let q = (x - header + self.arrange_scroll) / self.arrange_ppq;
+            self.arrange_ppq = (self.arrange_ppq * factor).clamp(2.0, 400.0);
+            self.arrange_scroll = arrange::clamp_scroll(q * self.arrange_ppq - (x - header), &self.arrange, self.arrange_ppq);
+        }
+        arrange::ArrangeEvent::AddTrack => self.new_audio_track(),
         arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
             if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
                 let at = Frac::new((q * 16.0).round() as i64, 64);

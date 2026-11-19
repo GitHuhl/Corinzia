@@ -55,6 +55,11 @@ pub struct Content {
     pub row_of: Vec<Option<usize>>,
     pub blocks: Vec<Block>,
     pub bars: Vec<f64>, // bar line quarters, with the final barline
+    /// The beats (quarters), bar lines among them.
+    pub beats: Vec<f64>,
+    /// Each lane's notes gathered into items: (lane, from, to) in quarters,
+    /// whole bars, a bar or more of rest between two.
+    pub items: Vec<(usize, f64, f64)>,
     pub length_q: f64,
 }
 
@@ -94,7 +99,42 @@ pub fn content(project: &Project, movement: usize) -> Content {
     c.bars = corinzia_edit::bar_starts(m).into_iter().map(q).collect();
     c.length_q = q(m.length);
     c.bars.push(c.length_q);
+    for w in c.bars.windows(2) {
+        let unit = corinzia_perform::follow::beat_unit(m, w[0]);
+        let mut b = w[0];
+        while b < w[1] - 1e-9 {
+            c.beats.push(b);
+            b += unit;
+        }
+    }
+    c.items = note_items(&c);
     c
+}
+
+/// The notes of each lane as items: from the bar of a note to the end of
+/// the bar of the last one before a whole bar's rest.
+fn note_items(c: &Content) -> Vec<(usize, f64, f64)> {
+    let bar_of = |q: f64| c.bars.partition_point(|&b| b <= q + 1e-9).saturating_sub(1);
+    let mut out = Vec::new();
+    for lane in 0..c.lanes.len() {
+        let mut spans: Vec<(usize, usize)> = c.blocks.iter().filter(|b| b.lane == lane).map(|b| (bar_of(b.start_q), bar_of((b.start_q + b.length_q - 1e-6).max(b.start_q)))).collect();
+        spans.sort();
+        let mut cur: Option<(usize, usize)> = None;
+        for (a, b) in spans {
+            cur = match cur {
+                Some((x, y)) if a <= y + 1 => Some((x, y.max(b))),
+                Some((x, y)) => {
+                    out.push((lane, c.bars[x], c.bars.get(y + 1).copied().unwrap_or(c.length_q)));
+                    Some((a, b))
+                }
+                None => Some((a, b)),
+            };
+        }
+        if let Some((x, y)) = cur {
+            out.push((lane, c.bars[x], c.bars.get(y + 1).copied().unwrap_or(c.length_q)));
+        }
+    }
+    out
 }
 
 /// The folder buses' and the master's lanes are shown in.
@@ -239,6 +279,11 @@ pub enum ArrangeEvent {
     Locate(f64), // quarters
     Scroll(f32),
     Zoom(f32),
+    /// Zoom along time keeping the beat under `x` (pixels from the view's
+    /// left edge) where it is.
+    ZoomAt { factor: f32, x: f32 },
+    /// A double-click below the last track: a new (audio) track.
+    AddTrack,
     /// Automation in a lane: a new point, a point dragged, a point deleted,
     /// the drag over.
     AutoAdd { lane: usize, q: f64, value: f64 },
@@ -301,6 +346,8 @@ pub struct State {
     /// and the y where the drag began), or the headers.
     resize_lanes: Option<(usize, f32, f32)>,
     resize_header: bool,
+    /// The last click below the tracks (for double-clicks).
+    last_empty: Option<std::time::Instant>,
 }
 
 pub struct ArrangeView<'a> {
@@ -325,6 +372,10 @@ pub struct ArrangeView<'a> {
     /// Files dragged over from a file manager: where they would land (the
     /// lane, or none: a new track; quarters).
     pub drop_at: Option<(Option<usize>, f64)>,
+    /// The track (or bus) selected in the mixer: its header lit.
+    pub selected_track: Option<Id>,
+    /// Per lane: its level (left, right peak), for the headers' meters.
+    pub levels: Vec<(f32, f32)>,
 }
 
 const PALETTE: [Color; 6] = [
@@ -377,9 +428,9 @@ impl ArrangeView<'_> {
         if l.mixer || self.header < 120.0 {
             return None;
         }
-        let y = self.lane_y(lane) + 6.0;
-        let s = Rectangle::new(Point::new(self.header - 26.0, y), Size::new(20.0, 18.0));
-        let m = Rectangle::new(Point::new(self.header - 50.0, y), Size::new(20.0, 18.0));
+        let y = self.lane_y(lane) + 5.0;
+        let s = Rectangle::new(Point::new(self.header - 24.0, y), Size::new(18.0, 16.0));
+        let m = Rectangle::new(Point::new(self.header - 45.0, y), Size::new(18.0, 16.0));
         Some((m, s))
     }
     fn on_header_edge(&self, x: f32, y: f32) -> bool {
@@ -445,11 +496,17 @@ impl ArrangeView<'_> {
         if free { q.max(0.0) } else { q.round().max(0.0) }
     }
 
+    /// The height of an item's title bar (none in short lanes).
+    fn title_h(&self) -> f32 {
+        if self.lane_height >= 44.0 { 14.0 } else { 0.0 }
+    }
+
     pub fn block_rect(&self, b: &Block) -> Rectangle {
         let lane = &self.content.lanes[b.lane];
         let span = (lane.max_key - lane.min_key).max(1) as f32;
-        let h = (self.lane_height - 8.0) / span;
-        let y = self.lane_y(b.lane) + 4.0 + (lane.max_key - b.key) as f32 * h - h / 2.0;
+        let top = 3.0 + self.title_h() + 3.0;
+        let h = (self.lane_height - top - 6.0) / span;
+        let y = self.lane_y(b.lane) + top + (lane.max_key - b.key) as f32 * h - h / 2.0;
         Rectangle::new(Point::new(self.x(b.start_q), y), Size::new((b.length_q as f32 * self.pixels_per_quarter - 1.0).max(2.0), h.max(3.0)))
     }
 }
@@ -523,6 +580,13 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = pos?;
+                // Below the last track: a double-click adds one.
+                if p.y > self.row_y(self.content.rows.len()) && p.y > RULER {
+                    let now = std::time::Instant::now();
+                    let double = state.last_empty.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(450));
+                    state.last_empty = if double { None } else { Some(now) };
+                    return double.then(|| canvas::Action::publish(ArrangeEvent::AddTrack).and_capture());
+                }
                 if self.on_header_edge(p.x, p.y) {
                     state.resize_header = true;
                     return Some(canvas::Action::capture());
@@ -588,23 +652,25 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 Some(canvas::Action::publish(ArrangeEvent::Select(hit)).and_capture())
             }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-                pos?;
                 let (dx, dy) = match delta {
                     mouse::ScrollDelta::Lines { x, y } => (x * 40.0, y * 40.0),
                     mouse::ScrollDelta::Pixels { x, y } => (*x, *y),
                 };
-                // The wheel scrolls the tracks; Shift (or a sideways swipe)
-                // along time; Ctrl zooms time, Alt the tracks' height.
-                let ev = if mods.control() {
-                    ArrangeEvent::Zoom((1.0 + dy / 400.0).clamp(0.5, 2.0))
-                } else if mods.alt() {
+                // The common DAW layout: the wheel zooms time (around the
+                // pointer), Ctrl+wheel the tracks' height, Alt+wheel (or
+                // Shift, or a sideways swipe) scrolls along time,
+                // Ctrl+Alt+wheel up and down the tracks.
+                let p = pos?;
+                let ev = if mods.control() && mods.alt() {
+                    ArrangeEvent::ScrollY(-dy)
+                } else if mods.control() {
                     ArrangeEvent::LaneHeight((self.lane_height * (1.0 + dy / 400.0)).clamp(LANE_HEIGHTS.0, LANE_HEIGHTS.1))
-                } else if mods.shift() {
+                } else if mods.alt() || mods.shift() {
                     ArrangeEvent::Scroll(-(dx + dy))
                 } else if dx.abs() > dy.abs() {
                     ArrangeEvent::Scroll(-dx)
                 } else {
-                    ArrangeEvent::ScrollY(-dy)
+                    ArrangeEvent::ZoomAt { factor: (1.0 + dy / 300.0).clamp(0.5, 2.0), x: p.x.max(self.header) }
                 };
                 Some(canvas::Action::publish(ev).and_capture())
             }
@@ -630,36 +696,67 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
     fn draw(&self, _state: &Self::State, renderer: &Renderer, _theme: &Theme, bounds: Rectangle, _cursor: mouse::Cursor) -> Vec<Geometry> {
         let c = self.content;
         let geometry = self.cache.draw(renderer, bounds.size(), |f: &mut Frame| {
-            f.fill_rectangle(Point::ORIGIN, bounds.size(), crate::theme::palette().desk);
-            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
-            // Rows: lanes, and folders' headers.
+            let pal = crate::theme::palette();
+            let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+            let bottom = self.row_y(c.rows.len()).min(bounds.height);
+            f.fill_rectangle(Point::ORIGIN, bounds.size(), pal.base);
+            // Rows: lanes (the selected track's lit), and folders' headers.
             for (i, row) in c.rows.iter().enumerate() {
                 let y = self.row_y(i);
                 if y + self.lane_height < RULER || y > bounds.height {
                     continue;
                 }
-                if matches!(row, Row::Folder { .. }) {
-                    f.fill_rectangle(Point::new(self.header, y), Size::new(bounds.width - self.header, self.lane_height), crate::theme::palette().base);
-                } else if i % 2 == 1 {
-                    f.fill_rectangle(Point::new(self.header, y), Size::new(bounds.width - self.header, self.lane_height), crate::theme::palette().surface);
-                }
-                f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
+                let lit = matches!(row, Row::Lane(l) if self.selected_track == Some(c.lanes[*l].track));
+                let bg = match row {
+                    Row::Folder { .. } => pal.surface,
+                    _ if lit => Color { a: 1.0, ..mix(pal.desk, pal.hover, 0.5) },
+                    _ => pal.desk,
+                };
+                f.fill_rectangle(Point::new(self.header, y), Size::new(bounds.width - self.header, self.lane_height), bg);
+                f.stroke(&Path::line(Point::new(self.header, y + self.lane_height), Point::new(bounds.width, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(pal.base));
             }
-            // Bar grid (the numbers go on the ruler, last).
+            // The grid: beats faint (when there is room for them), bars.
+            let beat_px = c.beats.windows(2).map(|w| ((w[1] - w[0]) as f32) * self.pixels_per_quarter).fold(f32::MAX, f32::min);
+            if beat_px > 10.0 {
+                for &bq in &c.beats {
+                    let x = self.x(bq);
+                    if x > self.header && x < bounds.width {
+                        f.stroke(&Path::line(Point::new(x, RULER), Point::new(x, bottom)), Stroke::default().with_width(1.0).with_color(Color { a: 0.35, ..pal.line }));
+                    }
+                }
+            }
             for &bq in c.bars.iter() {
                 let x = self.x(bq);
-                if x < self.header || x > bounds.width {
+                if x > self.header && x < bounds.width {
+                    f.stroke(&Path::line(Point::new(x, RULER), Point::new(x, bottom)), Stroke::default().with_width(1.0).with_color(pal.line));
+                }
+            }
+            // Items: each lane's notes in bodies of its colour, a title bar
+            // with its name, the notes inside.
+            let title = self.title_h();
+            for &(lane, a, b) in c.items.iter().filter(|it| c.row_of.get(it.0).copied().flatten().is_some()) {
+                let (x0, x1) = (self.x(a).max(self.header), self.x(b).min(bounds.width));
+                if x1 <= x0 {
                     continue;
                 }
-                f.stroke(&Path::line(Point::new(x, RULER), Point::new(x, (self.row_y(c.rows.len())).min(bounds.height))), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
+                let l = &c.lanes[lane];
+                let y = self.lane_y(lane) + 2.0;
+                let h = self.lane_height - 4.0;
+                f.fill_rectangle(Point::new(x0, y), Size::new(x1 - x0, h), Color { a: 0.22, ..l.color });
+                if title > 0.0 {
+                    f.fill_rectangle(Point::new(x0, y), Size::new(x1 - x0, title), Color { a: 0.75, ..mix(l.color, Color::BLACK, 0.25) });
+                    if self.x(a) >= self.header - 1.0 && x1 - x0 > 30.0 {
+                        f.fill_text(Text { content: l.name.clone(), position: Point::new(x0 + 4.0, y + 1.0), size: iced::Pixels(10.0), color: Color::WHITE, ..Text::default() });
+                    }
+                }
+                f.stroke(&Path::rectangle(Point::new(x0, y), Size::new(x1 - x0, h)), Stroke::default().with_width(1.0).with_color(Color { a: 0.9, ..mix(l.color, Color::BLACK, 0.3) }));
             }
-            // Note blocks.
             for b in c.blocks.iter().filter(|b| c.row_of.get(b.lane).copied().flatten().is_some()) {
                 let r = self.block_rect(b);
                 if r.x + r.width < self.header || r.x > bounds.width {
                     continue;
                 }
-                let color = if self.selected.contains(&b.element) { crate::theme::palette().accent } else { c.lanes[b.lane].color };
+                let color = if self.selected.contains(&b.element) { pal.accent } else { mix(c.lanes[b.lane].color, Color::WHITE, 0.45) };
                 f.fill_rectangle(Point::new(r.x.max(self.header), r.y), Size::new(r.width - (self.header - r.x).max(0.0), r.height), color);
             }
             // Clips, with their waveform and fades.
@@ -667,45 +764,64 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 draw_clip(f, self, clip, bounds.width);
             }
             // Track headers over everything that scrolled under them.
-            f.fill_rectangle(Point::ORIGIN, Size::new(self.header, bounds.height), crate::theme::palette().surface);
+            f.fill_rectangle(Point::ORIGIN, Size::new(self.header, bounds.height), pal.surface);
             for (i, row) in c.rows.iter().enumerate() {
                 let y = self.row_y(i);
                 if y + self.lane_height < RULER || y > bounds.height {
                     continue;
                 }
-                let l = match row {
+                f.stroke(&Path::line(Point::new(0.0, y + self.lane_height), Point::new(self.header, y + self.lane_height)), Stroke::default().with_width(1.0).with_color(pal.base));
+                let (lane, l) = match row {
                     Row::Folder { name, collapsed, tracks } => {
                         let label = format!("{} {name}  ({tracks})", if *collapsed { "▸" } else { "▾" });
-                        f.fill_text(Text { content: label, position: Point::new(8.0, y + 8.0), size: iced::Pixels(13.0), font: iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT }, ..Text::default() });
+                        f.fill_text(Text { content: label, position: Point::new(8.0, y + 6.0), size: iced::Pixels(12.0), font: bold, color: pal.dim, ..Text::default() });
                         continue;
                     }
-                    Row::Lane(l) => &c.lanes[*l],
+                    Row::Lane(l) => (*l, &c.lanes[*l]),
                 };
-                let indent = if l.folder.is_empty() { 0.0 } else { 10.0 };
-                f.fill_rectangle(Point::new(indent, y), Size::new(5.0, self.lane_height), l.color);
-                f.fill_text(Text { content: l.name.clone(), position: Point::new(12.0 + indent, y + 8.0), size: iced::Pixels(13.0), ..Text::default() });
-                if l.mixer {
-                    f.fill_text(Text { content: if l.track == crate::editor::MASTER { "Master".into() } else { "Bus".into() }, position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                let indent = if l.folder.is_empty() { 0.0 } else { 8.0 };
+                if self.selected_track == Some(l.track) {
+                    f.fill_rectangle(Point::new(0.0, y), Size::new(self.header, self.lane_height), pal.hover);
                 }
-                if l.audio {
-                    f.fill_text(Text { content: "Audio".into(), position: Point::new(12.0 + indent, y + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                f.fill_rectangle(Point::new(indent, y), Size::new(4.0, self.lane_height), l.color);
+                let number = if l.mixer { String::new() } else { format!("{}", lane + 1) };
+                f.fill_text(Text { content: number, position: Point::new(indent + 8.0, y + 6.0), size: iced::Pixels(10.0), color: pal.faint, font: iced::Font::MONOSPACE, ..Text::default() });
+                f.fill_text(Text { content: l.name.clone(), position: Point::new(indent + 28.0, y + 5.0), size: iced::Pixels(12.0), font: bold, color: pal.text, ..Text::default() });
+                if self.lane_height >= 40.0 {
+                    let kind = if l.mixer { if l.track == crate::editor::MASTER { "Master" } else { "Bus" } } else if l.audio { "Audio" } else { "Instrument" };
+                    f.fill_text(Text { content: kind.into(), position: Point::new(indent + 28.0, y + 21.0), size: iced::Pixels(10.0), color: pal.faint, ..Text::default() });
                 }
             }
-            // The ruler over the rows scrolled under it: bar numbers, and
-            // the headers' edge.
-            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), crate::theme::palette().base);
+            // The ruler over the rows scrolled under it: bar numbers, beat
+            // ticks, the headers' edge.
+            f.fill_rectangle(Point::ORIGIN, Size::new(bounds.width, RULER), pal.surface);
+            f.stroke(&Path::line(Point::new(0.0, RULER - 0.5), Point::new(bounds.width, RULER - 0.5)), Stroke::default().with_width(1.0).with_color(pal.base));
+            if beat_px > 6.0 {
+                for &bq in &c.beats {
+                    let x = self.x(bq);
+                    if x > self.header && x < bounds.width {
+                        f.stroke(&Path::line(Point::new(x, RULER - 5.0), Point::new(x, RULER)), Stroke::default().with_width(1.0).with_color(pal.faint));
+                    }
+                }
+            }
+            let bar_px = c.bars.windows(2).map(|w| ((w[1] - w[0]) as f32) * self.pixels_per_quarter).fold(f32::MAX, f32::min);
+            let every = if bar_px >= 28.0 { 1 } else if bar_px >= 14.0 { 2 } else if bar_px >= 7.0 { 4 } else { 8 };
             for (n, &bq) in c.bars.iter().enumerate() {
                 let x = self.x(bq);
                 if x < self.header || x > bounds.width {
                     continue;
                 }
-                f.stroke(&Path::line(Point::new(x, RULER - 8.0), Point::new(x, RULER)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
-                if n + 1 < c.bars.len() {
-                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 4.0), size: iced::Pixels(11.0), color: crate::theme::palette().dim, ..Text::default() });
+                f.stroke(&Path::line(Point::new(x, RULER - 11.0), Point::new(x, RULER)), Stroke::default().with_width(1.0).with_color(pal.dim));
+                if n + 1 < c.bars.len() && n % every == 0 {
+                    f.fill_text(Text { content: format!("{}", n + 1), position: Point::new(x + 3.0, 3.0), size: iced::Pixels(11.0), color: pal.text, font: iced::Font::MONOSPACE, ..Text::default() });
                 }
             }
-            f.stroke(&Path::line(Point::new(self.header, 0.0), Point::new(self.header, bounds.height)), Stroke::default().with_width(1.0).with_color(crate::theme::palette().line));
-            f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(12.0), color: crate::theme::palette().dim, ..Text::default() });
+            f.fill_rectangle(Point::ORIGIN, Size::new(self.header, RULER), pal.surface);
+            f.stroke(&Path::line(Point::new(self.header, 0.0), Point::new(self.header, bounds.height)), Stroke::default().with_width(1.0).with_color(pal.base));
+            f.fill_text(Text { content: "Tracks".into(), position: Point::new(8.0, 5.0), size: iced::Pixels(11.0), color: pal.faint, ..Text::default() });
+            if c.rows.is_empty() || bottom < bounds.height - 30.0 {
+                f.fill_text(Text { content: "Double-click here to add an audio track".into(), position: Point::new(self.header + 12.0, bottom.max(RULER) + 10.0), size: iced::Pixels(11.0), color: pal.faint, ..Text::default() });
+            }
         });
         let mut overlay = Frame::new(renderer, bounds.size());
         // Automation over the lanes that show it.
@@ -742,18 +858,38 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
             }
             overlay.fill_text(Text { content: c.label.clone(), position: Point::new(12.0, self.lane_y(lane) + 26.0), size: iced::Pixels(11.0), color: crate::theme::palette().accent, ..Text::default() });
         }
-        // The headers' mute and solo buttons (not cached: they change often).
+        // The headers' mute and solo buttons and level meters (not cached:
+        // they change often).
+        let pal = crate::theme::palette();
         for lane in 0..self.content.lanes.len() {
-            let Some((m, s)) = self.ms_buttons(lane) else { continue };
-            if m.y < RULER || m.y > bounds.height || self.content.row_of.get(lane).copied().flatten().is_none() {
+            let Some(row) = self.content.row_of.get(lane).copied().flatten() else { continue };
+            let y = self.row_y(row);
+            if y + self.lane_height < RULER || y > bounds.height {
                 continue;
             }
-            let (muted, soloed) = self.mute_solo.get(lane).copied().unwrap_or((false, false));
-            let pal = crate::theme::palette();
-            for (r, on, label, color) in [(m, muted, "M", pal.danger), (s, soloed, "S", pal.success)] {
-                overlay.fill_rectangle(r.position(), r.size(), if on { color } else { pal.base });
-                overlay.stroke(&Path::rectangle(r.position(), r.size()), Stroke::default().with_width(1.0).with_color(pal.line));
-                overlay.fill_text(Text { content: label.into(), position: Point::new(r.x + 6.0, r.y + 2.0), size: iced::Pixels(11.0), color: if on { pal.base } else { pal.dim }, ..Text::default() });
+            if let Some((m, s)) = self.ms_buttons(lane) {
+                let (muted, soloed) = self.mute_solo.get(lane).copied().unwrap_or((false, false));
+                for (r, on, label, color) in [(m, muted, "M", crate::theme::MUTE), (s, soloed, "S", crate::theme::SOLO)] {
+                    overlay.fill_rectangle(r.position(), r.size(), if on { color } else { pal.base });
+                    overlay.stroke(&Path::rectangle(r.position(), r.size()), Stroke::default().with_width(1.0).with_color(if on { color } else { pal.line }));
+                    overlay.fill_text(Text { content: label.into(), position: Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0), size: iced::Pixels(10.0), color: if on { Color::from_rgb8(0x10, 0x10, 0x12) } else { pal.dim }, align_x: iced::alignment::Horizontal::Center.into(), align_y: iced::alignment::Vertical::Center, ..Text::default() });
+                }
+            }
+            // A thin meter along the header's foot, −60 to +6 dB.
+            if self.lane_height >= 30.0 {
+                let indent = if self.content.lanes[lane].folder.is_empty() { 0.0 } else { 8.0 };
+                let (x0, x1) = (indent + 8.0, self.header - 6.0);
+                let (l, r) = self.levels.get(lane).copied().unwrap_or((0.0, 0.0));
+                for (k, v) in [l, r].into_iter().enumerate() {
+                    let my = y + self.lane_height - 9.0 + k as f32 * 3.0;
+                    overlay.fill_rectangle(Point::new(x0, my), Size::new(x1 - x0, 2.0), pal.base);
+                    if v > 1e-5 {
+                        let db = 20.0 * v.log10();
+                        let w = ((db + 60.0) / 66.0).clamp(0.0, 1.0) * (x1 - x0);
+                        let color = if db > 0.0 { crate::theme::MUTE } else if db > -6.0 { crate::theme::SOLO } else { pal.success };
+                        overlay.fill_rectangle(Point::new(x0, my), Size::new(w, 2.0), color);
+                    }
+                }
             }
         }
         // The cycle along the ruler (dim when off).
@@ -836,6 +972,11 @@ fn draw_clip(f: &mut Frame, v: &ArrangeView, c: &ClipBlock, width: f32) {
     if r.x >= v.header - 1.0 {
         f.fill_text(Text { content: c.name.clone(), position: Point::new(r.x + 4.0, r.y + 2.0), size: iced::Pixels(11.0), ..Text::default() });
     }
+}
+
+/// `a` towards `b` by `k` (0..1).
+fn mix(a: Color, b: Color, k: f32) -> Color {
+    Color::from_rgb(a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k)
 }
 
 /// Keeps the vertical scroll inside the rows (the last one can reach the top).
