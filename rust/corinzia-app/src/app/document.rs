@@ -161,7 +161,7 @@ impl App {
         let (path, warnings) = (b.path.clone(), b.warnings.clone());
         self.editor.status = match b.finish() {
             Ok(s) => {
-                let mut msg = format!("Exported {} ({:.1} s, peak {:.1} dBFS)", path.display(), s.seconds, s.peak_db);
+                let mut msg = format!("Exported {} ({:.1} s, {:.1} LUFS, true peak {:.1} dBTP)", path.display(), s.seconds, s.lufs, s.true_peak_db);
                 if s.clipped > 0 {
                     msg += &format!(" — {} samples clipped: lower the master or add a limiter", s.clipped);
                 }

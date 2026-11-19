@@ -127,4 +127,5 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 Done so far: audio tracks and cues, the mixer and automation gaps, the
 EQ and limiter, the cycle. Still open from the map: streaming long files
 from disk, warping, looped clips, video, per-note expression, release
-velocity, VCAs, a compressor and gate, analyzers (level meters), comments.
+velocity, VCAs, analyzers, comments. (Done since: a compressor and gate,
+and the export's integrated loudness and true peak.)

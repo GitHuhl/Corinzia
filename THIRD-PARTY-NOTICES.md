@@ -8,6 +8,8 @@ listed here, and say so in the files that contain them.
 | Corinzia file | Adapted from | Licence |
 |---|---|---|
 | `rust/corinzia-audio/src/analysis.rs` (`onset_strength`, `log_bands`) | SoundCraft, `crates/dsp/src/offline.rs` (`detect_transients`, `log_bands`), https://github.com/storytold/soundcraft | MIT |
+| `rust/corinzia-ensemble/src/effects.rs` (the compressor's and gate's gain computers and ballistics) | SoundCraft, `crates/dsp/src/plugins/dynamics.rs` | MIT |
+| `rust/corinzia-audio/src/loudness.rs` (K-weighting design, true-peak interpolator) | SoundCraft, `crates/dsp/src/meter.rs` | MIT |
 
 ## SoundCraft
 

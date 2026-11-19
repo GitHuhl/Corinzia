@@ -8,6 +8,7 @@
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
 //! * [`analysis`]: beats in recorded sound (a tempo map that follows it);
+//! * [`loudness`]: integrated loudness and true peak of a render;
 //! * [`bounce`]: audio export, rendered offline to a WAV file;
 //! * [`engine`]: the realtime core and its UI handle (wait-free queues);
 //! * [`workers`]: the threads instruments render on in parallel;
@@ -19,6 +20,7 @@ pub mod bounce;
 pub mod engine;
 pub mod gui;
 pub mod host;
+pub mod loudness;
 pub mod media;
 pub mod pool;
 pub mod scan;

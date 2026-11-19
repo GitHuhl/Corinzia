@@ -34,6 +34,9 @@ pub struct Summary {
     pub peak_db: f64,
     /// Samples over full scale (clipped in the file).
     pub clipped: usize,
+    /// Integrated loudness (LUFS) and true peak (dBTP), BS.1770.
+    pub lufs: f64,
+    pub true_peak_db: f64,
 }
 
 impl Bounce {
@@ -74,7 +77,8 @@ impl Bounce {
         let clipped = self.left.iter().chain(&self.right).filter(|v| v.abs() > 1.0).count();
         let bytes = wav_24(&self.left, &self.right, self.sample_rate as u32);
         std::fs::write(&self.path, bytes).map_err(|e| format!("{}: {e}", self.path.display()))?;
-        Ok(Summary { seconds: self.left.len() as f64 / self.sample_rate, peak_db: 20.0 * (peak.max(1e-9) as f64).log10(), clipped })
+        let l = crate::loudness::measure(&self.left, &self.right, self.sample_rate);
+        Ok(Summary { seconds: self.left.len() as f64 / self.sample_rate, peak_db: 20.0 * (peak.max(1e-9) as f64).log10(), clipped, lufs: l.integrated, true_peak_db: l.true_peak })
     }
 }
 

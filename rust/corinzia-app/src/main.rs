@@ -135,7 +135,7 @@ fn main() -> iced::Result {
                 b.finish()
             });
             match done {
-                Ok(s) => println!("exported {} ({:.1} s, peak {:.1} dBFS)", out.display(), s.seconds, s.peak_db),
+                Ok(s) => println!("exported {} ({:.1} s, {:.1} LUFS, true peak {:.1} dBTP)", out.display(), s.seconds, s.lufs, s.true_peak_db),
                 Err(e) => {
                     eprintln!("export failed: {e}");
                     std::process::exit(1);
