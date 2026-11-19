@@ -1187,3 +1187,49 @@ fn grace_notes_on_a_beat_end_an_automatic_beam() {
     assert_eq!(count("c''8 d'' \\grace { e''16 f'' } e''8 f'' g''2"), 2);
     assert_eq!(count("c''8 d'' e'' \\grace f''16 g''8 a''2"), 1);
 }
+
+#[test]
+fn dynamics_are_centred_by_their_ink_and_stay_inside_their_bar() {
+    let font = corinzia_layout::font::Font::bravura();
+    let s = score(&[("treble", &["r1 <d' fis'>1\\pp g'4\\mf a' b' c''"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let bars: Vec<f32> = l.items.iter().filter_map(|i| match i { Item::Line { from, to, .. } if (from.x - to.x).abs() < 1e-3 && (to.y - from.y).abs() > 3.9 => Some(from.x), _ => None }).collect();
+    let ink = |cps: &[u32]| -> (f32, f32) {
+        l.items.iter().filter(|i| matches!(i, Item::Glyph { glyph, .. } if cps.contains(glyph))).map(|i| i.bounds(font)).fold((f32::MAX, f32::MIN), |a, r| (a.0.min(r[0]), a.1.max(r[2])))
+    };
+    // The pp's ink is centred on the whole notes (Bravura's p reaches left
+    // of its origin; that must not shift it).
+    let heads = glyphs(&l, Glyph::NoteheadWhole);
+    let head_mid = heads[0].0 + font.bbox(Glyph::NoteheadWhole).width() / 2.0;
+    let pp = ink(&[0xE520]);
+    let pp = (pp.0, l.items.iter().filter(|i| matches!(i, Item::Glyph { glyph: 0xE520, .. })).map(|i| i.bounds(font)[2]).fold(f32::MIN, f32::max).min(pp.1));
+    assert!(((pp.0 + pp.1) / 2.0 - head_mid).abs() < 0.3, "pp {pp:?}, head centre {head_mid}");
+    // Every dynamic's ink keeps clear of every barline.
+    for i in l.items.iter().filter(|i| matches!(i, Item::Glyph { glyph, .. } if (0xE520..0xE530).contains(glyph))) {
+        let r = i.bounds(font);
+        assert!(bars.iter().all(|&b| r[2] < b - 0.3 || r[0] > b + 0.3), "{r:?} against {bars:?}");
+    }
+}
+
+#[test]
+fn a_run_of_hairpins_and_dynamics_shares_one_line() {
+    // The pp under the low chord at the end pulls the hairpins down with it
+    // (one DynamicLineSpanner); hairpins are centred 0.6 above its baseline.
+    let s = score(&[("treble", &["c''1\\cr d''1\\decr <a c' e'>1\\pp r1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let pp_y = glyphs(&l, Glyph::DynamicP).iter().map(|g| g.1).fold(f32::MIN, f32::max);
+    let centres: Vec<f32> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Line { from, to, .. } if (to.x - from.x).abs() > 1.0 && (to.y - from.y).abs() > 0.05 && from.y > 4.0 => Some((from.y + to.y) / 2.0),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(centres.len(), 4, "two hairpins of two lines each");
+    // Each hairpin's two lines are symmetric about the line's centre.
+    let mid = (centres[0] + centres[1]) / 2.0;
+    assert!((mid - (pp_y - 0.6)).abs() < 0.05, "hairpin centre {mid}, pp baseline {pp_y}");
+    let mid2 = (centres[2] + centres[3]) / 2.0;
+    assert!((mid2 - mid).abs() < 0.05);
+}
