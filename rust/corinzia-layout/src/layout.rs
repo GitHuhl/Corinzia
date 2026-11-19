@@ -236,6 +236,7 @@ struct Measure {
     last: bool,       // the movement's last bar (final barline)
     shortest: Frac,   // the movement's common shortest duration (spacing)
     stretch: f32,     // the stretchability of the bar's springs
+    squeeze: f32,     // how far they give when compressed, rods kept
     phase: Frac,      // a pickup's missing beginning (beats count from it)
     number: usize,    // the bar number (a pickup is bar 0)
     multi: usize,     // bars of rest it stands for (a multi-bar rest when > 1)
@@ -283,7 +284,7 @@ fn measures(s: &Score) -> Vec<Measure> {
             _ if shift_changes => Some(key.unwrap_or(Key { at: Frac::ZERO, fifths: 0, minor: false })),
             _ => None,
         };
-        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, phase, number: 0, multi: 1, beams });
+        out.push(Measure { start: at, len, num, den, show_time, key: key_changed, x0: 0.0, x1: 0.0, last: false, shortest: BASE_SHORTEST, stretch: 0.0, squeeze: 0.0, phase, number: 0, multi: 1, beams });
         at = at + len;
     }
     if let Some(m) = out.last_mut() {
@@ -755,6 +756,8 @@ fn tie_shape(width: f32) -> (f32, f32) {
 /// How far above a dynamic's baseline its letters' middle (an 'm') sits:
 /// hairpins are centred there (LilyPond's DynamicText Y-offset).
 const DYN_CENTRE: f32 = 0.55;
+/// DynamicLineSpanner `padding`.
+const DYN_PAD: f32 = 0.6;
 
 /// A brace from `top` to `bottom` whose right edge is at `right`: two
 /// filled halves meeting at a point in the middle, thickest half-way along
@@ -1073,6 +1076,10 @@ impl<'a> Engraver<'a> {
         // note's spring stretches by its duration space and fixed distances
         // (signatures, padding) do not.
         let mut breaks: Vec<(f32, f32)> = Vec::new();
+        // Compression's own weights: a gap held open by grace notes gives
+        // no more than down to its rod.
+        let mut squeezes: Vec<(f32, f32)> = Vec::new();
+        let mut squeeze = 0.0f32;
         let mut stretch = 0.0f32;
         for mi in 0..nms {
             if mi > 0 {
@@ -1080,6 +1087,7 @@ impl<'a> Engraver<'a> {
             }
             let m = self.ms[mi].clone();
             let bar_stretch = stretch;
+            let bar_squeeze = squeeze;
             // Key and time shown at this barline.
             if let Some(k) = m.key {
                 // The widest staff's signature (transposing staves differ).
@@ -1157,12 +1165,17 @@ impl<'a> Engraver<'a> {
                     }
                     if mi > 0 {
                         stretch += BAR_TO_NOTE_STRETCH;
+                        squeeze += BAR_TO_NOTE_STRETCH;
                     }
                 } else {
                     let (spring, k) = ideal(cols[j - 1], t - cols[j - 1], &prev_here).unwrap_or((0.0, 0.0));
                     stretch += k;
                     let spring = spring + self.stem_correction(&prev_here, &here);
-                    cx += spring.max(prev_right + left + if left > 0.0 { ROD_PADDING_ACCIDENTAL } else { ROD_PADDING });
+                    let rod = prev_right + left + if left > 0.0 { ROD_PADDING_ACCIDENTAL } else { ROD_PADDING };
+                    // Grace notes squeezed into the note before them would
+                    // collide: there the rod holds under compression.
+                    squeeze += if here.iter().any(|n| !n.graces.is_empty()) { k.min((spring - rod).max(0.0) / -MAX_COMPRESSION) } else { k };
+                    cx += spring.max(rod);
                 }
                 // A chord symbol here must clear the previous one on its staff.
                 for (pi, part) in self.score.parts.iter().enumerate() {
@@ -1186,6 +1199,7 @@ impl<'a> Engraver<'a> {
                 }
                 xs.push(cx);
                 breaks.push((cx, stretch));
+                squeezes.push((cx, squeeze));
                 prev_right = right;
                 prev_here = here;
             }
@@ -1201,6 +1215,7 @@ impl<'a> Engraver<'a> {
                 .unwrap_or(0.0);
             let (spring, k) = ideal(tlast, end - tlast, &prev_here).map(|(s, k)| (s + bar_corr + BAR_HALF_WIDTH, k)).unwrap_or((0.0, 0.0));
             stretch += k;
+            squeeze += k;
             let mut x1 = cx + spring.max(prev_right + 0.8);
             if m.multi > 1 {
                 // A multi-bar rest: a little wider for longer ones.
@@ -1208,10 +1223,14 @@ impl<'a> Engraver<'a> {
             }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
-                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.1) * self.opt.spacing;
+                let k = (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.1) * self.opt.spacing;
+                stretch += k;
+                squeeze += k;
             }
             breaks.push((x1, stretch));
+            squeezes.push((x1, squeeze));
             self.ms[mi].stretch = stretch - bar_stretch;
+            self.ms[mi].squeeze = squeeze - bar_squeeze;
             for n in self.notes.iter_mut().filter(|n| n.measure == mi) {
                 let j = cols.iter().position(|&t| t == n.start).unwrap_or(0);
                 n.x = xs[j];
@@ -1227,10 +1246,11 @@ impl<'a> Engraver<'a> {
         // Justify: the springs share the extra room by their stretchability.
         if let Some(w) = self.width {
             let target = w - self.opt.margin;
-            if stretch > 0.0 && (target - x).abs() > 1e-3 {
+            let (total, weights) = if target < x { (squeeze, &squeezes) } else { (stretch, &breaks) };
+            if total > 0.0 && (target - x).abs() > 1e-3 {
                 // Compressed lines stop short of the springs' minimum.
-                let k = ((target - x) / stretch).max(MAX_COMPRESSION);
-                let f = |v: f32| v + k * stretch_at(&breaks, v);
+                let k = ((target - x) / total).max(MAX_COMPRESSION);
+                let f = |v: f32| v + k * stretch_at(weights, v);
                 for n in self.notes.iter_mut() {
                     n.x = f(n.x);
                 }
@@ -2462,10 +2482,35 @@ impl<'a> Engraver<'a> {
             let end_ids = (si.map(|i| self.notes[i].id), ei.map(|i| self.notes[i].id));
             let mut inner: Vec<&Note> = between.iter().copied().filter(|n| Some(n.id) != end_ids.0 && Some(n.id) != end_ids.1).collect();
             inner.sort_by(|a, b| a.x.total_cmp(&b.x));
+            let mut inner_cols: Vec<slur::Column> = inner.iter().map(|n| column(n, self)).collect();
+            // Grace notes inside the slur are encompassed like any other
+            // note (LilyPond's slur acknowledges their columns too); those
+            // before its first note lie outside it.
+            for n in between.iter().filter(|n| Some(n.id) != end_ids.0) {
+                let up = n.voice % 2 == 1;
+                let beamed = n.graces.len() > 1;
+                for g in &n.graces {
+                    let Some((sx, tip)) = self.out.items.iter().find_map(|it| match it {
+                        Item::Line { from, to, id, .. } if *id == g.id && (from.x - to.x).abs() < 1e-3 => Some((from.x, if up { from.y.min(to.y) } else { from.y.max(to.y) })),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let hy = if above { self.y(n.part, g.heads[g.heads.len() - 1].pos) } else { self.y(n.part, g.heads[0].pos) };
+                    let head = hy + dir * 0.5 * GRACE_SCALE;
+                    let col = if up == above {
+                        slur::Column { x: sx, head, stem: tip + if beamed { dir * 0.5 * GRACE_SCALE } else { 0.0 } }
+                    } else {
+                        slur::Column { x: sx, head, stem: head }
+                    };
+                    inner_cols.push(col);
+                }
+            }
+            inner_cols.sort_by(|a, b| a.x.total_cmp(&b.x));
             let columns: Vec<slur::Column> = si
                 .map(|i| column(&self.notes[i], self))
                 .into_iter()
-                .chain(inner.iter().map(|n| column(n, self)))
+                .chain(inner_cols)
                 .chain(ei.map(|i| column(&self.notes[i], self)))
                 .collect();
             // What else hangs off these notes: accidentals to go around,
@@ -2528,7 +2573,7 @@ impl<'a> Engraver<'a> {
     fn build_skylines(&mut self) {
         let mut sky: Vec<Skyline> = (0..self.score.parts.len()).map(|p| Skyline::new(self.top(p))).collect();
         for st in &self.out.staves {
-            sky[st.part].add([st.left, st.top, st.right, st.top + 4.0]);
+            sky[st.part].add_staff([st.left, st.top, st.right, st.top + 4.0]);
         }
         // Notes and what hangs off them belong to their part.
         let mut owner: std::collections::HashMap<u64, usize> = Default::default();
@@ -2555,7 +2600,14 @@ impl<'a> Engraver<'a> {
             if let Some(k) = (0..sky.len()).min_by(|&a, &b| {
                 (cy - (sky[a].staff_top + 2.0)).abs().partial_cmp(&(cy - (sky[b].staff_top + 2.0)).abs()).unwrap()
             }) {
-                sky[k].add(r);
+                // Barlines and clefs within the staff are the staff's own:
+                // dynamics keep the staff's 0.1 from them, not the notes' 0.6.
+                let inside = r[1] >= sky[k].staff_top - 0.2 && r[3] <= sky[k].staff_top + 4.2;
+                if item.id() == 0 && inside {
+                    sky[k].add_staff(r);
+                } else {
+                    sky[k].add(r);
+                }
             }
         }
         self.sky = sky;
@@ -2972,6 +3024,8 @@ impl<'a> Engraver<'a> {
             x0: f32,
             x1: f32,
         }
+        // Hairpin bound-padding.
+        const PIN_PAD: f32 = 1.0;
         let mut placed: Vec<Pin> = Vec::new();
         for sp in pins.iter().cloned() {
             let si = if sp.from >= r0 { self.note_at(sp.part, sp.voice, sp.from) } else { None };
@@ -2983,8 +3037,8 @@ impl<'a> Engraver<'a> {
                 Some(i) => {
                     let n = &self.notes[i];
                     match &n.dynamic {
-                        Some(t) => n.x + HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + 0.5,
-                        None if handed_from => n.x + 0.8 * HEAD_W,
+                        Some(t) => n.x + HEAD_W / 2.0 + dyn_width(self, t) / 2.0 + PIN_PAD,
+                        None if handed_from => n.x + HEAD_W / 2.0 + PIN_PAD / 3.0,
                         None => n.x,
                     }
                 }
@@ -2993,22 +3047,26 @@ impl<'a> Engraver<'a> {
             let x1 = match ei {
                 Some(k) => {
                     let o = &self.notes[k];
-                    let at_dynamic = o.dynamic.as_ref().map(|t| o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - 0.5);
+                    let at_dynamic = o.dynamic.as_ref().map(|t| o.x + HEAD_W / 2.0 - dyn_width(self, t) / 2.0 - PIN_PAD);
                     if self.is_bar_start(sp.to) && sp.to > sp.from {
                         // LilyPond's to-barline: a hairpin ending on a bar's
-                        // first note stops at the barline before it.
-                        (self.bar_x(sp.to) - 0.6).min(at_dynamic.unwrap_or(f32::MAX))
+                        // first note is bound to the barline before it, and
+                        // stops its bound-padding short of the line's right side.
+                        self.bar_x(sp.to) + d.thin_barline_thickness / 2.0 - PIN_PAD
                     } else if let Some(x) = at_dynamic {
                         x
                     } else if hands_on {
-                        o.x + 0.3 * HEAD_W
+                        o.x + HEAD_W / 2.0 - PIN_PAD / 3.0
                     } else {
                         o.x + HEAD_W
                     }
                 }
                 // Continues in the next system (or ends at its bar's end).
                 None if sp.to >= r1 => right,
-                None => self.col_x(sp.to) - 0.5,
+                // Ending on a bar that opens with a rest: to-barline still.
+                None if self.is_bar_start(sp.to) && sp.to > sp.from => self.bar_x(sp.to) + d.thin_barline_thickness / 2.0 - PIN_PAD,
+                // On a rest: its left edge.
+                None => self.col_x(sp.to),
             };
             if x1 <= x0 + 0.5 {
                 continue;
@@ -3028,11 +3086,23 @@ impl<'a> Engraver<'a> {
             // LilyPond's DynamicLineSpanner: the hairpin's open end clear of
             // the staff by 0.1 and of what hangs below it by 0.6, on the
             // line its dynamics are centred on.
+            // The skyline is the wedge's own outline, so the narrow end may
+            // tuck in under a stem the wide end must clear.
             let base = placed[k..end]
                 .iter()
                 .map(|p| {
-                    let hi = p.ei.map(|e| self.notes[e].x + 2.5).unwrap_or(p.x1);
-                    self.dynamic_clearance(part, p.x0 - 0.5, hi) + 2.0 / 3.0 + DYN_CENTRE
+                    let cresc = p.sp.kind == SpanKind::Cresc;
+                    let half = |x: f32| {
+                        let f = ((x - p.x0) / (p.x1 - p.x0)).clamp(0.0, 1.0);
+                        2.0 / 3.0 * if cresc { f } else { 1.0 - f }
+                    };
+                    let edge = d.hairpin_thickness / 2.0;
+                    let staff = self.top(part) + 4.0 + DYN_PAD + 2.0 / 3.0 + edge;
+                    self.sky[part]
+                        .objects_over(p.x0, p.x1)
+                        .map(|b| b[3] + DYN_PAD + half(if cresc { b[2] } else { b[0] }) + edge)
+                        .fold(staff, f32::max)
+                        + DYN_CENTRE
                 })
                 .fold(f32::MIN, f32::max);
             for p in &placed[k..end] {
@@ -3085,16 +3155,13 @@ impl<'a> Engraver<'a> {
     }
 
     /// Where something under staff `part` over [x0, x1] may start (its
-    /// top edge): LilyPond's DynamicLineSpanner `staff-padding` (0.1) under
-    /// the staff, `padding` (0.6) under the notes, slurs and marks there.
+    /// top edge): LilyPond's DynamicLineSpanner `padding`, 0.6 under the
+    /// staff and under the notes, slurs and marks there.
     fn dynamic_clearance(&self, part: usize, x0: f32, x1: f32) -> f32 {
+        // The staff joins the support as its minimum height, and `padding`
+        // applies to it as to the rest: staff-padding never comes into play.
         let staff = self.top(part) + 4.0;
-        let below = self.sky[part].bottom_over(x0, x1);
-        if below <= staff + 1e-3 {
-            staff + 0.1
-        } else {
-            (below + 0.6).max(staff + 0.1)
-        }
+        self.sky[part].lowest_object(x0, x1).unwrap_or(staff).max(staff) + DYN_PAD
     }
 
     /// Above the top staff: volta brackets, rehearsal marks, tempo marks.
@@ -3559,7 +3626,7 @@ impl Default for PageSpec {
 ///
 /// A system always ends before a bar in `forced`; with `per_system` > 0
 /// systems hold that many bars instead (still ending at forced breaks).
-fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32, line: f32, forced: &[usize], per_system: usize) -> Vec<(usize, usize)> {
+fn break_systems(natural: &[f32], stretch: &[f32], squeeze: &[f32], prefix: impl Fn(usize) -> f32, line: f32, forced: &[usize], per_system: usize) -> Vec<(usize, usize)> {
     let n = natural.len();
     let mut cuts: Vec<usize> = forced.iter().copied().filter(|&f| f > 0 && f < n).collect();
     cuts.push(0);
@@ -3577,25 +3644,26 @@ fn break_systems(natural: &[f32], stretch: &[f32], prefix: impl Fn(usize) -> f32
                 a = b;
             }
         } else {
-            out.extend(break_range(natural, stretch, &prefix, line, lo, hi));
+            out.extend(break_range(natural, stretch, squeeze, &prefix, line, lo, hi));
         }
     }
     out
 }
 
 /// The optimal breaks of bars `lo..hi`.
-fn break_range(natural: &[f32], stretch: &[f32], prefix: &impl Fn(usize) -> f32, line: f32, lo: usize, hi: usize) -> Vec<(usize, usize)> {
+fn break_range(natural: &[f32], stretch: &[f32], squeeze: &[f32], prefix: &impl Fn(usize) -> f32, line: f32, lo: usize, hi: usize) -> Vec<(usize, usize)> {
     let n = hi;
     let mut best = vec![f32::INFINITY; n + 1];
     let mut from = vec![lo; n + 1];
     best[lo] = 0.0;
     for b in lo + 1..=n {
-        let (mut sum, mut k) = (0.0, 0.0);
+        let (mut sum, mut k, mut q) = (0.0, 0.0, 0.0);
         for a in (lo..b).rev() {
             sum += natural[a];
             k += stretch[a];
+            q += squeeze[a];
             let width = prefix(a) + sum;
-            let force = (line - width) / k.max(1e-3);
+            let force = (line - width) / if width > line { q } else { k }.max(1e-3);
             if force < MAX_COMPRESSION && b - a > 1 {
                 break;
             }
@@ -3642,11 +3710,12 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         e.left + 0.8 + clef_w + 0.8 + 3.0
     };
     let stretch: Vec<f32> = natural_line.ms.iter().map(|m| m.stretch).collect();
+    let squeeze: Vec<f32> = natural_line.ms.iter().map(|m| m.squeeze).collect();
     // Breaks by hand: before the bars starting there.
     let bar_of = |t: Frac| ms.iter().position(|m| m.start == t);
     let forced: Vec<usize> = score.breaks.iter().filter_map(|b| bar_of(b.0)).collect();
     let page_breaks: Vec<usize> = score.breaks.iter().filter(|b| b.1).filter_map(|b| bar_of(b.0)).collect();
-    let systems = break_systems(&natural, &stretch, |a| if a == 0 { first_prefix } else { later_prefix }, line, &forced, page.bars_per_system);
+    let systems = break_systems(&natural, &stretch, &squeeze, |a| if a == 0 { first_prefix } else { later_prefix }, line, &forced, page.bars_per_system);
 
     // Lay out each system, then stack them on pages by their real extents.
     let mut pages: Vec<DisplayList> = Vec::new();

@@ -9,11 +9,19 @@ pub type Rect = [f32; 4];
 pub struct Skyline {
     pub staff_top: f32,
     boxes: Vec<Rect>,
+    /// The staff's own box: occupied, but not something to pad from.
+    staves: Vec<Rect>,
 }
 
 impl Skyline {
     pub fn new(staff_top: f32) -> Self {
-        Skyline { staff_top, boxes: Vec::new() }
+        Skyline { staff_top, boxes: Vec::new(), staves: Vec::new() }
+    }
+    /// Records the staff itself (its lines' extent).
+    pub fn add_staff(&mut self, r: Rect) {
+        if r.iter().all(|v| v.is_finite()) {
+            self.staves.push(r);
+        }
     }
     pub fn add(&mut self, r: Rect) {
         if r.iter().all(|v| v.is_finite()) {
@@ -21,7 +29,15 @@ impl Skyline {
         }
     }
     fn overlapping(&self, x0: f32, x1: f32) -> impl Iterator<Item = &Rect> {
+        self.boxes.iter().chain(&self.staves).filter(move |b| b[0] < x1 && b[2] > x0)
+    }
+    /// What is drawn over [x0, x1], the staff aside.
+    pub fn objects_over(&self, x0: f32, x1: f32) -> impl Iterator<Item = &Rect> {
         self.boxes.iter().filter(move |b| b[0] < x1 && b[2] > x0)
+    }
+    /// The lowest bottom of what is drawn over [x0, x1], the staff aside.
+    pub fn lowest_object(&self, x0: f32, x1: f32) -> Option<f32> {
+        self.boxes.iter().filter(|b| b[0] < x1 && b[2] > x0).map(|b| b[3]).reduce(f32::max)
     }
     /// The highest y (smallest value) occupied over [x0, x1]; the staff's top line at least.
     pub fn top_over(&self, x0: f32, x1: f32) -> f32 {
