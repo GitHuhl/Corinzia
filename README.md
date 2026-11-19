@@ -5,7 +5,8 @@
 [![Listed on Remade](https://remade.wiki/badges/listed-on-remade.svg)](https://remade.wiki/projects/corinzia/)
 
 Corinzia is a music notation program with its own orchestra inside. Write
-your music on beautifully engraved pages, press Space, and hear it played
+your music on pages engraved to **LilyPond quality**, the standard the
+finest open-source engraving is measured by, press Space, and hear it played
 back with the expression of a finished mockup: phrased, balanced and
 alive, with nothing to download, set up or route. When you want more, it is
 also a full DAW for your own CLAP and VST3 instruments and effects.
@@ -57,12 +58,30 @@ piece for full orchestra: long string lines, woodwind solos over
 pizzicato, racing strings under brass fanfares, and a brass chorale to
 finish. Press Space.
 
-## Engraving you'd be proud to print
+## LilyPond-quality engraving
 
-Corinzia sets music the way a professional engraver would. Slurs curve
-around the notes, beams follow the meter, lyrics and chord symbols find
-their room, and every page is crisp at any zoom. PDFs come straight from
-the same engraver, so what you see is exactly what prints.
+Corinzia's pages are engraved to the standard of LilyPond, the program
+engravers and publishers hold up as the benchmark for beautiful music
+typesetting. Its engraver is built on LilyPond's rules and, more and more,
+on LilyPond's own algorithms: the same decisions, made the same way, every
+time you type a note.
+
+* **Slurs placed by LilyPond's own method.** Every possible slur is shaped
+  by LilyPond's curve laws and scored by its rules (how close it hugs the
+  notes, what it clears, how it follows the line), and the best one wins.
+* **Spacing with LilyPond's proportions.** Notes take room by their length
+  as LilyPond spaces them, and lines are broken and justified the way
+  LilyPond breaks them.
+* **Beams, stems and marks as LilyPond sets them.** Beams follow the meter
+  and slope with the music; dynamics and hairpins sit as close to the staff
+  as LilyPond puts them; ties, tuplets, accidentals and articulations keep
+  out of each other's way.
+* **Live, as you write.** Unlike a compile-and-wait engraver, Corinzia
+  re-engraves the page the instant you change a note, and PDFs come straight
+  from the same engraver, so what you see is exactly what prints.
+
+Lyrics and chord symbols find their room, and every page is crisp at any
+zoom.
 
 ![A Beethoven string quartet engraved in Corinzia](docs/screenshots/quartet.png)
 
@@ -97,14 +116,21 @@ export the whole thing as a finished WAV.
 * **Your plugins:** any CLAP or VST3 instrument or effect, each with its own
   editor and saved sound.
 * **Mix like a DAW:** faders, pan, mute, solo, buses, pre- and post-fader
-  sends, level meters, and the built-in EQ, reverb and limiter.
+  sends, level meters, and the built-in EQ, compressor, gate, reverb and
+  limiter.
 * **Automation:** fader, pan, any plugin parameter, MIDI controllers and
   pitch bend.
 * **Expression maps:** pizz., arco, con sord. and staccato switch your
   sample library's articulations automatically.
 * **Audio tracks:** drag sounds in from your file manager, then trim,
-  fade and move them. Each audio track gets its own staff in the score,
-  showing each clip by its file's name.
+  split, crossfade and move them, with fade curves, gain lines and strip
+  silence. Each audio track gets its own staff in the score, showing each
+  clip by its file's name.
+* **The score follows your recording.** Point Corinzia at a recorded
+  performance and the score's tempo bends to match it, beat by beat, so
+  the orchestra plays along with the take.
+* **Finished files:** export the mix or one stem per track, with the
+  loudness (LUFS) and true peak measured as broadcast standards do.
 
 ## Byzantine chant, sung in tune
 

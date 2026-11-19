@@ -689,7 +689,9 @@ fn nested_and_cross_staff_slurs() {
     preview("slurs-cross-staff", &l);
     let c = curve(&l, 9999).expect("drawn from staff to staff");
     let (top0, top1) = (l.staves.iter().find(|x| x.part == 0).unwrap().top, l.staves.iter().find(|x| x.part == 1).unwrap().top);
-    assert!(c.0.y > top1 - 3.0 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
+    // (A steep slur's low end rises towards the other, as LilyPond's
+    // edge scoring lets it: within its region of four spaces.)
+    assert!(c.0.y > top1 - 4.5 && c.3.y < top0 + 7.0, "from the lower staff to the upper: {:?} {:?}", c.0, c.3);
 }
 
 #[test]
@@ -936,4 +938,24 @@ fn an_audio_staff_is_one_line_with_its_clips_boxed() {
     assert_eq!(along, 1, "the clip's line along the staff");
     // The barlines cross the one line a space each way.
     assert!(l.items.iter().any(|i| matches!(i, Item::Line { from, to, id: 0, .. } if from.x == to.x && (from.y - audio.top - 1.0).abs() < 1e-4 && (to.y - audio.top - 3.0).abs() < 1e-4)));
+}
+
+#[test]
+fn a_slur_keeps_a_staccato_inside_it() {
+    // Stems up: the slur goes under the heads, and round the last note's dot.
+    let s = score(&[("treble", &["f'4( g' a' e'-.)"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("slur-staccato", &l);
+    let dot = glyphs(&l, Glyph::StaccatoBelow);
+    assert_eq!(dot.len(), 1);
+    let (end_x, end_y) = l
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Crescent { to, .. } => Some((to.x, to.y)),
+            _ => None,
+        })
+        .expect("the slur");
+    let dot_bottom = dot[0].1 + 0.2;
+    assert!(end_y > dot_bottom, "the slur's end ({end_x}, {end_y}) passes under the dot (bottom {dot_bottom})");
 }
