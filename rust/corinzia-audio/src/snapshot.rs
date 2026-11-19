@@ -98,6 +98,8 @@ pub struct ScheduledClip {
     pub len: usize,
     pub fade_in: usize,
     pub fade_out: usize,
+    pub in_shape: corinzia_model::FadeShape,
+    pub out_shape: corinzia_model::FadeShape,
     pub gain: f32,
     pub data: Arc<AudioData>,
 }
@@ -110,13 +112,39 @@ impl ScheduledClip {
     pub fn gain_at(&self, k: usize) -> f32 {
         let mut g = self.gain;
         if k < self.fade_in {
-            g *= k as f32 / self.fade_in as f32;
+            g *= self.in_shape.gain(k as f32 / self.fade_in as f32);
         }
         let left = self.len - k;
         if left < self.fade_out {
-            g *= left as f32 / self.fade_out as f32;
+            g *= self.out_shape.gain(left as f32 / self.fade_out as f32);
         }
         g
+    }
+}
+
+/// Where clips on one track overlap, the earlier fades out and the later
+/// in over the overlap at equal power (a crossfade), unless their own
+/// fades there are longer. `clips` sorted by start.
+pub fn crossfade(clips: &mut [ScheduledClip]) {
+    use corinzia_model::FadeShape;
+    for i in 0..clips.len() {
+        for j in i + 1..clips.len() {
+            let overlap = clips[i].end() - clips[j].start;
+            if overlap <= 0 {
+                break;
+            }
+            // The later clip may lie wholly inside: then it is laid over, no fade.
+            if clips[j].end() <= clips[i].end() {
+                continue;
+            }
+            let n = overlap as usize;
+            if clips[i].fade_out < n {
+                (clips[i].fade_out, clips[i].out_shape) = (n.min(clips[i].len), FadeShape::EqualPower);
+            }
+            if clips[j].fade_in < n {
+                (clips[j].fade_in, clips[j].in_shape) = (n.min(clips[j].len), FadeShape::EqualPower);
+            }
+        }
     }
 }
 
@@ -779,12 +807,53 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                 continue;
             }
             let (fade_in, fade_out) = (frames(c.fade_in).min(len), frames(c.fade_out).min(len));
-            node.clips.push(ScheduledClip { start: sec.start + frames(c.at) as i64, offset, len, fade_in, fade_out, gain: db_to_gain(c.gain_db), data });
+            node.clips.push(ScheduledClip { start: sec.start + frames(c.at) as i64, offset, len, fade_in, fade_out, in_shape: c.fade_in_shape, out_shape: c.fade_out_shape, gain: db_to_gain(c.gain_db), data });
         }
         node.clips.sort_by_key(|c| c.start);
+        crossfade(&mut node.clips);
     }
     // Offs before ons at the same sample: a repeated key restarts cleanly.
     notes.sort_by_key(|n| (n.at, n.on));
     let effects = fx_nodes.into_iter().map(|x| x.1).collect();
     Snapshot { generation, sample_rate, sections, notes, nodes, buses, master_inserts, master_gain, effects, clip_errors }
+}
+
+#[cfg(test)]
+mod crossfade_tests {
+    use super::*;
+    use corinzia_model::FadeShape;
+
+    fn clip(start: i64, len: usize) -> ScheduledClip {
+        let data = Arc::new(AudioData::from_channels(vec![vec![1.0; len]], 1000.0));
+        ScheduledClip { start, offset: 0, len, fade_in: 0, fade_out: 0, in_shape: FadeShape::Linear, out_shape: FadeShape::Linear, gain: 1.0, data }
+    }
+
+    #[test]
+    fn overlapping_clips_crossfade_at_equal_power() {
+        let mut c = vec![clip(0, 1000), clip(800, 1000)];
+        crossfade(&mut c);
+        assert_eq!((c[0].fade_out, c[1].fade_in), (200, 200));
+        // Through the overlap the two together keep their power.
+        for t in (800..1000).step_by(10) {
+            let (a, b) = (c[0].gain_at(t), c[1].gain_at((t - 800) as usize));
+            assert!((a * a + b * b - 1.0).abs() < 0.02, "{t}: {a} {b}");
+        }
+        // Not touching: no fades; a clip inside another: laid over.
+        let mut d = vec![clip(0, 100), clip(100, 100), clip(150, 10)];
+        crossfade(&mut d);
+        assert_eq!((d[0].fade_out, d[1].fade_in, d[2].fade_in), (0, 0, 0));
+    }
+
+    #[test]
+    fn fades_follow_their_shapes() {
+        for s in FadeShape::ALL {
+            assert_eq!((s.gain(0.0), s.gain(1.0)), (0.0, 1.0), "{s:?}");
+            assert_eq!(FadeShape::from_code(s.code()), s);
+        }
+        assert!(FadeShape::Fast.gain(0.5) > FadeShape::Linear.gain(0.5) && FadeShape::Slow.gain(0.5) < FadeShape::Linear.gain(0.5));
+        assert!((FadeShape::SCurve.gain(0.5) - 0.5).abs() < 1e-6 && FadeShape::SCurve.gain(0.1) < 0.1);
+        let mut c = clip(0, 100);
+        (c.fade_in, c.in_shape) = (50, FadeShape::Slow);
+        assert!((c.gain_at(25) - 0.25).abs() < 1e-6);
+    }
 }

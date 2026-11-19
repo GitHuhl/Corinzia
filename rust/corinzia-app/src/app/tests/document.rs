@@ -86,6 +86,34 @@ fn audio_is_exported_over_several_frames_and_can_be_stopped() {
 }
 
 #[test]
+fn each_track_exports_as_a_stem_of_its_own() {
+    let dir = std::env::temp_dir().join(format!("corinzia-app-stems-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut a = app(View::Page);
+    // Two tracks heard (the muted ones are left out).
+    for t in a.editor.project.tracks.iter_mut().skip(2) {
+        t.mute = true;
+    }
+    let names: Vec<String> = a.editor.project.tracks.iter().take(2).map(|t| t.name.clone()).collect();
+    let _ = a.update(Message::ExportTo(files::Format::Stems, Some(dir.join("take"))));
+    assert!(a.editor.status.starts_with("Exporting"), "{}", a.editor.status);
+    let mut frames = 0;
+    while a.bounce.is_some() {
+        let _ = a.update(Message::Frame);
+        frames += 1;
+        assert!(frames < 20_000);
+    }
+    assert!(a.editor.status.starts_with("Exported 2 stems"), "{}", a.editor.status);
+    let files: Vec<Vec<u8>> = names.iter().map(|n| std::fs::read(dir.join(format!("take - {n}.wav"))).unwrap()).collect();
+    assert!(files.iter().all(|f| f.len() > 44));
+    assert_ne!(files[0], files[1], "each its own track");
+    // The project itself is as it was: the stems' mutes were on copies.
+    assert!(!a.editor.project.tracks[0].mute && !a.editor.project.tracks[1].mute);
+    assert_eq!(files::stem_path(std::path::Path::new("/x/mix.wav"), "Violin I/II"), std::path::PathBuf::from("/x/mix - Violin III.wav"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn autosaves_projects_with_a_file() {
     let dir = std::env::temp_dir().join(format!("corinzia-autosave-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

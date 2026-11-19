@@ -128,4 +128,5 @@ Done so far: audio tracks and cues, the mixer and automation gaps, the
 EQ and limiter, the cycle. Still open from the map: streaming long files
 from disk, warping, looped clips, video, per-note expression, release
 velocity, VCAs, analyzers, comments. (Done since: a compressor and gate,
-and the export's integrated loudness and true peak.)
+the export's integrated loudness and true peak, stems, fade curves,
+crossfades, clip gain lines and strip silence.)

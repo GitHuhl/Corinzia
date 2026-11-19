@@ -131,6 +131,43 @@ impl Editor {
         }
     }
 
+    /// A clip replaced by the parts of it at `pieces` ((from, to) seconds
+    /// into the clip), each where it was: the first keeps the clip's id and
+    /// fade in, the last its fade out, the cuts between get 5 ms fades.
+    /// One undo step.
+    pub fn split_into(&mut self, track: Id, clip: Id, pieces: &[(f64, f64)]) -> Vec<Id> {
+        let Some(c) = self.clip(track, clip).cloned() else { return vec![] };
+        if pieces.is_empty() {
+            return vec![];
+        }
+        let before = self.snapshot();
+        let ids: Vec<Id> = (0..pieces.len()).map(|i| if i == 0 { clip } else { self.project.allocate_id() }).collect();
+        let n = pieces.len();
+        let parts: Vec<AudioClip> = pieces
+            .iter()
+            .zip(&ids)
+            .enumerate()
+            .map(|(i, (&(a, b), &id))| {
+                let len = (b - a).max(0.01);
+                let edge = 0.005f64.min(len / 2.0);
+                AudioClip {
+                    id,
+                    at: c.at + a,
+                    offset: c.offset + a,
+                    length: len,
+                    fade_in: if i == 0 && a < 1e-9 { c.fade_in.min(len) } else { edge },
+                    fade_out: if i + 1 == n { c.fade_out.min(len) } else { edge },
+                    ..c.clone()
+                }
+            })
+            .collect();
+        let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return vec![] };
+        t.clips.retain(|x| x.id != clip);
+        t.clips.extend(parts);
+        self.commit_with(before, "Strip silence", true, None);
+        ids
+    }
+
     pub fn delete_clip(&mut self, track: Id, clip: Id) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };

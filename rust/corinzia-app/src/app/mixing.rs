@@ -129,6 +129,15 @@ impl App {
                 self.editor.share_instrument(t, host);
             }
             FollowClip => self.follow_clip(),
+            FadeInShape(n) => {
+                let s = corinzia_model::FadeShape::ALL.into_iter().find(|s| s.name() == n).unwrap_or_default();
+                self.edit_selected_clip("Fade shape", false, move |c| c.fade_in_shape = s);
+            }
+            FadeOutShape(n) => {
+                let s = corinzia_model::FadeShape::ALL.into_iter().find(|s| s.name() == n).unwrap_or_default();
+                self.edit_selected_clip("Fade shape", false, move |c| c.fade_out_shape = s);
+            }
+            StripSilence => self.strip_silence(),
             FollowUnit(label) => self.follow.unit = mix::FOLLOW_UNITS.iter().find(|u| u.0 == label).and_then(|u| u.1),
             FollowBars(b) => self.follow.bars = b,
             ForgetFollowed => self.editor.forget_followed_tempo(),
@@ -526,6 +535,35 @@ impl App {
         }
     }
 
+    /// The selected clip cut where it is silent (under −50 dB for a
+    /// quarter of a second or more), the quiet parts gone, the rest where
+    /// they were (10 ms either side kept). One undo step.
+    pub(crate) fn strip_silence(&mut self) {
+        let Some((track, clip)) = self.selected_clip else { return };
+        let Some(c) = self.editor.clip(track, clip).cloned() else { return };
+        let media = &mut self.playback.pool.media;
+        let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.editor.status = e;
+                return;
+            }
+        };
+        let played = arrange::clip_length(&c, Some(&data));
+        let sr = data.sample_rate;
+        let (a, b) = ((c.offset * sr) as usize, ((c.offset + played) * sr) as usize);
+        let part: Vec<Vec<f32>> = data.channels.iter().map(|ch| ch[a.min(ch.len())..b.min(ch.len())].to_vec()).collect();
+        let pieces = corinzia_audio::analysis::sounding(&part, sr, -50.0, 0.25, 0.01);
+        match pieces.as_slice() {
+            [] => self.editor.status = format!("\"{}\" is silent throughout", c.name),
+            [(x, y)] if *x < 0.02 && *y > played - 0.02 => self.editor.status = format!("\"{}\" has no silence to strip", c.name),
+            _ => {
+                let n = self.editor.split_into(track, clip, &pieces).len();
+                self.editor.status = format!("\"{}\": {n} part{} kept", c.name, if n == 1 { "" } else { "s" });
+            }
+        }
+    }
+
     /// Where S splits the selected clip: the playhead while playing, else
     /// the caret (a click on the ruler puts it there).
     pub(crate) fn split_point(&self) -> f64 {
@@ -549,7 +587,8 @@ impl App {
     }
 
     /// A drag step on the selected clip: `q` (quarters) is its new start,
-    /// edge, or the end of a fade, applied to the clip as it was pressed.
+    /// edge, or the end of a fade, applied to the clip as it was pressed;
+    /// for the gain line, its gain (dB).
     pub(crate) fn drag_clip(&mut self, edit: arrange::ClipEdit, q: f64) {
         use arrange::ClipEdit;
         const SHORTEST: f64 = 0.01;
@@ -567,6 +606,7 @@ impl App {
             ClipEdit::Move => "Move audio",
             ClipEdit::TrimStart | ClipEdit::TrimEnd => "Trim audio",
             ClipEdit::FadeIn | ClipEdit::FadeOut => "Fade audio",
+            ClipEdit::Gain => "Audio gain",
         };
         self.clip_dragged = true;
         self.editor.edit_clip(track, id, label, true, |c| match edit {
@@ -586,6 +626,7 @@ impl App {
             }
             ClipEdit::FadeIn => c.fade_in = (s - o.at).clamp(0.0, o.length - o.fade_out),
             ClipEdit::FadeOut => c.fade_out = (o.at + o.length - s).clamp(0.0, o.length - o.fade_in),
+            ClipEdit::Gain => c.gain_db = q.clamp(crate::fader::MIN_DB, 12.0),
         });
     }
 

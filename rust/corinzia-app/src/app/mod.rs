@@ -93,6 +93,10 @@ pub(crate) struct App {
     pub(crate) roll: Option<RollState>,
     /// An audio export under way.
     pub(crate) bounce: Option<corinzia_audio::bounce::Bounce>,
+    /// Stems still to render after the one rendering: (track, its file),
+    /// and how many there were with the folder they go in.
+    pub(crate) stems: std::collections::VecDeque<(corinzia_model::Id, PathBuf)>,
+    pub(crate) stems_done: Option<(usize, PathBuf)>,
     /// Folders folded away in the arrange view.
     pub(crate) folded: HashSet<String>,
     /// The clip selected in the arrange view (track, clip), and while it is
@@ -305,6 +309,8 @@ impl App {
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
             arrange_clips: Vec::new(),
+            stems: Default::default(),
+            stems_done: None,
             bounce: None,
             roll: None,
             folded: HashSet::new(),

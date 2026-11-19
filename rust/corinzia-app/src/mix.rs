@@ -24,6 +24,11 @@ pub enum MixMsg {
     ClipMute,
     ClipCue(String),
     ClipCueLine,
+    /// The selected clip's fade curves (by name).
+    FadeInShape(String),
+    FadeOutShape(String),
+    /// The selected clip cut at its silences (the quiet parts gone).
+    StripSilence,
     /// The score's tempo follows the selected clip's beats; its beat
     /// ("Auto" or a note value); every beat or bar by bar.
     FollowClip,
@@ -473,6 +478,18 @@ fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip, follow: Foll
     if c.cue.is_some() {
         col = col.push(button(text(if c.cue_line { "Line to its end: on" } else { "Line to its end: off" }).size(12)).padding([4, 10]).style(crate::theme::tool(c.cue_line)).on_press(MixMsg::ClipCueLine));
     }
+    // Fades' curves; silence stripped.
+    let shapes: Vec<String> = corinzia_model::FadeShape::ALL.iter().map(|s| s.name().to_string()).collect();
+    col = col.push(
+        row![
+            text("Fades").size(12).style(crate::theme::dim).width(40),
+            crate::panels::tip(pick_list(shapes.clone(), Some(c.fade_in_shape.name().to_string()), MixMsg::FadeInShape).text_size(11).padding([2, 4]).width(Length::Fill), "The fade in's curve (drag a clip's top left corner to fade it in)"),
+            crate::panels::tip(pick_list(shapes, Some(c.fade_out_shape.name().to_string()), MixMsg::FadeOutShape).text_size(11).padding([2, 4]).width(Length::Fill), "The fade out's curve (its top right corner)"),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    );
+    col = col.push(crate::panels::tip(button(text("Strip silence").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::StripSilence), "Cut the clip where it is silent (under −50 dB for a quarter of a second or more): the quiet parts go, the rest stay where they are"));
     // The score's tempo from the recording.
     let units: Vec<String> = FOLLOW_UNITS.iter().map(|u| u.0.to_string()).collect();
     let unit = FOLLOW_UNITS.iter().find(|u| u.1 == follow.unit).map(|u| u.0.to_string());

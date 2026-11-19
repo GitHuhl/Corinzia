@@ -228,6 +228,14 @@ the output), automation playback and saving plugin settings.
   splits it right there, on the beat (Shift too: anywhere). The two
   halves play as the one did: the fade in stays on the first, the fade
   out on the second.
+* **Clip fades, gain and silence:** each fade has a curve (Fades, beside
+  the strips: linear, equal power, S-curve, fast or slow), drawn as it
+  sounds. Where two clips on a track overlap they crossfade at equal
+  power over the overlap. Drag a clip's gain line (the thin line across
+  it, 0 dB three quarters up) up or down to change its gain (in half
+  dB; Shift: finely). "Strip silence" cuts the selected clip where it is
+  silent (under −50 dB for a quarter of a second or more): the quiet
+  parts go, the rest stay where they were, with short fades at the cuts.
 * **Tempo from a recording** (Mix tab, a clip selected): "Follow this
   clip" finds the clip's beats and sets the movement's tempo so that the
   score's beats fall on them: the bars, the built-in orchestra and the
@@ -369,7 +377,10 @@ the output), automation playback and saving plugin settings.
   by its own plugin instances, with the reverb tail; Escape stops it;
   `--export out.wav` works headless too). When it is written, the status
   bar gives its integrated loudness (LUFS) and true peak (dBTP), measured
-  as EBU R128 does.
+  as EBU R128 does. "Audio stems" writes each track on its own (through
+  its effects, the buses and the master) beside the name chosen: "Take -
+  Violin I.wav", "Take - Viola.wav" and so on; tracks muted in the mix
+  are left out.
   `corinzia score.project --export score.pdf` works headless.
 
 ## Scripting and AI agents

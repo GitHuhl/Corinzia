@@ -468,7 +468,7 @@ fn a_roll_note_is_grabbed_by_its_body_or_its_right_edge() {
 #[test]
 fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), mixer: false, min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
-    let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
+    let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, in_shape: Default::default(), out_shape: Default::default(), gain_db: 0.0, muted: false, data: None, offset: 0.0, length: 2.0 };
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
@@ -770,4 +770,44 @@ fn notes_gather_into_items_split_by_a_bar_of_rest() {
     }
     // Beats include every bar line.
     assert!(c.bars[..c.bars.len() - 1].iter().all(|b| c.beats.iter().any(|x| (x - b).abs() < 1e-9)));
+}
+
+#[test]
+fn silence_strips_gain_drags_and_fades_take_shapes() {
+    use arrange::{ArrangeEvent as E, ClipEdit};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    let rate = a.playback.sample_rate;
+    // 1 s of sound, 1 s of silence, 0.5 s of sound.
+    let n = rate as usize;
+    let mut x = vec![0.3f32; n];
+    x.extend(vec![0.0; n]);
+    x.extend(vec![0.3; n / 2]);
+    a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
+    a.editor.caret = Frac::int(1);
+    let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
+    let (track, clip) = a.selected_clip.unwrap();
+    let at = a.editor.clip(track, clip).unwrap().at;
+    // Fade shapes from the clip panel.
+    let _ = a.update(Message::Mix(mix::MixMsg::FadeInShape("S-curve".into())));
+    let _ = a.update(Message::Mix(mix::MixMsg::FadeOutShape("Equal power".into())));
+    let c = a.editor.clip(track, clip).unwrap().clone();
+    assert_eq!((c.fade_in_shape, c.fade_out_shape), (corinzia_model::FadeShape::SCurve, corinzia_model::FadeShape::EqualPower));
+    // The gain line, dragged: one undo step.
+    let _ = a.update(Message::Arrange(E::ClipPress { track, clip, copy: false }));
+    let _ = a.update(Message::Arrange(E::ClipDrag { edit: ClipEdit::Gain, q: -6.0 }));
+    let _ = a.update(Message::Arrange(E::ClipRelease));
+    assert_eq!(a.editor.clip(track, clip).unwrap().gain_db, -6.0);
+    // Strip silence: two parts where the sound is, in place.
+    let _ = a.update(Message::Mix(mix::MixMsg::StripSilence));
+    let clips = a.editor.project.track(track).unwrap().clips.clone();
+    assert_eq!(clips.len(), 2, "{}", a.editor.status);
+    let (p, q) = (&clips[0], &clips[1]);
+    assert!((p.at - at).abs() < 0.02 && (p.length - 1.0).abs() < 0.03, "{p:?}");
+    assert!((q.at - (at + 2.0)).abs() < 0.03 && (q.offset - 2.0).abs() < 0.03 && (q.length - 0.5).abs() < 0.03, "{q:?}");
+    assert!(p.gain_db == -6.0 && q.fade_out_shape == corinzia_model::FadeShape::EqualPower);
+    a.editor.undo();
+    assert_eq!(a.editor.project.track(track).unwrap().clips.len(), 1);
+    a.sync();
+    assert!(a.playback.clip_errors.is_empty());
 }

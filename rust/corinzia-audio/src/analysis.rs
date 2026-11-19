@@ -201,9 +201,67 @@ fn beat_period(env: &[f64], fps: f64, guess: Option<f64>) -> f64 {
     (min as f64 + refined).max(1.0)
 }
 
+/// Where a recording sounds: (from, to) in seconds, the stretches whose
+/// peak passes `threshold_db` (dBFS), split by silences of `min_silence`
+/// seconds or more, each widened by `pad` seconds (and merged where that
+/// makes them meet). Measured on 10 ms windows.
+pub fn sounding(channels: &[Vec<f32>], sample_rate: f64, threshold_db: f64, min_silence: f64, pad: f64) -> Vec<(f64, f64)> {
+    let sr = if sample_rate.is_finite() && sample_rate > 0.0 { sample_rate } else { 48_000.0 };
+    let len = channels.iter().map(Vec::len).max().unwrap_or(0);
+    let win = ((sr * 0.01) as usize).max(1);
+    let level = 10f64.powf(threshold_db / 20.0) as f32;
+    let loud: Vec<bool> = (0..len.div_ceil(win))
+        .map(|w| channels.iter().any(|c| c[(w * win).min(c.len())..((w + 1) * win).min(c.len())].iter().any(|v| v.is_finite() && v.abs() > level)))
+        .collect();
+    let gap = ((min_silence / 0.01).round() as usize).max(1);
+    let total = len as f64 / sr;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    let mut w = 0;
+    while w < loud.len() {
+        if !loud[w] {
+            w += 1;
+            continue;
+        }
+        // A stretch: on until `gap` quiet windows in a row.
+        let start = w;
+        let mut end = w + 1;
+        let mut quiet = 0;
+        while end < loud.len() && quiet < gap {
+            quiet = if loud[end] { 0 } else { quiet + 1 };
+            end += 1;
+        }
+        let end = end - quiet;
+        let (a, b) = (((start * win) as f64 / sr - pad).max(0.0), (((end * win) as f64 / sr) + pad).min(total));
+        match out.last_mut() {
+            Some(last) if a <= last.1 => last.1 = b,
+            _ => out.push((a, b)),
+        }
+        w = end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silences_split_what_sounds() {
+        let sr = 1000.0;
+        // 1 s loud, 0.5 s silent, 0.1 s loud, 0.1 s silent, 0.2 s loud.
+        let mut x = vec![0.5f32; 1000];
+        x.extend(vec![0.0; 500]);
+        x.extend(vec![0.5; 100]);
+        x.extend(vec![0.0001; 100]);
+        x.extend(vec![0.5; 200]);
+        let r = sounding(&[x.clone()], sr, -50.0, 0.25, 0.0);
+        assert_eq!(r.len(), 2, "{r:?}");
+        assert!((r[0].0 - 0.0).abs() < 0.011 && (r[0].1 - 1.0).abs() < 0.011, "{r:?}");
+        assert!((r[1].0 - 1.5).abs() < 0.011 && (r[1].1 - 1.9).abs() < 0.011, "the short gap does not split: {r:?}");
+        // Padding widens and merges.
+        assert_eq!(sounding(&[x], sr, -50.0, 0.25, 0.3).len(), 1);
+        assert!(sounding(&[vec![0.0; 1000]], sr, -50.0, 0.25, 0.0).is_empty());
+    }
 
     /// Clicks (short noise bursts over a decaying tone) at these times.
     fn clicks(times: &[f64], seconds: f64, sr: f64) -> Vec<Vec<f32>> {

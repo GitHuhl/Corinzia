@@ -235,6 +235,7 @@ impl App {
                     item("MIDI…", "the performance, track by track", files::Format::Midi),
                     item("MusicXML…", "for other notation programs", files::Format::MusicXml),
                     item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
+                    item("Audio stems (WAV)…", "each track on its own, a file each", files::Format::Stems),
                 ]
                 .spacing(2)
                 .width(250),

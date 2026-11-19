@@ -204,6 +204,9 @@ pub enum Format {
     /// The movement as it plays: a stereo WAV file (rendered offline, by
     /// the app, not `export`).
     Audio,
+    /// Each track on its own (through its effects, the buses and the
+    /// master), a WAV file each beside the name chosen.
+    Stems,
 }
 impl Format {
     pub fn extension(self) -> &'static str {
@@ -211,7 +214,7 @@ impl Format {
             Format::Pdf | Format::Parts => "pdf",
             Format::Midi => "mid",
             Format::MusicXml => "musicxml",
-            Format::Audio => "wav",
+            Format::Audio | Format::Stems => "wav",
         }
     }
     pub fn label(self) -> &'static str {
@@ -221,6 +224,7 @@ impl Format {
             Format::Midi => "MIDI file",
             Format::MusicXml => "MusicXML",
             Format::Audio => "Audio (WAV)",
+            Format::Stems => "Audio stems (WAV)",
         }
     }
 }
@@ -246,8 +250,16 @@ pub fn export(project: &Project, movement: usize, format: Format, transposed: bo
         }
         Format::Midi => corinzia_perform::midi(project, m),
         Format::MusicXml => corinzia_perform::musicxml(project, m).map(String::into_bytes),
-        Format::Audio => Err("Audio is rendered by the app's bounce".into()),
+        Format::Audio | Format::Stems => Err("Audio is rendered by the app's bounce".into()),
     }
+}
+
+/// A stem's file: beside `path`, its name and the track's ("Take -
+/// Violin I.wav"), characters a file name cannot hold left out.
+pub fn stem_path(path: &std::path::Path, track: &str) -> std::path::PathBuf {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Stems".into());
+    let clean: String = track.chars().filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).collect();
+    path.with_file_name(format!("{stem} - {}.wav", clean.trim()))
 }
 
 /// The export format a file name asks for, by its extension.

@@ -218,6 +218,9 @@ pub struct ClipBlock {
     /// Where the fade in ends and the fade out starts.
     pub fade_in_q: f64,
     pub fade_out_q: f64,
+    pub in_shape: corinzia_model::FadeShape,
+    pub out_shape: corinzia_model::FadeShape,
+    pub gain_db: f64,
     pub muted: bool,
     /// The sound (once decoded) and the part of it played, in seconds.
     pub data: Option<Arc<AudioData>>,
@@ -253,6 +256,9 @@ pub fn clips(project: &Project, movement: usize, sec: Option<&Section>, media: &
                 end_q: q(c.at + length),
                 fade_in_q: q(c.at + c.fade_in.min(length)),
                 fade_out_q: q(c.at + length - c.fade_out.min(length)),
+                in_shape: c.fade_in_shape,
+                out_shape: c.fade_out_shape,
+                gain_db: c.gain_db,
                 muted: c.mute,
                 data,
                 offset: c.offset,
@@ -260,7 +266,33 @@ pub fn clips(project: &Project, movement: usize, sec: Option<&Section>, media: &
             });
         }
     }
+    // Overlapping clips on a lane crossfade (as they play: see
+    // `corinzia_audio::snapshot::crossfade`).
+    out.sort_by(|a, b| (a.lane, a.start_q).partial_cmp(&(b.lane, b.start_q)).unwrap_or(std::cmp::Ordering::Equal));
+    for i in 0..out.len() {
+        for j in i + 1..out.len() {
+            if out[j].lane != out[i].lane || out[j].start_q >= out[i].end_q {
+                break;
+            }
+            if out[j].end_q <= out[i].end_q || out[i].muted || out[j].muted {
+                continue;
+            }
+            let (a, b) = (out[j].start_q, out[i].end_q);
+            if out[i].fade_out_q > a {
+                (out[i].fade_out_q, out[i].out_shape) = (a, corinzia_model::FadeShape::EqualPower);
+            }
+            if out[j].fade_in_q < b {
+                (out[j].fade_in_q, out[j].in_shape) = (b, corinzia_model::FadeShape::EqualPower);
+            }
+        }
+    }
     out
+}
+
+/// Where a clip's gain line sits in its block (0 at the bottom, 1 at the
+/// top): the faders' law, so 0 dB is three quarters up.
+pub fn gain_pos(db: f64) -> f32 {
+    crate::fader::db_to_pos(db) as f32
 }
 
 /// What a drag on a clip changes.
@@ -271,6 +303,8 @@ pub enum ClipEdit {
     TrimEnd,
     FadeIn,
     FadeOut,
+    /// The gain line, dragged up or down.
+    Gain,
 }
 
 #[derive(Debug, Clone)]
@@ -465,6 +499,12 @@ impl ArrangeView<'_> {
         c.points.iter().position(|&(q, v)| (self.x(q) - p.x).abs() < 7.0 && (self.curve_y(lane, c, v) - p.y).abs() < 7.0)
     }
 
+    /// The y of a clip's gain line.
+    fn gain_y(&self, c: &ClipBlock) -> f32 {
+        let r = self.clip_rect(c);
+        r.y + r.height - gain_pos(c.gain_db) * r.height
+    }
+
     pub fn clip_rect(&self, c: &ClipBlock) -> Rectangle {
         let y = self.lane_y(c.lane) + 3.0;
         Rectangle::new(Point::new(self.x(c.start_q), y), Size::new(((c.end_q - c.start_q) as f32 * self.pixels_per_quarter).max(4.0), self.lane_height - 6.0))
@@ -481,6 +521,8 @@ impl ArrangeView<'_> {
             ClipEdit::FadeIn
         } else if p.y < r.y + 10.0 && p.x > r.x + r.width - corner {
             ClipEdit::FadeOut
+        } else if (p.y - self.gain_y(c)).abs() <= 3.0 && r.height >= 24.0 {
+            ClipEdit::Gain
         } else if p.x < r.x + edge {
             ClipEdit::TrimStart
         } else if p.x > r.x + r.width - edge {
@@ -560,6 +602,13 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                     ClipEdit::Move => self.beat(at - grab, free),
                     ClipEdit::TrimStart | ClipEdit::TrimEnd => self.beat(at, free),
                     ClipEdit::FadeIn | ClipEdit::FadeOut => at,
+                    // The gain (dB) where the pointer is in the clip.
+                    ClipEdit::Gain => {
+                        let c = self.clips.iter().find(|c| Some(c.clip) == self.selected_clip)?;
+                        let r = self.clip_rect(c);
+                        let db = crate::fader::pos_to_db(((r.y + r.height - p.y) / r.height) as f64);
+                        if free { db } else { (db * 2.0).round() / 2.0 }
+                    }
                 };
                 Some(canvas::Action::publish(ArrangeEvent::ClipDrag { edit, q }).and_capture())
             }
@@ -960,13 +1009,32 @@ fn draw_clip(f: &mut Frame, v: &ArrangeView, c: &ClipBlock, width: f32) {
             x += 1.0;
         }
     }
-    // Fades: from the bottom corner to the top where they end.
+    // Fades: their curves, from the bottom corner to the top where they end.
     let fade = Stroke::default().with_width(1.5).with_color(Color::WHITE);
+    let curve = |x0: f32, x1: f32, shape: corinzia_model::FadeShape, rising: bool| {
+        Path::new(|b| {
+            for k in 0..=24 {
+                let t = k as f32 / 24.0;
+                let g = shape.gain(if rising { t } else { 1.0 - t });
+                let p = Point::new(x0 + (x1 - x0) * t, r.y + r.height - g * r.height);
+                if k == 0 { b.move_to(p) } else { b.line_to(p) }
+            }
+        })
+    };
     if c.fade_in_q > c.start_q {
-        f.stroke(&Path::line(Point::new(r.x, r.y + r.height), Point::new(v.x(c.fade_in_q), r.y)), fade);
+        f.stroke(&curve(r.x, v.x(c.fade_in_q), c.in_shape, true), fade);
     }
     if c.fade_out_q < c.end_q {
-        f.stroke(&Path::line(Point::new(v.x(c.fade_out_q), r.y), Point::new(r.x + r.width, r.y + r.height)), fade);
+        f.stroke(&curve(v.x(c.fade_out_q), r.x + r.width, c.out_shape, false), fade);
+    }
+    // The gain line (brighter when not at 0 dB).
+    if r.height >= 24.0 {
+        let gy = r.y + r.height - gain_pos(c.gain_db) * r.height;
+        let a = if c.gain_db.abs() < 0.05 { 0.35 } else { 0.9 };
+        f.stroke(&Path::line(Point::new(x0, gy), Point::new(x1, gy)), Stroke::default().with_width(1.0).with_color(Color { a, ..Color::WHITE }));
+        if c.gain_db.abs() >= 0.05 && x1 - x0 > 60.0 {
+            f.fill_text(Text { content: format!("{:+.1} dB", c.gain_db), position: Point::new(x1 - 52.0, gy - 13.0), size: iced::Pixels(10.0), color: Color::WHITE, ..Text::default() });
+        }
     }
     f.stroke(&Path::rectangle(Point::new(x0, r.y), Size::new(x1 - x0, r.height)), Stroke::default().with_width(if selected { 2.0 } else { 1.0 }).with_color(if selected { crate::theme::palette().accent } else { base }));
     if r.x >= v.header - 1.0 {
