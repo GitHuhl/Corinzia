@@ -1115,3 +1115,31 @@ fn a_tie_keeps_clear_of_its_notes_dot() {
 fn pt_mid(a: corinzia_layout::display::Point, b: corinzia_layout::display::Point) -> corinzia_layout::display::Point {
     corinzia_layout::display::Point { x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0 }
 }
+
+#[test]
+fn articulations_sit_as_lilypond_places_its_scripts() {
+    let font = corinzia_layout::font::Font::bravura();
+    let centre = |g: Glyph, y: f32| {
+        let b = font.bbox(g);
+        y - (b.ne.1 + b.sw.1) / 2.0
+    };
+    // Stem-down c'' (third space): the staccato above, centred in the space
+    // over the next line (y 0.5); stem-up g': below, in the space under it.
+    let s = score(&[("treble", &["c''4-. g'-. g'-> c''->"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    let above = glyphs(&l, Glyph::StaccatoAbove);
+    let below = glyphs(&l, Glyph::StaccatoBelow);
+    assert_eq!(above.len(), 1);
+    assert_eq!(below.len(), 1);
+    assert!((centre(Glyph::StaccatoAbove, above[0].1) - 0.5).abs() < 1e-3, "{above:?}");
+    assert!((centre(Glyph::StaccatoBelow, below[0].1) - 4.5).abs() < 1e-3, "{below:?}");
+    // Accents are not quantized: the staff joins their support, so they
+    // sit outside it, staff-padding (0.25) away.
+    let acc_below = glyphs(&l, Glyph::AccentBelow);
+    let acc_above = glyphs(&l, Glyph::AccentAbove);
+    assert_eq!((acc_below.len(), acc_above.len()), (1, 1), "single-note accents are drawn");
+    let b = font.bbox(Glyph::AccentBelow);
+    assert!(acc_below[0].1 - b.ne.1 >= 4.25 - 1e-3, "{acc_below:?}");
+    let b = font.bbox(Glyph::AccentAbove);
+    assert!(acc_above[0].1 - b.sw.1 <= -0.25 + 1e-3, "{acc_above:?}");
+}
