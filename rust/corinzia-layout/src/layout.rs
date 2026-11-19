@@ -1789,7 +1789,7 @@ impl<'a> Engraver<'a> {
             .iter()
             .map(|&i| {
                 let n = &self.notes[i];
-                crate::beam::Stem { x: n.stem_x, low: n.heads[0].pos, high: n.heads[n.heads.len() - 1].pos }
+                crate::beam::Stem { x: n.stem_x, low: n.heads[0].pos, high: n.heads[n.heads.len() - 1].pos, dir: 0.0, middle: 0.0 }
             })
             .collect();
         let counts: Vec<u32> = g.iter().map(|&i| self.notes[i].beams().max(1)).collect();
@@ -1823,6 +1823,8 @@ impl<'a> Engraver<'a> {
             .collect();
         let pb = crate::beam::Problem {
             collisions,
+            knee: false,
+            cross_staff: false,
             stems,
             dir,
             beam_count: counts.iter().copied().max().unwrap_or(1),
@@ -1839,6 +1841,48 @@ impl<'a> Engraver<'a> {
         (edge(l), slope)
     }
 
+    /// A kneed beam (stems down from the upper staff, up from the lower),
+    /// placed by LilyPond's beam quanting for knees (see `crate::beam`).
+    /// Returns the top beam's upper edge at the first stem and the slope,
+    /// page y down.
+    fn quant_knee(&self, g: &[usize], bt: f32, gap: f32) -> (f32, f32) {
+        let top_part = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+        let ref_mid = self.top(top_part) + 2.0;
+        let stems: Vec<crate::beam::Stem> = g
+            .iter()
+            .map(|&i| {
+                let n = &self.notes[i];
+                crate::beam::Stem {
+                    x: n.stem_x,
+                    low: n.heads[0].pos,
+                    high: n.heads[n.heads.len() - 1].pos,
+                    dir: if n.stem_up { 1.0 } else { -1.0 },
+                    middle: ref_mid - (self.top(n.part) + 2.0),
+                }
+            })
+            .collect();
+        let counts: Vec<u32> = g.iter().map(|&i| self.notes[i].beams().max(1)).collect();
+        let levels = counts.iter().copied().max().unwrap_or(1);
+        let pb = crate::beam::Problem {
+            stems,
+            dir: 1.0,
+            beam_count: levels,
+            edge_counts: [counts[0], counts[counts.len() - 1]],
+            thickness: bt,
+            translation: gap,
+            line_thickness: self.font.defaults.staff_line_thickness,
+            collisions: vec![],
+            knee: true,
+            cross_staff: g.iter().any(|&i| self.notes[i].part != top_part),
+        };
+        let [l, r] = crate::beam::solve(&pb);
+        let dx = pb.stems[pb.stems.len() - 1].x - pb.stems[0].x;
+        // The stack's middle -> its top edge, page y down.
+        let top_edge = |c: f32| ref_mid - (c + (levels as f32 - 1.0) * gap / 2.0 + bt / 2.0);
+        let slope = if dx > 0.0 { (top_edge(r) - top_edge(l)) / dx } else { 0.0 };
+        (top_edge(l), slope)
+    }
+
     fn draw_beams(&mut self, groups: &[Vec<usize>]) {
         let d = self.font.defaults;
         for g in groups {
@@ -1850,20 +1894,10 @@ impl<'a> Engraver<'a> {
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
             let kneed = g.iter().any(|&i| self.notes[i].part != self.notes[g[0]].part);
             let (y0, slope) = if kneed {
-                // Flat, halfway between the upper staff's lowest head and the
-                // lower staff's highest, the beams stacked from there down.
-                let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
-                let low = g.iter().filter(|&&i| self.notes[i].part == top).map(|&i| self.y(top, self.notes[i].heads[0].pos)).fold(f32::MIN, f32::max);
-                let high = g
-                    .iter()
-                    .filter(|&&i| self.notes[i].part != top)
-                    .map(|&i| {
-                        let n = &self.notes[i];
-                        self.y(n.part, n.heads[n.heads.len() - 1].pos)
-                    })
-                    .fold(f32::MAX, f32::min);
+                // Across the staves, by LilyPond's quanting for knees; drawn
+                // from the top beam's upper edge down.
                 up = true;
-                ((low + high) / 2.0 - (levels as f32 * gap) / 2.0, 0.0)
+                self.quant_knee(g, bt, gap)
             } else {
                 self.quant_beam(g, up, bt, gap)
             };
@@ -1938,10 +1972,15 @@ impl<'a> Engraver<'a> {
         // further out, on side `dir` (+1 down); `chord`: the chord's head
         // positions. Gives the ends' page y and the height.
         // `get_configuration` at tie position `p` (half spaces up).
-        let configure_at = |x0: f32, x1: f32, pos: i32, p: i32, chord: (i32, i32), top: f32, dir: f32| -> (f32, f32) {
+        // `dots`: the left note's dots (x, staff position): a tie at a dot's
+        // position moves a quarter space out, untuned.
+        let configure_at = |x0: f32, x1: f32, pos: i32, p: i32, chord: (i32, i32), top: f32, dir: f32, dots: &[(f32, i32)]| -> (f32, f32) {
             let (_, h) = tie_shape((x1 - x0).max(0.6));
             let up = -dir; // LilyPond's direction, y up
             let y = p as f32 * 0.5;
+            if dots.iter().any(|d| d.1 == p) {
+                return (top + 2.0 - (y + up * 0.25), h);
+            }
             let on_line = |q: i32| q % 2 == 0 && (-4..=4).contains(&q);
             let head_edge = pos as f32 * 0.5 + up * 0.5;
             let mut delta = 0.0;
@@ -1967,14 +2006,16 @@ impl<'a> Engraver<'a> {
             }
             (top + 2.0 - (y + delta), h)
         };
-        let configure = |x0: f32, x1: f32, pos: i32, extra: i32, chord: (i32, i32), top: f32, dir: f32| -> (f32, f32) {
-            configure_at(x0, x1, pos, pos - dir as i32 * (1 + extra), chord, top, dir)
+        let configure = |x0: f32, x1: f32, pos: i32, extra: i32, chord: (i32, i32), top: f32, dir: f32, dots: &[(f32, i32)]| -> (f32, f32) {
+            configure_at(x0, x1, pos, pos - dir as i32 * (1 + extra), chord, top, dir, dots)
         };
         // A single tie: LilyPond's variations (the other direction, and up
         // to three half spaces either way) scored by `score_configuration`
         // and `score_aptitude` (too short, tips or peak on a line, far from
         // its head, the wrong way, the stem's way); the best one.
-        let single = |x0: f32, x1: f32, pos: i32, base_dir: f32, stem: Option<f32>, chord: (i32, i32), top: f32| -> (f32, f32, f32) {
+        let single = |x0: f32, x1: f32, pos: i32, base_dir: f32, stem: Option<f32>, chord: (i32, i32), top: f32, dots: &[(f32, i32)]| -> (f32, f32, f32) {
+            const DOT_COLLISION_PENALTY: f32 = 0.25;
+            const DOT_COLLISION_CLEARANCE: f32 = 0.25;
             const MIN_LENGTH: f32 = 1.0;
             const MIN_LENGTH_PENALTY_FACTOR: f32 = 26.0;
             const STAFF_LINE_COLLISION_PENALTY: f32 = 5.0;
@@ -1993,7 +2034,7 @@ impl<'a> Engraver<'a> {
             }
             let mut best = (f32::INFINITY, 0.0, 0.0, base_dir);
             for (p, dir) in cands {
-                let (y, h) = configure_at(x0, x1, pos, p, chord, top, dir);
+                let (y, h) = configure_at(x0, x1, pos, p, chord, top, dir, dots);
                 let up = -dir;
                 let tip_y = top + 2.0 - y; // y up from the middle line
                 let mut sc = MIN_LENGTH_PENALTY_FACTOR * peak(0.33 * MIN_LENGTH, MIN_LENGTH, x1 - x0);
@@ -2011,6 +2052,16 @@ impl<'a> Engraver<'a> {
                     sc += WRONG_DIRECTION_OFFSET_PENALTY;
                 }
                 sc += VERTICAL_DISTANCE_PENALTY_FACTOR * convex(1.0, 0.9, ((tip_y - head_y).abs() - 0.5).max(0.0));
+                // A dot under the curve: penalised within a quarter space.
+                let indent = tie_shape(x1 - x0).0.min((x1 - x0) / 3.1);
+                for &(dx, dp) in dots {
+                    if dx < x0 || dx > x1 {
+                        continue;
+                    }
+                    let curve = crate::slur::Bezier([(x0, y), (x0 + indent, y + dir * h), (x1 - indent, y + dir * h), (x1, y)]);
+                    let dist = ((top + 2.0 - dp as f32 * 0.5) - curve.y_at(dx)).abs();
+                    sc += DOT_COLLISION_PENALTY * peak(0.1 * DOT_COLLISION_CLEARANCE, DOT_COLLISION_CLEARANCE, dist);
+                }
                 match stem {
                     Some(st) if st == up => sc += SAME_DIR_AS_STEM_PENALTY,
                     None if pos != 0 && (pos as f32).signum() != up => sc += SAME_DIR_AS_STEM_PENALTY,
@@ -2040,15 +2091,15 @@ impl<'a> Engraver<'a> {
         // A chord's ties (x0, x1, pos, dir, id): placed, those on one side
         // moved out a half space at a time while their middles are nearer
         // than LilyPond's tie-tie collision distance.
-        let place = |ties: &[(f32, f32, i32, f32, u64)], chord: (i32, i32), top: f32, stem: Option<f32>| -> Vec<Item> {
+        let place = |ties: &[(f32, f32, i32, f32, u64)], chord: (i32, i32), top: f32, stem: Option<f32>, dots: &[(f32, i32)]| -> Vec<Item> {
             if let [(x0, x1, pos, dir, id)] = *ties {
-                let (y, h, dir) = single(x0, x1, pos, dir, stem, chord, top);
+                let (y, h, dir) = single(x0, x1, pos, dir, stem, chord, top, dots);
                 return vec![shape(x0, x1, y, h, dir, id)];
             }
             let mut extra = vec![0i32; ties.len()];
             let at = |k: usize, extra: &[i32]| {
                 let (x0, x1, pos, dir, _) = ties[k];
-                let (y, h) = configure(x0, x1, pos, extra[k], chord, top, dir);
+                let (y, h) = configure(x0, x1, pos, extra[k], chord, top, dir, dots);
                 (y, h, y + dir * 0.75 * h)
             };
             for _ in 0..3 {
@@ -2139,12 +2190,22 @@ impl<'a> Engraver<'a> {
             }
             // The stems' direction (LilyPond's, +1 up), for a single tie.
             let stem = n.has_stem().then_some(if n.stem_up { 1.0 } else { -1.0 });
-            items.extend(place(&out, chord, top, stem));
+            // The note's dots, as drawn: (x, staff position).
+            let dots: Vec<(f32, i32)> = self
+                .out
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    Item::Glyph { glyph, at, id, .. } if *id == n.id && *glyph == Glyph::Dot.codepoint() => Some((at.x, ((top + 2.0 - at.y) * 2.0).round() as i32)),
+                    _ => None,
+                })
+                .collect();
+            items.extend(place(&out, chord, top, stem, &dots));
             // Arriving from the previous system: from just before the note.
             let first_here = !self.notes[..i].iter().any(|o| o.part == n.part && o.voice == n.voice);
             if first_here && n.start == self.range.0 {
                 let arriving: Vec<(f32, f32, i32, f32, u64)> = n.heads.iter().filter(|h| h.tied_in).map(|h| (n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, h.pos, side(h), h.id)).collect();
-                items.extend(place(&arriving, chord, top, n.has_stem().then_some(if n.stem_up { 1.0 } else { -1.0 })));
+                items.extend(place(&arriving, chord, top, n.has_stem().then_some(if n.stem_up { 1.0 } else { -1.0 }), &[]));
             }
         }
         self.out.items.extend(items);

@@ -44,12 +44,17 @@ const COLLISION_PENALTY: f32 = 500.0;
 const COLLISION_PADDING: f32 = 0.5;
 
 /// A stem of the group: its x, and its heads' lowest and highest staff
-/// positions (half spaces up from the middle line).
+/// positions (half spaces up from its staff's middle line); in a kneed
+/// beam, its own direction and its staff's middle line in the beam's
+/// frame (spaces up).
 #[derive(Clone, Copy, Debug)]
 pub struct Stem {
     pub x: f32,
     pub low: i32,
     pub high: i32,
+    /// +1 up, −1 down; 0: the group's.
+    pub dir: f32,
+    pub middle: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +75,11 @@ pub struct Problem {
     /// the middle line; the factor scales the penalty (√width for a glyph,
     /// a tenth for a stem).
     pub collisions: Vec<(f32, (f32, f32), f32)>,
+    /// Stems in both directions (a knee); `cross_staff`: across staves.
+    /// The beam's y is then its stack's middle, and each stem reaches the
+    /// beam farthest from its notes.
+    pub knee: bool,
+    pub cross_staff: bool,
 }
 
 struct StemInfo {
@@ -92,14 +102,25 @@ fn minimum_dy(dy: f32, bt: f32, lt: f32) -> f32 {
 }
 
 impl Problem {
-    /// The head nearest the beam and the one farthest, as staff positions.
-    fn close_far(&self, s: &Stem) -> (i32, i32) {
-        if self.dir > 0.0 { (s.high, s.low) } else { (s.low, s.high) }
+    fn dir_of(&self, s: &Stem) -> f32 {
+        if s.dir != 0.0 { s.dir } else { self.dir }
     }
 
-    /// `Stem::calc_stem_info`: ideal and shortest ends, y up.
+    /// The head nearest the beam and the one farthest, as staff positions.
+    fn close_far(&self, s: &Stem) -> (i32, i32) {
+        if self.dir_of(s) > 0.0 { (s.high, s.low) } else { (s.low, s.high) }
+    }
+
+    /// From the beam's y to where this stem's outer beam is: none, but in
+    /// a knee half the stack towards the stem's far side.
+    fn base_length(&self, s: &Stem) -> f32 {
+        if self.knee { self.dir_of(s) * (self.beam_count.max(1) as f32 - 1.0) * self.translation / 2.0 } else { 0.0 }
+    }
+
+    /// `Stem::calc_stem_info`: ideal and shortest ends, y up (in the beam's
+    /// frame, less the stem's base length).
     fn stem_info(&self, s: &Stem) -> StemInfo {
-        let dir = self.dir;
+        let dir = self.dir_of(s);
         let bc = self.beam_count.max(1) as usize;
         let (bt, tr) = (self.thickness, self.translation);
         let mut ideal_length = BEAMED_LENGTHS[bc.min(3) - 1] - 0.5 * bt;
@@ -108,16 +129,20 @@ impl Problem {
         ideal_length = ideal_length.max(ideal_minimum_length);
         let note_start = self.close_far(s).0 as f32 * 0.5 * dir;
         let mut ideal = note_start + ideal_length;
-        // The outer beam reaches the middle line; the inner, the second line.
-        ideal = ideal.max(0.0);
-        ideal = ideal.max(-1.0 - bt + height_of_beams);
+        // The outer beam reaches the middle line; the inner, the second line
+        // (not in a knee).
+        if !self.knee {
+            ideal = ideal.max(0.0);
+            ideal = ideal.max(-1.0 - bt + height_of_beams);
+        }
         let minimum_length = BEAMED_EXTREME_MINIMUM_FREE_LENGTHS[bc.min(2) - 1] + height_of_beams - 0.5 * bt;
-        StemInfo { ideal: ideal * dir, shortest: (note_start + minimum_length) * dir }
+        let at = s.middle - self.base_length(s);
+        StemInfo { ideal: ideal * dir + at, shortest: (note_start + minimum_length) * dir + at }
     }
 
     /// `calc_concaveness`.
     fn concaveness(&self) -> f32 {
-        if self.stems.len() <= 2 {
+        if self.stems.len() <= 2 || self.knee || self.cross_staff {
             return 0.0;
         }
         let dir = self.dir as i32;
@@ -224,9 +249,9 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
         let beam_dy = unq[1] - unq[0];
         let slope = if x_span != 0.0 { beam_dy / x_span } else { 0.0 };
         let (mut lo, mut hi) = (f32::NEG_INFINITY, f32::INFINITY);
-        for (x, info) in xs.iter().zip(&infos) {
+        for ((x, info), st) in xs.iter().zip(&infos).zip(&pb.stems) {
             let left_y = info.shortest - slope * x;
-            if dir > 0.0 {
+            if pb.dir_of(st) > 0.0 {
                 lo = lo.max(left_y);
             } else {
                 hi = hi.min(left_y);
@@ -244,19 +269,21 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
     let hang = 1.0 - sit;
     let base = [0.0, sit, 0.5, hang];
     // (A wider region where something is in the way.)
-    let region = REGION_SIZE + if pb.collisions.is_empty() { 0 } else { 2 };
+    let region = REGION_SIZE + if pb.collisions.is_empty() { 0 } else { 2 } + if pb.knee { 2 } else { 0 };
     let quants: Vec<f32> = (-region..region).flat_map(|i| base.map(|b| i as f32 + b)).collect();
     let range_ok = |d: usize, y: f32| {
         let s = &pb.stems[if d == 0 { 0 } else { n - 1 }];
         let widen = 0.5 + (pb.edge_counts[d].max(1) as f32 - 1.0) * tr + bt * 0.5;
-        if dir > 0.0 { y >= s.high as f32 * 0.5 + widen } else { y <= s.low as f32 * 0.5 - widen }
+        let y = y + pb.base_length(s);
+        if pb.dir_of(s) > 0.0 { y >= s.middle + s.high as f32 * 0.5 + widen } else { y <= s.middle + s.low as f32 * 0.5 - widen }
     };
+    let edge_dirs = [pb.dir_of(&pb.stems[0]), pb.dir_of(&pb.stems[n - 1])];
     let extra_demerit = SECONDARY_BEAM_DEMERIT / pb.edge_counts[0].max(pb.edge_counts[1]).max(1) as f32;
     let score = |y: [f32; 2], start: f32| -> f32 {
         let dy = y[1] - y[0];
         let mut dem = start;
         // score_slope_ideal
-        dem += shrink_extra_weight(damped_dy.abs() - dy.abs(), 1.5) * IDEAL_SLOPE_FACTOR;
+        dem += shrink_extra_weight(damped_dy.abs() - dy.abs(), 1.5) * IDEAL_SLOPE_FACTOR * if pb.cross_staff { 10.0 } else { 1.0 };
         // score_slope_direction
         if damped_dy.signum() != dy.signum() || (damped_dy == 0.0) != (dy == 0.0) {
             if dy == 0.0 {
@@ -268,7 +295,7 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
         // score_slope_musical
         dem += MUSICAL_DIRECTION_FACTOR * (dy.abs() - musical_dy.abs()).max(0.0);
         // score_forbidden_quants: no sliver of white between a beam and a line.
-        for (&yd, &count) in y.iter().zip(&pb.edge_counts) {
+        for ((&yd, &count), &dir) in y.iter().zip(&pb.edge_counts).zip(&edge_dirs) {
             for j in 1..=count.max(1) {
                 let jf = j as f32;
                 let g1 = yd - dir * ((jf - 1.0) * tr + bt / 2.0 - lt / 2.2);
@@ -286,7 +313,7 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
         }
         if pb.edge_counts[0].max(pb.edge_counts[1]) >= 2 {
             let modf = |v: f32| v - v.floor();
-            for (&yd, &count) in y.iter().zip(&pb.edge_counts) {
+            for ((&yd, &count), &dir) in y.iter().zip(&pb.edge_counts).zip(&edge_dirs) {
                 if count >= 2 && (yd - dir * tr).abs() < STAFF_RADIUS + 0.5 {
                     if dir > 0.0 && dy <= BEAM_EPS && (modf(yd) - sit).abs() < BEAM_EPS {
                         dem += extra_demerit;
@@ -300,14 +327,18 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
                 }
             }
         }
-        // score_stem_lengths
-        let mut s = 0.0;
-        for (x, info) in xs.iter().zip(&infos) {
+        // score_stem_lengths: per direction, averaged (convex in a knee).
+        let (mut s, mut count) = ([0.0f32; 2], [0usize; 2]);
+        for ((x, info), st) in xs.iter().zip(&infos).zip(&pb.stems) {
+            let d = pb.dir_of(st);
+            let k = usize::from(d > 0.0);
             let beam_y = if x_span != 0.0 { y[1] * x / x_span + y[0] * (x_span - x) / x_span } else { (y[0] + y[1]) / 2.0 };
-            s += STEM_LENGTH_LIMIT_PENALTY * (dir * (info.shortest - beam_y)).max(0.0);
-            s += STEM_LENGTH_DEMERIT_FACTOR * shrink_extra_weight(dir * (beam_y - info.ideal), 1.5);
+            s[k] += STEM_LENGTH_LIMIT_PENALTY * (d * (info.shortest - beam_y)).max(0.0);
+            let ideal_score = shrink_extra_weight(d * (beam_y - info.ideal), 1.5);
+            s[k] += STEM_LENGTH_DEMERIT_FACTOR * if pb.knee { ideal_score.powf(1.1) } else { ideal_score };
+            count[k] += 1;
         }
-        dem += s / n as f32;
+        dem += s[0] / count[0].max(1) as f32 + s[1] / count[1].max(1) as f32;
         // score_collisions: within half a space of something, the penalty
         // rising as the cube of how much nearer.
         for &(cx, (lo, hi), factor) in &pb.collisions {
@@ -317,7 +348,8 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
             }
             let centre = if x_span != 0.0 { y[1] * x / x_span + y[0] * (x_span - x) / x_span } else { y[0] };
             // The beams at x: the outer one and those towards the notes.
-            let inner = centre - dir * (pb.beam_count.max(1) as f32 - 1.0) * tr;
+            let inner = if pb.knee { centre - (pb.beam_count.max(1) as f32 - 1.0) * tr / 2.0 } else { centre - dir * (pb.beam_count.max(1) as f32 - 1.0) * tr };
+            let centre = if pb.knee { centre + (pb.beam_count.max(1) as f32 - 1.0) * tr / 2.0 } else { centre };
             let (blo, bhi) = (centre.min(inner) - bt / 2.0, centre.max(inner) + bt / 2.0);
             let dist = if bhi < lo { lo - bhi } else if blo > hi { blo - hi } else { 0.0 };
             let free = (COLLISION_PADDING - dist).max(0.0) / COLLISION_PADDING;
@@ -354,7 +386,7 @@ mod tests {
 
     fn pb(stems: &[(f32, i32)], dir: f32, beams: u32) -> Problem {
         Problem {
-            stems: stems.iter().map(|&(x, p)| Stem { x, low: p, high: p }).collect(),
+            stems: stems.iter().map(|&(x, p)| Stem { x, low: p, high: p, dir: 0.0, middle: 0.0 }).collect(),
             dir,
             beam_count: beams,
             edge_counts: [beams, beams],
@@ -362,6 +394,8 @@ mod tests {
             translation: 0.75,
             line_thickness: 0.1,
             collisions: vec![],
+            knee: false,
+            cross_staff: false,
         }
     }
 
@@ -404,6 +438,26 @@ mod tests {
         assert!(y[0] > free[0], "{y:?} vs {free:?}");
         let centre = (y[0] + y[1]) / 2.0;
         assert!(centre - 0.24 >= 2.2 + 0.4, "the beam clears it: {y:?}");
+    }
+
+    #[test]
+    fn a_kneed_beam_lies_between_its_staves() {
+        // Upper staff (middle at 0): two notes stems down; lower staff
+        // (middle 9 spaces lower): two notes stems up.
+        let stems = vec![
+            Stem { x: 0.0, low: -2, high: -2, dir: -1.0, middle: 0.0 },
+            Stem { x: 2.0, low: 2, high: 2, dir: 1.0, middle: -9.0 },
+            Stem { x: 4.0, low: -2, high: -2, dir: -1.0, middle: 0.0 },
+            Stem { x: 6.0, low: 2, high: 2, dir: 1.0, middle: -9.0 },
+        ];
+        let p = Problem { stems, dir: 1.0, beam_count: 1, edge_counts: [1, 1], thickness: 0.48, translation: 0.75, line_thickness: 0.1, collisions: vec![], knee: true, cross_staff: true };
+        let y = solve(&p);
+        // Between the upper staff's bottom line (−2) and the lower's top (−7),
+        // clear of every head, and level (the music goes nowhere).
+        for v in y {
+            assert!(v < -1.0 - 2.0 && v > -9.0 + 1.0 + 2.0, "{y:?}");
+        }
+        assert!((y[0] - y[1]).abs() < 0.6, "{y:?}");
     }
 
     #[test]

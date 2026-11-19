@@ -1082,3 +1082,36 @@ fn a_chords_ties_keep_apart() {
         }
     }
 }
+
+#[test]
+fn a_tie_keeps_clear_of_its_notes_dot() {
+    // d''4. (on a line, stem down: the tie goes up, where the dot is).
+    let s = score(&[("treble", &["d''4.~ d''8 r2"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("tie-dot", &l);
+    let dot = glyphs(&l, Glyph::Dot);
+    assert_eq!(dot.len(), 1);
+    let (dx, dy) = (dot[0].0 + 0.1, dot[0].1);
+    let tie = l
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Crescent { from, c1, c2, to, d1, d2, .. } => Some([*from, pt_mid(*c1, *d1), pt_mid(*c2, *d2), *to]),
+            _ => None,
+        })
+        .expect("the tie");
+    // The midline's y at the dot's x (sampled).
+    let at = |t: f32| {
+        let u = 1.0 - t;
+        let f = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d;
+        (f(tie[0].x, tie[1].x, tie[2].x, tie[3].x), f(tie[0].y, tie[1].y, tie[2].y, tie[3].y))
+    };
+    if (tie[0].x..=tie[3].x).contains(&dx) {
+        let y = (0..=200).map(|k| at(k as f32 / 200.0)).min_by(|a, b| (a.0 - dx).abs().total_cmp(&(b.0 - dx).abs())).unwrap().1;
+        assert!((y - dy).abs() >= 0.2, "the tie passes the dot: {y} vs {dy}");
+    }
+}
+
+fn pt_mid(a: corinzia_layout::display::Point, b: corinzia_layout::display::Point) -> corinzia_layout::display::Point {
+    corinzia_layout::display::Point { x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0 }
+}
