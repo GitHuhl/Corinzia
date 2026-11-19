@@ -479,7 +479,7 @@ pub struct Layout {
 impl Default for Layout {
     /// A4 with an 18 pt staff, as LilyPond's default.
     fn default() -> Self {
-        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 4.0, bars_per_system: 0, page_numbers: true, condense: false }
+        Layout { page_width_mm: 210.0, page_height_mm: 297.0, landscape: false, staff_mm: 6.35, margin_y_mm: 12.7, margin_x_mm: 12.7, spacing: 1.0, staff_distance: 9.0, system_gap: 1.0, bars_per_system: 0, page_numbers: true, condense: false }
     }
 }
 

@@ -75,10 +75,14 @@ time you type a note.
   LilyPond's shape and split up and down through a chord; a chord's
   accidentals stack in LilyPond's order, octaves aligned; rests step aside
   for another voice just as far as LilyPond moves them.
+* **Every mark where LilyPond puts it.** Staccatos, accents, fermatas and
+  trills sit at LilyPond's distances and in its order; tuplet brackets
+  slope with the notes; dotted chords get a dot for every note, each in its
+  own space.
 * **Spacing with LilyPond's proportions.** Notes take room by their length
   as LilyPond spaces them, dynamics and hairpins sit as close to the staff
-  as LilyPond puts them, and lines are broken and justified the way
-  LilyPond breaks them.
+  as LilyPond puts them, lines are broken and justified the way LilyPond
+  breaks them, and pages are filled with LilyPond's own system spacing.
 * **Live, as you write.** Unlike a compile-and-wait engraver, Corinzia
   re-engraves the page the instant you change a note, and PDFs come straight
   from the same engraver, so what you see is exactly what prints.
