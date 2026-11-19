@@ -202,7 +202,20 @@ the output), automation playback and saving plugin settings.
   when stopped (click the ruler to put it there); Alt+click on a clip
   splits it right there, on the beat (Shift too: anywhere). The two
   halves play as the one did: the fade in stays on the first, the fade
-  out on the second. A selected clip has
+  out on the second.
+* **Tempo from a recording** (Mix tab, a clip selected): "Follow this
+  clip" finds the clip's beats and sets the movement's tempo so that the
+  score's beats fall on them: the bars, the built-in orchestra and the
+  clips' places in the score then line up with the recording. Set the
+  score's tempo roughly first (it tells Corinzia how fast the beat is,
+  so it counts beats, not half beats); the beat is the meter's (a dotted
+  crotchet in 6/8), or choose one. "Every beat" puts each beat where it
+  was played; "Each bar" puts the downbeats there and spaces the beats
+  between them evenly. The tempo changes this makes play but are not
+  engraved; tempo marks in the stretch stay, with the tempo they now
+  have. The phrasing rules' slowing and fermata holds leave that stretch
+  alone (the recording has its own). One undo step; "Forget" returns to
+  the tempo marks. Not yet in movements with repeats. A selected clip has
   its gain, mute and name beside the strips, and can be cued in the
   score: its name with ▸ on a chosen player's staff where it starts
   (through the tempo), optionally with a line to where it ends. Audio tracks have effects,

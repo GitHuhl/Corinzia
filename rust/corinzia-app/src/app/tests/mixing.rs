@@ -641,3 +641,63 @@ fn the_mix_tab_panes_scroll_and_resize() {
     let old: crate::prefs::Prefs = serde_json::from_str(r#"{"theme": "Dark"}"#).unwrap();
     assert_eq!(old.layout, crate::prefs::Layout::default(), "preferences from before keep the defaults");
 }
+
+#[test]
+fn the_score_follows_a_recordings_tempo() {
+    use corinzia_perform::{perform_with, Style};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    let rate = a.playback.sample_rate;
+    let style = Style::of(&a.editor.project);
+    let m = a.editor.movement().unwrap().clone();
+    // A recording placed two bars in, its beat a little slower than the
+    // score's and slowing further: clicks over a decaying tone.
+    let tempo = perform_with(&m, style).tempo;
+    let at = tempo.seconds_at(8.0);
+    let unit = corinzia_perform::follow::beat_unit(&m, 8.0);
+    let beat = unit * 60.0 / tempo.tempo_at(8.0);
+    let mut clicks = vec![0.3];
+    for i in 0..16 {
+        clicks.push(clicks.last().unwrap() + beat * (1.1 + 0.25 * i as f64 / 15.0));
+    }
+    let mut x = vec![0.0f32; ((clicks.last().unwrap() + 1.0) * rate) as usize];
+    for &t in &clicks {
+        let s = (t * rate) as usize;
+        for i in 0..(0.06 * rate) as usize {
+            let e = (-(i as f64) / (0.012 * rate)).exp() as f32;
+            let tone = (2.0 * std::f64::consts::PI * 330.0 * i as f64 / rate).sin() as f32;
+            if let Some(v) = x.get_mut(s + i) {
+                *v += 0.6 * e * tone + 0.3 * e * if i % 3 == 0 { 1.0 } else { -0.5 };
+            }
+        }
+    }
+    a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
+    a.editor.caret = Frac::new(8, 4);
+    let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
+    let (track, clip) = a.selected_clip.unwrap();
+    assert!((a.editor.clip(track, clip).unwrap().at - at).abs() < 1e-9);
+    let marks = |a: &App| corinzia_model::notation::score_as(&a.editor.project, a.editor.movement().unwrap(), false).tempo.len();
+    let shown = marks(&a);
+    let _ = a.update(Message::Mix(mix::MixMsg::FollowClip));
+    assert!(a.editor.status.starts_with("The score follows"), "{}", a.editor.status);
+    // The score's beats now fall on the clicks.
+    let m2 = a.editor.movement().unwrap().clone();
+    assert!(m2.tempo.iter().any(|t| t.hidden));
+    let tempo2 = perform_with(&m2, style).tempo;
+    let first = (tempo2.quarter_at(at + clicks[0]) / unit).round() * unit;
+    let mut hit = 0;
+    for (i, c) in clicks.iter().enumerate() {
+        let t = tempo2.seconds_at(first + i as f64 * unit);
+        if (t - (at + c)).abs() < 0.03 {
+            hit += 1;
+        }
+    }
+    assert!(hit >= clicks.len() - 2, "{hit} of {} beats on their clicks", clicks.len());
+    // Nothing new on the page; one undo puts the tempo back; Forget removes it.
+    assert_eq!(marks(&a), shown);
+    a.editor.undo();
+    assert!(!a.editor.movement().unwrap().tempo.iter().any(|t| t.hidden));
+    a.editor.redo();
+    let _ = a.update(Message::Mix(mix::MixMsg::ForgetFollowed));
+    assert_eq!(a.editor.movement().unwrap().tempo, m.tempo);
+}

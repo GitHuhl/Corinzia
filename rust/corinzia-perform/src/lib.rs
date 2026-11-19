@@ -6,6 +6,7 @@
 //! It feeds both MIDI export (`document`) and the audio engine
 //! (`corinzia-audio`'s snapshots).
 
+pub mod follow;
 pub mod phrasing;
 pub mod tempo;
 
@@ -677,7 +678,8 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
     }
     let notes = apply_tweaks(m, notes);
     let mut perf = Performance { order, spans, tempo_points, meter_points, tempo, length_q: performed, notes };
-    phrasing::apply(&mut perf, &fermatas, style);
+    let followed = m.tempo.iter().filter(|t| t.hidden).map(|t| q(t.at)).reduce(f64::min);
+    phrasing::apply(&mut perf, &fermatas, style, followed);
     perf
 }
 

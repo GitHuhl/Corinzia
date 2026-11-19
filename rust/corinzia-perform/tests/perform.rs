@@ -23,7 +23,7 @@ fn movement(length: F, events: Vec<Event>) -> Movement {
         title: String::new(),
         length,
         revision: 0,
-        tempo: vec![Tempo { at: F::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
+        tempo: vec![Tempo { at: F::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false }],
         meter: vec![Meter { at: F::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: F::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
@@ -306,7 +306,7 @@ fn the_pedal_holds_notes_until_it_lifts() {
 fn audio_clips_are_cued_where_they_start_through_the_tempo() {
     use corinzia_score::score::LineKind;
     let mut m = fixture(); // two bars of 4/4 at 120: two quarters a second
-    m.tempo.push(Tempo { at: f(1, 1), bpm: 60.0, ramp: false, text: String::new() }); // bar 2 at 60
+    m.tempo.push(Tempo { at: f(1, 1), bpm: 60.0, ramp: false, text: String::new(), hidden: false }); // bar 2 at 60
     let clip = |id, at, length, cue: Option<u64>, line| {
         let mut c = AudioClip::new(id, "Rain", "rain.wav", 1, at);
         (c.length, c.cue, c.cue_line) = (length, cue, line);
@@ -473,4 +473,67 @@ fn short_and_accented_notes_are_played_as_players_do() {
     assert!((n[2].gate - 0.75).abs() < 1e-9 && n[2].velocity > n[2].sustain * 1.2);
     assert!(n[3].velocity > n[3].sustain + 0.1, "sfz: {} over {}", n[3].velocity, n[3].sustain);
     assert!((n[0].velocity - n[0].sustain).abs() < 1e-6, "no accent: no difference");
+}
+
+#[test]
+fn the_tempo_follows_a_recordings_beats() {
+    use corinzia_perform::follow::{follow, Follow};
+    let mut m = movement(F::int(4), vec![]); // four bars of 4/4 at 120
+    m.tempo.push(Tempo { at: f(2, 1), bpm: 100.0, ramp: false, text: "Meno mosso".into(), hidden: false }); // bar 3
+    // Ten beats from about quarter 2, slowing then quickening.
+    let mut beats = vec![1.03];
+    for g in [0.5, 0.55, 0.6, 0.65, 0.62, 0.58, 0.52, 0.5, 0.49] {
+        beats.push(beats.last().unwrap() + g);
+    }
+    for style in [Style { phrasing: false }, Style { phrasing: true }] {
+        let r = follow(&m, style, &beats, 1.0, Follow::Beats).unwrap();
+        assert_eq!((r.first_q, r.beats, r.shift), (2.0, 10, 0.0));
+        let mut n = m.clone();
+        n.tempo = r.tempo.clone();
+        let perf = perform_with(&n, style);
+        for (i, b) in beats.iter().enumerate() {
+            let t = perf.tempo.seconds_at(2.0 + i as f64);
+            assert!((t - b).abs() < 1e-6, "beat {i}: {t} for {b} (phrasing {})", style.phrasing);
+        }
+        // Before the beat before the first, as it was.
+        assert!((perf.tempo.seconds_at(1.0) - 0.5).abs() < 1e-9);
+        // The new tempo is not on the page; the mark in bar 3 is, with its tempo now.
+        let mark = r.tempo.iter().find(|t| t.text == "Meno mosso").unwrap();
+        assert!(!mark.hidden && (mark.bpm - 60.0 / 0.52).abs() < 1e-9, "{mark:?}");
+        assert!(r.tempo.iter().filter(|t| t.hidden).count() >= 9);
+        let s = corinzia_model::notation::score_as(&Project { movements: vec![n.clone()], ..Default::default() }, &n, false);
+        assert_eq!(s.tempo.len(), 2, "the opening tempo and the mark only");
+    }
+    // Bar by bar: the downbeats (quarters 4 and 8) and the ends land.
+    let r = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Bars).unwrap();
+    let mut n = m.clone();
+    n.tempo = r.tempo.clone();
+    let perf = perform_with(&n, Style { phrasing: false });
+    for (q, b) in [(2.0, beats[0]), (4.0, beats[2]), (8.0, beats[6]), (11.0, beats[9])] {
+        assert!((perf.tempo.seconds_at(q) - b).abs() < 1e-6, "{q}");
+    }
+    assert!(r.tempo.iter().filter(|t| t.hidden).count() < 6);
+    // Following again replaces what the first one put there.
+    let mut again = m.clone();
+    again.tempo = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap().tempo;
+    let twice = follow(&again, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap();
+    assert_eq!(twice.tempo.len(), again.tempo.len());
+}
+
+#[test]
+fn a_recording_that_starts_on_the_downbeat_moves_there() {
+    use corinzia_perform::follow::{beat_unit, follow, Follow};
+    let m = movement(F::int(2), vec![]);
+    let beats = [0.12, 0.62, 1.12, 1.62];
+    let r = follow(&m, Style { phrasing: false }, &beats, 1.0, Follow::Beats).unwrap();
+    assert_eq!((r.first_q, r.shift), (0.0, -0.12));
+    assert!((r.bpm - 120.0).abs() < 1e-6);
+    // The beat of 6/8 is a dotted crotchet; of 2/2, a minim.
+    let mut c = m.clone();
+    c.meter[0] = Meter { at: F::ZERO, num: 6, den: 8, pickup: false, beams: [0; 8] };
+    assert_eq!(beat_unit(&c, 0.0), 1.5);
+    c.meter[0].num = 2;
+    c.meter[0].den = 2;
+    assert_eq!(beat_unit(&c, 0.0), 2.0);
+    assert!(follow(&m, Style { phrasing: false }, &[1.0], 1.0, Follow::Beats).is_err());
 }

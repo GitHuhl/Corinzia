@@ -17,6 +17,7 @@ corinzia-model.workspace = true
 corinzia-perform.workspace = true
 corinzia-ensemble.workspace = true
 rubato = "0.16"
+rustfft = "6.4"
 symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "vorbis", "ogg"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

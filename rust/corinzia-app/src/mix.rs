@@ -24,6 +24,13 @@ pub enum MixMsg {
     ClipMute,
     ClipCue(String),
     ClipCueLine,
+    /// The score's tempo follows the selected clip's beats; its beat
+    /// ("Auto" or a note value); every beat or bar by bar.
+    FollowClip,
+    FollowUnit(String),
+    FollowBars(bool),
+    /// The movement's followed tempo removed (back to its marks).
+    ForgetFollowed,
     /// Split the selected clip at the playhead (or the caret).
     ClipSplit,
     ClipRemove,
@@ -419,8 +426,19 @@ fn audio_strip<'a>(p: &'a Project, play: &'a Playback, t: &'a corinzia_model::Tr
     container(body.align_x(Alignment::Center)).padding(10).style(crate::theme::strip(selected)).into()
 }
 
+/// How "Follow" reads a clip: the score's beat it is in (none: the
+/// meter's), and whether the tempo changes on every beat or each bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FollowOptions {
+    pub unit: Option<f64>,
+    pub bars: bool,
+}
+
+/// The beats "Follow" can count in: (label, quarters; none: the meter's).
+pub const FOLLOW_UNITS: [(&str, Option<f64>); 5] = [("Beat: as the meter", None), ("Beat: ♪", Some(0.5)), ("Beat: ♩", Some(1.0)), ("Beat: ♩.", Some(1.5)), ("Beat: 𝅗𝅥", Some(2.0))];
+
 /// The selected clip's settings: name, gain, mute, and its cue in the score.
-fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip) -> Element<'a, MixMsg> {
+fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip, follow: FollowOptions, followed: bool) -> Element<'a, MixMsg> {
     let mut staves: Vec<String> = vec!["None".into()];
     staves.extend(p.players.iter().map(|pl| pl.name.clone()));
     let cue = c.cue.and_then(|id| p.players.iter().find(|pl| pl.id == id)).map(|pl| pl.name.clone()).unwrap_or_else(|| "None".into());
@@ -444,7 +462,23 @@ fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip) -> Element<'
     if c.cue.is_some() {
         col = col.push(button(text(if c.cue_line { "Line to its end: on" } else { "Line to its end: off" }).size(12)).padding([4, 10]).style(crate::theme::tool(c.cue_line)).on_press(MixMsg::ClipCueLine));
     }
-    col.into()
+    // The score's tempo from the recording.
+    let units: Vec<String> = FOLLOW_UNITS.iter().map(|u| u.0.to_string()).collect();
+    let unit = FOLLOW_UNITS.iter().find(|u| u.1 == follow.unit).map(|u| u.0.to_string());
+    col = col.push(text("Tempo from the recording").size(12).style(crate::theme::dim));
+    col = col.push(
+        row![
+            pick_list(units, unit, MixMsg::FollowUnit).text_size(12).padding([3, 6]).width(Length::Fill),
+            crate::panels::tip(button(text(if follow.bars { "Each bar" } else { "Every beat" }).size(12)).padding([4, 8]).style(crate::theme::tool(false)).on_press(MixMsg::FollowBars(!follow.bars)), "Every beat: each beat lands where it was played. Each bar: the downbeats do, the beats between them evenly."),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    );
+    let mut follow_row = row![crate::panels::tip(button(text("Follow this clip").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::FollowClip), "Find the clip's beats and set the movement's tempo so that the score's beats fall on them (set the score's tempo roughly first: it says how fast the beat is)")].spacing(6);
+    if followed {
+        follow_row = follow_row.push(crate::panels::tip(button(text("Forget").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::ForgetFollowed), "Remove the tempo taken from a recording: back to the tempo marks"));
+    }
+    col.push(follow_row).into()
 }
 
 /// A track's sends: a button per bus (on: it sends there), and for each
@@ -626,7 +660,8 @@ fn effect_panel<'a>(p: &'a Project, play: &'a Playback, node: Id, ps: &Presets<'
     col.into()
 }
 
-pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>, layout: crate::prefs::Layout) -> Element<'a, MixMsg> {
+#[allow(clippy::too_many_arguments)]
+pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Option<Id>, ps: Presets<'a>, shown: &std::collections::HashMap<Id, corinzia_model::AutoTarget>, clip: Option<(Id, Id)>, layout: crate::prefs::Layout, follow: FollowOptions, movement: Option<&corinzia_model::Movement>) -> Element<'a, MixMsg> {
     let shown_lane = shown;
     // The faders take what the panel's height leaves after the strips'
     // controls.
@@ -641,7 +676,8 @@ pub fn view<'a>(p: &'a Project, play: &'a Playback, selected: Option<Id>, fx: Op
     strips = strips.push(master_strip(p, play, selected == Some(MASTER), fx, shown.get(&MASTER).copied()));
     let mut browser = column![].spacing(6).padding(12).width(layout.side_width);
     if let Some(c) = clip.and_then(|(t, c)| p.track(t)?.clips.iter().find(|x| x.id == c)) {
-        browser = browser.push(clip_panel(p, c)).push(Space::new().height(12));
+        let followed = movement.is_some_and(|m| m.tempo.iter().any(|t| t.hidden));
+        browser = browser.push(clip_panel(p, c, follow, followed)).push(Space::new().height(12));
     }
     if let Some(node) = fx.filter(|n| p.node(*n).is_some()) {
         browser = browser.push(effect_panel(p, play, node, &ps)).push(Space::new().height(12));

@@ -132,6 +132,10 @@ impl App {
             Share(t, host) => {
                 self.editor.share_instrument(t, host);
             }
+            FollowClip => self.follow_clip(),
+            FollowUnit(label) => self.follow.unit = mix::FOLLOW_UNITS.iter().find(|u| u.0 == label).and_then(|u| u.1),
+            FollowBars(b) => self.follow.bars = b,
+            ForgetFollowed => self.editor.forget_followed_tempo(),
             ClipSplit => {
                 if let Some((t, c)) = self.selected_clip {
                     let q = self.split_point();
@@ -429,6 +433,43 @@ impl App {
                 self.editor.status = "To split a clip, put the playhead (or the caret) inside it".into();
                 false
             }
+        }
+    }
+
+    /// The movement's tempo follows the selected clip: its beats found
+    /// (the score's tempo there saying about how fast), the score's beats
+    /// laid on them (see [`corinzia_perform::follow`]). One undo step; the
+    /// status bar says what was found.
+    pub(crate) fn follow_clip(&mut self) {
+        use corinzia_perform::follow::{beat_unit, follow, Follow};
+        let Some((track, clip)) = self.selected_clip else { return };
+        let (Some(c), Some(m)) = (self.editor.clip(track, clip).cloned(), self.editor.movement().cloned()) else { return };
+        let media = &mut self.playback.pool.media;
+        let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.editor.status = e;
+                return;
+            }
+        };
+        // The part of the file the clip plays.
+        let played = arrange::clip_length(&c, Some(&data));
+        let sr = data.sample_rate;
+        let (a, b) = ((c.offset * sr) as usize, ((c.offset + played) * sr) as usize);
+        let part: Vec<Vec<f32>> = data.channels.iter().map(|ch| ch[a.min(ch.len())..b.min(ch.len())].to_vec()).collect();
+        let style = corinzia_perform::Style::of(&self.editor.project);
+        let tempo = corinzia_perform::perform_with(&m, style).tempo;
+        let q = tempo.quarter_at(c.at);
+        let unit = self.follow.unit.unwrap_or_else(|| beat_unit(&m, q));
+        let guess = unit * 60.0 / tempo.tempo_at(q).max(1.0);
+        let beats: Vec<f64> = corinzia_audio::analysis::track_beats(&part, sr, Some(guess)).into_iter().map(|t| t + c.at).collect();
+        match follow(&m, style, &beats, unit, if self.follow.bars { Follow::Bars } else { Follow::Beats }) {
+            Ok(r) => {
+                self.editor.follow_tempo(track, clip, r.tempo, r.shift);
+                let bar = corinzia_perform::perform_with(self.editor.movement().unwrap_or(&m), style).tempo.bar_at(r.first_q).bar;
+                self.editor.status = format!("The score follows \"{}\": {} beats from bar {bar}, about {:.0} a minute", c.name, r.beats, r.bpm);
+            }
+            Err(e) => self.editor.status = format!("Could not follow \"{}\": {e}", c.name),
         }
     }
 

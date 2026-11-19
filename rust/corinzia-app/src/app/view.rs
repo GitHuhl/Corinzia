@@ -344,7 +344,7 @@ impl App {
                 column![
                     top,
                     crate::splitter::view(false, Message::SplitMixer),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout, self.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()

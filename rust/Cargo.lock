@@ -826,6 +826,7 @@ dependencies = [
  "pipewire",
  "rtrb",
  "rubato",
+ "rustfft",
  "serde",
  "serde_json",
  "symphonia",

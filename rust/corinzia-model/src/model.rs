@@ -258,6 +258,9 @@ pub struct Tempo {
     pub bpm: f64,
     pub ramp: bool,
     pub text: String,
+    /// Played, not engraved: a tempo map that follows a recording sets
+    /// one on each beat (or bar).
+    pub hidden: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meter {

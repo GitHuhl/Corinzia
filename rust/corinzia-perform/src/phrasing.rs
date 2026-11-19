@@ -38,7 +38,10 @@ const PER_DB: f32 = 0.84 / 30.0;
 /// The fermata's hold (tempo factor while it sounds).
 const FERMATA_HOLD: f64 = 0.5;
 
-pub fn apply(perf: &mut Performance, fermatas: &[(f64, f64)], style: Style) {
+/// `followed`: from here (quarters) the tempo follows a recording (see
+/// [`crate::follow`]), which already has its holds and slowings: no
+/// tempo rule changes it.
+pub fn apply(perf: &mut Performance, fermatas: &[(f64, f64)], style: Style, followed: Option<f64>) {
     // Tempo regions: (from, to, factor at from, factor at to, curve).
     let mut regions: Vec<Region> = Vec::new();
     for (a, b) in merge(fermatas) {
@@ -53,6 +56,9 @@ pub fn apply(perf: &mut Performance, fermatas: &[(f64, f64)], style: Style) {
         let len = (perf.length_q - bar.start_quarter).max(2.0f64.min(perf.length_q));
         let from = (perf.length_q - len).max(0.0);
         regions.push(Region { from, to: perf.length_q, f0: 1.0, f1: 0.72, runner: true });
+    }
+    if let Some(f) = followed {
+        regions.retain(|r| r.to <= f + 1e-9);
     }
     if !regions.is_empty() {
         perf.tempo_points = warp(&perf.tempo, &perf.tempo_points, &regions, perf.length_q);

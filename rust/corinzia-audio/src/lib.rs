@@ -7,12 +7,14 @@
 //! * [`media`]: sound files for audio tracks, decoded and resampled;
 //! * [`snapshot`]: the immutable, sample-positioned render plan built from
 //!   the project through the performance compiler;
+//! * [`analysis`]: beats in recorded sound (a tempo map that follows it);
 //! * [`bounce`]: audio export, rendered offline to a WAV file;
 //! * [`engine`]: the realtime core and its UI handle (wait-free queues);
 //! * [`workers`]: the threads instruments render on in parallel;
 //! * [`backend`]: live output: PipeWire on Linux (feature `pipewire`),
 //!   WASAPI on Windows (feature `wasapi`).
 
+pub mod analysis;
 pub mod bounce;
 pub mod engine;
 pub mod gui;

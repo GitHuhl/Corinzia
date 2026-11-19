@@ -665,7 +665,7 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
         movement.keys.push(Key { at: Frac::ZERO, fifths: 0, minor: false });
     }
     if movement.tempo.is_empty() {
-        movement.tempo.push(Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() });
+        movement.tempo.push(Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false });
     }
     movement.meter.sort_by(|a, b| a.at.cmp(&b.at));
     movement.navigation.sort_by(|a, b| a.at.cmp(&b.at));
@@ -892,7 +892,7 @@ fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff
     match bpm {
         Some(b) if first => {
             movement.tempo.retain(|t| t.at != at);
-            movement.tempo.push(Tempo { at, bpm: b, ramp: false, text: words.join(" ") });
+            movement.tempo.push(Tempo { at, bpm: b, ramp: false, text: words.join(" "), hidden: false });
         }
         _ => {
             // Words above the staff are directions (technique text, set

@@ -332,6 +332,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 bpm: t["bpm"].as_f64().unwrap_or(120.0),
                 ramp: t["ramp"].as_bool().unwrap_or(false),
                 text: t["text"].as_str().unwrap_or("").to_string(),
+                hidden: t["hidden"].as_bool().unwrap_or(false),
             });
         }
         for t in serde_json::from_str::<Vec<Value>>(&meter)? {
@@ -764,6 +765,9 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             let mut o = json!({"at": jfrac(t.at), "bpm": t.bpm, "ramp": t.ramp});
             if !t.text.is_empty() {
                 o["text"] = json!(t.text);
+            }
+            if t.hidden {
+                o["hidden"] = json!(true);
             }
             o
         }).collect());
