@@ -119,9 +119,13 @@ const BASE_SHORTEST: Frac = Frac { num: 3, den: 16 };
 
 /// Ideal space after a note of duration `d` when `shortest` is the
 /// movement's common shortest duration.
+/// (LilyPond's `Spacing_options::get_duration_space`: notes shorter than
+/// the shortest are spaced linearly, not by the logarithm, so that they
+/// do not crowd.)
 fn ideal_space(d: Frac, shortest: Frac) -> f32 {
     let r = (d.num as f64 / d.den as f64) / (shortest.num as f64 / shortest.den as f64);
-    (SPACING_INCREMENT * (SHORTEST_DURATION_SPACE + r.log2())) as f32
+    let k = if r < 1.0 { SHORTEST_DURATION_SPACE + r - 1.0 } else { SHORTEST_DURATION_SPACE + r.log2() };
+    (SPACING_INCREMENT * k) as f32
 }
 
 /// Fixed distances around barlines and between columns, measured from
@@ -657,6 +661,82 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
     a.brace || a.group != 0 && a.group == b.group
 }
 
+/// A chord's accidentals placed as LilyPond's AccidentalPlacement places
+/// them (`lily/accidental-placement.cc`; GNU LilyPond, GPL-3.0-or-later):
+/// those on one note name (its octaves) together in one column; the
+/// columns with most accidentals first, then from the outside in (the
+/// highest, the lowest, the next highest…), each as far right as it
+/// clears what is placed already, 0.2 apart and 0.15 from the heads.
+/// (LilyPond fits the glyphs' outlines; here their boxes.)
+/// A box (x0, x1, y0, y1).
+type AccBox = (f32, f32, f32, f32);
+
+fn place_accidentals(note: &mut Note) {
+    const PADDING: f32 = 0.2;
+    const RIGHT_PADDING: f32 = 0.15;
+    const VERTICAL_FUDGE: f32 = 0.1;
+    let font = Font::bravura();
+    // Boxes (x0, x1, y0, y1), y down from the middle line, x from the note's x.
+    let mut placed: Vec<(f32, f32, f32, f32)> = note
+        .heads
+        .iter()
+        .map(|h| (h.shift - RIGHT_PADDING, h.shift + HEAD_W, -h.pos as f32 * 0.5 - 0.5, -h.pos as f32 * 0.5 + 0.5))
+        .collect();
+    // The groups: by note name, then split where one octave holds two.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (j, h) in note.heads.iter().enumerate().filter(|(_, h)| h.accidental.is_some()) {
+        let name = h.dia.rem_euclid(7);
+        match groups.iter_mut().find(|g| g.iter().all(|&k| note.heads[k].dia != h.dia) && note.heads[g[0]].dia.rem_euclid(7) == name) {
+            Some(g) => g.push(j),
+            None => groups.push(vec![j]),
+        }
+    }
+    if groups.is_empty() {
+        return;
+    }
+    let top = |g: &Vec<usize>, n: &Note| g.iter().map(|&k| n.heads[k].pos).max().unwrap_or(0);
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then(top(a, note).cmp(&top(b, note))));
+    // Within each size, from the outside in: highest, lowest, next highest…
+    let mut order: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < groups.len() {
+        let mut same: std::collections::VecDeque<Vec<usize>> = groups[i..].iter().take_while(|g| g.len() == groups[i].len()).cloned().collect();
+        i += same.len();
+        let mut from_top = true;
+        while let Some(g) = if from_top { same.pop_back() } else { same.pop_front() } {
+            order.push(g);
+            from_top = !from_top;
+        }
+    }
+    let mut last_offset = 0.0f32;
+    for g in order {
+        // The group's boxes with each glyph's right edge at 0.
+        let boxes: Vec<(usize, f32, AccBox)> = g
+            .iter()
+            .map(|&k| {
+                let h = &note.heads[k];
+                let b = font.bbox(h.accidental.unwrap());
+                let y = -h.pos as f32 * 0.5;
+                (k, b.ne.0, (b.sw.0 - b.ne.0, 0.0, y - b.ne.1, y - b.sw.1))
+            })
+            .collect();
+        let mut offset = f32::INFINITY;
+        for &(_, _, (_, bx1, by0, by1)) in &boxes {
+            for &(px0, _, py0, py1) in &placed {
+                if by0 < py1 + VERTICAL_FUDGE && by1 > py0 - VERTICAL_FUDGE {
+                    offset = offset.min(px0 - bx1);
+                }
+            }
+        }
+        let offset = if offset.is_finite() { offset - PADDING } else { last_offset };
+        for &(k, right, (bx0, bx1, by0, by1)) in &boxes {
+            note.heads[k].acc_x = offset - right;
+            placed.push((bx0 + offset, bx1 + offset, by0, by1));
+        }
+        last_offset = offset;
+    }
+}
+
 /// A tie's indent and height for its width: LilyPond's slur shape law
 /// with the Tie's details (height limit 1, ratio 1/3).
 fn tie_shape(width: f32) -> (f32, f32) {
@@ -791,28 +871,7 @@ impl<'a> Engraver<'a> {
                     }
                 }
             }
-            // Columns right to left, top accidental first; a column takes an
-            // accidental if it clears the others in it by a sixth.
-            let left_edge = note.heads.iter().map(|h| h.shift).fold(0.0f32, f32::min);
-            let mut columns: Vec<(f32, Vec<i32>)> = Vec::new(); // (x of the column's left edge, positions)
-            let mut x_cursor = left_edge - 0.23; // LilyPond: 0.35 from accidental to head
-            for j in (0..k).rev() {
-                let Some(g) = note.heads[j].accidental else { continue };
-                let w = Font::bravura().bbox(g).width();
-                let pos = note.heads[j].pos;
-                let slot = columns.iter_mut().find(|(_, ps)| ps.iter().all(|p| (p - pos).abs() >= 6));
-                match slot {
-                    Some((x, ps)) => {
-                        ps.push(pos);
-                        note.heads[j].acc_x = *x;
-                    }
-                    None => {
-                        x_cursor -= w + 0.12;
-                        columns.push((x_cursor, vec![pos]));
-                        note.heads[j].acc_x = x_cursor;
-                    }
-                }
-            }
+            place_accidentals(note);
         }
     }
 
@@ -1145,7 +1204,7 @@ impl<'a> Engraver<'a> {
             }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
-                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0) * self.opt.spacing;
+                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.1) * self.opt.spacing;
             }
             breaks.push((x1, stretch));
             self.ms[mi].stretch = stretch - bar_stretch;
@@ -1373,7 +1432,28 @@ impl<'a> Engraver<'a> {
                 let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
                 let mut y = if n.value.base <= 1 { top + 1.0 } else { top + 2.0 };
                 if poly {
-                    y += if n.voice % 2 == 1 { -2.0 } else { 2.0 };
+                    let up = n.voice % 2 == 1;
+                    y += if up { -2.0 } else { 2.0 };
+                    // LilyPond's RestCollision: clear of the other voices'
+                    // notes at this moment by 0.75, moved in half spaces
+                    // (whole spaces within the staff, so it stays on its line).
+                    let b = self.font.bbox(g);
+                    let (r_top, r_bottom) = (y - b.ne.1 * s, y - b.sw.1 * s);
+                    let heads = self.notes.iter().filter(|o| o.part == n.part && o.voice != n.voice && !o.rest && o.start == n.start).flat_map(|o| o.heads.iter().map(move |h| (o.part, h.pos)));
+                    let (mut n_top, mut n_bottom) = (f32::MAX, f32::MIN);
+                    for (p, pos) in heads {
+                        let hy = self.y(p, pos);
+                        (n_top, n_bottom) = (n_top.min(hy - 0.5), n_bottom.max(hy + 0.5));
+                    }
+                    if n_top < f32::MAX {
+                        let need = if up { (r_bottom - n_top + 0.75).max(0.0) } else { (n_bottom - r_top + 0.75).max(0.0) };
+                        let mut steps = (need / 0.5).ceil() as i32;
+                        let pos_after = -((y - top - 2.0) * 2.0) as i32 + if up { steps } else { -steps };
+                        if (-5..=5).contains(&pos_after) {
+                            steps = (steps as f32 / 2.0).ceil() as i32 * 2;
+                        }
+                        y += if up { -0.5 } else { 0.5 } * steps as f32;
+                    }
                 }
                 if n.whole_bar && self.ms[n.measure].multi > 1 {
                     // An H-bar on the middle line between serifs, the count above.
@@ -1843,9 +1923,37 @@ impl<'a> Engraver<'a> {
             if n.rest {
                 continue;
             }
-            let side = |h: &Head| {
-                let above = !n.stem_up || n.heads.len() > 1 && h.pos > n.heads[0].pos && h.pos >= n.heads[n.heads.len() - 1].pos;
-                if above { -1.0 } else { 1.0 }
+            // LilyPond's tie directions (`Tie::get_default_dir`,
+            // `set_ties_config_standard_directions`): a single tie away from
+            // the stems (by its place on the staff without one); in a chord
+            // the lowest down, the highest up, a second split, the rest by
+            // their side of the middle line. (+1 down, −1 up.)
+            let tied: Vec<i32> = n.heads.iter().filter(|h| h.tie_out || h.tied_in).map(|h| h.pos).collect();
+            let side = |h: &Head| -> f32 {
+                if tied.len() <= 1 {
+                    return if n.has_stem() {
+                        if n.stem_up { 1.0 } else { -1.0 }
+                    } else if h.pos < 0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                }
+                let i = tied.iter().position(|&p| p == h.pos).unwrap_or(0);
+                if i == 0 {
+                    return 1.0;
+                }
+                if i + 1 == tied.len() {
+                    return -1.0;
+                }
+                // A second: its lower tie down, its upper up (the lower pair first).
+                if tied[i] - tied[i - 1] <= 1 {
+                    return -1.0;
+                }
+                if tied[i + 1] - tied[i] <= 1 {
+                    return 1.0;
+                }
+                if h.pos > 0 { -1.0 } else { 1.0 }
             };
             // The next piece of the same voice (in this system).
             let next = self.notes[i + 1..].iter().find(|o| o.part == n.part && o.voice == n.voice && o.start >= n.start + n.dur);
@@ -3456,5 +3564,8 @@ mod tests {
         let s = Frac::new(1, 8);
         let (e, q, h) = (ideal_space(Frac::new(1, 8), s), ideal_space(Frac::new(1, 4), s), ideal_space(Frac::new(1, 2), s));
         assert!((e - 2.4).abs() < 1e-4 && (q - e - 1.2).abs() < 1e-4 && (h - q - 1.2).abs() < 1e-4);
+        // Shorter than the shortest: linear (half the ratio below, not a whole increment).
+        let sixteenth = ideal_space(Frac::new(1, 16), s);
+        assert!((sixteenth - 1.2 * 1.5).abs() < 1e-4, "{sixteenth}");
     }
 }

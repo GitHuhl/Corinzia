@@ -959,3 +959,72 @@ fn a_slur_keeps_a_staccato_inside_it() {
     let dot_bottom = dot[0].1 + 0.2;
     assert!(end_y > dot_bottom, "the slur's end ({end_x}, {end_y}) passes under the dot (bottom {dot_bottom})");
 }
+
+#[test]
+fn a_chords_accidentals_stack_as_lilypond_stacks_them() {
+    // C♯ E♯ G♯ C♯': the C♯s an octave apart share a column; none overlap;
+    // all clear the heads.
+    let s = score(&[("treble", &["<cis' eis' gis' cis''>1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("accidentals-chord", &l);
+    let sharps = glyphs(&l, Glyph::Sharp);
+    assert_eq!(sharps.len(), 4);
+    let heads = glyphs(&l, Glyph::NoteheadWhole);
+    let head_x = heads.iter().map(|h| h.0).fold(f32::MAX, f32::min);
+    let w = corinzia_layout::font::Font::bravura().bbox(Glyph::Sharp);
+    for s in &sharps {
+        assert!(s.0 + w.width() <= head_x - 0.1, "left of the heads: {s:?} vs {head_x}");
+    }
+    // The two C♯ (lowest and highest) in one column.
+    let (lo, hi) = (sharps.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap(), sharps.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap());
+    assert!((lo.0 - hi.0).abs() < 1e-4, "octaves aligned: {lo:?} {hi:?}");
+    // No two overlap.
+    for (i, a) in sharps.iter().enumerate() {
+        for b in &sharps[i + 1..] {
+            let x_overlap = (a.0 - b.0).abs() < w.width();
+            let y_overlap = (a.1 - b.1).abs() < w.ne.1 - w.sw.1;
+            assert!(!(x_overlap && y_overlap), "{a:?} and {b:?} collide");
+        }
+    }
+}
+
+#[test]
+fn a_rest_moves_clear_of_the_other_voice() {
+    // Voice 1 rests while voice 2 (stems down) climbs to c'''.
+    let s = score(&[("treble", &["r4 r r r", "c'''4 g' e' c'"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("rest-collision", &l);
+    let rests = glyphs(&l, Glyph::RestQuarter);
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    let first_rest = rests.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let high = heads.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let b = corinzia_layout::font::Font::bravura().bbox(Glyph::RestQuarter);
+    let rest_bottom = first_rest.1 - b.sw.1;
+    assert!(rest_bottom <= high.1 - 0.5 - 0.7, "the rest ({first_rest:?}, bottom {rest_bottom}) clears c''' ({high:?})");
+    // Where the other voice is low, the rest stays at its voiced place.
+    let last = rests.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let top = l.staves[0].top;
+    assert!((last.1 - (top + 0.0)).abs() < 0.01, "{last:?}");
+}
+
+#[test]
+fn a_chords_ties_split_up_and_down() {
+    // <e' g' d'' f''>2~ q, around the middle line: the two lower ties curve
+    // down, the two upper up (an inner tie by its side of the middle line).
+    let s = score(&[("treble", &["<e' g' d'' f''>2~ q"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("chord-ties", &l);
+    let mut ties: Vec<(f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            // (the end's y, the middle's offset from it: < 0 curving up)
+            Item::Crescent { from, c1, .. } => Some((from.y, c1.y - from.y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ties.len(), 4);
+    ties.sort_by(|a, b| b.0.total_cmp(&a.0)); // lowest first
+    assert!(ties[0].1 > 0.0 && ties[1].1 > 0.0, "the lower two curve down: {ties:?}");
+    assert!(ties[2].1 < 0.0 && ties[3].1 < 0.0, "the upper two curve up: {ties:?}");
+}
