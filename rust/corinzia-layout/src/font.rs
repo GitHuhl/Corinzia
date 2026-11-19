@@ -265,6 +265,41 @@ impl Font {
         self.by_codepoint.get(&codepoint).copied().unwrap_or_default()
     }
 
+    /// The glyph's shape as horizontal bands (x0, x1, y0, y1), staff
+    /// spaces, y up: its box less its SMuFL cut-outs (the empty corners
+    /// an accidental's neighbour may tuck into); one band without any.
+    pub fn bands(&self, g: Glyph) -> Vec<(f32, f32, f32, f32)> {
+        let b = self.bbox(g);
+        let cut = |name: &str| self.anchor(g, name);
+        let (ne, se, nw, sw) = (cut("cutOutNE"), cut("cutOutSE"), cut("cutOutNW"), cut("cutOutSW"));
+        let mut ys: Vec<f32> = vec![b.sw.1, b.ne.1];
+        ys.extend([ne, se, nw, sw].iter().flatten().map(|p| p.1).filter(|y| *y > b.sw.1 && *y < b.ne.1));
+        ys.sort_by(f32::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+        ys.windows(2)
+            .map(|w| {
+                let mid = (w[0] + w[1]) / 2.0;
+                let mut x0 = b.sw.0;
+                let mut x1 = b.ne.0;
+                // Above a north cut-out's corner, its corner is empty; below a
+                // south one's, likewise.
+                if let Some(p) = ne.filter(|p| mid > p.1) {
+                    x1 = x1.min(p.0);
+                }
+                if let Some(p) = se.filter(|p| mid < p.1) {
+                    x1 = x1.min(p.0);
+                }
+                if let Some(p) = nw.filter(|p| mid > p.1) {
+                    x0 = x0.max(p.0);
+                }
+                if let Some(p) = sw.filter(|p| mid < p.1) {
+                    x0 = x0.max(p.0);
+                }
+                (x0, x1.max(x0), w[0], w[1])
+            })
+            .collect()
+    }
+
     /// An anchor (e.g. "stemUpSE"), staff spaces, y up.
     pub fn anchor(&self, g: Glyph, name: &str) -> Option<(f32, f32)> {
         self.anchors.get(g.name()).and_then(|a| a.get(name)).map(|p| (p[0], p[1]))
@@ -291,5 +326,18 @@ mod tests {
             assert!(face.glyph_index(ch).is_some(), "{} missing from the font", g.name());
             assert!(f.bbox(g).width() > 0.0, "{} has no bbox", g.name());
         }
+    }
+
+    #[test]
+    fn a_flat_is_narrow_beside_its_stem() {
+        let f = Font::bravura();
+        let b = f.bbox(Glyph::Flat);
+        let bands = f.bands(Glyph::Flat);
+        assert!(bands.len() >= 2, "{bands:?}");
+        // Its top band (the stem alone) is narrower than the bowl's.
+        let top = bands.iter().max_by(|a, b| a.3.total_cmp(&b.3)).unwrap();
+        assert!(top.1 < b.ne.0 - 0.1, "{top:?} vs {b:?}");
+        // The bands cover the box's height, without gaps.
+        assert!((bands[0].2 - b.sw.1).abs() < 1e-4 && (bands[bands.len() - 1].3 - b.ne.1).abs() < 1e-4);
     }
 }

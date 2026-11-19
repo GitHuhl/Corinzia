@@ -667,7 +667,8 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
 /// columns with most accidentals first, then from the outside in (the
 /// highest, the lowest, the next highest…), each as far right as it
 /// clears what is placed already, 0.2 apart and 0.15 from the heads.
-/// (LilyPond fits the glyphs' outlines; here their boxes.)
+/// (LilyPond fits the glyphs' outlines; here their boxes less the SMuFL
+/// cut-outs, the empty corners the font marks.)
 /// A box (x0, x1, y0, y1).
 type AccBox = (f32, f32, f32, f32);
 
@@ -711,13 +712,15 @@ fn place_accidentals(note: &mut Note) {
     let mut last_offset = 0.0f32;
     for g in order {
         // The group's boxes with each glyph's right edge at 0.
+        // Each glyph as its bands (its box less its cut-outs).
         let boxes: Vec<(usize, f32, AccBox)> = g
             .iter()
-            .map(|&k| {
+            .flat_map(|&k| {
                 let h = &note.heads[k];
-                let b = font.bbox(h.accidental.unwrap());
+                let gl = h.accidental.unwrap();
+                let right = font.bbox(gl).ne.0;
                 let y = -h.pos as f32 * 0.5;
-                (k, b.ne.0, (b.sw.0 - b.ne.0, 0.0, y - b.ne.1, y - b.sw.1))
+                font.bands(gl).into_iter().map(move |(x0, x1, y0, y1)| (k, right, (x0 - right, x1 - right, y - y1, y - y0)))
             })
             .collect();
         let mut offset = f32::INFINITY;
@@ -733,6 +736,7 @@ fn place_accidentals(note: &mut Note) {
             note.heads[k].acc_x = offset - right;
             placed.push((bx0 + offset, bx1 + offset, by0, by1));
         }
+        // (A glyph's bands all give it the same place.)
         last_offset = offset;
     }
 }
@@ -1453,6 +1457,25 @@ impl<'a> Engraver<'a> {
                             steps = (steps as f32 / 2.0).ceil() as i32 * 2;
                         }
                         y += if up { -0.5 } else { 0.5 } * steps as f32;
+                    } else if let Some(o) = self.notes.iter().find(|o| o.part == n.part && o.voice != n.voice && o.rest && o.start == n.start && (o.voice % 2 == 1) != up) {
+                        // Only rests here (LilyPond's rest-against-rest case):
+                        // where the upper voice's rest and the lower's overlap,
+                        // the lower moves down by half the overlap, the upper
+                        // up by the rest, in whole spaces.
+                        let og = rest_glyph(o.value.base);
+                        let ob = self.font.bbox(og);
+                        let oy = (if o.value.base <= 1 { top + 1.0 } else { top + 2.0 }) + if up { 2.0 } else { -2.0 };
+                        let (up_bottom, down_top) = if up { (r_bottom, oy - ob.ne.1) } else { (oy - ob.sw.1, r_top) };
+                        let mut diff = up_bottom - down_top;
+                        if diff > 0.0 {
+                            let down = (diff / 2.0).ceil();
+                            diff -= down;
+                            if !up {
+                                y += down;
+                            } else if diff > 0.0 {
+                                y -= diff.ceil();
+                            }
+                        }
                     }
                 }
                 if n.whole_bar && self.ms[n.measure].multi > 1 {
@@ -1862,51 +1885,63 @@ impl<'a> Engraver<'a> {
         }
     }
 
-    /// Ties, shaped and placed as LilyPond places a single tie
-    /// (`lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc`, the
-    /// Tie details in `scm/define-grobs.scm`; GNU LilyPond, GPL-3.0-or-later):
-    /// LilyPond's slur shape with the tie's height limit (1) and ratio
-    /// (1/3); ends 0.2 from the heads (0.35 past a stem in the way); a short
-    /// tie in a space centred on its heads' middle, on a line moved off it,
-    /// a tall one with its peak kept clear of the staff lines.
+    /// Ties, shaped and placed as LilyPond places them
+    /// (`lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc`,
+    /// `lily/tie.cc`, the Tie details in `scm/define-grobs.scm`; GNU
+    /// LilyPond, GPL-3.0-or-later): LilyPond's slur shape with the tie's
+    /// height limit (1) and ratio (1/3); ends 0.2 from the heads (0.35 past
+    /// a stem in the way); each tie half a space out from its head (in the
+    /// space beside a head on a line), a short tie centred in its space or
+    /// kept off the line, a tall one with its peak clear of the lines; a
+    /// chord's ties on one side moved apart where they would touch.
     fn draw_ties(&mut self) {
         const NOTE_HEAD_GAP: f32 = 0.2;
         const INTRA_SPACE_THRESHOLD: f32 = 1.25;
         const TIP_STAFF_LINE_CLEARANCE: f32 = 0.45;
         const CENTER_STAFF_LINE_CLEARANCE: f32 = 0.6;
+        const OUTER_TIE_VERTICAL_GAP: f32 = 0.25;
+        const TIE_TIE_COLLISION_DISTANCE: f32 = 0.45;
         let d = self.font.defaults;
         let system_end = self.ms.last().map(|m| m.x1).unwrap_or(self.left);
         let mut items = Vec::new();
-        // The tie at head height `y` (staff `top`) from x0 to x1, on side `dir`.
-        let tie = |x0: f32, x1: f32, y: f32, top: f32, dir: f32, id: u64| {
-            let x1 = x1.max(x0 + 0.6);
-            let w = x1 - x0;
-            let (indent, h) = {
-                let (i, h) = tie_shape(w);
-                (i.min(w / 3.1), h)
-            };
-            let pos = (y - top) * 2.0;
-            let on_line = |p: f32| {
-                let r = p.round();
-                (p - r).abs() < 1e-3 && (0.0..=8.0).contains(&r) && (r as i32) % 2 == 0
-            };
-            let within_staff = (1.0..=7.0).contains(&pos);
-            let mut dy = 0.0;
-            if h < INTRA_SPACE_THRESHOLD * 0.5 {
-                if on_line(pos) {
-                    dy = dir * TIP_STAFF_LINE_CLEARANCE * 0.5;
-                } else if within_staff {
-                    // Its ends and its peak either side of the heads' middle.
-                    dy = -dir * 0.375 * h;
-                }
-            } else {
-                let top_pos = (y + dir * h - top) * 2.0;
-                let r = top_pos.round();
-                if (top_pos - r).abs() < CENTER_STAFF_LINE_CLEARANCE && on_line(r) {
-                    dy = (r + CENTER_STAFF_LINE_CLEARANCE * dir) * 0.5 + top - (y + dir * h);
+        // `generate_configuration`: a tie from x0 to x1 for the head at
+        // `pos` (half spaces up from the middle line), `extra` half spaces
+        // further out, on side `dir` (+1 down); `chord`: the chord's head
+        // positions. Gives the ends' page y and the height.
+        let configure = |x0: f32, x1: f32, pos: i32, extra: i32, chord: (i32, i32), top: f32, dir: f32| -> (f32, f32) {
+            let (_, h) = tie_shape((x1 - x0).max(0.6));
+            let up = -dir; // LilyPond's direction, y up
+            let p = pos + up as i32 * (1 + extra);
+            let y = p as f32 * 0.5;
+            let on_line = |q: i32| q % 2 == 0 && (-4..=4).contains(&q);
+            let head_edge = pos as f32 * 0.5 + up * 0.5;
+            let mut delta = 0.0;
+            if (head_edge - y).abs() < 0.25 && !on_line(p) {
+                delta = head_edge - y + up * OUTER_TIE_VERTICAL_GAP;
+            }
+            let within_staff = (-3..=3).contains(&p);
+            if (chord.0..=chord.1).contains(&p) || within_staff {
+                if h < INTRA_SPACE_THRESHOLD * 0.5 {
+                    if on_line(p) {
+                        delta += up * TIP_STAFF_LINE_CLEARANCE * 0.5;
+                    } else if within_staff {
+                        // Its ends and its peak either side of the space's middle.
+                        delta = -up * 0.375 * h;
+                    }
+                } else {
+                    let top_y = y + delta + up * h;
+                    let r = (top_y * 2.0).round() as i32;
+                    if (top_y * 2.0 - r as f32).abs() < CENTER_STAFF_LINE_CLEARANCE && on_line(r) {
+                        delta = (r as f32 + CENTER_STAFF_LINE_CLEARANCE * up) * 0.5 - top_y;
+                    }
                 }
             }
-            let y = y + dy;
+            (top + 2.0 - (y + delta), h)
+        };
+        let shape = |x0: f32, x1: f32, y: f32, h: f32, dir: f32, id: u64| {
+            let x1 = x1.max(x0 + 0.6);
+            let w = x1 - x0;
+            let indent = tie_shape(w).0.min(w / 3.1);
             let c = |x: f32, hh: f32| pt(x, y + dir * hh);
             Item::Crescent {
                 from: pt(x0, y),
@@ -1917,6 +1952,42 @@ impl<'a> Engraver<'a> {
                 d2: c(x1 - indent, h - d.tie_midpoint_thickness / 2.0),
                 id,
             }
+        };
+        // A chord's ties (x0, x1, pos, dir, id): placed, those on one side
+        // moved out a half space at a time while their middles are nearer
+        // than LilyPond's tie-tie collision distance.
+        let place = |ties: &[(f32, f32, i32, f32, u64)], chord: (i32, i32), top: f32| -> Vec<Item> {
+            let mut extra = vec![0i32; ties.len()];
+            let at = |k: usize, extra: &[i32]| {
+                let (x0, x1, pos, dir, _) = ties[k];
+                let (y, h) = configure(x0, x1, pos, extra[k], chord, top, dir);
+                (y, h, y + dir * 0.75 * h)
+            };
+            for _ in 0..3 {
+                let mut moved = false;
+                for side in [1.0f32, -1.0] {
+                    // Inner to outer on this side.
+                    let mut idx: Vec<usize> = (0..ties.len()).filter(|&k| ties[k].3 == side).collect();
+                    idx.sort_by_key(|&k| ties[k].2 * -(side as i32));
+                    for w in idx.windows(2) {
+                        let (a, b) = (at(w[0], &extra).2, at(w[1], &extra).2);
+                        if (a - b).abs() < TIE_TIE_COLLISION_DISTANCE + d.tie_midpoint_thickness {
+                            extra[w[1]] += 1;
+                            moved = true;
+                        }
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+            (0..ties.len())
+                .map(|k| {
+                    let (x0, x1, _, dir, id) = ties[k];
+                    let (y, h, _) = at(k, &extra);
+                    shape(x0, x1, y, h, dir, id)
+                })
+                .collect()
         };
         for i in 0..self.notes.len() {
             let n = &self.notes[i];
@@ -1958,6 +2029,8 @@ impl<'a> Engraver<'a> {
             // The next piece of the same voice (in this system).
             let next = self.notes[i + 1..].iter().find(|o| o.part == n.part && o.voice == n.voice && o.start >= n.start + n.dur);
             let top = self.top(n.part);
+            let chord = (n.heads[0].pos, n.heads[n.heads.len() - 1].pos);
+            let mut out: Vec<(f32, f32, i32, f32, u64)> = Vec::new();
             for h in n.heads.iter().filter(|h| h.tie_out) {
                 let dir = side(h);
                 let y = self.y(n.part, h.pos);
@@ -1968,22 +2041,20 @@ impl<'a> Engraver<'a> {
                 match next {
                     Some(nx) if nx.start == n.start + n.dur => {
                         if let Some(h2) = nx.heads.iter().find(|x| x.dia == h.dia && x.alter == h.alter) {
-                            items.push(tie(x0, nx.x + h2.shift - NOTE_HEAD_GAP, y, top, dir, h.id));
+                            out.push((x0, nx.x + h2.shift - NOTE_HEAD_GAP, h.pos, dir, h.id));
                         }
                     }
                     // Continues in the next system: to the end of this one.
-                    None if n.start + n.dur >= self.range.1 => items.push(tie(x0, system_end - 0.3, y, top, dir, h.id)),
+                    None if n.start + n.dur >= self.range.1 => out.push((x0, system_end - 0.3, h.pos, dir, h.id)),
                     _ => {}
                 }
             }
+            items.extend(place(&out, chord, top));
             // Arriving from the previous system: from just before the note.
             let first_here = !self.notes[..i].iter().any(|o| o.part == n.part && o.voice == n.voice);
             if first_here && n.start == self.range.0 {
-                for h in n.heads.iter().filter(|h| h.tied_in) {
-                    let dir = side(h);
-                    let y = self.y(n.part, h.pos);
-                    items.push(tie(n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, y, self.top(n.part), dir, h.id));
-                }
+                let arriving: Vec<(f32, f32, i32, f32, u64)> = n.heads.iter().filter(|h| h.tied_in).map(|h| (n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, h.pos, side(h), h.id)).collect();
+                items.extend(place(&arriving, chord, top));
             }
         }
         self.out.items.extend(items);

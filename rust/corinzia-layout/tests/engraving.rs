@@ -1028,3 +1028,57 @@ fn a_chords_ties_split_up_and_down() {
     assert!(ties[0].1 > 0.0 && ties[1].1 > 0.0, "the lower two curve down: {ties:?}");
     assert!(ties[2].1 < 0.0 && ties[3].1 < 0.0, "the upper two curve up: {ties:?}");
 }
+
+#[test]
+fn rests_in_two_voices_do_not_collide() {
+    // Both voices rest together: the two rests do not overlap.
+    for (a, b) in [("r2 c''2", "r2 c'2"), ("r4 c''2.", "r4 c'2.")] {
+        let s = score(&[("treble", &[a, b])], (4, 4), 0);
+        let l = layout_line(&s, &Options::default());
+        let all: Vec<(f32, f32)> = [Glyph::RestHalf, Glyph::RestQuarter].iter().flat_map(|g| {
+            let bb = corinzia_layout::font::Font::bravura().bbox(*g);
+            glyphs(&l, *g).into_iter().map(move |r| (r.1 - bb.ne.1, r.1 - bb.sw.1))
+        }).collect();
+        assert_eq!(all.len(), 2, "{a} / {b}");
+        let (p, q) = (all[0], all[1]);
+        let overlap = p.1.min(q.1) - p.0.max(q.0);
+        assert!(overlap <= 1e-3, "{a} / {b}: the rests overlap by {overlap}: {all:?}");
+    }
+}
+
+#[test]
+fn flats_tuck_into_each_other_closer_than_their_boxes() {
+    // B♭ and E♭ a fourth apart: the lower flat's stem (narrow at the top)
+    // tucks under the upper's bowl, nearer than two boxes would allow.
+    let s = score(&[("treble", &["<bes' ees''>1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("accidentals-flats", &l);
+    let flats = glyphs(&l, Glyph::Flat);
+    assert_eq!(flats.len(), 2);
+    let w = corinzia_layout::font::Font::bravura().bbox(Glyph::Flat).width();
+    let span = (flats[0].0 - flats[1].0).abs();
+    assert!(span > 0.1 && span < w + 0.2 - 0.3, "the flats are {span} apart (boxes would need {})", w + 0.2);
+}
+
+#[test]
+fn a_chords_ties_keep_apart() {
+    // A five-note chord tied over: no two ties' middles nearer than
+    // LilyPond's tie-tie collision distance.
+    let s = score(&[("treble", &["<c' e' g' b' d''>2~ q"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("chord-ties-5", &l);
+    let mids: Vec<f32> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Crescent { from, c1, d1, .. } => Some(from.y + 0.75 * ((c1.y + d1.y) / 2.0 - from.y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(mids.len(), 5);
+    for (i, a) in mids.iter().enumerate() {
+        for b in &mids[i + 1..] {
+            assert!((a - b).abs() >= 0.45, "ties at {a} and {b} touch: {mids:?}");
+        }
+    }
+}
