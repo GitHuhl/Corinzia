@@ -5,7 +5,7 @@ members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-impo
 [workspace.package]
 version = "0.3.0"
 edition = "2021"
-license = "GPL-3.0-or-later"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
