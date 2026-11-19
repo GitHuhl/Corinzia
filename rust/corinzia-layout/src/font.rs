@@ -233,6 +233,9 @@ pub struct Font {
     pub units_per_space: f32,
 }
 
+/// A horizontal band of a glyph: (x0, x1, y0, y1).
+pub type Band = (f32, f32, f32, f32);
+
 impl Font {
     /// The vendored Bravura, parsed once.
     pub fn bravura() -> &'static Font {
@@ -263,6 +266,98 @@ impl Font {
     /// Box of a glyph by codepoint (display lists store codepoints).
     pub fn bbox_of(&self, codepoint: u32) -> BBox {
         self.by_codepoint.get(&codepoint).copied().unwrap_or_default()
+    }
+
+    /// The glyph's outline as `n` horizontal bands (x0, x1, y0, y1), staff
+    /// spaces, y up: in each, how far left and right the outline reaches,
+    /// as LilyPond's skylines from a glyph's stencil. Cached per glyph.
+    pub fn outline_bands(&self, g: Glyph, n: usize) -> Vec<(f32, f32, f32, f32)> {
+        thread_local! {
+            static CACHE: std::cell::RefCell<HashMap<(u32, usize), Vec<Band>>> = Default::default();
+        }
+        let key = (g.codepoint(), n);
+        if let Some(v) = CACHE.with(|c| c.borrow().get(&key).cloned()) {
+            return v;
+        }
+        let v = self.compute_outline_bands(g, n.max(1));
+        CACHE.with(|c| c.borrow_mut().insert(key, v.clone()));
+        v
+    }
+
+    fn compute_outline_bands(&self, g: Glyph, n: usize) -> Vec<(f32, f32, f32, f32)> {
+        struct Flat {
+            segs: Vec<((f32, f32), (f32, f32))>,
+            at: (f32, f32),
+            start: (f32, f32),
+        }
+        impl Flat {
+            fn line(&mut self, p: (f32, f32)) {
+                self.segs.push((self.at, p));
+                self.at = p;
+            }
+        }
+        impl ttf_parser::OutlineBuilder for Flat {
+            fn move_to(&mut self, x: f32, y: f32) {
+                self.at = (x, y);
+                self.start = (x, y);
+            }
+            fn line_to(&mut self, x: f32, y: f32) {
+                self.line((x, y));
+            }
+            fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+                let p0 = self.at;
+                for k in 1..=8 {
+                    let t = k as f32 / 8.0;
+                    let u = 1.0 - t;
+                    self.line((u * u * p0.0 + 2.0 * u * t * x1 + t * t * x, u * u * p0.1 + 2.0 * u * t * y1 + t * t * y));
+                }
+            }
+            fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+                let p0 = self.at;
+                for k in 1..=8 {
+                    let t = k as f32 / 8.0;
+                    let u = 1.0 - t;
+                    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                    self.line((a * p0.0 + b * x1 + c * x2 + d * x, a * p0.1 + b * y1 + c * y2 + d * y));
+                }
+            }
+            fn close(&mut self) {
+                let s = self.start;
+                self.line(s);
+            }
+        }
+        let b = self.bbox(g);
+        let fallback = vec![(b.sw.0, b.ne.0, b.sw.1, b.ne.1)];
+        let Ok(face) = ttf_parser::Face::parse(FONT_DATA, 0) else { return fallback };
+        let Some(gid) = char::from_u32(g.codepoint()).and_then(|c| face.glyph_index(c)) else { return fallback };
+        let mut flat = Flat { segs: vec![], at: (0.0, 0.0), start: (0.0, 0.0) };
+        if face.outline_glyph(gid, &mut flat).is_none() || flat.segs.is_empty() {
+            return fallback;
+        }
+        let k = 1.0 / self.units_per_space;
+        let segs: Vec<((f32, f32), (f32, f32))> = flat.segs.iter().map(|&(p, q)| ((p.0 * k, p.1 * k), (q.0 * k, q.1 * k))).collect();
+        let (y0, y1) = segs.iter().fold((f32::MAX, f32::MIN), |(lo, hi), (p, q)| (lo.min(p.1).min(q.1), hi.max(p.1).max(q.1)));
+        let h = (y1 - y0) / n as f32;
+        (0..n)
+            .filter_map(|i| {
+                let (a, c) = (y0 + h * i as f32, y0 + h * (i + 1) as f32);
+                // Each segment's part inside the band: its x extent.
+                let mut lo = f32::MAX;
+                let mut hi = f32::MIN;
+                for &(p, q) in &segs {
+                    let (pa, pb) = if p.1 <= q.1 { (p, q) } else { (q, p) };
+                    if pb.1 < a || pa.1 > c {
+                        continue;
+                    }
+                    let x_at = |y: f32| if (pb.1 - pa.1).abs() < 1e-6 { pa.0 } else { pa.0 + (pb.0 - pa.0) * (y - pa.1) / (pb.1 - pa.1) };
+                    for x in [x_at(pa.1.max(a)), x_at(pb.1.min(c))] {
+                        lo = lo.min(x);
+                        hi = hi.max(x);
+                    }
+                }
+                (lo <= hi).then_some((lo, hi, a, c))
+            })
+            .collect()
     }
 
     /// The glyph's shape as horizontal bands (x0, x1, y0, y1), staff
@@ -337,6 +432,13 @@ mod tests {
         // Its top band (the stem alone) is narrower than the bowl's.
         let top = bands.iter().max_by(|a, b| a.3.total_cmp(&b.3)).unwrap();
         assert!(top.1 < b.ne.0 - 0.1, "{top:?} vs {b:?}");
+        // Its outline, in ten bands, says the same: narrow at the top.
+        let ob = f.outline_bands(Glyph::Flat, 10);
+        assert_eq!(ob.len(), 10);
+        let (o_top, o_mid) = (ob[9], ob[3]);
+        assert!(o_top.1 - o_top.0 < o_mid.1 - o_mid.0, "{ob:?}");
+        // A double sharp, without cut-outs, has an outline too.
+        assert!(f.outline_bands(Glyph::DoubleSharp, 10).len() >= 8);
         // The bands cover the box's height, without gaps.
         assert!((bands[0].2 - b.sw.1).abs() < 1e-4 && (bands[bands.len() - 1].3 - b.ne.1).abs() < 1e-4);
     }

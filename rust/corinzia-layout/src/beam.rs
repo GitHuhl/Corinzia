@@ -40,6 +40,8 @@ const BEAM_EPS: f32 = 1e-3;
 /// The Beam's `damping`.
 const DAMPING: f32 = 1.0;
 const STAFF_RADIUS: f32 = 2.0;
+const COLLISION_PENALTY: f32 = 500.0;
+const COLLISION_PADDING: f32 = 0.5;
 
 /// A stem of the group: its x, and its heads' lowest and highest staff
 /// positions (half spaces up from the middle line).
@@ -63,6 +65,11 @@ pub struct Problem {
     pub thickness: f32,
     pub translation: f32,
     pub line_thickness: f32,
+    /// Other things under or over the beam (other voices' notes and rests,
+    /// accidentals, clefs…): (x, y extent (low, high), factor), y up from
+    /// the middle line; the factor scales the penalty (√width for a glyph,
+    /// a tenth for a stem).
+    pub collisions: Vec<(f32, (f32, f32), f32)>,
 }
 
 struct StemInfo {
@@ -236,7 +243,9 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
     let sit = (bt - lt) / 2.0;
     let hang = 1.0 - sit;
     let base = [0.0, sit, 0.5, hang];
-    let quants: Vec<f32> = (-REGION_SIZE..REGION_SIZE).flat_map(|i| base.map(|b| i as f32 + b)).collect();
+    // (A wider region where something is in the way.)
+    let region = REGION_SIZE + if pb.collisions.is_empty() { 0 } else { 2 };
+    let quants: Vec<f32> = (-region..region).flat_map(|i| base.map(|b| i as f32 + b)).collect();
     let range_ok = |d: usize, y: f32| {
         let s = &pb.stems[if d == 0 { 0 } else { n - 1 }];
         let widen = 0.5 + (pb.edge_counts[d].max(1) as f32 - 1.0) * tr + bt * 0.5;
@@ -299,6 +308,21 @@ pub fn solve(pb: &Problem) -> [f32; 2] {
             s += STEM_LENGTH_DEMERIT_FACTOR * shrink_extra_weight(dir * (beam_y - info.ideal), 1.5);
         }
         dem += s / n as f32;
+        // score_collisions: within half a space of something, the penalty
+        // rising as the cube of how much nearer.
+        for &(cx, (lo, hi), factor) in &pb.collisions {
+            let x = cx - x0;
+            if x < 0.0 || x > x_span {
+                continue;
+            }
+            let centre = if x_span != 0.0 { y[1] * x / x_span + y[0] * (x_span - x) / x_span } else { y[0] };
+            // The beams at x: the outer one and those towards the notes.
+            let inner = centre - dir * (pb.beam_count.max(1) as f32 - 1.0) * tr;
+            let (blo, bhi) = (centre.min(inner) - bt / 2.0, centre.max(inner) + bt / 2.0);
+            let dist = if bhi < lo { lo - bhi } else if blo > hi { blo - hi } else { 0.0 };
+            let free = (COLLISION_PADDING - dist).max(0.0) / COLLISION_PADDING;
+            dem += factor * free.powi(3) * COLLISION_PENALTY;
+        }
         // score_horizontal_inter_quants: a level beam between two lines.
         if dy == 0.0 && y[0].abs() < STAFF_RADIUS {
             let yshift = y[0] - 0.5;
@@ -337,6 +361,7 @@ mod tests {
             thickness: 0.48,
             translation: 0.75,
             line_thickness: 0.1,
+            collisions: vec![],
         }
     }
 
@@ -366,6 +391,19 @@ mod tests {
         // Low, high, high, low (stems up): the beam does not slope.
         let y = solve(&pb(&[(0.0, -4), (2.0, 0), (4.0, 0), (6.0, -3)], 1.0, 1));
         assert_eq!(y[0], y[1], "{y:?}");
+    }
+
+    #[test]
+    fn a_beam_moves_clear_of_what_is_in_its_way() {
+        // Stems up over g' (the beam ideally near 1.5); something at 1.0..2.2
+        // in the middle of the group pushes it up and away.
+        let mut p = pb(&[(0.0, -3), (2.0, -3), (4.0, -3)], 1.0, 1);
+        let free = solve(&p);
+        p.collisions = vec![(2.0, (1.0, 2.2), 1.0)];
+        let y = solve(&p);
+        assert!(y[0] > free[0], "{y:?} vs {free:?}");
+        let centre = (y[0] + y[1]) / 2.0;
+        assert!(centre - 0.24 >= 2.2 + 0.4, "the beam clears it: {y:?}");
     }
 
     #[test]
