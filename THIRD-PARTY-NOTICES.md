@@ -10,6 +10,7 @@ listed here, and say so in the files that contain them.
 | `rust/corinzia-audio/src/analysis.rs` (`onset_strength`, `log_bands`) | SoundCraft, `crates/dsp/src/offline.rs` (`detect_transients`, `log_bands`), https://github.com/storytold/soundcraft | MIT |
 | `rust/corinzia-ensemble/src/effects.rs` (the compressor's and gate's gain computers and ballistics) | SoundCraft, `crates/dsp/src/plugins/dynamics.rs` | MIT |
 | `rust/corinzia-audio/src/loudness.rs` (K-weighting design, true-peak interpolator) | SoundCraft, `crates/dsp/src/meter.rs` | MIT |
+| `rust/corinzia-layout/src/beam.rs` (beam quanting, stems' ideal and shortest lengths) | GNU LilyPond, `lily/beam-quanting.cc`, `lily/stem.cc`, `scm/define-grobs.scm` | GPL-3.0-or-later |
 | `rust/corinzia-layout/src/slur.rs` (slur placement and scoring) | GNU LilyPond, `lily/slur-scoring.cc`, `lily/slur-configuration.cc`, `lily/bezier-bow.cc`, `scm/layout-slur.scm`, https://lilypond.org | GPL-3.0-or-later |
 | `rust/corinzia-layout/src/layout.rs` (dynamics' and hairpins' padding; single ties' shape and placement, `tie_shape` and `draw_ties`) | GNU LilyPond, `scm/define-grobs.scm` (DynamicLineSpanner, Tie), `lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc` | GPL-3.0-or-later |
 
