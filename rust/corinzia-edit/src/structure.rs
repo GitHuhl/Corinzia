@@ -603,7 +603,7 @@ pub fn parse_pickup(text: &str, beat: Frac) -> Option<Option<Frac>> {
     (len > Frac::ZERO).then_some(Some(len))
 }
 pub fn set_tempo(m: &mut Movement, at: Frac, t: &TempoSpec) {
-    replace_at(&mut m.tempo, at, Tempo { at, bpm: t.bpm, ramp: false, text: t.text.clone() }, |k| k.at);
+    replace_at(&mut m.tempo, at, Tempo { at, bpm: t.bpm, ramp: false, text: t.text.clone(), hidden: false }, |k| k.at);
 }
 pub fn set_barline(m: &mut Movement, at: Frac, kind: BarKind, ids: &mut Ids) {
     replace_at(&mut m.barlines, at, Barline { id: ids.next(), at, kind }, |k| k.at);

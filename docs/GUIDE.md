@@ -148,8 +148,12 @@ the output), automation playback and saving plugin settings.
   reused until a bundle changes. Rescan plugins starts afresh.
 * **Effects, buses and the master** (Mix tab): each strip has an effect
   chain (CLAP or VST3 effects, or the built-in Corinzia Gain, Reverb, EQ
-  (low and high cut, shelves, two bells) and Limiter (look-ahead, never
-  over its ceiling)), and effects can be bypassed or reordered. Tracks can also go to
+  (low and high cut, shelves, two bells), Limiter (look-ahead, never
+  over its ceiling), Compressor (threshold, ratio, attack, release, a
+  soft knee, makeup, a sidechain high-pass so the bass does not pump it,
+  and a wet/dry mix for parallel compression) and Gate (a downward
+  expander: threshold, ratio, range, attack, hold, release)), and effects
+  can be bypassed or reordered. Tracks can also go to
   a bus instead of the master, and send to buses post-fader. Buses have
   their own effects, fader, pan and mute; the master strip has effects and
   a fader. A selected effect shows its editor button and a slider per
@@ -179,14 +183,35 @@ the output), automation playback and saving plugin settings.
   mark, in the score and the arrange view.
 * **Recent scores:** the Recent menu beside Open lists the last eight
   scores opened or saved.
-* **The Mix tab's panes:** the wheel scrolls the arrange view's tracks,
-  Shift+wheel along time, Ctrl+wheel zooms; Alt+wheel or dragging a
-  track's bottom edge (in the headers) makes the tracks taller or
-  shorter; drag the headers' edge to widen them. Each header has mute (M)
-  and solo (S) buttons. Drag the bar between the arrange view and the
-  mixer, or before the side panel, to resize them; the faders grow with
-  the mixer. The sizes are remembered. A strip's automation lane and
-  dynamics controller are in the side panel when the strip is selected.
+* **The Mix tab's panes:** the arrange view's tracks have numbered
+  headers (name, kind, mute and solo, a level meter along the foot), and
+  each track's notes are items in its colour, with the notes inside; the
+  ruler has the bars and their beats. The mouse and keys work as
+  in the common DAW layout:
+  - the wheel zooms along time around the pointer; Ctrl+wheel makes the
+    tracks taller or shorter; Alt+wheel (or Shift+wheel, or a sideways
+    swipe) scrolls along time; Ctrl+Alt+wheel scrolls up and down;
+  - + and − zoom along time, PageUp and PageDown the tracks' height,
+    Ctrl+PageDown shows the whole movement;
+  - Space plays and stops, Home or W goes to the start, End to the end,
+    R turns the loop (the cycle) on or off;
+  - Ctrl+T adds a track, as does a double-click below the last track or
+    in the empty space after the mixer's strips; Ctrl+M hides or shows
+    the mixer; Ctrl+Alt+Up and Down select the track above or below;
+  - S splits the selected clip, Delete removes it.
+
+  Dragging a track's bottom edge (in the headers) also sets the tracks'
+  height; drag the headers' edge to widen them. Drag the bar between the
+  arrange view and the mixer, or before the side panel, to resize them;
+  the faders grow with the mixer. The sizes are remembered.
+* **The mixer:** the master first, then a narrow strip per track and
+  bus, top to bottom: the rack (the instrument, or an audio track's
+  sound, then the effects, each with its on/off light, then an empty
+  slot to add one), the output, the sends, a pan knob (drag up or down,
+  double-click to centre), the fader beside its meter, the level, mute
+  and solo, and the track's number and name on its colour (click it to
+  select the strip). A strip's automation lane and dynamics controller
+  are in the side panel when the strip is selected.
 * **Audio tracks** (Mix tab): "+ Audio track", then "Add sound…" puts a
   clip at the caret. Or drag WAV, FLAC, MP3 or Ogg files in from your
   file manager (Wayland and X11 alike): dropped on an audio track in the
@@ -202,7 +227,28 @@ the output), automation playback and saving plugin settings.
   when stopped (click the ruler to put it there); Alt+click on a clip
   splits it right there, on the beat (Shift too: anywhere). The two
   halves play as the one did: the fade in stays on the first, the fade
-  out on the second. A selected clip has
+  out on the second.
+* **Clip fades, gain and silence:** each fade has a curve (Fades, beside
+  the strips: linear, equal power, S-curve, fast or slow), drawn as it
+  sounds. Where two clips on a track overlap they crossfade at equal
+  power over the overlap. Drag a clip's gain line (the thin line across
+  it, 0 dB three quarters up) up or down to change its gain (in half
+  dB; Shift: finely). "Strip silence" cuts the selected clip where it is
+  silent (under −50 dB for a quarter of a second or more): the quiet
+  parts go, the rest stay where they were, with short fades at the cuts.
+* **Tempo from a recording** (Mix tab, a clip selected): "Follow this
+  clip" finds the clip's beats and sets the movement's tempo so that the
+  score's beats fall on them: the bars, the built-in orchestra and the
+  clips' places in the score then line up with the recording. Set the
+  score's tempo roughly first (it tells Corinzia how fast the beat is,
+  so it counts beats, not half beats); the beat is the meter's (a dotted
+  crotchet in 6/8), or choose one. "Every beat" puts each beat where it
+  was played; "Each bar" puts the downbeats there and spaces the beats
+  between them evenly. The tempo changes this makes play but are not
+  engraved; tempo marks in the stretch stay, with the tempo they now
+  have. The phrasing rules' slowing and fermata holds leave that stretch
+  alone (the recording has its own). One undo step; "Forget" returns to
+  the tempo marks. Not yet in movements with repeats. A selected clip has
   its gain, mute and name beside the strips, and can be cued in the
   score: its name with ▸ on a chosen player's staff where it starts
   (through the tempo), optionally with a line to where it ends. Audio tracks have effects,
@@ -329,7 +375,12 @@ the output), automation playback and saving plugin settings.
   a vector PDF straight from the engraver, MIDI and MusicXML 4.0, and
   audio: the movement as it plays, mixed to a 24-bit WAV (rendered offline
   by its own plugin instances, with the reverb tail; Escape stops it;
-  `--export out.wav` works headless too).
+  `--export out.wav` works headless too). When it is written, the status
+  bar gives its integrated loudness (LUFS) and true peak (dBTP), measured
+  as EBU R128 does. "Audio stems" writes each track on its own (through
+  its effects, the buses and the master) beside the name chosen: "Take -
+  Violin I.wav", "Take - Viola.wav" and so on; tracks muted in the mix
+  are left out.
   `corinzia score.project --export score.pdf` works headless.
 
 ## Scripting and AI agents

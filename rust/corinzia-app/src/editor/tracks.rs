@@ -93,6 +93,81 @@ impl Editor {
         Some(id)
     }
 
+    /// The movement's tempo set to follow a recording (see
+    /// [`corinzia_perform::follow`]); its clip moved by `shift` seconds
+    /// first (trimmed at the front where that would start it before the
+    /// movement). One undo step.
+    pub fn follow_tempo(&mut self, track: Id, clip: Id, tempo: Vec<Tempo>, shift: f64) {
+        let before = self.snapshot();
+        if shift != 0.0 {
+            if let Some(c) = self.project.tracks.iter_mut().find(|t| t.id == track).and_then(|t| t.clips.iter_mut().find(|c| c.id == clip)) {
+                let at = c.at + shift;
+                if at < 0.0 {
+                    c.offset -= at;
+                    if c.length > 0.0 {
+                        c.length = (c.length + at).max(0.01);
+                    }
+                }
+                c.at = at.max(0.0);
+            }
+        }
+        let mi = self.movement;
+        let Some(m) = self.project.movements.get_mut(mi) else { return };
+        m.tempo = tempo;
+        self.commit_with(before, "Follow a recording's tempo", true, None);
+    }
+
+    /// The tempo taken from a recording removed: the movement's tempo
+    /// marks alone again.
+    pub fn forget_followed_tempo(&mut self) {
+        let before = self.snapshot();
+        let mi = self.movement;
+        let Some(m) = self.project.movements.get_mut(mi) else { return };
+        let n = m.tempo.len();
+        m.tempo.retain(|t| !t.hidden);
+        if m.tempo.len() != n {
+            self.commit_with(before, "Forget a recording's tempo", true, None);
+            self.status = "The tempo follows the marks again".into();
+        }
+    }
+
+    /// A clip replaced by the parts of it at `pieces` ((from, to) seconds
+    /// into the clip), each where it was: the first keeps the clip's id and
+    /// fade in, the last its fade out, the cuts between get 5 ms fades.
+    /// One undo step.
+    pub fn split_into(&mut self, track: Id, clip: Id, pieces: &[(f64, f64)]) -> Vec<Id> {
+        let Some(c) = self.clip(track, clip).cloned() else { return vec![] };
+        if pieces.is_empty() {
+            return vec![];
+        }
+        let before = self.snapshot();
+        let ids: Vec<Id> = (0..pieces.len()).map(|i| if i == 0 { clip } else { self.project.allocate_id() }).collect();
+        let n = pieces.len();
+        let parts: Vec<AudioClip> = pieces
+            .iter()
+            .zip(&ids)
+            .enumerate()
+            .map(|(i, (&(a, b), &id))| {
+                let len = (b - a).max(0.01);
+                let edge = 0.005f64.min(len / 2.0);
+                AudioClip {
+                    id,
+                    at: c.at + a,
+                    offset: c.offset + a,
+                    length: len,
+                    fade_in: if i == 0 && a < 1e-9 { c.fade_in.min(len) } else { edge },
+                    fade_out: if i + 1 == n { c.fade_out.min(len) } else { edge },
+                    ..c.clone()
+                }
+            })
+            .collect();
+        let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return vec![] };
+        t.clips.retain(|x| x.id != clip);
+        t.clips.extend(parts);
+        self.commit_with(before, "Strip silence", true, None);
+        ids
+    }
+
     pub fn delete_clip(&mut self, track: Id, clip: Id) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };

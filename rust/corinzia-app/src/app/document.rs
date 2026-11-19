@@ -133,7 +133,36 @@ impl App {
     /// Starts an audio export of the movement edited: its own plugins,
     /// restored from the live ones' current settings.
     pub(crate) fn start_bounce(&mut self, path: PathBuf) {
+        self.stems.clear();
+        self.stems_done = None;
+        self.bounce_project(self.editor.project.clone(), path);
+    }
+
+    /// Starts exporting each track on its own: "name - Track.wav" beside
+    /// `path`, one after another (tracks muted in the mix left out).
+    pub(crate) fn start_stems(&mut self, path: PathBuf) {
+        let tracks: Vec<(corinzia_model::Id, PathBuf)> = self.editor.project.tracks.iter().filter(|t| !t.mute).map(|t| (t.id, files::stem_path(&path, &t.name))).collect();
+        if tracks.is_empty() {
+            self.editor.status = "No tracks to export".into();
+            return;
+        }
+        self.stems_done = Some((tracks.len(), path.parent().map(Into::into).unwrap_or_default()));
+        self.stems = tracks.into();
+        self.next_stem();
+    }
+
+    /// The next stem: the project with every other track muted.
+    fn next_stem(&mut self) {
+        let Some((track, path)) = self.stems.pop_front() else { return };
         let mut project = self.editor.project.clone();
+        for t in project.tracks.iter_mut() {
+            t.mute = t.id != track;
+            t.solo = false;
+        }
+        self.bounce_project(project, path);
+    }
+
+    fn bounce_project(&mut self, mut project: corinzia_model::Project, path: PathBuf) {
         self.playback.pool.store_states(&mut project);
         let folder = self.path.as_deref().and_then(|p| p.parent());
         match corinzia_audio::bounce::Bounce::new(&project, self.editor.movement, self.playback.sample_rate, self.playback.max_frames(), folder, path) {
@@ -154,14 +183,17 @@ impl App {
             done = b.step(0.1);
         }
         if !done {
-            self.editor.status = format!("Exporting audio… {:.0}% (Escape stops)", b.progress() * 100.0);
+            self.editor.status = match self.stems_done {
+                Some((n, _)) => format!("Exporting stem {} of {n}… {:.0}% (Escape stops)", n - self.stems.len(), b.progress() * 100.0),
+                None => format!("Exporting audio… {:.0}% (Escape stops)", b.progress() * 100.0),
+            };
             return;
         }
         let b = self.bounce.take().unwrap();
         let (path, warnings) = (b.path.clone(), b.warnings.clone());
         self.editor.status = match b.finish() {
             Ok(s) => {
-                let mut msg = format!("Exported {} ({:.1} s, peak {:.1} dBFS)", path.display(), s.seconds, s.peak_db);
+                let mut msg = format!("Exported {} ({:.1} s, {:.1} LUFS, true peak {:.1} dBTP)", path.display(), s.seconds, s.lufs, s.true_peak_db);
                 if s.clipped > 0 {
                     msg += &format!(" — {} samples clipped: lower the master or add a limiter", s.clipped);
                 }
@@ -172,6 +204,17 @@ impl App {
             }
             Err(e) => format!("Export failed: {e}"),
         };
+        // Stems: the next, or all done.
+        if self.editor.status.starts_with("Exported") {
+            if !self.stems.is_empty() {
+                self.next_stem();
+            } else if let Some((n, folder)) = self.stems_done.take() {
+                self.editor.status = format!("Exported {n} stems to {}", if folder.as_os_str().is_empty() { ".".into() } else { folder.display().to_string() });
+            }
+        } else {
+            self.stems.clear();
+            self.stems_done = None;
+        }
     }
 
     /// Exports the movement or the work to a file (audio goes through

@@ -165,7 +165,7 @@ fn header() -> Movement {
         title: String::new(),
         length: f(8, 1),
         revision: 0,
-        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false }],
         meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],

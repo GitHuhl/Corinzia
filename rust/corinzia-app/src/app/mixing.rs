@@ -108,11 +108,7 @@ impl App {
                 let id = self.editor.add_bus("");
                 self.strip = Some(id);
             }
-            AddAudioTrack => {
-                let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
-                let id = self.editor.add_audio_track(&format!("Audio {n}"));
-                self.strip = Some(id);
-            }
+            AddAudioTrack => self.new_audio_track(),
             RemoveTrack(t) => {
                 self.editor.remove_audio_track(t);
                 if self.strip == Some(t) {
@@ -132,6 +128,19 @@ impl App {
             Share(t, host) => {
                 self.editor.share_instrument(t, host);
             }
+            FollowClip => self.follow_clip(),
+            FadeInShape(n) => {
+                let s = corinzia_model::FadeShape::ALL.into_iter().find(|s| s.name() == n).unwrap_or_default();
+                self.edit_selected_clip("Fade shape", false, move |c| c.fade_in_shape = s);
+            }
+            FadeOutShape(n) => {
+                let s = corinzia_model::FadeShape::ALL.into_iter().find(|s| s.name() == n).unwrap_or_default();
+                self.edit_selected_clip("Fade shape", false, move |c| c.fade_out_shape = s);
+            }
+            StripSilence => self.strip_silence(),
+            FollowUnit(label) => self.follow.unit = mix::FOLLOW_UNITS.iter().find(|u| u.0 == label).and_then(|u| u.1),
+            FollowBars(b) => self.follow.bars = b,
+            ForgetFollowed => self.editor.forget_followed_tempo(),
             ClipSplit => {
                 if let Some((t, c)) = self.selected_clip {
                     let q = self.split_point();
@@ -370,7 +379,7 @@ impl App {
         }
         let layout = self.prefs.layout;
         let top = 47.0;
-        let bottom = self.window.height - 28.0 - layout.mixer_height - crate::splitter::SIZE;
+        let bottom = self.window.height - 28.0 - if self.mixer_hidden { 0.0 } else { layout.mixer_height + crate::splitter::SIZE };
         if p.y < top + arrange::RULER || p.y > bottom {
             return None;
         }
@@ -413,6 +422,63 @@ impl App {
         }
     }
 
+    /// The Mix tab's own keys, in the common DAW layout: + and − zoom along time, PageUp and PageDown the
+    /// tracks' height, Ctrl+PageDown shows the whole movement; Home or W
+    /// go to the start, End to the end; R turns the loop on or off; Ctrl+T
+    /// adds a track; Ctrl+M shows or hides the mixer; Ctrl+Alt+Up and Down
+    /// select the track above or below. (Space plays and stops, S splits
+    /// and Delete removes a clip, as everywhere.)
+    pub(crate) fn mix_key(&mut self, key: &iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Task<Message>> {
+        use iced::keyboard::{key::Named, Key};
+        let (ctrl, alt) = (mods.control() || mods.logo(), mods.alt());
+        let ar = |e: arrange::ArrangeEvent| Some(Task::done(Message::Arrange(e)));
+        let h = self.prefs.layout.lane_height;
+        match key {
+            Key::Character(c) if !ctrl && !alt && (c.as_str() == "+" || c.as_str() == "=") => ar(arrange::ArrangeEvent::Zoom(1.25)),
+            Key::Character(c) if !ctrl && !alt && c.as_str() == "-" => ar(arrange::ArrangeEvent::Zoom(0.8)),
+            Key::Named(Named::PageUp) if !ctrl => ar(arrange::ArrangeEvent::LaneHeight(h * 1.25)),
+            Key::Named(Named::PageDown) if !ctrl => ar(arrange::ArrangeEvent::LaneHeight(h / 1.25)),
+            Key::Named(Named::PageDown) => {
+                // The whole movement in view.
+                let width = (self.window.width - self.prefs.layout.header_width).max(100.0);
+                self.arrange_ppq = (width / self.arrange.length_q.max(1.0) as f32).clamp(2.0, 400.0);
+                self.arrange_scroll = 0.0;
+                Some(Task::none())
+            }
+            Key::Named(Named::Home) => ar(arrange::ArrangeEvent::Locate(0.0)),
+            Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("w") => ar(arrange::ArrangeEvent::Locate(0.0)),
+            Key::Named(Named::End) => ar(arrange::ArrangeEvent::Locate(self.arrange.length_q)),
+            Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("r") => Some(self.act(Action::Cycle)),
+            Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("t") => {
+                self.new_audio_track();
+                Some(Task::none())
+            }
+            Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("m") => {
+                self.mixer_hidden = !self.mixer_hidden;
+                Some(Task::none())
+            }
+            Key::Named(n @ (Named::ArrowUp | Named::ArrowDown)) if ctrl && alt => {
+                let ids: Vec<corinzia_model::Id> = self.arrange.lanes.iter().map(|l| l.track).collect();
+                let at = self.strip.and_then(|s| ids.iter().position(|t| *t == s));
+                let next = match (at, n) {
+                    (None, _) => 0,
+                    (Some(i), Named::ArrowUp) => i.saturating_sub(1),
+                    (Some(i), _) => (i + 1).min(ids.len().saturating_sub(1)),
+                };
+                self.strip = ids.get(next).copied();
+                Some(Task::none())
+            }
+            _ => None,
+        }
+    }
+
+    /// A new audio track ("Audio n"), selected.
+    pub(crate) fn new_audio_track(&mut self) {
+        let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
+        let id = self.editor.add_audio_track(&format!("Audio {n}"));
+        self.strip = Some(id);
+    }
+
     /// Splits a clip at `q` (quarters into the movement): two clips that
     /// play as it did; the second selected. False (and a word in the status
     /// bar) when `q` is not inside the clip.
@@ -428,6 +494,72 @@ impl App {
             None => {
                 self.editor.status = "To split a clip, put the playhead (or the caret) inside it".into();
                 false
+            }
+        }
+    }
+
+    /// The movement's tempo follows the selected clip: its beats found
+    /// (the score's tempo there saying about how fast), the score's beats
+    /// laid on them (see [`corinzia_perform::follow`]). One undo step; the
+    /// status bar says what was found.
+    pub(crate) fn follow_clip(&mut self) {
+        use corinzia_perform::follow::{beat_unit, follow, Follow};
+        let Some((track, clip)) = self.selected_clip else { return };
+        let (Some(c), Some(m)) = (self.editor.clip(track, clip).cloned(), self.editor.movement().cloned()) else { return };
+        let media = &mut self.playback.pool.media;
+        let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.editor.status = e;
+                return;
+            }
+        };
+        // The part of the file the clip plays.
+        let played = arrange::clip_length(&c, Some(&data));
+        let sr = data.sample_rate;
+        let (a, b) = ((c.offset * sr) as usize, ((c.offset + played) * sr) as usize);
+        let part: Vec<Vec<f32>> = data.channels.iter().map(|ch| ch[a.min(ch.len())..b.min(ch.len())].to_vec()).collect();
+        let style = corinzia_perform::Style::of(&self.editor.project);
+        let tempo = corinzia_perform::perform_with(&m, style).tempo;
+        let q = tempo.quarter_at(c.at);
+        let unit = self.follow.unit.unwrap_or_else(|| beat_unit(&m, q));
+        let guess = unit * 60.0 / tempo.tempo_at(q).max(1.0);
+        let beats: Vec<f64> = corinzia_audio::analysis::track_beats(&part, sr, Some(guess)).into_iter().map(|t| t + c.at).collect();
+        match follow(&m, style, &beats, unit, if self.follow.bars { Follow::Bars } else { Follow::Beats }) {
+            Ok(r) => {
+                self.editor.follow_tempo(track, clip, r.tempo, r.shift);
+                let bar = corinzia_perform::perform_with(self.editor.movement().unwrap_or(&m), style).tempo.bar_at(r.first_q).bar;
+                self.editor.status = format!("The score follows \"{}\": {} beats from bar {bar}, about {:.0} a minute", c.name, r.beats, r.bpm);
+            }
+            Err(e) => self.editor.status = format!("Could not follow \"{}\": {e}", c.name),
+        }
+    }
+
+    /// The selected clip cut where it is silent (under −50 dB for a
+    /// quarter of a second or more), the quiet parts gone, the rest where
+    /// they were (10 ms either side kept). One undo step.
+    pub(crate) fn strip_silence(&mut self) {
+        let Some((track, clip)) = self.selected_clip else { return };
+        let Some(c) = self.editor.clip(track, clip).cloned() else { return };
+        let media = &mut self.playback.pool.media;
+        let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
+            Ok(d) => d,
+            Err(e) => {
+                self.editor.status = e;
+                return;
+            }
+        };
+        let played = arrange::clip_length(&c, Some(&data));
+        let sr = data.sample_rate;
+        let (a, b) = ((c.offset * sr) as usize, ((c.offset + played) * sr) as usize);
+        let part: Vec<Vec<f32>> = data.channels.iter().map(|ch| ch[a.min(ch.len())..b.min(ch.len())].to_vec()).collect();
+        let pieces = corinzia_audio::analysis::sounding(&part, sr, -50.0, 0.25, 0.01);
+        match pieces.as_slice() {
+            [] => self.editor.status = format!("\"{}\" is silent throughout", c.name),
+            [(x, y)] if *x < 0.02 && *y > played - 0.02 => self.editor.status = format!("\"{}\" has no silence to strip", c.name),
+            _ => {
+                let n = self.editor.split_into(track, clip, &pieces).len();
+                self.editor.status = format!("\"{}\": {n} part{} kept", c.name, if n == 1 { "" } else { "s" });
             }
         }
     }
@@ -455,7 +587,8 @@ impl App {
     }
 
     /// A drag step on the selected clip: `q` (quarters) is its new start,
-    /// edge, or the end of a fade, applied to the clip as it was pressed.
+    /// edge, or the end of a fade, applied to the clip as it was pressed;
+    /// for the gain line, its gain (dB).
     pub(crate) fn drag_clip(&mut self, edit: arrange::ClipEdit, q: f64) {
         use arrange::ClipEdit;
         const SHORTEST: f64 = 0.01;
@@ -473,6 +606,7 @@ impl App {
             ClipEdit::Move => "Move audio",
             ClipEdit::TrimStart | ClipEdit::TrimEnd => "Trim audio",
             ClipEdit::FadeIn | ClipEdit::FadeOut => "Fade audio",
+            ClipEdit::Gain => "Audio gain",
         };
         self.clip_dragged = true;
         self.editor.edit_clip(track, id, label, true, |c| match edit {
@@ -492,6 +626,7 @@ impl App {
             }
             ClipEdit::FadeIn => c.fade_in = (s - o.at).clamp(0.0, o.length - o.fade_out),
             ClipEdit::FadeOut => c.fade_out = (o.at + o.length - s).clamp(0.0, o.length - o.fade_in),
+            ClipEdit::Gain => c.gain_db = q.clamp(crate::fader::MIN_DB, 12.0),
         });
     }
 
@@ -577,6 +712,13 @@ impl App {
         arrange::ArrangeEvent::Mute(t) => self.mix(mix::MixMsg::Mute(t)),
         arrange::ArrangeEvent::Solo(t) => self.mix(mix::MixMsg::Solo(t)),
         arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+        arrange::ArrangeEvent::ZoomAt { factor, x } => {
+            let header = self.prefs.layout.header_width;
+            let q = (x - header + self.arrange_scroll) / self.arrange_ppq;
+            self.arrange_ppq = (self.arrange_ppq * factor).clamp(2.0, 400.0);
+            self.arrange_scroll = arrange::clamp_scroll(q * self.arrange_ppq - (x - header), &self.arrange, self.arrange_ppq);
+        }
+        arrange::ArrangeEvent::AddTrack => self.new_audio_track(),
         arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
             if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
                 let at = Frac::new((q * 16.0).round() as i64, 64);

@@ -235,6 +235,7 @@ impl App {
                     item("MIDI…", "the performance, track by track", files::Format::Midi),
                     item("MusicXML…", "for other notation programs", files::Format::MusicXml),
                     item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
+                    item("Audio stems (WAV)…", "each track on its own, a file each", files::Format::Stems),
                 ]
                 .spacing(2)
                 .width(250),
@@ -335,19 +336,26 @@ impl App {
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                     mute_solo,
                     drop_at,
+                    selected_track: self.strip,
+                    levels: self.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill))
                     .map(Message::Arrange),
                 };
                 let layout = self.prefs.layout;
+                // Ctrl+M hides the mixer: the arrange view takes it all.
+                if self.mixer_hidden {
+                    top
+                } else {
                 column![
                     top,
                     crate::splitter::view(false, Message::SplitMixer),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout, self.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
+                }
             }
         };
         let window = column![toolbar, hline(), body, hline(), status];

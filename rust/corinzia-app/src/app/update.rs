@@ -73,6 +73,8 @@ impl App {
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.bounce.is_some() => {
                 self.bounce = None;
+                self.stems.clear();
+                self.stems_done = None;
                 self.editor.status = "Audio export stopped".into();
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -166,6 +168,10 @@ impl App {
             Message::ExportTo(files::Format::Audio, Some(path)) => {
                 let path = if path.extension().is_none() { path.with_extension("wav") } else { path };
                 self.start_bounce(path);
+            }
+            Message::ExportTo(files::Format::Stems, Some(path)) => {
+                let path = if path.extension().is_none() { path.with_extension("wav") } else { path };
+                self.start_stems(path);
             }
             Message::ExportTo(format, Some(path)) => self.export_to(format, path),
             Message::PluginTick => {
@@ -270,6 +276,12 @@ impl App {
                 Key::Named(Named::Escape) => return Some(Task::done(Message::Roll(RollMsg::Close))),
                 Key::Character(c) if c.as_str() == "r" && !mods.control() => return Some(Task::done(Message::Roll(RollMsg::Reset))),
                 _ => {}
+            }
+        }
+        // The Mix tab's own keys (see `mix_key`).
+        if self.tab == Tab::Mix && self.roll.is_none() {
+            if let Some(t) = self.mix_key(key, mods) {
+                return Some(t);
             }
         }
         // The selected clip in the arrange view: S splits it at the playhead.

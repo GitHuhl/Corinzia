@@ -3,8 +3,16 @@
 //! room: parallel damped combs into allpasses, per channel), Corinzia EQ
 //! (low cut, low shelf, two bells, high shelf, high cut: RBJ biquads) and
 //! Corinzia Limiter (stereo-linked, 1 ms look-ahead: never over its
-//! ceiling). All are stereo in, stereo out, with parameters (automatable)
-//! and state.
+//! ceiling), Corinzia Compressor (soft knee, stereo-linked, a sidechain
+//! high-pass, wet/dry) and Corinzia Gate (a downward expander with hold
+//! and range). All are stereo in, stereo out, with parameters
+//! (automatable) and state.
+//!
+//! The compressor's and the gate's gain computers and ballistics are
+//! adapted from SoundCraft's dynamics (`crates/dsp/src/plugins/dynamics.rs`
+//! in <https://github.com/storytold/soundcraft>, Copyright (c) 2026 ArtCraft
+//! Team and the SoundCraft contributors, MIT licence; see
+//! `THIRD-PARTY-NOTICES.md`).
 
 use crate::{read_all, write_all, write_name, Sync};
 use clap_sys::events::*;
@@ -25,6 +33,8 @@ pub const GAIN_ID: &CStr = c"org.corinzia.gain";
 pub const REVERB_ID: &CStr = c"org.corinzia.reverb";
 pub const EQ_ID: &CStr = c"org.corinzia.eq";
 pub const LIMITER_ID: &CStr = c"org.corinzia.limiter";
+pub const COMPRESSOR_ID: &CStr = c"org.corinzia.compressor";
+pub const GATE_ID: &CStr = c"org.corinzia.gate";
 
 static FX_FEATURES: Sync<[*const c_char; 3]> = Sync([c"audio-effect".as_ptr(), c"stereo".as_ptr(), ptr::null()]);
 
@@ -47,6 +57,8 @@ pub static GAIN_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(GAIN_
 pub static REVERB_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(REVERB_ID, c"Corinzia Reverb", c"A small room reverb"));
 pub static EQ_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(EQ_ID, c"Corinzia EQ", c"Low and high cut, shelves and two bells"));
 pub static LIMITER_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(LIMITER_ID, c"Corinzia Limiter", c"A look-ahead peak limiter"));
+pub static COMPRESSOR_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(COMPRESSOR_ID, c"Corinzia Compressor", c"A soft-knee compressor"));
+pub static GATE_DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(descriptor(GATE_ID, c"Corinzia Gate", c"A downward expander and gate"));
 
 /// A parameter: (name, min, max, default, unit).
 struct Param {
@@ -83,6 +95,62 @@ const LIMITER_PARAMS: [Param; 3] = [
     Param { name: "Ceiling", min: -24.0, max: 0.0, default: -0.3, unit: "dB" },
     Param { name: "Release", min: 1.0, max: 1000.0, default: 80.0, unit: "ms" },
 ];
+const COMPRESSOR_PARAMS: [Param; 8] = [
+    Param { name: "Threshold", min: -60.0, max: 0.0, default: -20.0, unit: "dB" },
+    Param { name: "Ratio", min: 1.0, max: 20.0, default: 4.0, unit: ":1" },
+    Param { name: "Attack", min: 0.1, max: 300.0, default: 10.0, unit: "ms" },
+    Param { name: "Release", min: 5.0, max: 3000.0, default: 100.0, unit: "ms" },
+    Param { name: "Knee", min: 0.0, max: 24.0, default: 6.0, unit: "dB" },
+    Param { name: "Makeup", min: 0.0, max: 40.0, default: 0.0, unit: "dB" },
+    Param { name: "Sidechain high-pass", min: 20.0, max: 500.0, default: 20.0, unit: "Hz" },
+    Param { name: "Mix", min: 0.0, max: 100.0, default: 100.0, unit: "%" },
+];
+const GATE_PARAMS: [Param; 6] = [
+    Param { name: "Threshold", min: -80.0, max: 0.0, default: -40.0, unit: "dB" },
+    Param { name: "Ratio", min: 1.0, max: 100.0, default: 100.0, unit: ":1" },
+    Param { name: "Range", min: 0.0, max: 80.0, default: 80.0, unit: "dB" },
+    Param { name: "Attack", min: 0.01, max: 100.0, default: 0.5, unit: "ms" },
+    Param { name: "Hold", min: 0.0, max: 2000.0, default: 50.0, unit: "ms" },
+    Param { name: "Release", min: 1.0, max: 4000.0, default: 100.0, unit: "ms" },
+];
+
+/// A one-pole smoothing coefficient for a time constant (ms).
+fn time_coef(ms: f64, sr: f64) -> f32 {
+    let n = ms * 0.001 * sr;
+    if n < 1e-3 { 0.0 } else { (-1.0 / n).exp() as f32 }
+}
+
+fn gain_to_db(g: f32) -> f32 {
+    if g > 1e-9 { 20.0 * g.log10() } else { -180.0 }
+}
+
+/// A soft-knee compressor's gain reduction (dB, ≥ 0) at `level_db`.
+fn compress_gr(level_db: f32, threshold: f32, ratio: f32, knee: f32) -> f32 {
+    let slope = 1.0 - 1.0 / ratio.max(1.0);
+    let over = level_db - threshold;
+    if knee > 1e-3 && 2.0 * over.abs() <= knee {
+        let t = over + knee / 2.0;
+        slope * t * t / (2.0 * knee)
+    } else if over > 0.0 {
+        slope * over
+    } else {
+        0.0
+    }
+}
+
+/// The compressor's and the gate's running state: the gain reduction (dB),
+/// the gate's level envelope and hold, the sidechain filters and what they
+/// were set for, the makeup and mix reached (smoothing).
+#[derive(Default)]
+struct Dynamics {
+    gr: f32,
+    env: f32,
+    hold_left: usize,
+    sc: [Biquad; 2],
+    sc_for: f64,
+    makeup: f32,
+    mix: f32,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
@@ -90,6 +158,8 @@ enum Kind {
     Reverb,
     Eq,
     Limiter,
+    Compressor,
+    Gate,
 }
 
 /// A biquad filter (transposed direct form II), coefficients normalised.
@@ -207,6 +277,7 @@ pub struct Effect {
     eq: [[Biquad; 6]; 2],
     eq_for: Vec<f64>,
     limiter: Limiter,
+    dynamics: Dynamics,
 }
 
 impl Effect {
@@ -219,6 +290,8 @@ impl Effect {
             Kind::Reverb => &REVERB_PARAMS,
             Kind::Eq => &EQ_PARAMS,
             Kind::Limiter => &LIMITER_PARAMS,
+            Kind::Compressor => &COMPRESSOR_PARAMS,
+            Kind::Gate => &GATE_PARAMS,
         }
     }
     /// The EQ's filters for the current values (when they changed).
@@ -252,6 +325,7 @@ impl Effect {
         self.eq = Default::default();
         self.eq_for.clear();
         let look = ((sample_rate * 0.001).round() as usize).max(1);
+        self.dynamics = Dynamics { sc_for: -1.0, makeup: 1.0, mix: 1.0, ..Dynamics::default() };
         self.limiter = Limiter { delay: [vec![0.0; look], vec![0.0; look]], need: vec![1.0; look], mins: vec![1.0; look], sum: look as f64, at: 0, env: 1.0 };
         let scale = sample_rate / 44100.0;
         for ch in 0..2 {
@@ -324,6 +398,72 @@ impl Effect {
                     ol[i] = (d0 * g).clamp(-ceiling, ceiling);
                     or[i] = (d1 * g).clamp(-ceiling, ceiling);
                     l.at = (l.at + 1) % n;
+                }
+            }
+            Kind::Compressor => {
+                let sr = self.sample_rate;
+                let (thr, ratio, knee) = (self.get(0) as f32, self.get(1) as f32, self.get(4) as f32);
+                let (att, rel) = (time_coef(self.get(2), sr), time_coef(self.get(3), sr));
+                let makeup = 10f32.powf(self.get(5) as f32 / 20.0);
+                let mix = (self.get(7) / 100.0) as f32;
+                let hpf = self.get(6);
+                let d = &mut self.dynamics;
+                if hpf != d.sc_for {
+                    for f in d.sc.iter_mut() {
+                        f.set(Shape::HighPass, hpf, std::f64::consts::FRAC_1_SQRT_2, 0.0, sr);
+                    }
+                    d.sc_for = hpf;
+                }
+                let filtered = hpf > 20.5;
+                // Makeup and mix glide to their values over the block.
+                let (m0, x0) = (d.makeup, d.mix);
+                let n = ol.len().max(1) as f32;
+                for i in 0..ol.len() {
+                    let (l, r) = (inp[0][i], inp[1][i]);
+                    let (sl, sr2) = if filtered { (d.sc[0].tick(l), d.sc[1].tick(r)) } else { (l, r) };
+                    let level = sl.abs().max(sr2.abs());
+                    let target = compress_gr(gain_to_db(level), thr, ratio, knee);
+                    let c = if target > d.gr { att } else { rel };
+                    d.gr = target + (d.gr - target) * c;
+                    if !d.gr.is_finite() {
+                        d.gr = 0.0;
+                    }
+                    let k = (i + 1) as f32 / n;
+                    let (mk, mx) = (m0 + (makeup - m0) * k, x0 + (mix - x0) * k);
+                    let g = 10f32.powf(-d.gr / 20.0) * mk;
+                    ol[i] = l * (1.0 - mx) + l * g * mx;
+                    or[i] = r * (1.0 - mx) + r * g * mx;
+                }
+                (d.makeup, d.mix) = (makeup, mix);
+            }
+            Kind::Gate => {
+                let sr = self.sample_rate;
+                let (thr, ratio, range) = (self.get(0) as f32, self.get(1) as f32, self.get(2) as f32);
+                let (att, rel) = (time_coef(self.get(3), sr), time_coef(self.get(5), sr));
+                let hold = (self.get(4) * 0.001 * sr) as usize;
+                let env_rel = time_coef(5.0, sr);
+                let d = &mut self.dynamics;
+                for i in 0..ol.len() {
+                    let (l, r) = (inp[0][i], inp[1][i]);
+                    let level = l.abs().max(r.abs());
+                    d.env = if level.is_finite() { level.max(d.env * env_rel) } else { d.env * env_rel };
+                    let ldb = gain_to_db(d.env);
+                    let mut target = if ldb < thr { ((thr - ldb) * (ratio - 1.0)).min(range) } else { 0.0 };
+                    if target <= 0.0 {
+                        d.hold_left = hold;
+                    } else if target > d.gr && d.hold_left > 0 {
+                        d.hold_left -= 1;
+                        target = d.gr;
+                    }
+                    // Opening (less reduction) at the attack, closing at the release.
+                    let c = if target < d.gr { att } else { rel };
+                    d.gr = target + (d.gr - target) * c;
+                    if !d.gr.is_finite() {
+                        d.gr = 0.0;
+                    }
+                    let g = 10f32.powf(-d.gr / 20.0);
+                    ol[i] = l * g;
+                    or[i] = r * g;
                 }
             }
             Kind::Reverb => {
@@ -562,6 +702,10 @@ pub unsafe fn create(_host: *const clap_host, id: &CStr) -> *const clap_plugin {
         (Kind::Eq, &EQ_DESCRIPTOR.0, &EQ_PARAMS)
     } else if id == LIMITER_ID {
         (Kind::Limiter, &LIMITER_DESCRIPTOR.0, &LIMITER_PARAMS)
+    } else if id == COMPRESSOR_ID {
+        (Kind::Compressor, &COMPRESSOR_DESCRIPTOR.0, &COMPRESSOR_PARAMS)
+    } else if id == GATE_ID {
+        (Kind::Gate, &GATE_DESCRIPTOR.0, &GATE_PARAMS)
     } else {
         return ptr::null();
     };
@@ -590,6 +734,7 @@ pub unsafe fn create(_host: *const clap_host, id: &CStr) -> *const clap_plugin {
         eq: Default::default(),
         eq_for: vec![],
         limiter: Limiter::default(),
+        dynamics: Dynamics::default(),
     }));
     (*e).plugin.plugin_data = e as *mut c_void;
     (*e).build(48000.0);
@@ -669,6 +814,49 @@ mod tests {
         // High cut at 2 kHz.
         let e = effect(EQ_ID, &[(11, 2000.0)]);
         assert!(gain_db(e, 10000.0) < -20.0);
+    }
+
+    #[test]
+    fn the_compressor_turns_loud_sound_down_by_its_ratio() {
+        let rms = |y: &[f32]| (y.iter().map(|v| v * v).sum::<f32>() / y.len() as f32).sqrt();
+        // A tone peaking 20 dB over a −30 dB threshold, at 4:1 with a hard knee:
+        // 15 dB down once it has settled.
+        let x = sine(440.0, 10f32.powf(-10.0 / 20.0), 48000); // peaks at −10 dBFS
+        let e = effect(COMPRESSOR_ID, &[(0, -30.0), (1, 4.0), (2, 1.0), (4, 0.0)]);
+        let y = through(e, &x);
+        let drop = 20.0 * (rms(&y[24000..]) / rms(&x[24000..])).log10();
+        assert!((drop + 15.0).abs() < 1.5, "{drop} dB");
+        // Under the threshold: untouched.
+        let quiet = sine(440.0, 0.01, 4800);
+        let e = effect(COMPRESSOR_ID, &[(0, -10.0)]);
+        let y = through(e, &quiet);
+        assert!(quiet.iter().zip(&y).all(|(a, b)| (a - b).abs() < 1e-6));
+        // Mix at 0: dry; makeup raises it.
+        let e = effect(COMPRESSOR_ID, &[(0, -30.0), (7, 0.0)]);
+        let y = through(e, &x);
+        assert!(x[4800..].iter().zip(&y[4800..]).all(|(a, b)| (a - b).abs() < 1e-5));
+        let e = effect(COMPRESSOR_ID, &[(0, 0.0), (5, 6.0)]);
+        let y = through(e, &quiet);
+        assert!((rms(&y[2400..]) / rms(&quiet[2400..]) - 2.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn the_gate_shuts_below_its_threshold_and_holds_open() {
+        // A loud burst, then a quiet tail under the threshold.
+        let mut x = sine(440.0, 0.5, 9600);
+        x.extend(sine(440.0, 0.001, 24000));
+        let e = effect(GATE_ID, &[(0, -30.0), (4, 20.0), (5, 20.0)]);
+        let y = through(e, &x);
+        let peak = |y: &[f32]| y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((peak(&y[4800..9600]) - 0.5).abs() < 0.01, "open while loud");
+        // Held for 20 ms after the burst, then shut by its range (80 dB).
+        assert!(peak(&y[9600 + 200..9600 + 600]) > 0.0005, "held");
+        assert!(peak(&y[9600 + 9600..]) < 1e-5, "shut");
+        // Range 12 dB: the tail only 12 dB down.
+        let e = effect(GATE_ID, &[(0, -30.0), (2, 12.0), (4, 0.0), (5, 5.0)]);
+        let y = through(e, &x);
+        let k = peak(&y[9600 + 9600..]) / peak(&x[9600 + 9600..]);
+        assert!((20.0 * k.log10() + 12.0).abs() < 0.5, "{k}");
     }
 
     #[test]

@@ -83,7 +83,7 @@ impl Browser {
             Purpose::Export(Format::Pdf | Format::Parts) => &["pdf"],
             Purpose::Export(Format::Midi) => &["mid", "midi"],
             Purpose::Export(Format::MusicXml) => &["musicxml", "xml"],
-            Purpose::Export(Format::Audio) => &["wav"],
+            Purpose::Export(Format::Audio | Format::Stems) => &["wav"],
             Purpose::Audio(_) => &AUDIO_EXTENSIONS,
         }
     }

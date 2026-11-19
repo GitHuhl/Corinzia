@@ -501,7 +501,7 @@ pub unsafe fn set_gain(p: *const clap_plugin, gain: f32) {
 
 // ------------------------------------------------------- factory and entry --
 unsafe extern "C" fn factory_count(_f: *const clap_plugin_factory) -> u32 {
-    5
+    7
 }
 unsafe extern "C" fn factory_descriptor(_f: *const clap_plugin_factory, index: u32) -> *const clap_plugin_descriptor {
     match index {
@@ -510,6 +510,8 @@ unsafe extern "C" fn factory_descriptor(_f: *const clap_plugin_factory, index: u
         2 => &effects::REVERB_DESCRIPTOR.0,
         3 => &effects::EQ_DESCRIPTOR.0,
         4 => &effects::LIMITER_DESCRIPTOR.0,
+        5 => &effects::COMPRESSOR_DESCRIPTOR.0,
+        6 => &effects::GATE_DESCRIPTOR.0,
         _ => ptr::null(),
     }
 }

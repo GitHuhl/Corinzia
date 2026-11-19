@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS movement (
     length_num  INTEGER NOT NULL,
     length_den  INTEGER NOT NULL,
     revision    INTEGER NOT NULL DEFAULT 0,
-    tempo       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"bpm":120,"ramp":false}]
+    tempo       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"bpm":120,"ramp":false,"text"?:"Allegro","hidden"?:true}]
     meter       BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"num":4,"den":4}]
     keys        BLOB    NOT NULL,                     -- JSONB [{"at":[n,d],"fifths":0,"minor":false}]
     -- JSONB {"barlines":[{"id","at","k":"||"}], "marks":[{"id","at"}], "endings":[{"id","from","to","n":passes bitmask}],

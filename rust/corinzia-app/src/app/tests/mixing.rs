@@ -468,11 +468,11 @@ fn a_roll_note_is_grabbed_by_its_body_or_its_right_edge() {
 #[test]
 fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let content = arrange::Content { lanes: vec![arrange::Lane { track: 1, name: "A".into(), audio: true, color: iced::Color::WHITE, folder: String::new(), mixer: false, min_key: 60, max_key: 72 }], rows: vec![arrange::Row::Lane(0)], row_of: vec![Some(0)], length_q: 16.0, ..Default::default() };
-    let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, muted: false, data: None, offset: 0.0, length: 2.0 };
+    let block = arrange::ClipBlock { lane: 0, track: 1, clip: 2, name: "x".into(), start_q: 2.0, end_q: 6.0, fade_in_q: 2.0, fade_out_q: 6.0, in_shape: Default::default(), out_shape: Default::default(), gain_db: 0.0, muted: false, data: None, offset: 0.0, length: 2.0 };
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
-    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None, drop_at: None };
+    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None, drop_at: None, selected_track: None, levels: vec![] };
     let r = v.clip_rect(&clips[0]);
     let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
     let mid_y = r.y + r.height / 2.0;
@@ -640,4 +640,174 @@ fn the_mix_tab_panes_scroll_and_resize() {
     assert!(a.editor.project.tracks[0].solo);
     let old: crate::prefs::Prefs = serde_json::from_str(r#"{"theme": "Dark"}"#).unwrap();
     assert_eq!(old.layout, crate::prefs::Layout::default(), "preferences from before keep the defaults");
+}
+
+#[test]
+fn the_score_follows_a_recordings_tempo() {
+    use corinzia_perform::{perform_with, Style};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    let rate = a.playback.sample_rate;
+    let style = Style::of(&a.editor.project);
+    let m = a.editor.movement().unwrap().clone();
+    // A recording placed two bars in, its beat a little slower than the
+    // score's and slowing further: clicks over a decaying tone.
+    let tempo = perform_with(&m, style).tempo;
+    let at = tempo.seconds_at(8.0);
+    let unit = corinzia_perform::follow::beat_unit(&m, 8.0);
+    let beat = unit * 60.0 / tempo.tempo_at(8.0);
+    let mut clicks = vec![0.3];
+    for i in 0..16 {
+        clicks.push(clicks.last().unwrap() + beat * (1.1 + 0.25 * i as f64 / 15.0));
+    }
+    let mut x = vec![0.0f32; ((clicks.last().unwrap() + 1.0) * rate) as usize];
+    for &t in &clicks {
+        let s = (t * rate) as usize;
+        for i in 0..(0.06 * rate) as usize {
+            let e = (-(i as f64) / (0.012 * rate)).exp() as f32;
+            let tone = (2.0 * std::f64::consts::PI * 330.0 * i as f64 / rate).sin() as f32;
+            if let Some(v) = x.get_mut(s + i) {
+                *v += 0.6 * e * tone + 0.3 * e * if i % 3 == 0 { 1.0 } else { -0.5 };
+            }
+        }
+    }
+    a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
+    a.editor.caret = Frac::new(8, 4);
+    let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
+    let (track, clip) = a.selected_clip.unwrap();
+    assert!((a.editor.clip(track, clip).unwrap().at - at).abs() < 1e-9);
+    let marks = |a: &App| corinzia_model::notation::score_as(&a.editor.project, a.editor.movement().unwrap(), false).tempo.len();
+    let shown = marks(&a);
+    let _ = a.update(Message::Mix(mix::MixMsg::FollowClip));
+    assert!(a.editor.status.starts_with("The score follows"), "{}", a.editor.status);
+    // The score's beats now fall on the clicks.
+    let m2 = a.editor.movement().unwrap().clone();
+    assert!(m2.tempo.iter().any(|t| t.hidden));
+    let tempo2 = perform_with(&m2, style).tempo;
+    let first = (tempo2.quarter_at(at + clicks[0]) / unit).round() * unit;
+    let mut hit = 0;
+    for (i, c) in clicks.iter().enumerate() {
+        let t = tempo2.seconds_at(first + i as f64 * unit);
+        if (t - (at + c)).abs() < 0.03 {
+            hit += 1;
+        }
+    }
+    assert!(hit >= clicks.len() - 2, "{hit} of {} beats on their clicks", clicks.len());
+    // Nothing new on the page; one undo puts the tempo back; Forget removes it.
+    assert_eq!(marks(&a), shown);
+    a.editor.undo();
+    assert!(!a.editor.movement().unwrap().tempo.iter().any(|t| t.hidden));
+    a.editor.redo();
+    let _ = a.update(Message::Mix(mix::MixMsg::ForgetFollowed));
+    assert_eq!(a.editor.movement().unwrap().tempo, m.tempo);
+}
+
+#[test]
+fn the_mix_tab_answers_daw_keys_and_wheel() {
+    use iced::keyboard::{key::Named, Key, Modifiers};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    a.sync();
+    let press = |a: &mut App, k: Key, m: Modifiers| {
+        if let Some(t) = a.press(&k, m) {
+            drop(t);
+        }
+        a.sync();
+    };
+    let ch = |c: &str| Key::Character(c.into());
+    // Ctrl+T: a new track; double-clicking below the tracks does the same.
+    let tracks = a.editor.project.tracks.len();
+    let _ = a.mix_key(&ch("t"), Modifiers::CTRL);
+    assert_eq!(a.editor.project.tracks.len(), tracks + 1);
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::AddTrack));
+    assert_eq!(a.editor.project.tracks.len(), tracks + 2);
+    assert_eq!(a.strip, a.editor.project.tracks.last().map(|t| t.id), "the new one selected");
+    // Ctrl+M hides the mixer, and back.
+    let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
+    assert!(a.mixer_hidden);
+    let _ = a.view();
+    let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
+    assert!(!a.mixer_hidden);
+    // + and − zoom along time; PageUp and PageDown the tracks' height.
+    let ppq = a.arrange_ppq;
+    press(&mut a, ch("+"), Modifiers::default());
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Zoom(1.25)));
+    assert!(a.arrange_ppq > ppq);
+    let h = a.prefs.layout.lane_height;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(h * 1.25)));
+    assert!(a.prefs.layout.lane_height > h);
+    assert!(a.mix_key(&Key::Named(Named::PageUp), Modifiers::default()).is_some());
+    // Ctrl+PageDown: the whole movement in view.
+    let _ = a.mix_key(&Key::Named(Named::PageDown), Modifiers::CTRL);
+    let width = a.window.width - a.prefs.layout.header_width;
+    assert!((a.arrange.length_q as f32 * a.arrange_ppq - width).abs() < 1.0 || a.arrange_ppq == 2.0);
+    // Ctrl+Alt+Down selects the next track.
+    a.strip = a.arrange.lanes.first().map(|l| l.track);
+    let _ = a.mix_key(&Key::Named(Named::ArrowDown), Modifiers::CTRL | Modifiers::ALT);
+    assert_eq!(a.strip, a.arrange.lanes.get(1).map(|l| l.track));
+    // The wheel zooms around the pointer: the beat under it stays there.
+    a.arrange_ppq = 20.0;
+    a.arrange_scroll = 100.0;
+    let header = a.prefs.layout.header_width;
+    let x = header + 300.0;
+    let q = (x - header + a.arrange_scroll) / a.arrange_ppq;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ZoomAt { factor: 1.5, x }));
+    assert!((a.arrange_ppq - 30.0).abs() < 1e-4);
+    assert!(((x - header + a.arrange_scroll) / a.arrange_ppq - q).abs() < 1e-3, "the beat under the pointer stays");
+}
+
+#[test]
+fn notes_gather_into_items_split_by_a_bar_of_rest() {
+    let a = app(View::Page);
+    let c = &a.arrange;
+    // Every note lies inside an item of its lane, and items start and end
+    // on bar lines.
+    for b in &c.blocks {
+        assert!(c.items.iter().any(|&(l, x, y)| l == b.lane && x <= b.start_q + 1e-9 && b.start_q + b.length_q <= y + 1e-9), "{b:?}");
+    }
+    for &(_, x, y) in &c.items {
+        assert!(x < y && c.bars.iter().any(|b| (b - x).abs() < 1e-9) && c.bars.iter().any(|b| (b - y).abs() < 1e-9));
+    }
+    // Beats include every bar line.
+    assert!(c.bars[..c.bars.len() - 1].iter().all(|b| c.beats.iter().any(|x| (x - b).abs() < 1e-9)));
+}
+
+#[test]
+fn silence_strips_gain_drags_and_fades_take_shapes() {
+    use arrange::{ArrangeEvent as E, ClipEdit};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    let rate = a.playback.sample_rate;
+    // 1 s of sound, 1 s of silence, 0.5 s of sound.
+    let n = rate as usize;
+    let mut x = vec![0.3f32; n];
+    x.extend(vec![0.0; n]);
+    x.extend(vec![0.3; n / 2]);
+    a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
+    a.editor.caret = Frac::int(1);
+    let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
+    let (track, clip) = a.selected_clip.unwrap();
+    let at = a.editor.clip(track, clip).unwrap().at;
+    // Fade shapes from the clip panel.
+    let _ = a.update(Message::Mix(mix::MixMsg::FadeInShape("S-curve".into())));
+    let _ = a.update(Message::Mix(mix::MixMsg::FadeOutShape("Equal power".into())));
+    let c = a.editor.clip(track, clip).unwrap().clone();
+    assert_eq!((c.fade_in_shape, c.fade_out_shape), (corinzia_model::FadeShape::SCurve, corinzia_model::FadeShape::EqualPower));
+    // The gain line, dragged: one undo step.
+    let _ = a.update(Message::Arrange(E::ClipPress { track, clip, copy: false }));
+    let _ = a.update(Message::Arrange(E::ClipDrag { edit: ClipEdit::Gain, q: -6.0 }));
+    let _ = a.update(Message::Arrange(E::ClipRelease));
+    assert_eq!(a.editor.clip(track, clip).unwrap().gain_db, -6.0);
+    // Strip silence: two parts where the sound is, in place.
+    let _ = a.update(Message::Mix(mix::MixMsg::StripSilence));
+    let clips = a.editor.project.track(track).unwrap().clips.clone();
+    assert_eq!(clips.len(), 2, "{}", a.editor.status);
+    let (p, q) = (&clips[0], &clips[1]);
+    assert!((p.at - at).abs() < 0.02 && (p.length - 1.0).abs() < 0.03, "{p:?}");
+    assert!((q.at - (at + 2.0)).abs() < 0.03 && (q.offset - 2.0).abs() < 0.03 && (q.length - 0.5).abs() < 0.03, "{q:?}");
+    assert!(p.gain_db == -6.0 && q.fade_out_shape == corinzia_model::FadeShape::EqualPower);
+    a.editor.undo();
+    assert_eq!(a.editor.project.track(track).unwrap().clips.len(), 1);
+    a.sync();
+    assert!(a.playback.clip_errors.is_empty());
 }

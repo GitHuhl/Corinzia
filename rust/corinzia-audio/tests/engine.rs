@@ -25,7 +25,7 @@ fn project() -> Project {
         title: String::new(),
         length: Frac::int(1),
         revision: 0,
-        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new() }],
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false }],
         meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
         barlines: vec![],
@@ -55,7 +55,7 @@ fn builtin_instrument_is_a_clap_plugin() {
     let lib = Library::builtin();
     let infos = lib.plugins();
     let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
-    assert_eq!(ids, ["org.corinzia.ensemble", "org.corinzia.gain", "org.corinzia.reverb", "org.corinzia.eq", "org.corinzia.limiter"]);
+    assert_eq!(ids, ["org.corinzia.ensemble", "org.corinzia.gain", "org.corinzia.reverb", "org.corinzia.eq", "org.corinzia.limiter", "org.corinzia.compressor", "org.corinzia.gate"]);
     assert!(infos[0].is_instrument() && !infos[1].is_instrument());
     // Projects saved with Corinzia Sine get the ensemble.
     assert_eq!(Plugin::create(&lib, "org.corinzia.sine").unwrap().info.id, "org.corinzia.ensemble");
@@ -613,6 +613,7 @@ fn a_movement_is_exported_as_a_wav_file_like_it_plays() {
     let summary = b.finish().unwrap();
     assert!((summary.seconds - (2.0 + corinzia_audio::bounce::TAIL_SECONDS)).abs() < 0.01);
     assert!(summary.peak_db < 0.0 && summary.peak_db > -40.0 && summary.clipped == 0, "{summary:?}");
+    assert!(summary.lufs < 0.0 && summary.lufs > -60.0 && summary.true_peak_db >= summary.peak_db - 0.01, "{summary:?}");
     // The file reads back as what playback renders (to 24 bits).
     let (ch, rate) = corinzia_audio::media::decode(&path).unwrap();
     assert_eq!((ch.len(), rate), (2, SR as u32));

@@ -258,6 +258,9 @@ pub struct Tempo {
     pub bpm: f64,
     pub ramp: bool,
     pub text: String,
+    /// Played, not engraved: a tempo map that follows a recording sets
+    /// one on each beat (or bar).
+    pub hidden: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meter {
@@ -715,11 +718,66 @@ pub struct AudioClip {
     pub cue: Option<Id>,
     /// The cue continues as a line to the clip's end.
     pub cue_line: bool,
+    /// The fades' curves.
+    pub fade_in_shape: FadeShape,
+    pub fade_out_shape: FadeShape,
+}
+
+/// How a fade's level moves (a fade in, from silence; a fade out is the
+/// same curve backwards).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FadeShape {
+    /// Straight in level.
+    #[default]
+    Linear,
+    /// Constant power: two clips crossfading this way keep their loudness.
+    EqualPower,
+    /// Slow at both ends, quick in the middle.
+    SCurve,
+    /// Most of the level early.
+    Fast,
+    /// Most of the level late.
+    Slow,
+}
+
+impl FadeShape {
+    pub const ALL: [FadeShape; 5] = [FadeShape::Linear, FadeShape::EqualPower, FadeShape::SCurve, FadeShape::Fast, FadeShape::Slow];
+
+    /// The level (0..1) at `x` (0..1) of a fade in.
+    pub fn gain(self, x: f32) -> f32 {
+        let x = x.clamp(0.0, 1.0);
+        match self {
+            FadeShape::Linear => x,
+            FadeShape::EqualPower => (x * std::f32::consts::FRAC_PI_2).sin(),
+            FadeShape::SCurve => 0.5 - 0.5 * (x * std::f32::consts::PI).cos(),
+            FadeShape::Fast => 1.0 - (1.0 - x) * (1.0 - x),
+            FadeShape::Slow => x * x,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FadeShape::Linear => "Linear",
+            FadeShape::EqualPower => "Equal power",
+            FadeShape::SCurve => "S-curve",
+            FadeShape::Fast => "Fast",
+            FadeShape::Slow => "Slow",
+        }
+    }
+
+    /// Its index in [`FadeShape::ALL`] (stored in the project file).
+    pub fn code(self) -> u64 {
+        FadeShape::ALL.iter().position(|s| *s == self).unwrap_or(0) as u64
+    }
+
+    pub fn from_code(c: u64) -> FadeShape {
+        FadeShape::ALL.get(c as usize).copied().unwrap_or_default()
+    }
 }
 
 impl AudioClip {
     pub fn new(id: Id, name: &str, file: &str, movement: Id, at: f64) -> AudioClip {
-        AudioClip { id, name: name.into(), file: file.into(), movement, at, offset: 0.0, length: 0.0, fade_in: 0.0, fade_out: 0.0, gain_db: 0.0, mute: false, cue: None, cue_line: false }
+        AudioClip { id, name: name.into(), file: file.into(), movement, at, offset: 0.0, length: 0.0, fade_in: 0.0, fade_out: 0.0, gain_db: 0.0, mute: false, cue: None, cue_line: false, fade_in_shape: FadeShape::Linear, fade_out_shape: FadeShape::Linear }
     }
 }
 

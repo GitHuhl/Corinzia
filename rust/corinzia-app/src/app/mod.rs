@@ -93,11 +93,19 @@ pub(crate) struct App {
     pub(crate) roll: Option<RollState>,
     /// An audio export under way.
     pub(crate) bounce: Option<corinzia_audio::bounce::Bounce>,
+    /// Stems still to render after the one rendering: (track, its file),
+    /// and how many there were with the folder they go in.
+    pub(crate) stems: std::collections::VecDeque<(corinzia_model::Id, PathBuf)>,
+    pub(crate) stems_done: Option<(usize, PathBuf)>,
     /// Folders folded away in the arrange view.
     pub(crate) folded: HashSet<String>,
     /// The clip selected in the arrange view (track, clip), and while it is
     /// dragged, the clip as it was (its length made explicit).
     pub(crate) selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
+    /// How "Follow this clip" reads a recording's beats.
+    pub(crate) follow: mix::FollowOptions,
+    /// The Mix tab's mixer hidden (Ctrl+M): the arrange view takes its room.
+    pub(crate) mixer_hidden: bool,
     pub(crate) clip_origin: Option<corinzia_model::AudioClip>,
     pub(crate) clip_dragged: bool,
     /// Ctrl was held at the press: the first drag step makes the copy.
@@ -301,10 +309,14 @@ impl App {
             auto_shown: Default::default(),
             arrange_curves: Vec::new(),
             arrange_clips: Vec::new(),
+            stems: Default::default(),
+            stems_done: None,
             bounce: None,
             roll: None,
             folded: HashSet::new(),
             selected_clip: None,
+            follow: Default::default(),
+            mixer_hidden: false,
             clip_origin: None,
             clip_dragged: false,
             clip_copy: false,

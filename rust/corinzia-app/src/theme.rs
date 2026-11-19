@@ -251,3 +251,79 @@ pub fn accent(_: &Theme) -> text::Style {
 pub fn danger(_: &Theme) -> text::Style {
     text::Style { color: Some(palette().danger) }
 }
+
+// ------------------------------------------------------------- mixer --
+
+/// A mixer strip, flat and square, a shade lighter than the mixer's well;
+/// lighter again when selected.
+pub fn strip_flat(selected: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_| container::Style {
+        text_color: Some(palette().text),
+        background: Some(Background::Color(if selected { palette().hover } else { palette().raised })),
+        border: Border { color: if selected { palette().dim } else { palette().base }, width: 1.0, radius: 0.0.into() },
+        ..container::Style::default()
+    }
+}
+
+/// The well the mixer's strips stand in.
+pub fn mixer_well(_: &Theme) -> container::Style {
+    container::Style { text_color: Some(palette().text), background: Some(Background::Color(palette().base)), ..container::Style::default() }
+}
+
+/// A slot in a strip's effects rack (an instrument, an insert, the empty
+/// slot): inset dark, the name left; `on`: the one shown on the right.
+pub fn slot(on: bool, bypassed: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = match status {
+            button::Status::Hovered => palette().hover,
+            button::Status::Pressed => palette().raised,
+            _ => palette().base,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if bypassed { palette().faint } else if on { palette().text } else { palette().dim },
+            border: Border { color: if on { palette().accent } else { palette().line }, width: 1.0, radius: 2.0.into() },
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}
+
+/// A strip's small square toggle (mute, solo, phase): dark when off,
+/// filled with `lit` when on.
+pub fn mini(on: bool, lit: Color) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = match (on, status) {
+            (true, _) => lit,
+            (false, button::Status::Hovered) => palette().hover,
+            (false, _) => palette().base,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if on { Color::from_rgb8(0x10, 0x10, 0x12) } else { palette().dim },
+            border: Border { color: if on { lit } else { palette().line }, width: 1.0, radius: 2.0.into() },
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}
+
+/// Mute's and solo's lights.
+pub const MUTE: Color = Color::from_rgb(0.90, 0.33, 0.28);
+pub const SOLO: Color = Color::from_rgb(0.95, 0.78, 0.25);
+
+/// A strip's name plate at its foot: its track's colour, darkened so the
+/// name reads; brighter when the strip is selected.
+pub fn nameplate(color: Color, selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let k = if selected { 0.85 } else if matches!(status, button::Status::Hovered) { 0.7 } else { 0.55 };
+        let bg = Color::from_rgb(color.r * k, color.g * k, color.b * k);
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: Color::WHITE,
+            border: Border { color: if selected { Color::WHITE } else { bg }, width: if selected { 1.0 } else { 0.0 }, radius: 2.0.into() },
+            shadow: Shadow::default(),
+            snap: true,
+        }
+    }
+}

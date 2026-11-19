@@ -332,6 +332,7 @@ pub fn load(path: &Path) -> Result<Project> {
                 bpm: t["bpm"].as_f64().unwrap_or(120.0),
                 ramp: t["ramp"].as_bool().unwrap_or(false),
                 text: t["text"].as_str().unwrap_or("").to_string(),
+                hidden: t["hidden"].as_bool().unwrap_or(false),
             });
         }
         for t in serde_json::from_str::<Vec<Value>>(&meter)? {
@@ -640,12 +641,21 @@ fn clip_from(c: &Value) -> Option<AudioClip> {
         mute: c["mute"].as_bool().unwrap_or(false),
         cue: c["cue"].as_u64(),
         cue_line: c["cue_line"].as_bool().unwrap_or(false),
+        fade_in_shape: FadeShape::from_code(c["fade_in_shape"].as_u64().unwrap_or(0)),
+        fade_out_shape: FadeShape::from_code(c["fade_out_shape"].as_u64().unwrap_or(0)),
     })
 }
 
 fn clip_json(c: &AudioClip) -> Value {
-    json!({"id": c.id, "name": c.name, "file": c.file, "movement": c.movement, "at": c.at, "offset": c.offset, "length": c.length,
-           "fade_in": c.fade_in, "fade_out": c.fade_out, "db": c.gain_db, "mute": c.mute, "cue": c.cue, "cue_line": c.cue_line})
+    let mut v = json!({"id": c.id, "name": c.name, "file": c.file, "movement": c.movement, "at": c.at, "offset": c.offset, "length": c.length,
+           "fade_in": c.fade_in, "fade_out": c.fade_out, "db": c.gain_db, "mute": c.mute, "cue": c.cue, "cue_line": c.cue_line});
+    if c.fade_in_shape != FadeShape::Linear {
+        v["fade_in_shape"] = json!(c.fade_in_shape.code());
+    }
+    if c.fade_out_shape != FadeShape::Linear {
+        v["fade_out_shape"] = json!(c.fade_out_shape.code());
+    }
+    v
 }
 
 pub fn save(project: &Project, path: &Path) -> Result<()> {
@@ -764,6 +774,9 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             let mut o = json!({"at": jfrac(t.at), "bpm": t.bpm, "ramp": t.ramp});
             if !t.text.is_empty() {
                 o["text"] = json!(t.text);
+            }
+            if t.hidden {
+                o["hidden"] = json!(true);
             }
             o
         }).collect());

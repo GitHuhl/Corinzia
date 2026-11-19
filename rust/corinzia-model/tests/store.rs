@@ -29,7 +29,7 @@ fn sample() -> Project {
         title: "I. Andante".into(),
         length: Frac::int(6),
         revision: 7,
-        tempo: vec![Tempo { at: Frac::ZERO, bpm: 96.0, ramp: false, text: "Andante \"con moto\"".into() }],
+        tempo: vec![Tempo { at: Frac::ZERO, bpm: 96.0, ramp: false, text: "Andante \"con moto\"".into(), hidden: false }],
         meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }, Meter { at: Frac::int(4), num: 7, den: 8, pickup: false, beams: [2, 2, 3, 0, 0, 0, 0, 0] }],
         keys: vec![Key { at: Frac::ZERO, fifths: 1, minor: false }],
         barlines: vec![Barline { id: 20, at: Frac::int(2), kind: BarKind::RepeatEnd }],

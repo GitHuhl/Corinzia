@@ -113,6 +113,9 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
   dragged at either edge to trim, and dragged at a top corner to fade.
   Click selects; Delete removes; Ctrl+drag duplicates; S splits at the
   playhead (or caret), Alt+click splits where clicked.
+* **Tempo from audio:** a clip's beats (spectral-flux onsets, then
+  dynamic-programming beat tracking guided by the score's tempo) become
+  the movement's tempo, as hidden tempo changes on each beat or bar.
 * **In the mixer:** an audio track is a strip like an instrument track
   (inserts, sends, output bus, fader, pan, mute, solo, automation).
 * **Anchoring:** fixed (clock) time: seconds after the movement's start
@@ -124,4 +127,6 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
 Done so far: audio tracks and cues, the mixer and automation gaps, the
 EQ and limiter, the cycle. Still open from the map: streaming long files
 from disk, warping, looped clips, video, per-note expression, release
-velocity, VCAs, a compressor and gate, analyzers (level meters), comments.
+velocity, VCAs, analyzers, comments. (Done since: a compressor and gate,
+the export's integrated loudness and true peak, stems, fade curves,
+crossfades, clip gain lines and strip silence.)
