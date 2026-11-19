@@ -196,6 +196,53 @@ fn a_clip_cued_on_a_staff_is_engraved_there() {
 }
 
 #[test]
+fn a_clip_splits_into_two_that_play_as_it_did() {
+    use iced::keyboard::{Key, Modifiers};
+    let mut a = app(View::Page);
+    let _ = a.update(Message::Act(Action::ShowMix));
+    let rate = a.playback.sample_rate;
+    a.playback.pool.media.insert("tone.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.5; (rate * 10.0) as usize]], rate));
+    a.editor.caret = Frac::int(1); // quarter 4
+    let _ = a.update(Message::AudioChosen(0, Some("tone.wav".into())));
+    let (track, clip) = a.selected_clip.unwrap();
+    a.editor.edit_clip(track, clip, "fades", false, |c| (c.fade_in, c.fade_out) = (0.5, 1.0));
+    let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
+    let clips = |a: &App| a.editor.project.track(track).unwrap().clips.clone();
+    // S splits the selected clip at the caret (stopped): quarter 8.
+    a.editor.caret = Frac::int(2);
+    let _ = a.press(&Key::Character("s".into()), Modifiers::default());
+    let cs = clips(&a);
+    assert_eq!(cs.len(), 2);
+    let cut = sec(&a, 8.0) - sec(&a, 4.0);
+    let (first, second) = (&cs[0], &cs[1]);
+    assert!((first.length - cut).abs() < 1e-9 && first.fade_in == 0.5 && first.fade_out == 0.0, "{first:?}");
+    assert!((second.at - sec(&a, 8.0)).abs() < 1e-9 && (second.offset - cut).abs() < 1e-9 && (second.length - (10.0 - cut)).abs() < 1e-9, "{second:?}");
+    assert!(second.fade_in == 0.0 && second.fade_out == 1.0 && second.file == first.file);
+    assert_eq!(a.selected_clip, Some((track, second.id)), "the second half selected");
+    // One undo puts it back whole.
+    a.editor.undo();
+    assert_eq!(clips(&a).len(), 1);
+    assert_eq!(clips(&a)[0].length, 0.0);
+    a.editor.redo();
+    // Outside the clip: nothing, and a word why.
+    a.editor.caret = Frac::int(30);
+    let _ = a.update(Message::Mix(mix::MixMsg::ClipSplit));
+    assert_eq!(clips(&a).len(), 2);
+    assert!(a.editor.status.contains("split"), "{}", a.editor.status);
+    // Alt+click on a clip: split there.
+    let second = a.selected_clip.unwrap().1;
+    let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ClipSplit { track, clip: second, q: 10.0 }));
+    let cs = clips(&a);
+    assert_eq!(cs.len(), 3);
+    assert!(cs.iter().any(|c| (c.at - sec(&a, 10.0)).abs() < 1e-9));
+    // Played back to back, the three cover what the one did.
+    let total: f64 = cs.iter().map(|c| c.length).sum();
+    assert!((total - 10.0).abs() < 1e-9, "{total}");
+    a.sync();
+    assert!(a.playback.clip_errors.is_empty());
+}
+
+#[test]
 fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     let mut a = app(View::Page);
     let rate = a.playback.sample_rate;
@@ -205,6 +252,8 @@ fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     let tracks = |a: &App| a.editor.project.tracks.iter().filter(|t| t.audio).count();
     // On the score: a new track, at the caret.
     a.editor.caret = Frac::int(1);
+    let _ = a.update(Message::DragOver(Some(iced::Point::new(300.0, 300.0))));
+    let _ = a.view(); // the window outlined
     let _ = a.update(Message::DroppedAt(vec!["a.wav".into()], iced::Point::new(300.0, 300.0)));
     assert_eq!(tracks(&a), 1);
     let (track, _) = a.selected_clip.expect("the clip, selected");
@@ -219,6 +268,7 @@ fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     let at = iced::Point::new(layout.header_width + 12.0 * a.arrange_ppq - a.arrange_scroll + 1.0, 47.0 + arrange::RULER + (row as f32 + 0.5) * layout.lane_height - a.arrange_scroll_y);
     assert_eq!(a.drop_target(at), Some((Some(track), 12.0)));
     let _ = a.update(Message::DragOver(Some(at)));
+    let _ = a.view(); // highlighted where it would land
     assert!(a.drag_over.is_some() && a.editor.status == "Drop to add the sound to a", "{}", a.editor.status);
     load(&mut a, "b.wav");
     load(&mut a, "c.flac");
@@ -422,7 +472,7 @@ fn a_clip_is_grabbed_by_its_body_edges_and_corners() {
     let cache = canvas::Cache::new();
     let sel = HashSet::new();
     let clips = [block];
-    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None };
+    let v = arrange::ArrangeView { content: &content, pixels_per_quarter: 40.0, scroll_x: 0.0, scroll_y: 0.0, header: arrange::HEADER, mute_solo: vec![], lane_height: 56.0, selected: &sel, playhead: None, cache: &cache, curves: &[None], clips: &clips, selected_clip: None, cycle: None, drop_at: None };
     let r = v.clip_rect(&clips[0]);
     let at = |x: f32, y: f32| v.clip_at(iced::Point::new(x, y)).map(|(_, e)| e);
     let mid_y = r.y + r.height / 2.0;
