@@ -66,6 +66,33 @@ impl Editor {
         self.add_clip(track, c)
     }
 
+    /// Splits a clip `at` (seconds after the movement's start) into two that
+    /// play as it did: the first up to there, the second from there (its
+    /// own clip, further into the file). `played`: the clip's length as
+    /// played (its file's, less the trims, when it has no set length).
+    /// The fade in stays on the first, the fade out on the second. One undo
+    /// step; the second's id, or none when `at` is not inside the clip.
+    pub fn split_clip(&mut self, track: Id, clip: Id, at: f64, played: f64) -> Option<Id> {
+        const SHORTEST: f64 = 0.01;
+        let c = self.clip(track, clip)?.clone();
+        let cut = at - c.at;
+        if cut < SHORTEST || cut > played - SHORTEST {
+            return None;
+        }
+        let before = self.snapshot();
+        let id = self.project.allocate_id();
+        let t = self.project.tracks.iter_mut().find(|t| t.id == track)?;
+        let first = t.clips.iter_mut().find(|x| x.id == clip)?;
+        first.length = cut;
+        first.fade_in = first.fade_in.min(cut);
+        first.fade_out = 0.0;
+        let rest = played - cut;
+        let second = corinzia_model::AudioClip { id, at, offset: c.offset + cut, length: rest, fade_in: 0.0, fade_out: c.fade_out.min(rest), ..c };
+        t.clips.push(second);
+        self.commit_with(before, "Split audio", true, None);
+        Some(id)
+    }
+
     pub fn delete_clip(&mut self, track: Id, clip: Id) {
         let before = self.snapshot();
         let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == track) else { return };

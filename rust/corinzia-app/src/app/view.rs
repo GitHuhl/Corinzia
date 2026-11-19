@@ -295,6 +295,8 @@ impl App {
             Tab::Mix => {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
                 // The arrange headers' mute and solo buttons, per lane.
+                // Files dragged over: where they would land.
+                let drop_at = self.drag_over.and_then(|p| self.drop_target(p)).map(|(t, q)| (t.and_then(|t| self.arrange.lanes.iter().position(|l| l.track == t)), q));
                 let mute_solo: Vec<(bool, bool)> = self.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
                 let top: Element<'_, Message> = match &self.roll {
                     Some(r) => {
@@ -332,6 +334,7 @@ impl App {
                     selected_clip: self.selected_clip.map(|s| s.1),
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                     mute_solo,
+                    drop_at,
                 })
                 .width(Length::Fill)
                 .height(Length::Fill))
@@ -347,7 +350,17 @@ impl App {
                 .into()
             }
         };
-        column![toolbar, hline(), body, hline(), status].into()
+        let window = column![toolbar, hline(), body, hline(), status];
+        // Files dragged over anywhere but the arrange view: the window
+        // outlined (they would go on new tracks at the caret, or open).
+        if self.drag_over.is_some_and(|p| self.drop_target(p).is_none()) {
+            let outline = container(iced::widget::Space::new()).width(Length::Fill).height(Length::Fill).style(|_| container::Style {
+                border: iced::Border { color: theme::palette().accent, width: 3.0, radius: 0.0.into() },
+                ..container::Style::default()
+            });
+            return iced::widget::stack![window, outline].into();
+        }
+        window.into()
     }
 
     /// Bar and beat, time into the movement, tempo: the playhead's while

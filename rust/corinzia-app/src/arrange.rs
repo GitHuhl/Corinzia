@@ -252,6 +252,9 @@ pub enum ArrangeEvent {
     ClipPress { track: Id, clip: Id, copy: bool },
     ClipDrag { edit: ClipEdit, q: f64 },
     ClipRelease,
+    /// Alt+click on a clip: split it there (`q`: quarters, on the beat
+    /// unless Shift is held too).
+    ClipSplit { track: Id, clip: Id, q: f64 },
     /// A double-click on a track's lane: its piano roll.
     OpenRoll(Id),
     /// Shift+drag along the ruler: the cycle over [from, to) (quarters).
@@ -319,6 +322,9 @@ pub struct ArrangeView<'a> {
     pub cycle: Option<(f64, f64, bool)>,
     /// Per lane: (muted, soloed), for the headers' buttons.
     pub mute_solo: Vec<(bool, bool)>,
+    /// Files dragged over from a file manager: where they would land (the
+    /// lane, or none: a new track; quarters).
+    pub drop_at: Option<(Option<usize>, f64)>,
 }
 
 const PALETTE: [Color; 6] = [
@@ -560,6 +566,10 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                     state.drag = Some((lane, index));
                     return Some(canvas::Action::publish(ArrangeEvent::AutoAdd { lane, q, value: self.curve_value(lane, c, p.y) }).and_capture());
                 }
+                if let Some((c, ClipEdit::Move)) = self.clip_at(p).filter(|_| mods.alt()) {
+                    let q = self.beat(self.quarter_at(p.x), mods.shift());
+                    return Some(canvas::Action::publish(ArrangeEvent::ClipSplit { track: c.track, clip: c.clip, q }).and_capture());
+                }
                 if let Some((c, edit)) = self.clip_at(p) {
                     state.clip_drag = Some((edit, self.quarter_at(p.x) - c.start_q));
                     return Some(canvas::Action::publish(ArrangeEvent::ClipPress { track: c.track, clip: c.clip, copy: mods.control() && edit == ClipEdit::Move }).and_capture());
@@ -753,6 +763,27 @@ impl canvas::Program<ArrangeEvent> for ArrangeView<'_> {
                 let c = if on { crate::theme::palette().accent } else { crate::theme::palette().dim };
                 overlay.fill_rectangle(Point::new(x0, 2.0), Size::new(x1 - x0, RULER - 6.0), Color { a: 0.35, ..c });
                 overlay.stroke(&Path::rectangle(Point::new(x0, 2.0), Size::new(x1 - x0, RULER - 6.0)), Stroke::default().with_width(1.0).with_color(c));
+            }
+        }
+        // Files dragged over: the lane they would go on (or the whole view,
+        // for new tracks) and the beat they would start on.
+        if let Some((lane, q)) = self.drop_at {
+            let pal = crate::theme::palette();
+            let (y0, y1) = match lane {
+                Some(l) => (self.lane_y(l), self.lane_y(l) + self.lane_height),
+                None => (RULER, bounds.height),
+            };
+            let (y0, y1) = (y0.max(RULER), y1.min(bounds.height));
+            if y1 > y0 {
+                let (pos, size) = (Point::new(self.header, y0), Size::new((bounds.width - self.header).max(0.0), y1 - y0));
+                overlay.fill_rectangle(pos, size, Color { a: 0.14, ..pal.accent });
+                overlay.stroke(&Path::rectangle(pos, size), Stroke::default().with_width(2.0).with_color(pal.accent));
+                let x = self.x(q);
+                if x >= self.header {
+                    overlay.stroke(&Path::line(Point::new(x, y0), Point::new(x, y1)), Stroke::default().with_width(2.0).with_color(pal.accent));
+                    let label = if lane.is_some() { "Add here" } else { "New audio track" };
+                    overlay.fill_text(Text { content: label.into(), position: Point::new(x + 5.0, y0 + 4.0), size: iced::Pixels(12.0), color: pal.accent, ..Text::default() });
+                }
             }
         }
         if let Some(q) = self.playhead {

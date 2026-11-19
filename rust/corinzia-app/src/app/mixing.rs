@@ -132,6 +132,12 @@ impl App {
             Share(t, host) => {
                 self.editor.share_instrument(t, host);
             }
+            ClipSplit => {
+                if let Some((t, c)) = self.selected_clip {
+                    let q = self.split_point();
+                    self.split_clip_at(t, c, q);
+                }
+            }
             ClipRemove => {
                 if let Some((t, c)) = self.selected_clip.take() {
                     self.editor.delete_clip(t, c);
@@ -407,6 +413,31 @@ impl App {
         }
     }
 
+    /// Splits a clip at `q` (quarters into the movement): two clips that
+    /// play as it did; the second selected. False (and a word in the status
+    /// bar) when `q` is not inside the clip.
+    pub(crate) fn split_clip_at(&mut self, track: corinzia_model::Id, clip: corinzia_model::Id, q: f64) -> bool {
+        let Some(c) = self.editor.clip(track, clip).cloned() else { return false };
+        let played = arrange::clip_length(&c, self.playback.pool.media.loaded(&c.file).as_deref());
+        let at = arrange::seconds_of(self.movement_section(), q);
+        match self.editor.split_clip(track, clip, at, played) {
+            Some(id) => {
+                self.selected_clip = Some((track, id));
+                true
+            }
+            None => {
+                self.editor.status = "To split a clip, put the playhead (or the caret) inside it".into();
+                false
+            }
+        }
+    }
+
+    /// Where S splits the selected clip: the playhead while playing, else
+    /// the caret (a click on the ruler puts it there).
+    pub(crate) fn split_point(&self) -> f64 {
+        self.playback.playhead().map(|(_, q)| q).unwrap_or_else(|| quarters(self.editor.caret))
+    }
+
     /// Changes the selected clip; `live`: a slider or typing (one undo step
     /// until let go; playback catches up then).
     pub(crate) fn edit_selected_clip(&mut self, label: &str, live: bool, f: impl FnOnce(&mut corinzia_model::AudioClip)) {
@@ -490,6 +521,10 @@ impl App {
             });
         }
         arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
+        arrange::ArrangeEvent::ClipSplit { track, clip, q } => {
+            self.selected_clip = Some((track, clip));
+            self.split_clip_at(track, clip, q);
+        }
         arrange::ArrangeEvent::Cycle { from, to } => {
             if let Some(m) = self.editor.movement().map(|m| m.id) {
                 self.playback.set_cycle(Some((m, from, to)));

@@ -111,7 +111,8 @@ Status: **yes** — has it; **partly** — some of it; **no** — missing;
   drawn as blocks with their waveform. Clips are dragged along the
   timeline to move them (snapping to the beat grid, Shift for no snap),
   dragged at either edge to trim, and dragged at a top corner to fade.
-  Click selects; Delete removes; Ctrl+drag duplicates.
+  Click selects; Delete removes; Ctrl+drag duplicates; S splits at the
+  playhead (or caret), Alt+click splits where clicked.
 * **In the mixer:** an audio track is a strip like an instrument track
   (inserts, sends, output bus, fader, pan, mute, solo, automation).
 * **Anchoring:** fixed (clock) time: seconds after the movement's start

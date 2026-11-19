@@ -24,6 +24,8 @@ pub enum MixMsg {
     ClipMute,
     ClipCue(String),
     ClipCueLine,
+    /// Split the selected clip at the playhead (or the caret).
+    ClipSplit,
     ClipRemove,
     /// Puts out a strip's clip light.
     ClearClip(Id),
@@ -430,6 +432,7 @@ fn clip_panel<'a>(p: &'a Project, c: &'a corinzia_model::AudioClip) -> Element<'
         row![text("Gain").size(12).width(40), slider(MIN_DB..=12.0, c.gain_db, |v| MixMsg::ClipGain((v * 2.0).round() / 2.0)).step(0.5).on_release(MixMsg::Released), text(db_label(c.gain_db)).size(11).width(52)].spacing(6).align_y(Alignment::Center),
         row![
             button(text(if c.mute { "Muted" } else { "Mute" }).size(12)).padding([4, 10]).style(crate::theme::tool(c.mute)).on_press(MixMsg::ClipMute),
+            crate::panels::tip(button(text("Split").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::ClipSplit), "Split the clip at the playhead, or at the caret when stopped (S; Alt+click on a clip splits it there)"),
             crate::panels::spacer(),
             button(text("Remove").size(12)).padding([4, 10]).style(crate::theme::tool(false)).on_press(MixMsg::ClipRemove),
         ]

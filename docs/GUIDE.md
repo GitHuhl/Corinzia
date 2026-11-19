@@ -192,11 +192,17 @@ the output), automation playback and saving plugin settings.
   file manager (Wayland and X11 alike): dropped on an audio track in the
   arrange view, the first goes on that track at the beat under the
   pointer and any others each on a new track there; dropped anywhere
-  else, each goes on a new track at the caret. The status bar says where
-  a drag will land. Clips sit at fixed times (seconds after their movement's start: tempo
+  else, each goes on a new track at the caret. While you drag, the
+  arrange view highlights the lane and beat it will land on ("New audio
+  track" over empty space), and anywhere else the window is outlined. Clips sit at fixed times (seconds after their movement's start: tempo
   changes do not move them). In the arrange view, drag a clip to move it
   (snapping to the beat; Shift for none), its edges to trim, its top
-  corners to fade; Ctrl+drag copies, Delete removes. A selected clip has
+  corners to fade; Ctrl+drag copies, Delete removes. S (or "Split" by
+  the strips) splits the selected clip at the playhead, or at the caret
+  when stopped (click the ruler to put it there); Alt+click on a clip
+  splits it right there, on the beat (Shift too: anywhere). The two
+  halves play as the one did: the fade in stays on the first, the fade
+  out on the second. A selected clip has
   its gain, mute and name beside the strips, and can be cued in the
   score: its name with ▸ on a chosen player's staff where it starts
   (through the tempo), optionally with a line to where it ends. Audio tracks have effects,

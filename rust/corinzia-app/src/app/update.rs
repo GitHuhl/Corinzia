@@ -272,6 +272,14 @@ impl App {
                 _ => {}
             }
         }
+        // The selected clip in the arrange view: S splits it at the playhead.
+        if let (Tab::Mix, Some((track, clip)), Key::Character(c)) = (self.tab, self.selected_clip, key) {
+            if c.as_str().eq_ignore_ascii_case("s") && !mods.control() && !mods.alt() && !mods.logo() && self.roll.is_none() {
+                let q = self.split_point();
+                self.split_clip_at(track, clip, q);
+                return Some(Task::none());
+            }
+        }
         // The selected clip in the arrange view: Delete removes it.
         if let (Tab::Mix, Some((track, clip)), Key::Named(Named::Delete | Named::Backspace)) = (self.tab, self.selected_clip, key) {
             self.editor.delete_clip(track, clip);
