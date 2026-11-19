@@ -959,3 +959,159 @@ fn a_slur_keeps_a_staccato_inside_it() {
     let dot_bottom = dot[0].1 + 0.2;
     assert!(end_y > dot_bottom, "the slur's end ({end_x}, {end_y}) passes under the dot (bottom {dot_bottom})");
 }
+
+#[test]
+fn a_chords_accidentals_stack_as_lilypond_stacks_them() {
+    // C♯ E♯ G♯ C♯': the C♯s an octave apart share a column; none overlap;
+    // all clear the heads.
+    let s = score(&[("treble", &["<cis' eis' gis' cis''>1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("accidentals-chord", &l);
+    let sharps = glyphs(&l, Glyph::Sharp);
+    assert_eq!(sharps.len(), 4);
+    let heads = glyphs(&l, Glyph::NoteheadWhole);
+    let head_x = heads.iter().map(|h| h.0).fold(f32::MAX, f32::min);
+    let w = corinzia_layout::font::Font::bravura().bbox(Glyph::Sharp);
+    for s in &sharps {
+        assert!(s.0 + w.width() <= head_x - 0.1, "left of the heads: {s:?} vs {head_x}");
+    }
+    // The two C♯ (lowest and highest) in one column.
+    let (lo, hi) = (sharps.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap(), sharps.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap());
+    assert!((lo.0 - hi.0).abs() < 1e-4, "octaves aligned: {lo:?} {hi:?}");
+    // No two overlap.
+    for (i, a) in sharps.iter().enumerate() {
+        for b in &sharps[i + 1..] {
+            let x_overlap = (a.0 - b.0).abs() < w.width();
+            let y_overlap = (a.1 - b.1).abs() < w.ne.1 - w.sw.1;
+            assert!(!(x_overlap && y_overlap), "{a:?} and {b:?} collide");
+        }
+    }
+}
+
+#[test]
+fn a_rest_moves_clear_of_the_other_voice() {
+    // Voice 1 rests while voice 2 (stems down) climbs to c'''.
+    let s = score(&[("treble", &["r4 r r r", "c'''4 g' e' c'"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("rest-collision", &l);
+    let rests = glyphs(&l, Glyph::RestQuarter);
+    let heads = glyphs(&l, Glyph::NoteheadBlack);
+    let first_rest = rests.iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let high = heads.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let b = corinzia_layout::font::Font::bravura().bbox(Glyph::RestQuarter);
+    let rest_bottom = first_rest.1 - b.sw.1;
+    assert!(rest_bottom <= high.1 - 0.5 - 0.7, "the rest ({first_rest:?}, bottom {rest_bottom}) clears c''' ({high:?})");
+    // Where the other voice is low, the rest stays at its voiced place.
+    let last = rests.iter().max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+    let top = l.staves[0].top;
+    assert!((last.1 - (top + 0.0)).abs() < 0.01, "{last:?}");
+}
+
+#[test]
+fn a_chords_ties_split_up_and_down() {
+    // <e' g' d'' f''>2~ q, around the middle line: the two lower ties curve
+    // down, the two upper up (an inner tie by its side of the middle line).
+    let s = score(&[("treble", &["<e' g' d'' f''>2~ q"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("chord-ties", &l);
+    let mut ties: Vec<(f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            // (the end's y, the middle's offset from it: < 0 curving up)
+            Item::Crescent { from, c1, .. } => Some((from.y, c1.y - from.y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ties.len(), 4);
+    ties.sort_by(|a, b| b.0.total_cmp(&a.0)); // lowest first
+    assert!(ties[0].1 > 0.0 && ties[1].1 > 0.0, "the lower two curve down: {ties:?}");
+    assert!(ties[2].1 < 0.0 && ties[3].1 < 0.0, "the upper two curve up: {ties:?}");
+}
+
+#[test]
+fn rests_in_two_voices_do_not_collide() {
+    // Both voices rest together: the two rests do not overlap.
+    for (a, b) in [("r2 c''2", "r2 c'2"), ("r4 c''2.", "r4 c'2.")] {
+        let s = score(&[("treble", &[a, b])], (4, 4), 0);
+        let l = layout_line(&s, &Options::default());
+        let all: Vec<(f32, f32)> = [Glyph::RestHalf, Glyph::RestQuarter].iter().flat_map(|g| {
+            let bb = corinzia_layout::font::Font::bravura().bbox(*g);
+            glyphs(&l, *g).into_iter().map(move |r| (r.1 - bb.ne.1, r.1 - bb.sw.1))
+        }).collect();
+        assert_eq!(all.len(), 2, "{a} / {b}");
+        let (p, q) = (all[0], all[1]);
+        let overlap = p.1.min(q.1) - p.0.max(q.0);
+        assert!(overlap <= 1e-3, "{a} / {b}: the rests overlap by {overlap}: {all:?}");
+    }
+}
+
+#[test]
+fn flats_tuck_into_each_other_closer_than_their_boxes() {
+    // B♭ and E♭ a fourth apart: the lower flat's stem (narrow at the top)
+    // tucks under the upper's bowl, nearer than two boxes would allow.
+    let s = score(&[("treble", &["<bes' ees''>1"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("accidentals-flats", &l);
+    let flats = glyphs(&l, Glyph::Flat);
+    assert_eq!(flats.len(), 2);
+    let w = corinzia_layout::font::Font::bravura().bbox(Glyph::Flat).width();
+    let span = (flats[0].0 - flats[1].0).abs();
+    assert!(span > 0.1 && span < w + 0.2 - 0.3, "the flats are {span} apart (boxes would need {})", w + 0.2);
+}
+
+#[test]
+fn a_chords_ties_keep_apart() {
+    // A five-note chord tied over: no two ties' middles nearer than
+    // LilyPond's tie-tie collision distance.
+    let s = score(&[("treble", &["<c' e' g' b' d''>2~ q"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("chord-ties-5", &l);
+    let mids: Vec<f32> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Crescent { from, c1, d1, .. } => Some(from.y + 0.75 * ((c1.y + d1.y) / 2.0 - from.y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(mids.len(), 5);
+    for (i, a) in mids.iter().enumerate() {
+        for b in &mids[i + 1..] {
+            assert!((a - b).abs() >= 0.45, "ties at {a} and {b} touch: {mids:?}");
+        }
+    }
+}
+
+#[test]
+fn a_tie_keeps_clear_of_its_notes_dot() {
+    // d''4. (on a line, stem down: the tie goes up, where the dot is).
+    let s = score(&[("treble", &["d''4.~ d''8 r2"])], (4, 4), 0);
+    let l = layout_line(&s, &Options::default());
+    preview("tie-dot", &l);
+    let dot = glyphs(&l, Glyph::Dot);
+    assert_eq!(dot.len(), 1);
+    let (dx, dy) = (dot[0].0 + 0.1, dot[0].1);
+    let tie = l
+        .items
+        .iter()
+        .find_map(|i| match i {
+            Item::Crescent { from, c1, c2, to, d1, d2, .. } => Some([*from, pt_mid(*c1, *d1), pt_mid(*c2, *d2), *to]),
+            _ => None,
+        })
+        .expect("the tie");
+    // The midline's y at the dot's x (sampled).
+    let at = |t: f32| {
+        let u = 1.0 - t;
+        let f = |a: f32, b: f32, c: f32, d: f32| u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d;
+        (f(tie[0].x, tie[1].x, tie[2].x, tie[3].x), f(tie[0].y, tie[1].y, tie[2].y, tie[3].y))
+    };
+    if (tie[0].x..=tie[3].x).contains(&dx) {
+        let y = (0..=200).map(|k| at(k as f32 / 200.0)).min_by(|a, b| (a.0 - dx).abs().total_cmp(&(b.0 - dx).abs())).unwrap().1;
+        assert!((y - dy).abs() >= 0.2, "the tie passes the dot: {y} vs {dy}");
+    }
+}
+
+fn pt_mid(a: corinzia_layout::display::Point, b: corinzia_layout::display::Point) -> corinzia_layout::display::Point {
+    corinzia_layout::display::Point { x: (a.x + b.x) / 2.0, y: (a.y + b.y) / 2.0 }
+}

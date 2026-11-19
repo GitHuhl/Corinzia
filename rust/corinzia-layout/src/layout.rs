@@ -119,9 +119,13 @@ const BASE_SHORTEST: Frac = Frac { num: 3, den: 16 };
 
 /// Ideal space after a note of duration `d` when `shortest` is the
 /// movement's common shortest duration.
+/// (LilyPond's `Spacing_options::get_duration_space`: notes shorter than
+/// the shortest are spaced linearly, not by the logarithm, so that they
+/// do not crowd.)
 fn ideal_space(d: Frac, shortest: Frac) -> f32 {
     let r = (d.num as f64 / d.den as f64) / (shortest.num as f64 / shortest.den as f64);
-    (SPACING_INCREMENT * (SHORTEST_DURATION_SPACE + r.log2())) as f32
+    let k = if r < 1.0 { SHORTEST_DURATION_SPACE + r - 1.0 } else { SHORTEST_DURATION_SPACE + r.log2() };
+    (SPACING_INCREMENT * k) as f32
 }
 
 /// Fixed distances around barlines and between columns, measured from
@@ -201,21 +205,6 @@ impl StemInfo {
 fn overlap((l1, h1): (f32, f32), (l2, h2): (f32, f32)) -> f32 {
     (h1.min(h2) - l1.max(l2)).max(0.0)
 }
-
-/// Beams (LilyPond's Stem and Beam details): ideal beamed stem lengths (to
-/// the outer beam) by number of beams, the least free stem below the
-/// innermost beam, the slope damping, and the demerit weights of the
-/// quanting.
-const BEAMED_LENGTHS: [f32; 3] = [3.26, 3.5, 3.6];
-const BEAMED_MIN_FREE: [f32; 3] = [1.83, 1.5, 1.25];
-const BEAM_SLOPE_DAMPING: f32 = 0.6;
-const BEAM_SLOPE_FACTOR: f32 = 10.0;
-const BEAM_FLAT_PENALTY: f32 = 800.0;
-const BEAM_DIRECTION_PENALTY: f32 = 400.0;
-const STEM_LENGTH_DEMERIT: f32 = 5.0;
-/// Stems shorter than ideal cost more than longer ones.
-const BEAM_SHORT_FACTOR: f32 = 2.0;
-const BEAM_CONCAVE_DAMPING: f32 = 3.0;
 
 /// The movement's common shortest duration: the shortest note of each bar,
 /// the one most bars have (the shorter on a tie), capped at
@@ -672,6 +661,86 @@ fn joined_to_next(score: &Score, pi: usize) -> bool {
     a.brace || a.group != 0 && a.group == b.group
 }
 
+/// A chord's accidentals placed as LilyPond's AccidentalPlacement places
+/// them (`lily/accidental-placement.cc`; GNU LilyPond, GPL-3.0-or-later):
+/// those on one note name (its octaves) together in one column; the
+/// columns with most accidentals first, then from the outside in (the
+/// highest, the lowest, the next highest…), each as far right as it
+/// clears what is placed already, 0.2 apart and 0.15 from the heads.
+/// Each glyph fitted by its outline (24 bands), as LilyPond fits them by
+/// their skylines.
+/// A box (x0, x1, y0, y1).
+type AccBox = (f32, f32, f32, f32);
+
+fn place_accidentals(note: &mut Note) {
+    const PADDING: f32 = 0.2;
+    const RIGHT_PADDING: f32 = 0.15;
+    const VERTICAL_FUDGE: f32 = 0.1;
+    let font = Font::bravura();
+    // Boxes (x0, x1, y0, y1), y down from the middle line, x from the note's x.
+    let mut placed: Vec<(f32, f32, f32, f32)> = note
+        .heads
+        .iter()
+        .map(|h| (h.shift - RIGHT_PADDING, h.shift + HEAD_W, -h.pos as f32 * 0.5 - 0.5, -h.pos as f32 * 0.5 + 0.5))
+        .collect();
+    // The groups: by note name, then split where one octave holds two.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (j, h) in note.heads.iter().enumerate().filter(|(_, h)| h.accidental.is_some()) {
+        let name = h.dia.rem_euclid(7);
+        match groups.iter_mut().find(|g| g.iter().all(|&k| note.heads[k].dia != h.dia) && note.heads[g[0]].dia.rem_euclid(7) == name) {
+            Some(g) => g.push(j),
+            None => groups.push(vec![j]),
+        }
+    }
+    if groups.is_empty() {
+        return;
+    }
+    let top = |g: &Vec<usize>, n: &Note| g.iter().map(|&k| n.heads[k].pos).max().unwrap_or(0);
+    groups.sort_by(|a, b| b.len().cmp(&a.len()).then(top(a, note).cmp(&top(b, note))));
+    // Within each size, from the outside in: highest, lowest, next highest…
+    let mut order: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < groups.len() {
+        let mut same: std::collections::VecDeque<Vec<usize>> = groups[i..].iter().take_while(|g| g.len() == groups[i].len()).cloned().collect();
+        i += same.len();
+        let mut from_top = true;
+        while let Some(g) = if from_top { same.pop_back() } else { same.pop_front() } {
+            order.push(g);
+            from_top = !from_top;
+        }
+    }
+    let mut last_offset = 0.0f32;
+    for g in order {
+        // The group's boxes with each glyph's right edge at 0.
+        // Each glyph as its outline's bands.
+        let boxes: Vec<(usize, f32, AccBox)> = g
+            .iter()
+            .flat_map(|&k| {
+                let h = &note.heads[k];
+                let gl = h.accidental.unwrap();
+                let right = font.bbox(gl).ne.0;
+                let y = -h.pos as f32 * 0.5;
+                font.outline_bands(gl, 24).into_iter().map(move |(x0, x1, y0, y1)| (k, right, (x0 - right, x1 - right, y - y1, y - y0)))
+            })
+            .collect();
+        let mut offset = f32::INFINITY;
+        for &(_, _, (_, bx1, by0, by1)) in &boxes {
+            for &(px0, _, py0, py1) in &placed {
+                if by0 < py1 + VERTICAL_FUDGE && by1 > py0 - VERTICAL_FUDGE {
+                    offset = offset.min(px0 - bx1);
+                }
+            }
+        }
+        let offset = if offset.is_finite() { offset - PADDING } else { last_offset };
+        for &(k, right, (bx0, bx1, by0, by1)) in &boxes {
+            note.heads[k].acc_x = offset - right;
+            placed.push((bx0 + offset, bx1 + offset, by0, by1));
+        }
+        // (A glyph's bands all give it the same place.)
+        last_offset = offset;
+    }
+}
+
 /// A tie's indent and height for its width: LilyPond's slur shape law
 /// with the Tie's details (height limit 1, ratio 1/3).
 fn tie_shape(width: f32) -> (f32, f32) {
@@ -806,28 +875,7 @@ impl<'a> Engraver<'a> {
                     }
                 }
             }
-            // Columns right to left, top accidental first; a column takes an
-            // accidental if it clears the others in it by a sixth.
-            let left_edge = note.heads.iter().map(|h| h.shift).fold(0.0f32, f32::min);
-            let mut columns: Vec<(f32, Vec<i32>)> = Vec::new(); // (x of the column's left edge, positions)
-            let mut x_cursor = left_edge - 0.23; // LilyPond: 0.35 from accidental to head
-            for j in (0..k).rev() {
-                let Some(g) = note.heads[j].accidental else { continue };
-                let w = Font::bravura().bbox(g).width();
-                let pos = note.heads[j].pos;
-                let slot = columns.iter_mut().find(|(_, ps)| ps.iter().all(|p| (p - pos).abs() >= 6));
-                match slot {
-                    Some((x, ps)) => {
-                        ps.push(pos);
-                        note.heads[j].acc_x = *x;
-                    }
-                    None => {
-                        x_cursor -= w + 0.12;
-                        columns.push((x_cursor, vec![pos]));
-                        note.heads[j].acc_x = x_cursor;
-                    }
-                }
-            }
+            place_accidentals(note);
         }
     }
 
@@ -1160,7 +1208,7 @@ impl<'a> Engraver<'a> {
             }
             if self.notes.iter().filter(|n| n.measure == mi).all(|n| n.whole_bar) {
                 x1 = x1.max(x + 8.0); // an empty bar keeps a sensible width
-                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.0) * self.opt.spacing;
+                stretch += (ideal_space(m.len, m.shortest) - SPACING_INCREMENT as f32).max(0.1) * self.opt.spacing;
             }
             breaks.push((x1, stretch));
             self.ms[mi].stretch = stretch - bar_stretch;
@@ -1388,7 +1436,47 @@ impl<'a> Engraver<'a> {
                 let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
                 let mut y = if n.value.base <= 1 { top + 1.0 } else { top + 2.0 };
                 if poly {
-                    y += if n.voice % 2 == 1 { -2.0 } else { 2.0 };
+                    let up = n.voice % 2 == 1;
+                    y += if up { -2.0 } else { 2.0 };
+                    // LilyPond's RestCollision: clear of the other voices'
+                    // notes at this moment by 0.75, moved in half spaces
+                    // (whole spaces within the staff, so it stays on its line).
+                    let b = self.font.bbox(g);
+                    let (r_top, r_bottom) = (y - b.ne.1 * s, y - b.sw.1 * s);
+                    let heads = self.notes.iter().filter(|o| o.part == n.part && o.voice != n.voice && !o.rest && o.start == n.start).flat_map(|o| o.heads.iter().map(move |h| (o.part, h.pos)));
+                    let (mut n_top, mut n_bottom) = (f32::MAX, f32::MIN);
+                    for (p, pos) in heads {
+                        let hy = self.y(p, pos);
+                        (n_top, n_bottom) = (n_top.min(hy - 0.5), n_bottom.max(hy + 0.5));
+                    }
+                    if n_top < f32::MAX {
+                        let need = if up { (r_bottom - n_top + 0.75).max(0.0) } else { (n_bottom - r_top + 0.75).max(0.0) };
+                        let mut steps = (need / 0.5).ceil() as i32;
+                        let pos_after = -((y - top - 2.0) * 2.0) as i32 + if up { steps } else { -steps };
+                        if (-5..=5).contains(&pos_after) {
+                            steps = (steps as f32 / 2.0).ceil() as i32 * 2;
+                        }
+                        y += if up { -0.5 } else { 0.5 } * steps as f32;
+                    } else if let Some(o) = self.notes.iter().find(|o| o.part == n.part && o.voice != n.voice && o.rest && o.start == n.start && (o.voice % 2 == 1) != up) {
+                        // Only rests here (LilyPond's rest-against-rest case):
+                        // where the upper voice's rest and the lower's overlap,
+                        // the lower moves down by half the overlap, the upper
+                        // up by the rest, in whole spaces.
+                        let og = rest_glyph(o.value.base);
+                        let ob = self.font.bbox(og);
+                        let oy = (if o.value.base <= 1 { top + 1.0 } else { top + 2.0 }) + if up { 2.0 } else { -2.0 };
+                        let (up_bottom, down_top) = if up { (r_bottom, oy - ob.ne.1) } else { (oy - ob.sw.1, r_top) };
+                        let mut diff = up_bottom - down_top;
+                        if diff > 0.0 {
+                            let down = (diff / 2.0).ceil();
+                            diff -= down;
+                            if !up {
+                                y += down;
+                            } else if diff > 0.0 {
+                                y -= diff.ceil();
+                            }
+                        }
+                    }
                 }
                 if n.whole_bar && self.ms[n.measure].multi > 1 {
                     // An H-bar on the middle line between serifs, the count above.
@@ -1690,89 +1778,109 @@ impl<'a> Engraver<'a> {
         }
     }
 
-    /// The beam of a group, placed as LilyPond does: ideal stem ends
-    /// fitted by least squares, the slope damped (0.6 tanh), flat for
-    /// concave groups, then the best of the allowed positions (in the staff,
-    /// on a line or 0.19 off it) by stem-length and slope demerits.
-    /// Returns the outer edge at the first stem and the slope, page y down.
+    /// The beam of a group, placed by LilyPond's beam quanting (see
+    /// `crate::beam`). Returns the outer edge at the first stem and the
+    /// slope, page y down.
     fn quant_beam(&self, g: &[usize], up: bool, bt: f32, gap: f32) -> (f32, f32) {
         let dir = if up { 1.0 } else { -1.0 };
         let part = self.notes[g[0]].part;
         let mid = self.top(part) + 2.0;
-        // Per stem: x, the head the stem ends nearest (y up from the middle
-        // line), its number of beams.
-        let stems: Vec<(f32, f32, u32)> = g
+        let stems: Vec<crate::beam::Stem> = g
             .iter()
             .map(|&i| {
                 let n = &self.notes[i];
-                let (lo, hi) = (n.heads[0].pos as f32 * 0.5, n.heads[n.heads.len() - 1].pos as f32 * 0.5);
-                (n.stem_x, if up { hi } else { lo }, n.beams().max(1))
+                crate::beam::Stem { x: n.stem_x, low: n.heads[0].pos, high: n.heads[n.heads.len() - 1].pos, dir: 0.0, middle: 0.0 }
             })
             .collect();
-        let x0 = stems[0].0;
-        let outer_len = |b: u32| BEAMED_LENGTHS[(b.min(3) - 1) as usize];
-        // Ideal beam centre lines over each stem, and their least-squares line.
-        let ideal: Vec<(f32, f32)> = stems.iter().map(|&(x, h, b)| (x - x0, h + dir * (outer_len(b) - bt / 2.0))).collect();
-        let k = ideal.len() as f32;
-        let (mx, my) = (ideal.iter().map(|p| p.0).sum::<f32>() / k, ideal.iter().map(|p| p.1).sum::<f32>() / k);
-        let sxx: f32 = ideal.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
-        let sxy: f32 = ideal.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
-        let ls = if sxx > 1e-6 { sxy / sxx } else { 0.0 };
-        // Equal outer notes give a flat beam.
-        let level = (stems[0].1 - stems[stems.len() - 1].1).abs() < 1e-4;
-        // Concaveness (how far the inner notes reach towards the beam beyond
-        // the line joining the outer ones) damps the slope further.
-        let n = stems.len();
-        let (first, last) = (stems[0].1 * dir, stems[n - 1].1 * dir);
-        let excess: Vec<f32> = (1..n.saturating_sub(1)).map(|i| stems[i].1 * dir - (first + (last - first) * i as f32 / (n - 1) as f32)).collect();
-        let concave = if excess.is_empty() { 0.0 } else { excess.iter().map(|e| e.max(0.0)).sum::<f32>() / excess.len() as f32 };
-        let damped = if level { 0.0 } else { BEAM_SLOPE_DAMPING * ls.tanh() / (1.0 + BEAM_CONCAVE_DAMPING * concave) };
-        let dx = stems[stems.len() - 1].0 - x0;
-        let ideal_dy = damped * dx;
-        // Candidate centre positions near the damped line through the centroid.
-        let left0 = my - damped * mx;
-        let quants = |c: f32| -> Vec<f32> {
-            let mut q = Vec::new();
-            let lo = (c - 2.0).floor() as i32;
-            for k in lo..=lo + 5 {
-                for off in [0.0, 0.19, 0.81] {
-                    // The beam centre on a line, or sitting on / hanging from it.
-                    q.push(k as f32 + off);
+        let counts: Vec<u32> = g.iter().map(|&i| self.notes[i].beams().max(1)).collect();
+        // What else is under or over the beam on this staff: other notes'
+        // heads, rests, accidentals and stems, clefs (LilyPond's covered grobs).
+        let (xa, xb) = (stems[0].x, stems[stems.len() - 1].x);
+        let own: std::collections::HashSet<u64> = g.iter().flat_map(|&i| std::iter::once(self.notes[i].id).chain(self.notes[i].heads.iter().map(|h| h.id))).collect();
+        let top = self.top(part);
+        let collisions: Vec<(f32, (f32, f32), f32)> = self
+            .out
+            .items
+            .iter()
+            .filter(|it| !own.contains(&it.id()) && !matches!(it, Item::Crescent { .. } | Item::Quad { .. } | Item::Text { .. }))
+            .filter_map(|it| {
+                let r = it.bounds(self.font);
+                if r[2] < xa || r[0] > xb || r[3] < top - 8.0 || r[1] > top + 12.0 {
+                    return None;
                 }
-            }
-            q
-        };
-        let (mut best, mut best_score) = ((left0, left0 + ideal_dy), f32::INFINITY);
-        for &l in &quants(left0) {
-            for &r in &quants(left0 + ideal_dy) {
-                let dy = r - l;
-                let mut score = BEAM_SLOPE_FACTOR * (dy - ideal_dy).abs();
-                if ideal_dy == 0.0 && dy != 0.0 {
-                    score += BEAM_FLAT_PENALTY;
-                } else if dy * ideal_dy < 0.0 {
-                    score += BEAM_DIRECTION_PENALTY * dy.abs();
-                }
-                for &(x, h, b) in &stems {
-                    let centre = l + if dx > 0.0 { dy * (x - x0) / dx } else { 0.0 };
-                    let len = dir * (centre - h) + bt / 2.0;
-                    let d = len - outer_len(b);
-                    score += STEM_LENGTH_DEMERIT * if d < 0.0 { -d * BEAM_SHORT_FACTOR } else { d };
-                    let free = len - (b - 1) as f32 * gap - bt;
-                    if free < BEAMED_MIN_FREE[(b.min(3) - 1) as usize] {
-                        score += 5000.0;
+                let (lo, hi) = (mid - r[3], mid - r[1]); // y up from the middle line
+                match it {
+                    // Stems (upright lines) count a tenth; staff and ledger lines not.
+                    Item::Line { from, to, .. } if (from.x - to.x).abs() < 1e-3 && (to.y - from.y).abs() > 1.0 => Some(vec![((from.x + to.x) / 2.0, (lo, hi), 0.1)]),
+                    Item::Line { .. } => None,
+                    _ => {
+                        let f = (r[2] - r[0]).max(0.0).sqrt();
+                        Some(vec![(r[0], (lo, hi), f), (r[2], (lo, hi), f)])
                     }
                 }
-                if score < best_score {
-                    best_score = score;
-                    best = (l, r);
-                }
-            }
-        }
-        let (l, r) = best;
+            })
+            .flatten()
+            .collect();
+        let pb = crate::beam::Problem {
+            collisions,
+            knee: false,
+            cross_staff: false,
+            stems,
+            dir,
+            beam_count: counts.iter().copied().max().unwrap_or(1),
+            edge_counts: [counts[0], counts[counts.len() - 1]],
+            thickness: bt,
+            translation: gap,
+            line_thickness: self.font.defaults.staff_line_thickness,
+        };
+        let [l, r] = crate::beam::solve(&pb);
+        let dx = pb.stems[pb.stems.len() - 1].x - pb.stems[0].x;
         // Back to page coordinates: the outer edge, y down.
         let edge = |c: f32| mid - (c + dir * bt / 2.0);
         let slope = if dx > 0.0 { (edge(r) - edge(l)) / dx } else { 0.0 };
         (edge(l), slope)
+    }
+
+    /// A kneed beam (stems down from the upper staff, up from the lower),
+    /// placed by LilyPond's beam quanting for knees (see `crate::beam`).
+    /// Returns the top beam's upper edge at the first stem and the slope,
+    /// page y down.
+    fn quant_knee(&self, g: &[usize], bt: f32, gap: f32) -> (f32, f32) {
+        let top_part = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
+        let ref_mid = self.top(top_part) + 2.0;
+        let stems: Vec<crate::beam::Stem> = g
+            .iter()
+            .map(|&i| {
+                let n = &self.notes[i];
+                crate::beam::Stem {
+                    x: n.stem_x,
+                    low: n.heads[0].pos,
+                    high: n.heads[n.heads.len() - 1].pos,
+                    dir: if n.stem_up { 1.0 } else { -1.0 },
+                    middle: ref_mid - (self.top(n.part) + 2.0),
+                }
+            })
+            .collect();
+        let counts: Vec<u32> = g.iter().map(|&i| self.notes[i].beams().max(1)).collect();
+        let levels = counts.iter().copied().max().unwrap_or(1);
+        let pb = crate::beam::Problem {
+            stems,
+            dir: 1.0,
+            beam_count: levels,
+            edge_counts: [counts[0], counts[counts.len() - 1]],
+            thickness: bt,
+            translation: gap,
+            line_thickness: self.font.defaults.staff_line_thickness,
+            collisions: vec![],
+            knee: true,
+            cross_staff: g.iter().any(|&i| self.notes[i].part != top_part),
+        };
+        let [l, r] = crate::beam::solve(&pb);
+        let dx = pb.stems[pb.stems.len() - 1].x - pb.stems[0].x;
+        // The stack's middle -> its top edge, page y down.
+        let top_edge = |c: f32| ref_mid - (c + (levels as f32 - 1.0) * gap / 2.0 + bt / 2.0);
+        let slope = if dx > 0.0 { (top_edge(r) - top_edge(l)) / dx } else { 0.0 };
+        (top_edge(l), slope)
     }
 
     fn draw_beams(&mut self, groups: &[Vec<usize>]) {
@@ -1786,20 +1894,10 @@ impl<'a> Engraver<'a> {
             let levels = g.iter().map(|&i| self.notes[i].beams()).max().unwrap_or(1);
             let kneed = g.iter().any(|&i| self.notes[i].part != self.notes[g[0]].part);
             let (y0, slope) = if kneed {
-                // Flat, halfway between the upper staff's lowest head and the
-                // lower staff's highest, the beams stacked from there down.
-                let top = g.iter().map(|&i| self.notes[i].part).min().unwrap_or(0);
-                let low = g.iter().filter(|&&i| self.notes[i].part == top).map(|&i| self.y(top, self.notes[i].heads[0].pos)).fold(f32::MIN, f32::max);
-                let high = g
-                    .iter()
-                    .filter(|&&i| self.notes[i].part != top)
-                    .map(|&i| {
-                        let n = &self.notes[i];
-                        self.y(n.part, n.heads[n.heads.len() - 1].pos)
-                    })
-                    .fold(f32::MAX, f32::min);
+                // Across the staves, by LilyPond's quanting for knees; drawn
+                // from the top beam's upper edge down.
                 up = true;
-                ((low + high) / 2.0 - (levels as f32 * gap) / 2.0, 0.0)
+                self.quant_knee(g, bt, gap)
             } else {
                 self.quant_beam(g, up, bt, gap)
             };
@@ -1850,51 +1948,135 @@ impl<'a> Engraver<'a> {
         }
     }
 
-    /// Ties, shaped and placed as LilyPond places a single tie
-    /// (`lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc`, the
-    /// Tie details in `scm/define-grobs.scm`; GNU LilyPond, GPL-3.0-or-later):
-    /// LilyPond's slur shape with the tie's height limit (1) and ratio
-    /// (1/3); ends 0.2 from the heads (0.35 past a stem in the way); a short
-    /// tie in a space centred on its heads' middle, on a line moved off it,
-    /// a tall one with its peak kept clear of the staff lines.
+    /// Ties, shaped and placed as LilyPond places them
+    /// (`lily/tie-formatting-problem.cc`, `lily/tie-configuration.cc`,
+    /// `lily/tie.cc`, the Tie details in `scm/define-grobs.scm`; GNU
+    /// LilyPond, GPL-3.0-or-later): LilyPond's slur shape with the tie's
+    /// height limit (1) and ratio (1/3); ends 0.2 from the heads (0.35 past
+    /// a stem in the way); each tie half a space out from its head (in the
+    /// space beside a head on a line), a short tie centred in its space or
+    /// kept off the line, a tall one with its peak clear of the lines; a
+    /// chord's ties on one side moved apart where they would touch.
     fn draw_ties(&mut self) {
         const NOTE_HEAD_GAP: f32 = 0.2;
         const INTRA_SPACE_THRESHOLD: f32 = 1.25;
         const TIP_STAFF_LINE_CLEARANCE: f32 = 0.45;
         const CENTER_STAFF_LINE_CLEARANCE: f32 = 0.6;
+        const OUTER_TIE_VERTICAL_GAP: f32 = 0.25;
+        const TIE_TIE_COLLISION_DISTANCE: f32 = 0.45;
         let d = self.font.defaults;
         let system_end = self.ms.last().map(|m| m.x1).unwrap_or(self.left);
         let mut items = Vec::new();
-        // The tie at head height `y` (staff `top`) from x0 to x1, on side `dir`.
-        let tie = |x0: f32, x1: f32, y: f32, top: f32, dir: f32, id: u64| {
-            let x1 = x1.max(x0 + 0.6);
-            let w = x1 - x0;
-            let (indent, h) = {
-                let (i, h) = tie_shape(w);
-                (i.min(w / 3.1), h)
-            };
-            let pos = (y - top) * 2.0;
-            let on_line = |p: f32| {
-                let r = p.round();
-                (p - r).abs() < 1e-3 && (0.0..=8.0).contains(&r) && (r as i32) % 2 == 0
-            };
-            let within_staff = (1.0..=7.0).contains(&pos);
-            let mut dy = 0.0;
-            if h < INTRA_SPACE_THRESHOLD * 0.5 {
-                if on_line(pos) {
-                    dy = dir * TIP_STAFF_LINE_CLEARANCE * 0.5;
-                } else if within_staff {
-                    // Its ends and its peak either side of the heads' middle.
-                    dy = -dir * 0.375 * h;
-                }
-            } else {
-                let top_pos = (y + dir * h - top) * 2.0;
-                let r = top_pos.round();
-                if (top_pos - r).abs() < CENTER_STAFF_LINE_CLEARANCE && on_line(r) {
-                    dy = (r + CENTER_STAFF_LINE_CLEARANCE * dir) * 0.5 + top - (y + dir * h);
+        // `generate_configuration`: a tie from x0 to x1 for the head at
+        // `pos` (half spaces up from the middle line), `extra` half spaces
+        // further out, on side `dir` (+1 down); `chord`: the chord's head
+        // positions. Gives the ends' page y and the height.
+        // `get_configuration` at tie position `p` (half spaces up).
+        // `dots`: the left note's dots (x, staff position): a tie at a dot's
+        // position moves a quarter space out, untuned.
+        let configure_at = |x0: f32, x1: f32, pos: i32, p: i32, chord: (i32, i32), top: f32, dir: f32, dots: &[(f32, i32)]| -> (f32, f32) {
+            let (_, h) = tie_shape((x1 - x0).max(0.6));
+            let up = -dir; // LilyPond's direction, y up
+            let y = p as f32 * 0.5;
+            if dots.iter().any(|d| d.1 == p) {
+                return (top + 2.0 - (y + up * 0.25), h);
+            }
+            let on_line = |q: i32| q % 2 == 0 && (-4..=4).contains(&q);
+            let head_edge = pos as f32 * 0.5 + up * 0.5;
+            let mut delta = 0.0;
+            if (head_edge - y).abs() < 0.25 && !on_line(p) {
+                delta = head_edge - y + up * OUTER_TIE_VERTICAL_GAP;
+            }
+            let within_staff = (-3..=3).contains(&p);
+            if (chord.0..=chord.1).contains(&p) || within_staff {
+                if h < INTRA_SPACE_THRESHOLD * 0.5 {
+                    if on_line(p) {
+                        delta += up * TIP_STAFF_LINE_CLEARANCE * 0.5;
+                    } else if within_staff {
+                        // Its ends and its peak either side of the space's middle.
+                        delta = -up * 0.375 * h;
+                    }
+                } else {
+                    let top_y = y + delta + up * h;
+                    let r = (top_y * 2.0).round() as i32;
+                    if (top_y * 2.0 - r as f32).abs() < CENTER_STAFF_LINE_CLEARANCE && on_line(r) {
+                        delta = (r as f32 + CENTER_STAFF_LINE_CLEARANCE * up) * 0.5 - top_y;
+                    }
                 }
             }
-            let y = y + dy;
+            (top + 2.0 - (y + delta), h)
+        };
+        let configure = |x0: f32, x1: f32, pos: i32, extra: i32, chord: (i32, i32), top: f32, dir: f32, dots: &[(f32, i32)]| -> (f32, f32) {
+            configure_at(x0, x1, pos, pos - dir as i32 * (1 + extra), chord, top, dir, dots)
+        };
+        // A single tie: LilyPond's variations (the other direction, and up
+        // to three half spaces either way) scored by `score_configuration`
+        // and `score_aptitude` (too short, tips or peak on a line, far from
+        // its head, the wrong way, the stem's way); the best one.
+        let single = |x0: f32, x1: f32, pos: i32, base_dir: f32, stem: Option<f32>, chord: (i32, i32), top: f32, dots: &[(f32, i32)]| -> (f32, f32, f32) {
+            const DOT_COLLISION_PENALTY: f32 = 0.25;
+            const DOT_COLLISION_CLEARANCE: f32 = 0.25;
+            const MIN_LENGTH: f32 = 1.0;
+            const MIN_LENGTH_PENALTY_FACTOR: f32 = 26.0;
+            const STAFF_LINE_COLLISION_PENALTY: f32 = 5.0;
+            const WRONG_DIRECTION_OFFSET_PENALTY: f32 = 10.0;
+            const VERTICAL_DISTANCE_PENALTY_FACTOR: f32 = 7.0;
+            const SAME_DIR_AS_STEM_PENALTY: f32 = 8.0;
+            let peak = |eps: f32, threshold: f32, x: f32| if x < 0.0 { 1.0 } else { (-eps * (x - threshold) / ((x + eps) * threshold)).max(0.0) };
+            let convex = |standard: f32, factor: f32, x: f32| ((factor * x / standard).exp() - 1.0) / (factor.exp() - 1.0);
+            let on_line = |q: i32| q % 2 == 0 && (-4..=4).contains(&q);
+            let p0 = pos - base_dir as i32;
+            let mut cands: Vec<(i32, f32)> = vec![(p0, base_dir), (p0, -base_dir)];
+            for i in 1..4 {
+                for d in [1.0f32, -1.0] {
+                    cands.push((p0 - d as i32 * i, d));
+                }
+            }
+            let mut best = (f32::INFINITY, 0.0, 0.0, base_dir);
+            for (p, dir) in cands {
+                let (y, h) = configure_at(x0, x1, pos, p, chord, top, dir, dots);
+                let up = -dir;
+                let tip_y = top + 2.0 - y; // y up from the middle line
+                let mut sc = MIN_LENGTH_PENALTY_FACTOR * peak(0.33 * MIN_LENGTH, MIN_LENGTH, x1 - x0);
+                let top_pos = 2.0 * (tip_y + up * h);
+                if on_line(top_pos.round() as i32) {
+                    sc += STAFF_LINE_COLLISION_PENALTY * peak(0.06, 0.6, (top_pos - top_pos.round()).abs());
+                }
+                let tip_pos = 2.0 * tip_y;
+                let rt = tip_pos.round() as i32;
+                if on_line(rt) && ((chord.0..=chord.1).contains(&rt) || (-3..=3).contains(&rt)) {
+                    sc += STAFF_LINE_COLLISION_PENALTY * peak(0.045, 0.45, (tip_pos - tip_pos.round()).abs());
+                }
+                let head_y = pos as f32 * 0.5;
+                if (tip_y - head_y).signum() != up {
+                    sc += WRONG_DIRECTION_OFFSET_PENALTY;
+                }
+                sc += VERTICAL_DISTANCE_PENALTY_FACTOR * convex(1.0, 0.9, ((tip_y - head_y).abs() - 0.5).max(0.0));
+                // A dot under the curve: penalised within a quarter space.
+                let indent = tie_shape(x1 - x0).0.min((x1 - x0) / 3.1);
+                for &(dx, dp) in dots {
+                    if dx < x0 || dx > x1 {
+                        continue;
+                    }
+                    let curve = crate::slur::Bezier([(x0, y), (x0 + indent, y + dir * h), (x1 - indent, y + dir * h), (x1, y)]);
+                    let dist = ((top + 2.0 - dp as f32 * 0.5) - curve.y_at(dx)).abs();
+                    sc += DOT_COLLISION_PENALTY * peak(0.1 * DOT_COLLISION_CLEARANCE, DOT_COLLISION_CLEARANCE, dist);
+                }
+                match stem {
+                    Some(st) if st == up => sc += SAME_DIR_AS_STEM_PENALTY,
+                    None if pos != 0 && (pos as f32).signum() != up => sc += SAME_DIR_AS_STEM_PENALTY,
+                    _ => {}
+                }
+                if sc < best.0 {
+                    best = (sc, y, h, dir);
+                }
+            }
+            (best.1, best.2, best.3)
+        };
+        let shape = |x0: f32, x1: f32, y: f32, h: f32, dir: f32, id: u64| {
+            let x1 = x1.max(x0 + 0.6);
+            let w = x1 - x0;
+            let indent = tie_shape(w).0.min(w / 3.1);
             let c = |x: f32, hh: f32| pt(x, y + dir * hh);
             Item::Crescent {
                 from: pt(x0, y),
@@ -1906,18 +2088,88 @@ impl<'a> Engraver<'a> {
                 id,
             }
         };
+        // A chord's ties (x0, x1, pos, dir, id): placed, those on one side
+        // moved out a half space at a time while their middles are nearer
+        // than LilyPond's tie-tie collision distance.
+        let place = |ties: &[(f32, f32, i32, f32, u64)], chord: (i32, i32), top: f32, stem: Option<f32>, dots: &[(f32, i32)]| -> Vec<Item> {
+            if let [(x0, x1, pos, dir, id)] = *ties {
+                let (y, h, dir) = single(x0, x1, pos, dir, stem, chord, top, dots);
+                return vec![shape(x0, x1, y, h, dir, id)];
+            }
+            let mut extra = vec![0i32; ties.len()];
+            let at = |k: usize, extra: &[i32]| {
+                let (x0, x1, pos, dir, _) = ties[k];
+                let (y, h) = configure(x0, x1, pos, extra[k], chord, top, dir, dots);
+                (y, h, y + dir * 0.75 * h)
+            };
+            for _ in 0..3 {
+                let mut moved = false;
+                for side in [1.0f32, -1.0] {
+                    // Inner to outer on this side.
+                    let mut idx: Vec<usize> = (0..ties.len()).filter(|&k| ties[k].3 == side).collect();
+                    idx.sort_by_key(|&k| ties[k].2 * -(side as i32));
+                    for w in idx.windows(2) {
+                        let (a, b) = (at(w[0], &extra).2, at(w[1], &extra).2);
+                        if (a - b).abs() < TIE_TIE_COLLISION_DISTANCE + d.tie_midpoint_thickness {
+                            extra[w[1]] += 1;
+                            moved = true;
+                        }
+                    }
+                }
+                if !moved {
+                    break;
+                }
+            }
+            (0..ties.len())
+                .map(|k| {
+                    let (x0, x1, _, dir, id) = ties[k];
+                    let (y, h, _) = at(k, &extra);
+                    shape(x0, x1, y, h, dir, id)
+                })
+                .collect()
+        };
         for i in 0..self.notes.len() {
             let n = &self.notes[i];
             if n.rest {
                 continue;
             }
-            let side = |h: &Head| {
-                let above = !n.stem_up || n.heads.len() > 1 && h.pos > n.heads[0].pos && h.pos >= n.heads[n.heads.len() - 1].pos;
-                if above { -1.0 } else { 1.0 }
+            // LilyPond's tie directions (`Tie::get_default_dir`,
+            // `set_ties_config_standard_directions`): a single tie away from
+            // the stems (by its place on the staff without one); in a chord
+            // the lowest down, the highest up, a second split, the rest by
+            // their side of the middle line. (+1 down, −1 up.)
+            let tied: Vec<i32> = n.heads.iter().filter(|h| h.tie_out || h.tied_in).map(|h| h.pos).collect();
+            let side = |h: &Head| -> f32 {
+                if tied.len() <= 1 {
+                    return if n.has_stem() {
+                        if n.stem_up { 1.0 } else { -1.0 }
+                    } else if h.pos < 0 {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                }
+                let i = tied.iter().position(|&p| p == h.pos).unwrap_or(0);
+                if i == 0 {
+                    return 1.0;
+                }
+                if i + 1 == tied.len() {
+                    return -1.0;
+                }
+                // A second: its lower tie down, its upper up (the lower pair first).
+                if tied[i] - tied[i - 1] <= 1 {
+                    return -1.0;
+                }
+                if tied[i + 1] - tied[i] <= 1 {
+                    return 1.0;
+                }
+                if h.pos > 0 { -1.0 } else { 1.0 }
             };
             // The next piece of the same voice (in this system).
             let next = self.notes[i + 1..].iter().find(|o| o.part == n.part && o.voice == n.voice && o.start >= n.start + n.dur);
             let top = self.top(n.part);
+            let chord = (n.heads[0].pos, n.heads[n.heads.len() - 1].pos);
+            let mut out: Vec<(f32, f32, i32, f32, u64)> = Vec::new();
             for h in n.heads.iter().filter(|h| h.tie_out) {
                 let dir = side(h);
                 let y = self.y(n.part, h.pos);
@@ -1928,22 +2180,32 @@ impl<'a> Engraver<'a> {
                 match next {
                     Some(nx) if nx.start == n.start + n.dur => {
                         if let Some(h2) = nx.heads.iter().find(|x| x.dia == h.dia && x.alter == h.alter) {
-                            items.push(tie(x0, nx.x + h2.shift - NOTE_HEAD_GAP, y, top, dir, h.id));
+                            out.push((x0, nx.x + h2.shift - NOTE_HEAD_GAP, h.pos, dir, h.id));
                         }
                     }
                     // Continues in the next system: to the end of this one.
-                    None if n.start + n.dur >= self.range.1 => items.push(tie(x0, system_end - 0.3, y, top, dir, h.id)),
+                    None if n.start + n.dur >= self.range.1 => out.push((x0, system_end - 0.3, h.pos, dir, h.id)),
                     _ => {}
                 }
             }
+            // The stems' direction (LilyPond's, +1 up), for a single tie.
+            let stem = n.has_stem().then_some(if n.stem_up { 1.0 } else { -1.0 });
+            // The note's dots, as drawn: (x, staff position).
+            let dots: Vec<(f32, i32)> = self
+                .out
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    Item::Glyph { glyph, at, id, .. } if *id == n.id && *glyph == Glyph::Dot.codepoint() => Some((at.x, ((top + 2.0 - at.y) * 2.0).round() as i32)),
+                    _ => None,
+                })
+                .collect();
+            items.extend(place(&out, chord, top, stem, &dots));
             // Arriving from the previous system: from just before the note.
             let first_here = !self.notes[..i].iter().any(|o| o.part == n.part && o.voice == n.voice);
             if first_here && n.start == self.range.0 {
-                for h in n.heads.iter().filter(|h| h.tied_in) {
-                    let dir = side(h);
-                    let y = self.y(n.part, h.pos);
-                    items.push(tie(n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, y, self.top(n.part), dir, h.id));
-                }
+                let arriving: Vec<(f32, f32, i32, f32, u64)> = n.heads.iter().filter(|h| h.tied_in).map(|h| (n.x + h.shift - 2.2, n.x + h.shift - NOTE_HEAD_GAP, h.pos, side(h), h.id)).collect();
+                items.extend(place(&arriving, chord, top, n.has_stem().then_some(if n.stem_up { 1.0 } else { -1.0 }), &[]));
             }
         }
         self.out.items.extend(items);
@@ -3524,5 +3786,8 @@ mod tests {
         let s = Frac::new(1, 8);
         let (e, q, h) = (ideal_space(Frac::new(1, 8), s), ideal_space(Frac::new(1, 4), s), ideal_space(Frac::new(1, 2), s));
         assert!((e - 2.4).abs() < 1e-4 && (q - e - 1.2).abs() < 1e-4 && (h - q - 1.2).abs() < 1e-4);
+        // Shorter than the shortest: linear (half the ratio below, not a whole increment).
+        let sixteenth = ideal_space(Frac::new(1, 16), s);
+        assert!((sixteenth - 1.2 * 1.5).abs() < 1e-4, "{sixteenth}");
     }
 }

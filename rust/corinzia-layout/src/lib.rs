@@ -6,6 +6,7 @@
 //! independent of any GUI toolkit: the app's iced canvas, the PDF writer and
 //! the tiny-skia rasterizer used by the reference tests all draw the same list.
 
+pub mod beam;
 pub mod byz;
 pub mod byz_font;
 pub mod display;

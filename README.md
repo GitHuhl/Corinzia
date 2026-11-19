@@ -66,16 +66,19 @@ typesetting. Its engraver is built on LilyPond's rules and, more and more,
 on LilyPond's own algorithms: the same decisions, made the same way, every
 time you type a note.
 
-* **Slurs placed by LilyPond's own method.** Every possible slur is shaped
-  by LilyPond's curve laws and scored by its rules (how close it hugs the
-  notes, what it clears, how it follows the line), and the best one wins.
+* **Slurs and beams placed by LilyPond's own methods.** Every possible
+  slur and beam is shaped by LilyPond's laws and scored by its rules: how
+  close a slur hugs the notes and what it clears; how a beam slopes with
+  the music, how long its stems are, and that it never leaves a sliver of
+  white against a staff line. The best one wins, exactly as in LilyPond.
+* **Ties, accidentals and rests as LilyPond sets them.** Ties take
+  LilyPond's shape and split up and down through a chord; a chord's
+  accidentals stack in LilyPond's order, octaves aligned; rests step aside
+  for another voice just as far as LilyPond moves them.
 * **Spacing with LilyPond's proportions.** Notes take room by their length
-  as LilyPond spaces them, and lines are broken and justified the way
+  as LilyPond spaces them, dynamics and hairpins sit as close to the staff
+  as LilyPond puts them, and lines are broken and justified the way
   LilyPond breaks them.
-* **Beams, stems and marks as LilyPond sets them.** Beams follow the meter
-  and slope with the music; dynamics and hairpins sit as close to the staff
-  as LilyPond puts them; ties, tuplets, accidentals and articulations keep
-  out of each other's way.
 * **Live, as you write.** Unlike a compile-and-wait engraver, Corinzia
   re-engraves the page the instant you change a note, and PDFs come straight
   from the same engraver, so what you see is exactly what prints.

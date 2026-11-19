@@ -436,6 +436,7 @@ impl State {
         (-8..=0).contains(&p) && p % 2 == 0
     }
 
+    #[allow(dead_code)]
     fn score(&self, c: &Config) -> f32 {
         self.score_edges(c) + self.score_slopes(c) + self.score_encompass(c) + self.score_extra(c)
     }
@@ -573,14 +574,28 @@ pub fn solve(pb: &Problem) -> Bezier {
     let st = State::new(pb);
     let end_ys = st.end_ys();
     let avoid = st.avoid();
+    // As LilyPond does: the cheap scorers first (the ends and the slope
+    // need no curve), cheapest candidates first; every score is ≥ 0, so
+    // once a candidate's cheap part alone is no better than the best
+    // complete score, it and all after it are out.
+    let mut cands: Vec<([(f32, f32); 2], f32)> = st
+        .enumerate(end_ys)
+        .into_iter()
+        .filter(|e| e[1].0 - e[0].0 >= 0.01)
+        .map(|ends| {
+            let probe = Config { ends, curve: Bezier([ends[0]; 4]), height: 0.0, score: 0.0 };
+            (ends, st.score_edges(&probe) + st.score_slopes(&probe))
+        })
+        .collect();
+    cands.sort_by(|a, b| a.1.total_cmp(&b.1));
     let mut best: Option<Config> = None;
-    for ends in st.enumerate(end_ys) {
-        if ends[1].0 - ends[0].0 < 0.01 {
-            continue;
+    for (ends, cheap) in cands {
+        if best.as_ref().is_some_and(|b| cheap >= b.score) {
+            break;
         }
         let (curve, height) = st.curve(ends, &avoid);
         let mut c = Config { ends, curve, height, score: 0.0 };
-        c.score = st.score(&c);
+        c.score = cheap + st.score_encompass(&c) + st.score_extra(&c);
         if best.as_ref().is_none_or(|b| c.score < b.score) {
             best = Some(c);
         }
