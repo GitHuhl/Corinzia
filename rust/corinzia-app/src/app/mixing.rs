@@ -5,7 +5,7 @@ use super::*;
 impl App {
     /// The automation curve shown on a track's arrange lane.
     pub(crate) fn curve(&self, track: corinzia_model::Id) -> Option<arrange::Curve> {
-        let target = *self.auto_shown.get(&track)?;
+        let target = *self.mix.auto_shown.get(&track)?;
         let (label, min, max) = mix::auto_options(&self.editor.project, &self.playback, track).into_iter().find(|o| o.1 == Some(target)).map(|o| (o.0, o.2, o.3))?;
         let q = |f: Frac| f.num as f64 * 4.0 / f.den as f64;
         let lane = self.editor.auto_lane(target);
@@ -28,9 +28,9 @@ impl App {
                 l.side_width = (l.side_width - d).clamp(crate::prefs::Layout::SIDE.0, crate::prefs::Layout::SIDE.1);
             }
             SplitSide(None) => self.save_prefs(),
-            Select(t) => self.strip = Some(t),
+            Select(t) => self.mix.strip = Some(t),
             Editor(t) => {
-                self.strip = Some(t);
+                self.mix.strip = Some(t);
                 self.toggle_editor(t);
             }
             Gain(t, db) if t == editor::MASTER => {
@@ -67,11 +67,11 @@ impl App {
             AddEffect(owner, i) => {
                 let Some(info) = self.playback.plugins.get(i).cloned() else { return };
                 let bundle = info.bundle.to_string_lossy().into_owned();
-                self.fx = self.editor.add_insert(owner, &info.name, &bundle, &info.id);
+                self.mix.fx = self.editor.add_insert(owner, &info.name, &bundle, &info.id);
             }
-            SelectEffect(n) => self.fx = Some(n),
+            SelectEffect(n) => self.mix.fx = Some(n),
             EffectEditor(n) => {
-                self.fx = Some(n);
+                self.mix.fx = Some(n);
                 if let Some(pl) = self.playback.pool.effect(n) {
                     if pl.editor_is_open() {
                         pl.close_editor();
@@ -88,8 +88,8 @@ impl App {
                     pl.close_editor();
                 }
                 self.editor.remove_insert(owner, n);
-                if self.fx == Some(n) {
-                    self.fx = None;
+                if self.mix.fx == Some(n) {
+                    self.mix.fx = None;
                 }
             }
             MoveEffect(owner, n, by) => self.editor.move_insert(owner, n, by),
@@ -106,13 +106,13 @@ impl App {
             }
             AddBus => {
                 let id = self.editor.add_bus("");
-                self.strip = Some(id);
+                self.mix.strip = Some(id);
             }
             AddAudioTrack => self.new_audio_track(),
             RemoveTrack(t) => {
                 self.editor.remove_audio_track(t);
-                if self.strip == Some(t) {
-                    self.strip = None;
+                if self.mix.strip == Some(t) {
+                    self.mix.strip = None;
                 }
             }
             AddAudio(_) => {} // a file picker: in `update`
@@ -138,17 +138,17 @@ impl App {
                 self.edit_selected_clip("Fade shape", false, move |c| c.fade_out_shape = s);
             }
             StripSilence => self.strip_silence(),
-            FollowUnit(label) => self.follow.unit = mix::FOLLOW_UNITS.iter().find(|u| u.0 == label).and_then(|u| u.1),
-            FollowBars(b) => self.follow.bars = b,
+            FollowUnit(label) => self.mix.follow.unit = mix::FOLLOW_UNITS.iter().find(|u| u.0 == label).and_then(|u| u.1),
+            FollowBars(b) => self.mix.follow.bars = b,
             ForgetFollowed => self.editor.forget_followed_tempo(),
             ClipSplit => {
-                if let Some((t, c)) = self.selected_clip {
+                if let Some((t, c)) = self.mix.selected_clip {
                     let q = self.split_point();
                     self.split_clip_at(t, c, q);
                 }
             }
             ClipRemove => {
-                if let Some((t, c)) = self.selected_clip.take() {
+                if let Some((t, c)) = self.mix.selected_clip.take() {
                     self.editor.delete_clip(t, c);
                 }
             }
@@ -158,17 +158,17 @@ impl App {
                 self.editor.set_output(t, bus);
             }
             ToggleSend(t, b) => self.editor.toggle_send(t, b),
-            PresetName(n) => self.preset_name = n,
+            PresetName(n) => self.mix.preset_name = n,
             SavePreset(target) => {
                 let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
                 let Some(state) = pl.save_state() else {
                     self.editor.status = format!("{} cannot save its state", pl.info.name);
                     return;
                 };
-                match presets::save(&base, &pl.info.id, &self.preset_name, &state) {
+                match presets::save(&base, &pl.info.id, &self.mix.preset_name, &state) {
                     Ok(name) => {
                         self.editor.status = format!("Preset {name} saved for {}", pl.info.name);
-                        self.preset_name.clear();
+                        self.mix.preset_name.clear();
                     }
                     Err(e) => self.editor.status = e,
                 }
@@ -196,11 +196,11 @@ impl App {
             AutoShow(t, label) => {
                 match mix::auto_options(&self.editor.project, &self.playback, t).into_iter().find(|o| o.0 == label).and_then(|o| o.1) {
                     Some(target) => {
-                        self.auto_shown.insert(t, target);
+                        self.mix.auto_shown.insert(t, target);
                         self.editor.status = "Automation: click to add a point, drag to move, right-click to delete".into();
                     }
                     None => {
-                        self.auto_shown.remove(&t);
+                        self.mix.auto_shown.remove(&t);
                     }
                 }
             }
@@ -263,7 +263,7 @@ impl App {
             Released => {
                 self.editor.end_gesture();
                 // A clip's gain or name changed live: playback catches up.
-                if std::mem::take(&mut self.clip_dragged) {
+                if std::mem::take(&mut self.mix.clip_dragged) {
                     self.editor.music_changed();
                 }
             }
@@ -300,12 +300,12 @@ impl App {
 
     /// The presets of the plugin the Mix tab shows.
     pub(crate) fn refresh_presets(&mut self) {
-        let target = match (self.fx, self.strip) {
+        let target = match (self.mix.fx, self.mix.strip) {
             (Some(n), _) => Some(mix::Target::Effect(n)),
             (None, Some(t)) if self.editor.project.track(t).is_some() => Some(mix::Target::Track(t)),
             _ => None,
         };
-        self.preset_names = match (target.and_then(|t| self.preset_plugin(t)), Self::preset_base()) {
+        self.mix.preset_names = match (target.and_then(|t| self.preset_plugin(t)), Self::preset_base()) {
             (Some((p, _)), Some(base)) => presets::list(&base, &p.info.id),
             _ => vec![],
         };
@@ -349,7 +349,7 @@ impl App {
     fn place_audio_file(&mut self, track: Option<corinzia_model::Id>, path: &std::path::Path, at_q: Option<f64>) -> Option<corinzia_model::Id> {
         let movement = self.editor.movement().map(|m| m.id)?;
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Audio".into());
-        let folder = self.path.as_deref().and_then(|p| p.parent());
+        let folder = self.doc.path.as_deref().and_then(|p| p.parent());
         let file = match folder.and_then(|f| path.strip_prefix(f).ok()) {
             Some(rel) => rel.to_string_lossy().into_owned(),
             None => path.to_string_lossy().into_owned(),
@@ -365,8 +365,8 @@ impl App {
             None => self.editor.add_audio_track(&name),
         };
         if let Some(id) = self.editor.add_clip(track, corinzia_model::AudioClip::new(0, &name, &file, movement, at)) {
-            self.selected_clip = Some((track, id));
-            self.strip = Some(track);
+            self.mix.selected_clip = Some((track, id));
+            self.mix.strip = Some(track);
         }
         Some(track)
     }
@@ -374,19 +374,19 @@ impl App {
     /// Where a drop at a window point would go: on the arrange view, (an
     /// audio track there, or none: a new one; the beat there, quarters).
     pub(crate) fn drop_target(&self, p: iced::Point) -> Option<(Option<corinzia_model::Id>, f64)> {
-        if self.tab != Tab::Mix || self.roll.is_some() {
+        if self.tab != Tab::Mix || self.mix.roll.is_some() {
             return None;
         }
         let layout = self.prefs.layout;
         let top = 47.0;
-        let bottom = self.window.height - 28.0 - if self.mixer_hidden { 0.0 } else { layout.mixer_height + crate::splitter::SIZE };
+        let bottom = self.window.height - 28.0 - if self.mix.mixer_hidden { 0.0 } else { layout.mixer_height + crate::splitter::SIZE };
         if p.y < top + arrange::RULER || p.y > bottom {
             return None;
         }
-        let q = ((p.x - layout.header_width + self.arrange_scroll) / self.arrange_ppq).max(0.0).round() as f64;
-        let row = ((p.y - top - arrange::RULER + self.arrange_scroll_y) / layout.lane_height).floor() as usize;
-        let track = match self.arrange.rows.get(row) {
-            Some(arrange::Row::Lane(l)) => self.arrange.lanes.get(*l).filter(|l| l.audio).map(|l| l.track),
+        let q = ((p.x - layout.header_width + self.mix.arrange_scroll) / self.mix.arrange_ppq).max(0.0).round() as f64;
+        let row = ((p.y - top - arrange::RULER + self.mix.arrange_scroll_y) / layout.lane_height).floor() as usize;
+        let track = match self.mix.arrange.rows.get(row) {
+            Some(arrange::Row::Lane(l)) => self.mix.arrange.lanes.get(*l).filter(|l| l.audio).map(|l| l.track),
             _ => None,
         };
         Some((track, q))
@@ -441,31 +441,31 @@ impl App {
             Key::Named(Named::PageDown) => {
                 // The whole movement in view.
                 let width = (self.window.width - self.prefs.layout.header_width).max(100.0);
-                self.arrange_ppq = (width / self.arrange.length_q.max(1.0) as f32).clamp(2.0, 400.0);
-                self.arrange_scroll = 0.0;
+                self.mix.arrange_ppq = (width / self.mix.arrange.length_q.max(1.0) as f32).clamp(2.0, 400.0);
+                self.mix.arrange_scroll = 0.0;
                 Some(Task::none())
             }
             Key::Named(Named::Home) => ar(arrange::ArrangeEvent::Locate(0.0)),
             Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("w") => ar(arrange::ArrangeEvent::Locate(0.0)),
-            Key::Named(Named::End) => ar(arrange::ArrangeEvent::Locate(self.arrange.length_q)),
+            Key::Named(Named::End) => ar(arrange::ArrangeEvent::Locate(self.mix.arrange.length_q)),
             Key::Character(c) if !ctrl && !alt && c.as_str().eq_ignore_ascii_case("r") => Some(self.act(Action::Cycle)),
             Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("t") => {
                 self.new_audio_track();
                 Some(Task::none())
             }
             Key::Character(c) if ctrl && !alt && c.as_str().eq_ignore_ascii_case("m") => {
-                self.mixer_hidden = !self.mixer_hidden;
+                self.mix.mixer_hidden = !self.mix.mixer_hidden;
                 Some(Task::none())
             }
             Key::Named(n @ (Named::ArrowUp | Named::ArrowDown)) if ctrl && alt => {
-                let ids: Vec<corinzia_model::Id> = self.arrange.lanes.iter().map(|l| l.track).collect();
-                let at = self.strip.and_then(|s| ids.iter().position(|t| *t == s));
+                let ids: Vec<corinzia_model::Id> = self.mix.arrange.lanes.iter().map(|l| l.track).collect();
+                let at = self.mix.strip.and_then(|s| ids.iter().position(|t| *t == s));
                 let next = match (at, n) {
                     (None, _) => 0,
                     (Some(i), Named::ArrowUp) => i.saturating_sub(1),
                     (Some(i), _) => (i + 1).min(ids.len().saturating_sub(1)),
                 };
-                self.strip = ids.get(next).copied();
+                self.mix.strip = ids.get(next).copied();
                 Some(Task::none())
             }
             _ => None,
@@ -476,7 +476,7 @@ impl App {
     pub(crate) fn new_audio_track(&mut self) {
         let n = self.editor.project.tracks.iter().filter(|t| t.audio).count() + 1;
         let id = self.editor.add_audio_track(&format!("Audio {n}"));
-        self.strip = Some(id);
+        self.mix.strip = Some(id);
     }
 
     /// Splits a clip at `q` (quarters into the movement): two clips that
@@ -488,7 +488,7 @@ impl App {
         let at = arrange::seconds_of(self.movement_section(), q);
         match self.editor.split_clip(track, clip, at, played) {
             Some(id) => {
-                self.selected_clip = Some((track, id));
+                self.mix.selected_clip = Some((track, id));
                 true
             }
             None => {
@@ -504,7 +504,7 @@ impl App {
     /// status bar says what was found.
     pub(crate) fn follow_clip(&mut self) {
         use corinzia_perform::follow::{beat_unit, follow, Follow};
-        let Some((track, clip)) = self.selected_clip else { return };
+        let Some((track, clip)) = self.mix.selected_clip else { return };
         let (Some(c), Some(m)) = (self.editor.clip(track, clip).cloned(), self.editor.movement().cloned()) else { return };
         let media = &mut self.playback.pool.media;
         let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
@@ -522,10 +522,10 @@ impl App {
         let style = corinzia_perform::Style::of(&self.editor.project);
         let tempo = corinzia_perform::perform_with(&m, style.clone()).tempo;
         let q = tempo.quarter_at(c.at);
-        let unit = self.follow.unit.unwrap_or_else(|| beat_unit(&m, q));
+        let unit = self.mix.follow.unit.unwrap_or_else(|| beat_unit(&m, q));
         let guess = unit * 60.0 / tempo.tempo_at(q).max(1.0);
         let beats: Vec<f64> = corinzia_audio::analysis::track_beats(&part, sr, Some(guess)).into_iter().map(|t| t + c.at).collect();
-        match follow(&m, &style, &beats, unit, if self.follow.bars { Follow::Bars } else { Follow::Beats }) {
+        match follow(&m, &style, &beats, unit, if self.mix.follow.bars { Follow::Bars } else { Follow::Beats }) {
             Ok(r) => {
                 self.editor.follow_tempo(track, clip, r.tempo, r.shift);
                 let bar = corinzia_perform::perform_with(self.editor.movement().unwrap_or(&m), style).tempo.bar_at(r.first_q).bar;
@@ -539,7 +539,7 @@ impl App {
     /// quarter of a second or more), the quiet parts gone, the rest where
     /// they were (10 ms either side kept). One undo step.
     pub(crate) fn strip_silence(&mut self) {
-        let Some((track, clip)) = self.selected_clip else { return };
+        let Some((track, clip)) = self.mix.selected_clip else { return };
         let Some(c) = self.editor.clip(track, clip).cloned() else { return };
         let media = &mut self.playback.pool.media;
         let data = match media.get(&media.resolve(&c.file).to_string_lossy()) {
@@ -573,9 +573,9 @@ impl App {
     /// Changes the selected clip; `live`: a slider or typing (one undo step
     /// until let go; playback catches up then).
     pub(crate) fn edit_selected_clip(&mut self, label: &str, live: bool, f: impl FnOnce(&mut corinzia_model::AudioClip)) {
-        if let Some((t, c)) = self.selected_clip {
+        if let Some((t, c)) = self.mix.selected_clip {
             self.editor.edit_clip(t, c, label, live, f);
-            self.clip_dragged |= live;
+            self.mix.clip_dragged |= live;
         }
     }
 
@@ -592,12 +592,12 @@ impl App {
     pub(crate) fn drag_clip(&mut self, edit: arrange::ClipEdit, q: f64) {
         use arrange::ClipEdit;
         const SHORTEST: f64 = 0.01;
-        let (Some((track, mut id)), Some(o)) = (self.selected_clip, self.clip_origin.clone()) else { return };
-        if std::mem::take(&mut self.clip_copy) {
+        let (Some((track, mut id)), Some(o)) = (self.mix.selected_clip, self.mix.clip_origin.clone()) else { return };
+        if std::mem::take(&mut self.mix.clip_copy) {
             // Ctrl+drag: the copy moves, the original stays.
             let Some(copy) = self.editor.duplicate_clip(track, id) else { return };
             id = copy;
-            self.selected_clip = Some((track, id));
+            self.mix.selected_clip = Some((track, id));
             self.editor.end_gesture();
         }
         let s = arrange::seconds_of(self.movement_section(), q);
@@ -608,7 +608,7 @@ impl App {
             ClipEdit::FadeIn | ClipEdit::FadeOut => "Fade audio",
             ClipEdit::Gain => "Audio gain",
         };
-        self.clip_dragged = true;
+        self.mix.clip_dragged = true;
         self.editor.edit_clip(track, id, label, true, |c| match edit {
             ClipEdit::Move => c.at = s.max(0.0),
             ClipEdit::TrimStart => {
@@ -646,18 +646,18 @@ impl App {
         match e {
         arrange::ArrangeEvent::ClipPress { track, clip, copy } => {
             let id = clip;
-            self.selected_clip = Some((track, id));
-            self.clip_dragged = false;
-            self.clip_copy = copy;
+            self.mix.selected_clip = Some((track, id));
+            self.mix.clip_dragged = false;
+            self.mix.clip_copy = copy;
             // Its length made explicit: trims and fades measure from it.
-            self.clip_origin = self.editor.clip(track, id).cloned().map(|mut c| {
+            self.mix.clip_origin = self.editor.clip(track, id).cloned().map(|mut c| {
                 c.length = arrange::clip_length(&c, self.playback.pool.media.loaded(&c.file).as_deref());
                 c
             });
         }
         arrange::ArrangeEvent::ClipDrag { edit, q } => self.drag_clip(edit, q),
         arrange::ArrangeEvent::ClipSplit { track, clip, q } => {
-            self.selected_clip = Some((track, clip));
+            self.mix.selected_clip = Some((track, clip));
             self.split_clip_at(track, clip, q);
         }
         arrange::ArrangeEvent::Cycle { from, to } => {
@@ -667,19 +667,19 @@ impl App {
         }
         arrange::ArrangeEvent::OpenRoll(track) => self.open_roll(track),
         arrange::ArrangeEvent::ToggleFolder(name) => {
-            if !self.folded.remove(&name) {
-                self.folded.insert(name);
+            if !self.mix.folded.remove(&name) {
+                self.mix.folded.insert(name);
             }
         }
         arrange::ArrangeEvent::ClipRelease => {
             self.editor.end_gesture();
-            if std::mem::take(&mut self.clip_dragged) {
+            if std::mem::take(&mut self.mix.clip_dragged) {
                 self.editor.music_changed();
             }
-            self.clip_origin = None;
+            self.mix.clip_origin = None;
         }
         arrange::ArrangeEvent::Select(id) => {
-            self.selected_clip = None;
+            self.mix.selected_clip = None;
             self.editor.select(id);
             if id.is_some() {
                 self.audition();
@@ -695,50 +695,50 @@ impl App {
                 }
             }
         }
-        arrange::ArrangeEvent::Scroll(d) => self.arrange_scroll = arrange::clamp_scroll(self.arrange_scroll + d, &self.arrange, self.arrange_ppq),
-        arrange::ArrangeEvent::ScrollY(d) => self.arrange_scroll_y = arrange::clamp_scroll_y(self.arrange_scroll_y + d, &self.arrange, self.prefs.layout.lane_height),
+        arrange::ArrangeEvent::Scroll(d) => self.mix.arrange_scroll = arrange::clamp_scroll(self.mix.arrange_scroll + d, &self.mix.arrange, self.mix.arrange_ppq),
+        arrange::ArrangeEvent::ScrollY(d) => self.mix.arrange_scroll_y = arrange::clamp_scroll_y(self.mix.arrange_scroll_y + d, &self.mix.arrange, self.prefs.layout.lane_height),
         arrange::ArrangeEvent::LaneHeight(h) => {
             // The row under the pointer stays put, roughly: the scroll in rows.
-            let rows = self.arrange_scroll_y / self.prefs.layout.lane_height;
+            let rows = self.mix.arrange_scroll_y / self.prefs.layout.lane_height;
             self.prefs.layout.lane_height = h.clamp(arrange::LANE_HEIGHTS.0, arrange::LANE_HEIGHTS.1);
-            self.arrange_scroll_y = arrange::clamp_scroll_y(rows * self.prefs.layout.lane_height, &self.arrange, self.prefs.layout.lane_height);
-            self.arrange_cache.clear();
+            self.mix.arrange_scroll_y = arrange::clamp_scroll_y(rows * self.prefs.layout.lane_height, &self.mix.arrange, self.prefs.layout.lane_height);
+            self.mix.arrange_cache.clear();
         }
         arrange::ArrangeEvent::HeaderWidth(w) => {
             self.prefs.layout.header_width = w.clamp(arrange::HEADER_WIDTHS.0, arrange::HEADER_WIDTHS.1);
-            self.arrange_cache.clear();
+            self.mix.arrange_cache.clear();
         }
         arrange::ArrangeEvent::LayoutDone => self.save_prefs(),
         arrange::ArrangeEvent::Mute(t) => self.mix(mix::MixMsg::Mute(t)),
         arrange::ArrangeEvent::Solo(t) => self.mix(mix::MixMsg::Solo(t)),
-        arrange::ArrangeEvent::Zoom(k) => self.arrange_ppq = (self.arrange_ppq * k).clamp(6.0, 200.0),
+        arrange::ArrangeEvent::Zoom(k) => self.mix.arrange_ppq = (self.mix.arrange_ppq * k).clamp(6.0, 200.0),
         arrange::ArrangeEvent::ZoomAt { factor, x } => {
             let header = self.prefs.layout.header_width;
-            let q = (x - header + self.arrange_scroll) / self.arrange_ppq;
-            self.arrange_ppq = (self.arrange_ppq * factor).clamp(2.0, 400.0);
-            self.arrange_scroll = arrange::clamp_scroll(q * self.arrange_ppq - (x - header), &self.arrange, self.arrange_ppq);
+            let q = (x - header + self.mix.arrange_scroll) / self.mix.arrange_ppq;
+            self.mix.arrange_ppq = (self.mix.arrange_ppq * factor).clamp(2.0, 400.0);
+            self.mix.arrange_scroll = arrange::clamp_scroll(q * self.mix.arrange_ppq - (x - header), &self.mix.arrange, self.mix.arrange_ppq);
         }
         arrange::ArrangeEvent::AddTrack => self.new_audio_track(),
         arrange::ArrangeEvent::AutoAdd { lane, q, value } => {
-            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+            if let Some(t) = self.mix.arrange.lanes.get(lane).and_then(|l| self.mix.auto_shown.get(&l.track)).copied() {
                 let at = Frac::new((q * 16.0).round() as i64, 64);
                 self.editor.add_auto_point(t, at, value);
             }
         }
         arrange::ArrangeEvent::AutoMove { lane, index, q, value } => {
-            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+            if let Some(t) = self.mix.arrange.lanes.get(lane).and_then(|l| self.mix.auto_shown.get(&l.track)).copied() {
                 let at = Frac::new((q * 16.0).round() as i64, 64);
                 self.editor.move_auto_point(t, index, at, value);
             }
         }
         arrange::ArrangeEvent::AutoDelete { lane, index } => {
-            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+            if let Some(t) = self.mix.arrange.lanes.get(lane).and_then(|l| self.mix.auto_shown.get(&l.track)).copied() {
                 self.editor.delete_auto_point(t, index);
             }
         }
         arrange::ArrangeEvent::AutoRelease => self.editor.end_gesture(),
         arrange::ArrangeEvent::AutoHold { lane, index } => {
-            if let Some(t) = self.arrange.lanes.get(lane).and_then(|l| self.auto_shown.get(&l.track)).copied() {
+            if let Some(t) = self.mix.arrange.lanes.get(lane).and_then(|l| self.mix.auto_shown.get(&l.track)).copied() {
                 self.editor.toggle_auto_hold(t, index);
             }
         }

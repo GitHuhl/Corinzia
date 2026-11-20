@@ -26,7 +26,7 @@ scripts/screenshot.sh out.png --keys "n c d e" # headless screenshot (Xvfb + lav
 ```
 
 The README's screenshots are remade by `scripts/readme-screenshots.sh`
-(headless, with a private PipeWire session), from public-domain scores in
+(headless at 1920x1080, with a private PipeWire session), from public-domain scores in
 the music21 corpus and the demo project.
 
 ## Layout

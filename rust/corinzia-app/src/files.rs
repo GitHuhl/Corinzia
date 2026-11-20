@@ -3,15 +3,9 @@
 //! here is synchronous and UI-free; the app runs dialogs around it.
 
 use corinzia_layout::{layout_pages, Options, PageSpec};
-use corinzia_model::{Interval, Project};
+use corinzia_model::Project;
 use std::path::Path;
 
-/// The transposition a name not in the catalogue's aliases borrows: its
-/// kind's, if the name starts with the kind's own ("Clarinet in B♭ (Bb)"),
-/// else none ("Clarinet in E♭" is not a B♭ clarinet).
-pub fn transposition_of(name: &str) -> Interval {
-    corinzia_model::catalog::infer(name).filter(|k| name.starts_with(k.name)).map(|k| k.transposition).unwrap_or_default()
-}
 
 /// Ready-made ensembles for the New score card: (label, instrument list).
 pub const TEMPLATES: &[(&str, &str)] = &[
@@ -25,100 +19,9 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("Orchestra", "2 Flute, 2 Oboe, 2 Clarinet, 2 Bassoon, 2 Horn, 2 Trumpet, Timpani, 2 Violin, Viola, Cello, Double bass"),
 ];
 
-/// A comma-separated instrument list ("Flute, 2 Violin, Cello") ->
-/// (name, abbreviation, clef) per staff. A leading count repeats an
-/// instrument, numbered. A name not in the list is taken as written, with
-/// a clef guessed from it.
-pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, String> {
-    let mut out = Vec::new();
-    for item in text.split([',', ';', '\n']).map(str::trim).filter(|s| !s.is_empty()) {
-        let (count, name) = match item.split_once(' ') {
-            Some((n, rest)) if n.parse::<u32>().is_ok() => (n.parse::<u32>().unwrap().clamp(1, 16), rest.trim()),
-            _ => (1, item),
-        };
-        match corinzia_model::catalog::lookup(name).map(|k| (k.name, k.abbr, k.clef)) {
-            Some((full, abbr, clef)) => {
-                for i in 1..=count {
-                    let suffix = if count > 1 { format!(" {i}") } else { String::new() };
-                    out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), clef.to_string()));
-                }
-            }
-            None => {
-                // As typed, capitalised; abbreviated to its first syllable.
-                let mut full: String = name.chars().take(40).collect();
-                if let Some(c) = full.get(..1) {
-                    full = c.to_uppercase() + &full[1..];
-                }
-                let abbr = format!("{}.", full.chars().take(3).collect::<String>());
-                for i in 1..=count {
-                    let suffix = if count > 1 { format!(" {i}") } else { String::new() };
-                    out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), corinzia_model::catalog::guess_clef(name).to_string()));
-                }
-            }
-        }
-    }
-    if out.is_empty() {
-        return Err("Name at least one instrument, e.g. \"Flute, Violin, Cello\"".into());
-    }
-    Ok(out)
-}
 
-/// One instrument by name: from the known list (a trailing number is kept,
-/// "Violin 2"), or as typed with a clef guessed from it. "Name / Abbr."
-/// sets the short name later systems show.
-pub fn instrument_spec(name: &str) -> Option<crate::editor::InstrumentSpec> {
-    if let Some((name, abbr)) = name.split_once('/') {
-        let mut spec = instrument_spec(name)?;
-        if !abbr.trim().is_empty() {
-            spec.abbr = abbr.trim().to_string();
-        }
-        return Some(spec);
-    }
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    let (base, number) = match name.rsplit_once(' ') {
-        Some((b, n)) if n.chars().all(|c| c.is_ascii_digit()) && !b.trim().is_empty() => (b.trim(), Some(n)),
-        _ => (name, None),
-    };
-    let suffix = number.map(|n| format!(" {n}")).unwrap_or_default();
-    let known = corinzia_model::catalog::lookup(base);
-    let (full, abbr, clef) = match known {
-        Some(k) => (format!("{}{suffix}", k.name), format!("{}{suffix}", k.abbr), k.clef.to_string()),
-        None => {
-            let full: String = name.chars().take(40).collect();
-            let full = match full.get(..1) {
-                Some(c) => c.to_uppercase() + &full[1..],
-                None => full,
-            };
-            let abbr = format!("{}.", full.chars().take(3).collect::<String>());
-            (full, abbr, corinzia_model::catalog::guess_clef(base).to_string())
-        }
-    };
-    let transposition = transposition_of(&full);
-    // What it is: the kind typed, else the kind its words suggest (None: a
-    // name the catalogue does not know, which only renames an instrument).
-    let kind = known.or_else(|| corinzia_model::catalog::infer(name));
-    Some(crate::editor::InstrumentSpec { name: full, abbr, clef, transposition, kind, section: corinzia_model::catalog::section_of(name) })
-}
 
-/// A player's instruments, comma separated: the first one, then doublings.
-pub fn parse_instrument_list(text: &str) -> Result<Vec<crate::editor::InstrumentSpec>, String> {
-    let list: Vec<_> = text.split([',', ';']).filter_map(instrument_spec).collect();
-    if list.is_empty() {
-        return Err("Each player needs an instrument".into());
-    }
-    Ok(list)
-}
 
-pub fn new_project(title: &str, instruments: &str, bars: i64) -> Result<Project, String> {
-    let list = parse_instruments(instruments)?;
-    let refs: Vec<(&str, &str, &str, Interval)> = list.iter().map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str(), transposition_of(a))).collect();
-    let mut p = crate::demo::blank_with(title, &refs, bars);
-    p.phrasing = true; // new scores play phrased; older ones as they were
-    Ok(p)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -303,7 +206,7 @@ mod tests {
 
     #[test]
     fn pdf_pages_follow_the_layout() {
-        let mut p = new_project("T", "Flute, Viola", 8).unwrap();
+        let mut p = crate::editor::instruments::new_project("T", "Flute, Viola", 8).unwrap();
         let media = |bytes: &[u8]| -> Vec<String> {
             let text = String::from_utf8_lossy(bytes);
             text.match_indices("/MediaBox [").map(|(i, _)| text[i + 11..].split(']').next().unwrap().to_string()).collect()
@@ -317,32 +220,6 @@ mod tests {
         // Parts follow their own layout (A4 by default).
         let parts = media(&export(&p, 0, Format::Parts, false).unwrap());
         assert!(parts[0].starts_with("0 0 595.2"), "{parts:?}");
-    }
-
-    #[test]
-    fn instrument_lists() {
-        let l = parse_instruments("Flute, 2 violin; Cello").unwrap();
-        let names: Vec<_> = l.iter().map(|x| x.0.as_str()).collect();
-        assert_eq!(names, ["Flute", "Violin 1", "Violin 2", "Cello"]);
-        assert_eq!(l[3].2, "bass");
-        // Any other name is taken as typed, with a clef from the name.
-        let k = parse_instruments("Flute, kazoo, bass ocarina").unwrap();
-        assert_eq!((k[1].0.as_str(), k[1].2.as_str()), ("Kazoo", "treble"));
-        assert_eq!(k[2].2, "bass");
-        assert_eq!(parse_instruments("bass guitar").unwrap()[0], ("Bass guitar".into(), "B. Gtr.".into(), "bass_8".into()));
-        assert!(parse_instruments(" , ").is_err());
-        let p = new_project("Quartet", "violin, violin, viola, cello", 4).unwrap();
-        assert_eq!(p.movements[0].lanes.len(), 4);
-        assert_eq!(p.instruments[2].clef, "alto");
-        // A piano is a grand staff: two staves of one player, bass below.
-        let p = new_project("Duo", "Flute, Piano", 4).unwrap();
-        let m = &p.movements[0];
-        assert_eq!(m.lanes.len(), 3);
-        assert_eq!(p.players.len(), 2);
-        assert_eq!(m.lanes[1].player, m.lanes[2].player);
-        assert_eq!(m.lanes[2].clefs[0].clef, "bass");
-        let s = corinzia_model::notation::score(&p, m);
-        assert!(!s.parts[0].brace && s.parts[1].brace && !s.parts[2].brace);
     }
 
     #[test]

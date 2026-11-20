@@ -134,7 +134,7 @@ impl Editor {
     /// go into itself or a bus that comes back to it.
     pub fn set_bus_output(&mut self, bus: Id, to: Option<Id>) -> bool {
         if let Some(to) = to {
-            if corinzia_audio::snapshot::bus_chain(&self.project, to).contains(&bus) {
+            if self.project.bus_chain(to).contains(&bus) {
                 let name = self.project.bus(bus).map(|b| b.name.clone()).unwrap_or_default();
                 self.status = format!("{name} cannot go into a bus that goes back into it");
                 return false;

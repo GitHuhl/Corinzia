@@ -90,10 +90,10 @@ impl App {
     /// restarts when the device, rate or buffer change).
     pub(crate) fn prefs_msg(&mut self, m: PrefsMsg) {
         if let PrefsMsg::Open = m {
-            self.prefs_dialog = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), midi_ports: midi_in::ports(), error: None });
+            self.dialogs.prefs = Some(PrefsDialog { paths: self.prefs.plugin_paths.join("; "), draft: self.prefs.clone(), devices: playback::Playback::devices(), midi_ports: midi_in::ports(), error: None });
             return;
         }
-        let Some(d) = self.prefs_dialog.as_mut() else { return };
+        let Some(d) = self.dialogs.prefs.as_mut() else { return };
         d.error = None;
         match m {
             PrefsMsg::Open => {}
@@ -111,7 +111,7 @@ impl App {
             PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
             PrefsMsg::Cancel => {
                 theme::set(&self.prefs.theme);
-                self.prefs_dialog = None;
+                self.dialogs.prefs = None;
             }
             PrefsMsg::Apply => {
                 let mut next = d.draft.clone();
@@ -123,7 +123,7 @@ impl App {
                         return;
                     }
                 }
-                self.prefs_dialog = None;
+                self.dialogs.prefs = None;
                 theme::set(&next.theme);
                 self.playback.set_metronome(next.metronome, next.count_in);
                 if self.prefs.audio_differs(&next) {
@@ -134,9 +134,9 @@ impl App {
                     let plugins = std::mem::take(&mut self.playback.plugins);
                     self.playback = playback::Playback::new(live, &next);
                     self.playback.plugins = plugins;
-                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
+                    self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.doc.path.as_deref().and_then(|p| p.parent()));
                 }
-                if next.midi_input != self.prefs.midi_input || (self.midi.is_none() && !next.midi_input.is_empty()) {
+                if next.midi_input != self.prefs.midi_input || (self.midi.input.is_none() && !next.midi_input.is_empty()) {
                     self.open_midi(&next.midi_input);
                 }
                 let paths = next.plugin_search_paths();

@@ -16,6 +16,7 @@ use std::sync::Arc;
 pub use edit::names::{interval_name, parse_dynamic, pitch_name, spell_key};
 use edit::names::key_fifths_at;
 
+pub mod instruments;
 mod input;
 mod selection;
 mod spanners;
@@ -360,17 +361,17 @@ impl Editor {
     }
 
     // ------------------------------------------------------------ history --
-    pub(super) fn snapshot(&self) -> Project {
+    pub(crate) fn snapshot(&self) -> Project {
         self.project.clone()
     }
 
-    pub(super) fn commit(&mut self, before: Project, label: &str) {
+    pub(crate) fn commit(&mut self, before: Project, label: &str) {
         self.commit_with(before, label, true, None);
     }
 
     /// `merge`: consecutive commits with the same label and key fold into
     /// the first one's undo step.
-    pub(super) fn commit_with(&mut self, before: Project, label: &str, music: bool, merge: Option<Id>) {
+    pub(crate) fn commit_with(&mut self, before: Project, label: &str, music: bool, merge: Option<Id>) {
         let key = merge.map(|k| (label.to_string(), k));
         let merging = key.is_some() && key == self.merge && self.undo.last().is_some_and(|u| u.1 == label) && self.redo.is_empty();
         if !merging {
@@ -384,11 +385,11 @@ impl Editor {
         self.changed_with(music);
     }
 
-    pub(super) fn changed(&mut self) {
+    pub(crate) fn changed(&mut self) {
         self.changed_with(true);
     }
 
-    pub(super) fn changed_with(&mut self, music: bool) {
+    pub(crate) fn changed_with(&mut self, music: bool) {
         self.revision += 1;
         if music {
             self.music_revision += 1;
@@ -522,7 +523,7 @@ impl Editor {
         })
     }
 
-    pub(super) fn switch_movement_force(&mut self, i: usize) {
+    pub(crate) fn switch_movement_force(&mut self, i: usize) {
         self.movement = i.min(self.project.movements.len().saturating_sub(1));
         self.selection = None;
         self.range = None;
@@ -590,7 +591,7 @@ impl Editor {
 
     /// Runs `f` on the current movement with an id allocator; commits one
     /// undo step when it returns `true`, otherwise restores the project.
-    pub(super) fn transact(&mut self, label: &str, f: impl FnOnce(&mut Movement, &mut Ids) -> bool) -> bool {
+    pub(crate) fn transact(&mut self, label: &str, f: impl FnOnce(&mut Movement, &mut Ids) -> bool) -> bool {
         let before = self.snapshot();
         let mut ids = Ids(self.project.next_id);
         let Some(m) = self.project.movements.get_mut(self.movement) else { return false };
@@ -617,7 +618,7 @@ impl Editor {
         None
     }
 
-    pub(super) fn event_of(&self, id: Id) -> Option<(Locator, &Event)> {
+    pub(crate) fn event_of(&self, id: Id) -> Option<(Locator, &Event)> {
         let loc = self.locate(id)?;
         let v = &self.movement()?.lanes[loc.lane].voices[loc.voice];
         edit::find_event(&v.events, id).map(|(e, _)| (loc, e))

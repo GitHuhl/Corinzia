@@ -148,7 +148,7 @@ impl Editor {
             self.status = "Instrument change removed".into();
             return Ok(());
         }
-        let spec = crate::files::instrument_spec(text).ok_or("Name an instrument")?;
+        let spec = crate::instruments::instrument_spec(text).ok_or("Name an instrument")?;
         let p = &mut self.project;
         let held = p.player(player).map(|pl| pl.instruments.clone()).unwrap_or_default();
         let inst = match held.iter().copied().find(|i| p.instrument(*i).is_some_and(|x| x.name.eq_ignore_ascii_case(&spec.name))) {

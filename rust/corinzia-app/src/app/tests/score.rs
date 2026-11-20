@@ -5,11 +5,11 @@ use super::*;
 #[test]
 fn engraves_pages_and_panorama() {
     let a = app(View::Page);
-    assert_eq!(a.pages.len(), 1);
-    assert!(a.pages[0].height > a.pages[0].width, "A4 portrait");
+    assert_eq!(a.score.pages.len(), 1);
+    assert!(a.score.pages[0].height > a.score.pages[0].width, "A4 portrait");
     let b = app(View::Panorama);
-    assert_eq!(b.pages.len(), 1);
-    assert!(b.pages[0].width > b.pages[0].height * 3.0, "one long system");
+    assert_eq!(b.score.pages.len(), 1);
+    assert!(b.score.pages[0].width > b.score.pages[0].height * 3.0, "one long system");
 }
 
 #[test]
@@ -17,18 +17,18 @@ fn clefs_keys_and_barlines_change_by_right_click() {
     use corinzia_layout::font::Glyph;
     let mut a = app(View::Page);
     // A barline inside the first system (not its first bar's start).
-    let left = a.pages[0].staves[0].left;
+    let left = a.score.pages[0].staves[0].left;
     let bar = *marks(&a, |i| matches!(i, Item::Line { from, to, .. } if (from.x - to.x).abs() < 1e-3 && (from.y - to.y).abs() >= 3.9 && from.x > left + 5.0)).first().unwrap();
     let before = a.editor.movement().unwrap().barlines.len();
     right_click(&mut a, bar);
-    assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Barline);
+    assert_eq!(a.score.popover.as_ref().unwrap().kind, PopoverKind::Barline);
     retype(&mut a, "||");
     assert_eq!(a.editor.movement().unwrap().barlines.len(), before + 1);
 
     // The first staff's clef: the clef at the start becomes bass.
     let clef = *marks(&a, |i| matches!(i, Item::Glyph { glyph, .. } if [Glyph::GClef, Glyph::FClef, Glyph::CClef].iter().any(|g| g.codepoint() == *glyph))).first().unwrap();
     right_click(&mut a, clef);
-    assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Clef);
+    assert_eq!(a.score.popover.as_ref().unwrap().kind, PopoverKind::Clef);
     retype(&mut a, "bass");
     let m = a.editor.movement().unwrap();
     assert!(m.lanes.iter().any(|l| l.clefs.iter().any(|c| c.clef == "bass" && c.at == Frac::ZERO)), "{:?}", m.lanes.iter().map(|l| &l.clefs).collect::<Vec<_>>());
@@ -40,7 +40,7 @@ fn clefs_keys_and_barlines_change_by_right_click() {
     retype(&mut a, "D");
     let sharp = *marks(&a, |i| matches!(i, Item::Glyph { glyph, .. } if *glyph == Glyph::Sharp.codepoint())).first().unwrap();
     right_click(&mut a, sharp);
-    assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Key);
+    assert_eq!(a.score.popover.as_ref().unwrap().kind, PopoverKind::Key);
     retype(&mut a, "Eb");
     let m = a.editor.movement().unwrap();
     assert_eq!((m.keys.len(), m.keys[0].fifths), (1, -3));
@@ -56,10 +56,10 @@ fn the_note_input_shadow_follows_the_pointer_by_itself() {
     let view = a.score_view();
     let mut state = score_view::Interaction::default();
     let bounds = iced::Rectangle::new(iced::Point::ORIGIN, iced::Size::new(1000.0, 700.0));
-    let px = a.zoom * score_view::BASE_PX;
-    let origins = score_view::page_origins(&a.pages, true);
-    let st = &a.pages[0].staves[0];
-    let screen = |dx: f32| iced::Point::new((origins[0].x + st.left + 8.0 + dx) * px + a.pan.x, (origins[0].y + st.top + 1.0) * px + a.pan.y);
+    let px = a.score.zoom * score_view::BASE_PX;
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let st = &a.score.pages[0].staves[0];
+    let screen = |dx: f32| iced::Point::new((origins[0].x + st.left + 8.0 + dx) * px + a.score.pan.x, (origins[0].y + st.top + 1.0) * px + a.score.pan.y);
     let moved = |p: iced::Point, state: &mut score_view::Interaction| {
         view.update(state, &iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: p }), bounds, iced::mouse::Cursor::Available(p)).is_some()
     };
@@ -75,17 +75,17 @@ fn the_note_input_shadow_is_where_a_click_writes() {
     let _ = a.act(Action::SetInput(true));
     assert!(a.editor.input_mode);
     let g = score_view::Ghost { glyph: corinzia_layout::font::Glyph::NoteheadBlack.codepoint(), dots: 0, grid: 1.0 };
-    let origins = score_view::page_origins(&a.pages, true);
+    let origins = score_view::page_origins(&a.score.pages, true);
     // Over the first staff, a little into its second bar, a space above the top line.
-    let st = a.pages[0].staves[0].clone();
-    let col = a.pages[0].columns.iter().filter(|c| c.system == st.system && c.quarter >= 4.0).nth(1).unwrap().clone();
+    let st = a.score.pages[0].staves[0].clone();
+    let col = a.score.pages[0].columns.iter().filter(|c| c.system == st.system && c.quarter >= 4.0).nth(1).unwrap().clone();
     let desk = iced::Point::new(origins[0].x + col.x + 0.3, origins[0].y + st.top - 1.0);
-    let (spot, ..) = score_view::ghost_spot(&a.pages, &origins, &a.pages_of(a.editor.movement), desk, g).expect("a shadow");
-    let at = score_view::locate(&a.pages, &origins, desk);
+    let (spot, ..) = score_view::ghost_spot(&a.score.pages, &origins, &a.pages_of(a.editor.movement), desk, g).expect("a shadow");
+    let at = score_view::locate(&a.score.pages, &origins, desk);
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at, shift: false }));
     a.sync();
     let id = a.editor.selection.expect("a note written");
-    let head = a.pages.iter().zip(&origins).find_map(|(p, o)| p.items.iter().find_map(|i| match i {
+    let head = a.score.pages.iter().zip(&origins).find_map(|(p, o)| p.items.iter().find_map(|i| match i {
         Item::Glyph { id: g, at, .. } if *g == id => Some(iced::Point::new(at.x + o.x, at.y + o.y)),
         _ => None,
     })).expect("engraved");
@@ -98,10 +98,10 @@ fn popovers_open_by_the_caret() {
     a.editor.clear_selection();
     a.editor.caret = Frac::int(2);
     let _ = a.open_popover(PopoverKind::Tempo);
-    let first = a.popover.as_ref().and_then(|p| p.anchor).expect("anchored");
+    let first = a.score.popover.as_ref().and_then(|p| p.anchor).expect("anchored");
     a.editor.caret = Frac::int(1);
     let _ = a.open_popover(PopoverKind::Tempo);
-    let earlier = a.popover.as_ref().and_then(|p| p.anchor).unwrap();
+    let earlier = a.score.popover.as_ref().and_then(|p| p.anchor).unwrap();
     assert!(earlier.x < first.x || earlier.y < first.y, "{earlier:?} before {first:?}");
 }
 
@@ -112,7 +112,7 @@ fn words_on_the_page_are_double_clicked_and_retyped() {
     let m = |a: &App| a.editor.project.movements[0].clone();
     // The title, the movement's title and the composer.
     click_item(&mut a, ids::PROJECT_TITLE, 2);
-    assert_eq!(a.popover.as_ref().map(|p| (p.kind, p.input.clone())), Some((PopoverKind::Title, "Serenade (demo)".into())));
+    assert_eq!(a.score.popover.as_ref().map(|p| (p.kind, p.input.clone())), Some((PopoverKind::Title, "Serenade (demo)".into())));
     retype(&mut a, "Nocturne");
     assert_eq!(a.editor.project.title, "Nocturne");
     click_item(&mut a, ids::MOVEMENT_TITLE, 2);
@@ -123,12 +123,12 @@ fn words_on_the_page_are_double_clicked_and_retyped() {
     assert_eq!(a.editor.project.composer, "Anon.");
     // The tempo mark.
     click_item(&mut a, ids::tempo(0), 2);
-    assert_eq!(a.popover.as_ref().unwrap().input, "Andante 84");
+    assert_eq!(a.score.popover.as_ref().unwrap().input, "Andante 84");
     retype(&mut a, "Allegro 132");
     assert_eq!((m(&a).tempo[0].text.as_str(), m(&a).tempo[0].bpm), ("Allegro", 132.0));
     // Expression text.
     click_item(&mut a, 50, 2);
-    assert_eq!(a.popover.as_ref().map(|p| p.kind), Some(PopoverKind::Expression));
+    assert_eq!(a.score.popover.as_ref().map(|p| p.kind), Some(PopoverKind::Expression));
     retype(&mut a, "espress.");
     assert_eq!(m(&a).lanes[0].texts[0].text, "espress.");
     // A dynamic: a click selects it, a double-click retypes it, and
@@ -137,12 +137,12 @@ fn words_on_the_page_are_double_clicked_and_retyped() {
     let d = ids::dynamic(first.id);
     click_item(&mut a, d, 1);
     assert_eq!(a.editor.selection, Some(d));
-    assert!(a.selected.contains(&d), "drawn selected");
+    assert!(a.score.selected.contains(&d), "drawn selected");
     assert!(a.editor.selection_label().starts_with("Dynamic mp"), "{}", a.editor.selection_label());
     click_item(&mut a, d, 2);
     retype(&mut a, "sfz");
     assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, dynamic_index("sfz"));
-    assert!(a.pages[0].items.iter().any(|it| matches!(it, Item::Glyph { glyph, id, .. } if *id == d && *glyph == corinzia_layout::font::Glyph::DynamicZ.codepoint())));
+    assert!(a.score.pages[0].items.iter().any(|it| matches!(it, Item::Glyph { glyph, id, .. } if *id == d && *glyph == corinzia_layout::font::Glyph::DynamicZ.codepoint())));
     a.editor.select(Some(d));
     let _ = a.act(Action::Delete);
     assert_eq!(m(&a).lanes[0].voices[0].events[0].dynamic, None);
@@ -166,7 +166,7 @@ fn escape_and_blank_paper_deselect() {
     let _ = a.act(Action::Escape);
     assert_eq!(a.editor.selected_slur(), None);
     a.sync();
-    assert!(a.selected.is_empty());
+    assert!(a.score.selected.is_empty());
     // A slur, then a click on the paper (no staff under it).
     assert!(a.editor.select_slur(slur));
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: None, shift: false }));
@@ -204,15 +204,15 @@ fn slurs_are_selected_and_moved_to_other_notes_with_the_mouse() {
     a.editor.clear_selection();
     a.sync();
     // A click on its curve selects it (not its note), with a handle at each end.
-    let origins = score_view::page_origins(&a.pages, true);
-    let handles = score_view::slur_handles(&a.pages, &origins, slur);
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let handles = score_view::slur_handles(&a.score.pages, &origins, slur);
     assert_eq!(handles.len(), 2, "start and end handles");
     let curve = iced::Point::new((handles[0].1.x + handles[1].1.x) / 2.0, (handles[0].1.y + handles[1].1.y) / 2.0);
-    let on_curve = (0..12).map(|k| iced::Point::new(curve.x, curve.y - 1.5 + 0.25 * k as f32)).find(|p| score_view::hit_test(&a.pages, &origins, *p) == Some(slur));
+    let on_curve = (0..12).map(|k| iced::Point::new(curve.x, curve.y - 1.5 + 0.25 * k as f32)).find(|p| score_view::hit_test(&a.score.pages, &origins, *p) == Some(slur));
     assert!(on_curve.is_some(), "the curve is a hit target");
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(slur), at: None, shift: false }));
     assert_eq!(a.editor.selected_slur(), Some(slur));
-    assert!(a.selected.contains(&slur), "drawn selected");
+    assert!(a.score.selected.contains(&slur), "drawn selected");
     // Dragging the end handle over to the fourth note: the end snaps from
     // note to note, and the whole drag is one undo step.
     let q = |e: &corinzia_model::Event| score_view::StaffPoint { page: 0, part: 0, quarter: quarters(e.start), step_below_top: 4 };
@@ -240,9 +240,9 @@ fn slurs_are_selected_and_moved_to_other_notes_with_the_mouse() {
     let _ = a.act(Action::Nudge(-1));
     assert_eq!(slur_of(&a), Some((1, 4)));
     // X flips it; Delete removes it and leaves the notes.
-    let above = score_view::slur_above(&a.pages, slur).unwrap();
+    let above = score_view::slur_above(&a.score.pages, slur).unwrap();
     let _ = a.act(Action::Flip);
-    assert_eq!(score_view::slur_above(&a.pages, slur), Some(!above));
+    assert_eq!(score_view::slur_above(&a.score.pages, slur), Some(!above));
     let count = events(&a).len();
     let _ = a.act(Action::Delete);
     assert_eq!(slur_of(&a), None);
@@ -255,16 +255,16 @@ fn clicking_a_notehead_selects_it() {
     let mut a = app(View::Page);
     let first = a.editor.project.movements[0].lanes[0].voices[0].events[0].heads[0].id; // E5 in the flute
     let at = head_on_screen(&a, first);
-    let px = a.zoom * score_view::BASE_PX;
-    let desk = iced::Point::new((at.x - a.pan.x) / px, (at.y - a.pan.y) / px);
-    let origins = score_view::page_origins(&a.pages, true);
-    assert_eq!(score_view::hit_test(&a.pages, &origins, desk), Some(first));
+    let px = a.score.zoom * score_view::BASE_PX;
+    let desk = iced::Point::new((at.x - a.score.pan.x) / px, (at.y - a.score.pan.y) / px);
+    let origins = score_view::page_origins(&a.score.pages, true);
+    assert_eq!(score_view::hit_test(&a.score.pages, &origins, desk), Some(first));
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(first), at: None, shift: false }));
     a.editor.status.clear();
     assert_eq!(a.editor.selection_label(), "E5 · Flute · bar 1");
-    assert!(a.selected.contains(&first));
+    assert!(a.score.selected.contains(&first));
     // Empty paper selects nothing.
-    assert_eq!(score_view::hit_test(&a.pages, &origins, iced::Point::new(2.0, 2.0)), None);
+    assert_eq!(score_view::hit_test(&a.score.pages, &origins, iced::Point::new(2.0, 2.0)), None);
 }
 
 #[test]
@@ -272,16 +272,16 @@ fn zoom_keeps_the_point_under_the_cursor() {
     let mut a = app(View::Page);
     let id = a.editor.project.movements[0].lanes[1].voices[0].events[2].heads[0].id;
     let before = head_on_screen(&a, id);
-    let z0 = a.zoom;
+    let z0 = a.score.zoom;
     let _ = a.update(Message::Canvas(ViewEvent::Zoom { factor: 1.6, around: before }));
     let after = head_on_screen(&a, id);
     assert!((after.x - before.x).abs() < 0.5 && (after.y - before.y).abs() < 0.5, "{before:?} -> {after:?}");
-    assert!((a.zoom - z0 * 1.6).abs() < 1e-6);
+    assert!((a.score.zoom - z0 * 1.6).abs() < 1e-6);
 }
 
 #[test]
 fn condensing_puts_two_flutes_on_one_staff() {
-    let p = files::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
+    let p = crate::editor::instruments::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     // Bar 1 in unison, bar 2 apart; the cello rests.
     for (lane, notes) in [(0, [0, 1, 2, 3, 4, 4, 4, 4]), (1, [0, 1, 2, 3, 2, 2, 2, 2])] {
@@ -299,7 +299,7 @@ fn condensing_puts_two_flutes_on_one_staff() {
     let parts = a.editor.project.part_layout.clone();
     a.editor.set_layout(l, parts, Default::default());
     a.sync();
-    assert_eq!(a.staff_lanes, [0, 2], "the flutes on staff 0, the cello on 1");
+    assert_eq!(a.score.staff_lanes, [0, 2], "the flutes on staff 0, the cello on 1");
     let m = a.editor.movement().unwrap();
     let mut s = corinzia_model::notation::score(&a.editor.project, m);
     corinzia_model::notation::condense(&mut s);
@@ -311,25 +311,25 @@ fn condensing_puts_two_flutes_on_one_staff() {
     // Parts are never condensed.
     let _ = a.update(Message::SetPart(Some(a.editor.project.players[1].id)));
     a.sync();
-    assert_eq!(a.staff_lanes, [1]);
+    assert_eq!(a.score.staff_lanes, [1]);
 }
 
 #[test]
 fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
-    let p = files::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
+    let p = crate::editor::instruments::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     a.sync();
-    assert_eq!(a.staff_lanes, [0, 1, 2, 3]);
+    assert_eq!(a.score.staff_lanes, [0, 1, 2, 3]);
     let clarinet = a.editor.project.players[1].id;
     let piano = a.editor.project.players[2].id;
     let _ = a.update(Message::SetPart(Some(piano)));
     a.sync();
     // The piano's two staves, engraved as staves 0 and 1.
-    assert_eq!(a.staff_lanes, [2, 3]);
-    assert_eq!(a.pages[0].staves.iter().filter(|s| s.system == 0).count(), 2);
+    assert_eq!(a.score.staff_lanes, [2, 3]);
+    assert_eq!(a.score.pages[0].staves.iter().filter(|s| s.system == 0).count(), 2);
     // Eight empty bars: one multi-bar rest, counted 8.
     let eight = corinzia_layout::font::Glyph::TimeSigDigit(8).codepoint();
-    assert!(a.pages[0].items.iter().any(|i| matches!(i, corinzia_layout::display::Item::Glyph { glyph, .. } if *glyph == eight)));
+    assert!(a.score.pages[0].items.iter().any(|i| matches!(i, corinzia_layout::display::Item::Glyph { glyph, .. } if *glyph == eight)));
     // A click on the part's first staff enters into the piano's right hand.
     a.editor.set_input_mode(true);
     a.click(None, Some(StaffPoint { page: 0, part: 0, quarter: 0.0, step_below_top: 4 }), false);
@@ -352,13 +352,13 @@ fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
 
 #[test]
 fn typing_in_input_mode_re_engraves() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
-    let before = a.engraved;
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let before = a.score.engraved;
     for t in ["n", "4", "c", "d", "e", "shift+c"] {
         key(&mut a, t);
     }
     assert!(a.editor.input_mode);
-    assert_ne!(a.engraved, before, "re-engraved after the edit");
+    assert_ne!(a.score.engraved, before, "re-engraved after the edit");
     let ev = &a.editor.project.movements[0].lanes[0].voices[0].events;
     assert_eq!(ev.iter().filter(|e| !e.is_rest()).count(), 3);
     assert_eq!(ev[2].heads.len(), 2, "Shift+C added to the chord");
@@ -368,14 +368,14 @@ fn typing_in_input_mode_re_engraves() {
 
 #[test]
 fn clicking_a_staff_in_input_mode_enters_a_note() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
     key(&mut a, "n");
-    let origins = score_view::page_origins(&a.pages, true);
-    let st = a.pages[0].staves[0].clone();
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let st = a.score.pages[0].staves[0].clone();
     // Second line from the top of a treble staff is D5; one beat in.
-    let col = a.pages[0].columns.iter().find(|c| c.system == st.system && c.quarter == 0.0).unwrap();
+    let col = a.score.pages[0].columns.iter().find(|c| c.system == st.system && c.quarter == 0.0).unwrap();
     let x = col.x + 0.5;
-    let at = score_view::locate(&a.pages, &origins, iced::Point::new(x, st.top + 1.0)).unwrap();
+    let at = score_view::locate(&a.score.pages, &origins, iced::Point::new(x, st.top + 1.0)).unwrap();
     assert_eq!((at.part, at.step_below_top), (0, 2));
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(at), shift: false }));
     let ev = &a.editor.project.movements[0].lanes[0].voices[0].events;
@@ -385,20 +385,20 @@ fn clicking_a_staff_in_input_mode_enters_a_note() {
 #[test]
 fn marquee_selects_a_passage_and_popovers_apply() {
     let mut a = app(View::Page);
-    let origins = score_view::page_origins(&a.pages, true);
-    let ids = score_view::ids_in(&a.pages, &origins, iced::Point::new(0.0, 0.0), iced::Point::new(1000.0, 1000.0));
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let ids = score_view::ids_in(&a.score.pages, &origins, iced::Point::new(0.0, 0.0), iced::Point::new(1000.0, 1000.0));
     let _ = a.update(Message::Canvas(ViewEvent::Marquee { ids, shift: false }));
     let r = a.editor.range.unwrap();
     assert_eq!((r.lane_from, r.lane_to), (0, 1));
-    assert!(a.selected.len() > 20);
+    assert!(a.score.selected.len() > 20);
     let _ = a.update(Message::Act(Action::Popover(PopoverKind::Key)));
-    assert!(a.popover.is_some());
+    assert!(a.score.popover.is_some());
     let _ = a.update(Message::Popover(PopoverMsg::Input("x".into())));
     let _ = a.update(Message::Popover(PopoverMsg::Submit));
-    assert!(a.popover.as_ref().unwrap().error.is_some(), "bad input keeps the popover open with a hint");
+    assert!(a.score.popover.as_ref().unwrap().error.is_some(), "bad input keeps the popover open with a hint");
     let _ = a.update(Message::Popover(PopoverMsg::Input("D".into())));
     let _ = a.update(Message::Popover(PopoverMsg::Submit));
-    assert!(a.popover.is_none());
+    assert!(a.score.popover.is_none());
     assert_eq!(a.editor.project.movements[0].keys[0].fifths, 2);
     key(&mut a, "esc");
     assert!(a.editor.range.is_none());
@@ -478,7 +478,7 @@ fn filters_and_select_similar_pick_elements_to_edit() {
     let _ = a.update(Message::Popover(PopoverMsg::Submit));
     assert_eq!(a.editor.picked, high);
     assert_eq!(a.editor.status, format!("{} notes picked in the movement", high.len()));
-    assert!(high.iter().all(|id| a.selected.contains(id)));
+    assert!(high.iter().all(|id| a.score.selected.contains(id)));
     // Edits apply to each: staccato, then up a step.
     a.editor.toggle_articulation(corinzia_score::score::art::STACCATO);
     let stacc = |a: &App| notes(a, 0).iter().filter(|e| e.articulations & corinzia_score::score::art::STACCATO != 0).count();
@@ -522,7 +522,7 @@ fn filters_and_select_similar_pick_elements_to_edit() {
 fn explode_and_reduce_move_music_between_staves() {
     use corinzia_model::{Event, EventKind, Head, Pitch};
     use corinzia_score::Frac;
-    let project = files::new_project("T", "Violin, Viola, Cello, Piano", 2).unwrap();
+    let project = crate::editor::instruments::new_project("T", "Violin, Viola, Cello, Piano", 2).unwrap();
     let mut ed = editor::Editor::new(project);
     // Lanes: violin, viola, cello, piano right hand, piano left hand.
     let chord = |id: u64, k: i64| Event {
@@ -594,7 +594,7 @@ fn beams_by_hand_and_by_the_meter() {
     assert_eq!((m.num, m.den, m.beams[..3].to_vec()), (7, 8, vec![3, 2, 2]));
     assert!(a.editor.apply_popover(PopoverKind::Time, "7/8 3+3").is_err());
     a.engrave();
-    assert!(!a.pages.is_empty());
+    assert!(!a.score.pages.is_empty());
 }
 
 #[test]
@@ -604,18 +604,18 @@ fn all_movements_one_after_another_in_the_view() {
     a.editor.rename_movement("II. Allegro");
     a.editor.switch_movement(0);
     a.sync();
-    let one = a.pages.len();
+    let one = a.score.pages.len();
     let _ = a.update(Message::Act(Action::AllMovements));
     a.sync();
-    assert!(a.pages.len() > one, "both movements' pages");
-    assert_eq!(a.page_movements.first(), Some(&0));
-    assert_eq!(a.page_movements.last(), Some(&1));
-    let second = a.page_movements.iter().position(|&m| m == 1).unwrap();
-    assert_eq!(a.pages_of(1), second..a.pages.len());
+    assert!(a.score.pages.len() > one, "both movements' pages");
+    assert_eq!(a.score.page_movements.first(), Some(&0));
+    assert_eq!(a.score.page_movements.last(), Some(&1));
+    let second = a.score.page_movements.iter().position(|&m| m == 1).unwrap();
+    assert_eq!(a.pages_of(1), second..a.score.pages.len());
     // The second movement's page is headed by its own title, not the work's.
     let texts = |p: &DisplayList| p.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect::<Vec<_>>();
-    assert!(texts(&a.pages[second]).contains(&"II. Allegro".to_string()));
-    assert!(!texts(&a.pages[second]).contains(&"Serenade (demo)".to_string()));
+    assert!(texts(&a.score.pages[second]).contains(&"II. Allegro".to_string()));
+    assert!(!texts(&a.score.pages[second]).contains(&"Serenade (demo)".to_string()));
     // A click on it (empty paper, its first staff) edits that movement.
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: None, at: Some(StaffPoint { page: second, part: 0, quarter: 0.0, step_below_top: 4 }), shift: false }));
     assert_eq!(a.editor.movement, 1);
@@ -627,7 +627,7 @@ fn all_movements_one_after_another_in_the_view() {
     // Off again: one movement.
     let _ = a.update(Message::Act(Action::AllMovements));
     a.sync();
-    assert_eq!(a.pages.len(), one);
+    assert_eq!(a.score.pages.len(), one);
 }
 
 #[test]
@@ -638,10 +638,10 @@ fn a_shown_part_whose_player_goes_shows_the_full_score() {
     let _ = a.update(Message::Players(PlayersMsg::Open));
     let _ = a.update(Message::Players(PlayersMsg::Remove(1)));
     let _ = a.update(Message::Players(PlayersMsg::Apply));
-    assert_eq!(a.part, None);
+    assert_eq!(a.score.part, None);
     assert_eq!(a.editor.project.movements[0].lanes.len(), 1);
     a.engrave();
-    assert!(!a.pages.is_empty());
+    assert!(!a.score.pages.is_empty());
 }
 
 #[test]
@@ -650,7 +650,7 @@ fn lyrics_and_chords_are_typed_as_a_stream() {
     let flute = a.editor.project.movements[0].lanes[0].voices[0].events.clone();
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(flute[0].heads[0].id), at: None, shift: false }));
     key(&mut a, "ctrl+l");
-    assert_eq!(a.popover.as_ref().unwrap().kind, PopoverKind::Lyrics);
+    assert_eq!(a.score.popover.as_ref().unwrap().kind, PopoverKind::Lyrics);
     type_into_popover(&mut a, "Glo-ri-a in ");
     let ev = &a.editor.project.movements[0].lanes[0].voices[0].events;
     let syl: Vec<(String, bool)> = ev.iter().take(4).map(|e| e.lyrics.first().map(|l| (l.text.clone(), l.hyphen)).unwrap_or_default()).collect();
@@ -663,18 +663,18 @@ fn lyrics_and_chords_are_typed_as_a_stream() {
     key(&mut a, "ctrl+k");
     type_into_popover(&mut a, "C G7/b "); // a lower-case bass letter is fine
     type_into_popover(&mut a, "Hm ");
-    assert!(a.popover.as_ref().unwrap().error.as_deref().is_some_and(|e| e.starts_with("Chord symbol not understood")));
-    assert_eq!(a.popover.as_ref().unwrap().input, "Hm", "the bad input stays for correction");
+    assert!(a.score.popover.as_ref().unwrap().error.as_deref().is_some_and(|e| e.starts_with("Chord symbol not understood")));
+    assert_eq!(a.score.popover.as_ref().unwrap().input, "Hm", "the bad input stays for correction");
     let chords: Vec<String> = a.editor.movement().unwrap().lanes[1].chords.iter().map(|c| c.text.clone()).collect();
     assert_eq!(chords, vec!["C", "G7/B"]);
     let _ = a.update(Message::Popover(PopoverMsg::Close));
     // A chord symbol is clickable: select it and delete it.
     let id = a.editor.movement().unwrap().lanes[1].chords[1].id;
-    let origins = score_view::page_origins(&a.pages, true);
-    let item = a.pages[0].items.iter().find(|i| matches!(i, Item::Text { id: t, .. } if *t == id)).unwrap();
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let item = a.score.pages[0].items.iter().find(|i| matches!(i, Item::Text { id: t, .. } if *t == id)).unwrap();
     let r = item.bounds(corinzia_layout::font::Font::bravura());
     let at = iced::Point::new((r[0] + r[2]) / 2.0 + origins[0].x, (r[1] + r[3]) / 2.0 + origins[0].y);
-    assert_eq!(score_view::hit_test(&a.pages, &origins, at), Some(id));
+    assert_eq!(score_view::hit_test(&a.score.pages, &origins, at), Some(id));
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(id), at: None, shift: false }));
     key(&mut a, "del");
     assert_eq!(a.editor.movement().unwrap().lanes[1].chords.len(), 1);
@@ -700,17 +700,17 @@ fn hairpins_are_selected_dragged_by_their_ends_and_deleted() {
     let start = flute(&a).iter().find(|e| e.spans & span::CRESC_START != 0).expect("a crescendo").id;
     let pid = ids::hairpin(start);
     // Its strokes carry its own id: a click on one selects it, not a note.
-    let origins = score_view::page_origins(&a.pages, true);
-    let (page, mid) = a.pages.iter().enumerate().find_map(|(k, p)| p.items.iter().find_map(|i| match i {
+    let origins = score_view::page_origins(&a.score.pages, true);
+    let (page, mid) = a.score.pages.iter().enumerate().find_map(|(k, p)| p.items.iter().find_map(|i| match i {
         Item::Line { from, to, id, .. } if *id == pid => Some((k, iced::Point::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0))),
         _ => None,
     })).expect("the hairpin is drawn");
     let desk = iced::Point::new(mid.x + origins[page].x, mid.y + origins[page].y);
-    assert_eq!(score_view::hit_test(&a.pages, &origins, desk), Some(pid));
+    assert_eq!(score_view::hit_test(&a.score.pages, &origins, desk), Some(pid));
     let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(pid), at: None, shift: false }));
     assert_eq!(a.editor.selected_hairpin(), Some(start));
-    assert!(a.selected.contains(&pid), "drawn selected");
-    let handles = score_view::slur_handles(&a.pages, &origins, pid);
+    assert!(a.score.selected.contains(&pid), "drawn selected");
+    let handles = score_view::slur_handles(&a.score.pages, &origins, pid);
     assert_eq!(handles.len(), 2, "a handle at each end");
     assert!(handles[0].1.x < handles[1].1.x);
     // Dragging the end to bar 3's third beat ends it there.

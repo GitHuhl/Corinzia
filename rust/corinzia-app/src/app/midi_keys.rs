@@ -19,13 +19,13 @@ pub(crate) fn midi_clock() -> impl iced::futures::Stream<Item = Message> {
 impl App {
     /// Opens a MIDI input port (none for an empty id).
     pub(crate) fn open_midi(&mut self, id: &str) {
-        self.midi = None;
-        self.midi_held.clear();
+        self.midi.input = None;
+        self.midi.held.clear();
         if id.is_empty() {
             return;
         }
         match midi_in::Input::open(id) {
-            Ok(i) => self.midi = Some(i),
+            Ok(i) => self.midi.input = Some(i),
             Err(e) => self.editor.status = format!("MIDI input: {e}"),
         }
     }
@@ -33,19 +33,19 @@ impl App {
     /// Keys from the MIDI keyboard: in note input they are entered (keys
     /// held together make a chord); they always sound on the staff's track.
     pub(crate) fn midi_poll(&mut self) {
-        let Some(input) = &self.midi else { return };
+        let Some(input) = &self.midi.input else { return };
         let msgs: Vec<midi_in::MidiMsg> = input.rx.try_iter().collect();
         for m in msgs {
             match m {
                 midi_in::MidiMsg::On { key, .. } => {
                     if self.editor.input_mode && self.tab == Tab::Score {
-                        let chord = !self.midi_held.is_empty();
+                        let chord = !self.midi.held.is_empty();
                         self.editor.enter_midi_key(key, chord);
                     }
-                    self.midi_held.push(key);
+                    self.midi.held.push(key);
                     self.sound_key(key);
                 }
-                midi_in::MidiMsg::Off { key } => self.midi_held.retain(|k| *k != key),
+                midi_in::MidiMsg::Off { key } => self.midi.held.retain(|k| *k != key),
             }
         }
     }

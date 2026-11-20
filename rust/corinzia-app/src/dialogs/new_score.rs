@@ -56,7 +56,7 @@ impl NewScore {
 
 impl App {
     pub(crate) fn create_new(&mut self) {
-        let Some(n) = self.new_score.as_mut() else { return };
+        let Some(n) = self.dialogs.new_score.as_mut() else { return };
         let bars = n.bars.trim().parse::<i64>().unwrap_or(32).clamp(1, 2000);
         let title = if n.title.trim().is_empty() { "Untitled" } else { n.title.trim() };
         // Key, time (a pickup too: "3/4 pickup 1/4") and tempo, checked first.
@@ -82,7 +82,7 @@ impl App {
                 None => return n.error = Some(format!("Tempo not understood: {} (try Allegro, Andante 84, q=96)", n.tempo.trim())),
             }
         };
-        match files::new_project(title, &n.instruments, bars).map(|mut p| {
+        match crate::editor::instruments::new_project(title, &n.instruments, bars).map(|mut p| {
             p.composer = n.composer.trim().to_string();
             if let Some(m) = p.movements.first_mut() {
                 if let Some(k) = key {
@@ -108,7 +108,7 @@ impl App {
             p
         }) {
             Ok(p) => {
-                let (view, pb) = (self.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
+                let (view, pb) = (self.score.view, std::mem::replace(&mut self.playback, playback::Playback::new(false, &prefs::Prefs::default())));
                 *self = App::with_playback(p, None, view, "New score · N starts note input".into(), pb);
                 self.editor.set_input_mode(true);
             }

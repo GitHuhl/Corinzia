@@ -111,6 +111,7 @@ impl Spectrum {
 
 const MAX_HARMONICS: usize = 40;
 /// log2 of the harmonic numbers.
+#[allow(clippy::approx_constant)] // log2(10) is in the table, to four places
 static LOG2: [f32; MAX_HARMONICS + 1] = {
     // log2(n) for n in 0..=40 (0 for n = 0), to four decimals.
     [0.0, 0.0, 1.0, 1.585, 2.0, 2.3219, 2.585, 2.8074, 3.0, 3.1699, 3.3219, 3.4594, 3.585, 3.7004, 3.8074, 3.9069, 4.0, 4.0875, 4.1699, 4.2479, 4.3219, 4.3923, 4.4594, 4.5236, 4.585, 4.6439, 4.7004, 4.7549, 4.8074, 4.858, 4.9069, 4.9542, 5.0, 5.0444, 5.0875, 5.1293, 5.1699, 5.2095, 5.2479, 5.2854, 5.3219]

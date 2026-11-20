@@ -1,7 +1,7 @@
 //! The Players card: the instrumentation being edited, applied as one undo step.
 
 use crate::app::*;
-use crate::{editor, files, panels, theme};
+use crate::{editor, panels, theme};
 use iced::widget::{button, column, row, text, text_input};
 use iced::{Element, Length};
 
@@ -121,14 +121,14 @@ impl App {
                     PlayerRow { player: Some(pl.id), instruments: instruments.join(", "), detail }
                 })
                 .collect();
-            self.players = Some(PlayersDialog { rows, add: String::new(), error: None });
-            self.help = false;
-            self.export_menu = false;
+            self.dialogs.players = Some(PlayersDialog { rows, add: String::new(), error: None });
+            self.dialogs.help = false;
+            self.dialogs.export_menu = false;
             return;
         }
-        let Some(d) = self.players.as_mut() else { return };
+        let Some(d) = self.dialogs.players.as_mut() else { return };
         d.error = None;
-        let add = |d: &mut PlayersDialog, text: &str| match files::parse_instruments(text) {
+        let add = |d: &mut PlayersDialog, text: &str| match crate::editor::instruments::parse_instruments(text) {
             Ok(list) => {
                 for (name, _, clef) in list {
                     let staves = clef.split('+').count();
@@ -170,11 +170,11 @@ impl App {
             PlayersMsg::Quick(name) => {
                 add(d, name);
             }
-            PlayersMsg::Cancel => self.players = None,
+            PlayersMsg::Cancel => self.dialogs.players = None,
             PlayersMsg::Apply => {
                 let mut slots = Vec::new();
                 for (k, r) in d.rows.iter().enumerate() {
-                    match files::parse_instrument_list(&r.instruments) {
+                    match crate::editor::instruments::parse_instrument_list(&r.instruments) {
                         Ok(instruments) => slots.push(match r.player {
                             Some(id) => editor::PlayerSlot::Keep { id, instruments },
                             None => editor::PlayerSlot::New { instruments },
@@ -187,10 +187,10 @@ impl App {
                 }
                 match self.editor.set_players(&slots) {
                     Ok(()) => {
-                        self.players = None;
+                        self.dialogs.players = None;
                         // A part whose player went shows the full score.
-                        if self.part.is_some_and(|p| self.editor.project.player(p).is_none()) {
-                            self.part = None;
+                        if self.score.part.is_some_and(|p| self.editor.project.player(p).is_none()) {
+                            self.score.part = None;
                         }
                     }
                     Err(e) => d.error = Some(e),

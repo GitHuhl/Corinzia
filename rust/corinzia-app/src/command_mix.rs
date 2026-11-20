@@ -198,7 +198,7 @@ impl App {
                     "add" => {
                         let name = args[1..].join(" ");
                         let id = app.editor.add_bus(&name);
-                        app.strip = Some(id);
+                        app.mix.strip = Some(id);
                         app.sync();
                         return Ok(json!({"bus": id}));
                     }

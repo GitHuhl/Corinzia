@@ -17,18 +17,18 @@ impl App {
     pub(crate) fn open_roll(&mut self, track: corinzia_model::Id) {
         let content = roll::content(&self.editor.project, self.editor.movement, track);
         let top_key = (content.high + 2).min(127);
-        self.roll = Some(RollState { content, built: self.editor.music_revision, movement: self.editor.movement, selected: vec![], ppq: self.arrange_ppq.max(24.0), scroll_x: self.arrange_scroll, top_key, origin: vec![], dragged: false });
+        self.mix.roll = Some(RollState { content, built: self.editor.music_revision, movement: self.editor.movement, selected: vec![], ppq: self.mix.arrange_ppq.max(24.0), scroll_x: self.mix.arrange_scroll, top_key, origin: vec![], dragged: false });
     }
 
     /// The piano roll's notes rebuilt after the music changed.
     pub(crate) fn sync_roll(&mut self) {
         let (rev, movement) = (self.editor.music_revision, self.editor.movement);
-        let Some(r) = self.roll.as_mut() else { return };
+        let Some(r) = self.mix.roll.as_mut() else { return };
         if r.built == rev && r.movement == movement {
             return;
         }
         if self.editor.project.track(r.content.track).is_none() {
-            self.roll = None;
+            self.mix.roll = None;
             return;
         }
         r.content = roll::content(&self.editor.project, movement, r.content.track);
@@ -37,7 +37,7 @@ impl App {
     }
 
     pub(crate) fn roll_event(&mut self, e: roll::RollEvent) {
-        let Some(r) = self.roll.as_mut() else { return };
+        let Some(r) = self.mix.roll.as_mut() else { return };
         match e {
             roll::RollEvent::Select { head: None, .. } => r.selected.clear(),
             roll::RollEvent::Select { head: Some(h), add } => {
@@ -91,7 +91,7 @@ impl App {
 
     /// Plays the selected notes (or all of them) as written again.
     pub(crate) fn roll_reset(&mut self) {
-        if let Some(r) = &self.roll {
+        if let Some(r) = &self.mix.roll {
             let heads = r.selected.clone();
             let all = if heads.is_empty() { r.content.notes.iter().map(|n| n.head).collect() } else { heads };
             self.editor.tweak(&all, "Reset playing", false, |t| *t = corinzia_model::Tweak::new(t.head));

@@ -80,7 +80,7 @@ pub(crate) fn motif_card(d: &MotifDialog) -> Element<'_, Message> {
 
 impl App {
     pub(crate) fn motif_msg(&mut self, m: MotifMsg) {
-        let Some(d) = self.motif_dialog.as_mut() else { return };
+        let Some(d) = self.dialogs.motif.as_mut() else { return };
         d.error = None;
         match m {
             MotifMsg::Name(v) => d.name = v,
@@ -94,10 +94,10 @@ impl App {
             }
             MotifMsg::Tags(v) => d.tags = v,
             MotifMsg::Comment(v) => d.comment = v,
-            MotifMsg::Cancel => self.motif_dialog = None,
+            MotifMsg::Cancel => self.dialogs.motif = None,
             MotifMsg::Delete => {
                 let id = d.draft.id;
-                self.motif_dialog = None;
+                self.dialogs.motif = None;
                 self.editor.delete_motif(id);
             }
             MotifMsg::Save => {
@@ -109,7 +109,7 @@ impl App {
                 m.name = d.name.trim().to_string();
                 m.tags = d.tags.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
                 m.comment = d.comment.trim().to_string();
-                self.motif_dialog = None;
+                self.dialogs.motif = None;
                 self.editor.save_motif(m);
             }
         }

@@ -6,15 +6,15 @@ impl App {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::SetView(v) => {
-                self.view = v;
-                self.pan = Vector::new(24.0, 24.0);
-                self.engraved = None;
+                self.score.view = v;
+                self.score.pan = Vector::new(24.0, 24.0);
+                self.score.engraved = None;
             }
-            Message::SetPanel(p) => self.panel = p,
+            Message::SetPanel(p) => self.score.panel = p,
             Message::Mix(mix::MixMsg::AddAudio(t)) => return self.pick_file_for(browser::Purpose::Audio(t), false),
             Message::Mix(m) => self.mix(m),
             Message::Roll(RollMsg::Event(e)) => self.roll_event(e),
-            Message::Roll(RollMsg::Close) => self.roll = None,
+            Message::Roll(RollMsg::Close) => self.mix.roll = None,
             Message::Roll(RollMsg::Reset) => self.roll_reset(),
             Message::Arrange(e) => self.arrange_event(e),
             Message::SplitMixer(Some(d)) => {
@@ -24,16 +24,16 @@ impl App {
             }
             Message::SplitMixer(None) => self.save_prefs(),
             Message::OpenRecent(path) => self.open(path),
-            Message::ZoomBy(f) => self.zoom = (self.zoom * f).clamp(0.25, 8.0),
+            Message::ZoomBy(f) => self.score.zoom = (self.score.zoom * f).clamp(0.25, 8.0),
             Message::Resized(size) => self.window = size,
-            Message::ExportMenu(open) => self.export_menu = open,
+            Message::ExportMenu(open) => self.dialogs.export_menu = open,
             Message::SetPart(p) => {
-                self.part = p;
-                self.engraved = None;
+                self.score.part = p;
+                self.score.engraved = None;
             }
             Message::Dropped(path) if is_sound(&path) => {
                 // A sound file: onto the selected audio track, else a new one.
-                let track = self.strip.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio));
+                let track = self.mix.strip.filter(|t| self.editor.project.track(*t).is_some_and(|t| t.audio));
                 self.add_audio_file(track, &path, None);
             }
             Message::NativeWindow(handles) => {
@@ -71,22 +71,22 @@ impl App {
                     return t;
                 }
             }
-            Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.bounce.is_some() => {
-                self.bounce = None;
-                self.stems.clear();
-                self.stems_done = None;
+            Message::Key(iced::keyboard::Event::KeyPressed { key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape), .. }) if self.exports.bounce.is_some() => {
+                self.exports.bounce = None;
+                self.exports.stems.clear();
+                self.exports.stems_done = None;
                 self.editor.status = "Audio export stopped".into();
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.motif_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.score.popover.is_some() || self.dialogs.new_score.is_some() || self.dialogs.players.is_some() || self.dialogs.layout.is_some() || self.dialogs.prefs.is_some() || self.dialogs.motif.is_some() || self.dialogs.confirm.is_some() || self.dialogs.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
-                        if self.confirm.take().is_none() && self.browser.take().is_none() {
-                            self.popover = None;
-                            self.new_score = None;
-                            self.players = None;
-                            self.layout = None;
-                            self.prefs_dialog = None;
-                            self.motif_dialog = None;
+                        if self.dialogs.confirm.take().is_none() && self.dialogs.browser.take().is_none() {
+                            self.score.popover = None;
+                            self.dialogs.new_score = None;
+                            self.dialogs.players = None;
+                            self.dialogs.layout = None;
+                            self.dialogs.prefs = None;
+                            self.dialogs.motif = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -100,14 +100,14 @@ impl App {
                 return Task::none();
             }
             Message::Popover(PopoverMsg::Submit) => self.popover_submit(),
-            Message::Popover(PopoverMsg::Close) => self.popover = None,
+            Message::Popover(PopoverMsg::Close) => self.score.popover = None,
             Message::New(NewMsg::Input(field, v)) => {
-                if let Some(n) = self.new_score.as_mut() {
+                if let Some(n) = self.dialogs.new_score.as_mut() {
                     n.set(field, v);
                 }
                 return Task::none();
             }
-            Message::New(NewMsg::Cancel) => self.new_score = None,
+            Message::New(NewMsg::Cancel) => self.dialogs.new_score = None,
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
             Message::Prefs(m) => self.prefs_msg(m),
@@ -119,10 +119,10 @@ impl App {
                     return Task::done(Message::Proceed(next));
                 }
                 // Asked in the window (no system dialog needed).
-                self.confirm = Some(next);
+                self.dialogs.confirm = Some(next);
             }
             Message::ConfirmDiscard(yes) => {
-                if let (Some(next), true) = (self.confirm.take(), yes) {
+                if let (Some(next), true) = (self.dialogs.confirm.take(), yes) {
                     return Task::done(Message::Proceed(next));
                 }
             }
@@ -143,13 +143,13 @@ impl App {
                 return Task::done(chosen(purpose, path));
             }
             Message::Browser(msg) => {
-                let Some(b) = self.browser.as_mut() else { return Task::none() };
+                let Some(b) = self.dialogs.browser.as_mut() else { return Task::none() };
                 let purpose = b.purpose;
                 match b.update(msg) {
                     browser::Outcome::Stay => {}
-                    browser::Outcome::Cancel => self.browser = None,
+                    browser::Outcome::Cancel => self.dialogs.browser = None,
                     browser::Outcome::Chosen(path) => {
-                        self.browser = None;
+                        self.dialogs.browser = None;
                         return Task::done(chosen(purpose, Some(path)));
                     }
                 }
@@ -164,7 +164,7 @@ impl App {
                 self.save(path);
             }
             Message::Export(format) => {
-                self.export_menu = false;
+                self.dialogs.export_menu = false;
                 return self.pick_file_for(browser::Purpose::Export(format), false);
             }
             Message::ExportTo(files::Format::Audio, Some(path)) => {
@@ -200,10 +200,10 @@ impl App {
                 return Task::none();
             }
             Message::Autosaved(rev, result) => {
-                self.saving = false;
+                self.doc.saving = false;
                 match result {
                     Ok(()) => {
-                        self.saved_revision = rev;
+                        self.doc.saved_revision = rev;
                         if self.editor.revision == rev {
                             self.editor.saved();
                         }
@@ -229,7 +229,7 @@ impl App {
     /// another staff (an audio track's).
     pub(crate) fn lane_of_staff(&self, staff: usize) -> Option<usize> {
         let lanes = self.editor.movement()?.lanes.len();
-        self.staff_lanes.get(staff).copied().filter(|&l| l < lanes)
+        self.score.staff_lanes.get(staff).copied().filter(|&l| l < lanes)
     }
 
     /// A click on the score: select, or (input mode, empty paper) enter a note.
@@ -274,7 +274,7 @@ impl App {
     pub(crate) fn press(&mut self, key: &iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Task<Message>> {
         use iced::keyboard::{key::Named, Key};
         // The piano roll: Escape closes it, R resets the selected notes.
-        if let (Tab::Mix, true) = (self.tab, self.roll.is_some()) {
+        if let (Tab::Mix, true) = (self.tab, self.mix.roll.is_some()) {
             match key {
                 Key::Named(Named::Escape) => return Some(Task::done(Message::Roll(RollMsg::Close))),
                 Key::Character(c) if c.as_str() == "r" && !mods.control() => return Some(Task::done(Message::Roll(RollMsg::Reset))),
@@ -282,23 +282,23 @@ impl App {
             }
         }
         // The Mix tab's own keys (see `mix_key`).
-        if self.tab == Tab::Mix && self.roll.is_none() {
+        if self.tab == Tab::Mix && self.mix.roll.is_none() {
             if let Some(t) = self.mix_key(key, mods) {
                 return Some(t);
             }
         }
         // The selected clip in the arrange view: S splits it at the playhead.
-        if let (Tab::Mix, Some((track, clip)), Key::Character(c)) = (self.tab, self.selected_clip, key) {
-            if c.as_str().eq_ignore_ascii_case("s") && !mods.control() && !mods.alt() && !mods.logo() && self.roll.is_none() {
+        if let (Tab::Mix, Some((track, clip)), Key::Character(c)) = (self.tab, self.mix.selected_clip, key) {
+            if c.as_str().eq_ignore_ascii_case("s") && !mods.control() && !mods.alt() && !mods.logo() && self.mix.roll.is_none() {
                 let q = self.split_point();
                 self.split_clip_at(track, clip, q);
                 return Some(Task::none());
             }
         }
         // The selected clip in the arrange view: Delete removes it.
-        if let (Tab::Mix, Some((track, clip)), Key::Named(Named::Delete | Named::Backspace)) = (self.tab, self.selected_clip, key) {
+        if let (Tab::Mix, Some((track, clip)), Key::Named(Named::Delete | Named::Backspace)) = (self.tab, self.mix.selected_clip, key) {
             self.editor.delete_clip(track, clip);
-            self.selected_clip = None;
+            self.mix.selected_clip = None;
             return Some(Task::none());
         }
         if self.tab == Tab::Score && self.editor.chant.is_some() {
@@ -314,20 +314,20 @@ impl App {
     /// (without the usual sync).
     pub(crate) fn canvas_event(&mut self, e: ViewEvent) -> Option<Task<Message>> {
         match e {
-            ViewEvent::Pan(d) => self.pan = self.pan + d,
+            ViewEvent::Pan(d) => self.score.pan = self.score.pan + d,
             ViewEvent::Zoom { factor, around } => {
-                let z = (self.zoom * factor).clamp(0.25, 8.0);
-                let k = z / self.zoom;
+                let z = (self.score.zoom * factor).clamp(0.25, 8.0);
+                let k = z / self.score.zoom;
                 // Keep the point under the cursor fixed.
-                self.pan = Vector::new(around.x - (around.x - self.pan.x) * k, around.y - (around.y - self.pan.y) * k);
-                self.zoom = z;
+                self.score.pan = Vector::new(around.x - (around.x - self.score.pan.x) * k, around.y - (around.y - self.score.pan.y) * k);
+                self.score.zoom = z;
             }
             ViewEvent::Click { hit, .. } if self.editor.chant.is_some() => self.chant_click(hit),
             ViewEvent::Click { hit, at, shift } => {
-                self.export_menu = false;
+                self.dialogs.export_menu = false;
                 self.editor.status.clear();
                 // Another movement's page: it becomes the one edited.
-                let clicked = at.map(|p| self.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
+                let clicked = at.map(|p| self.score.page_movements.get(p.page).copied()).unwrap_or_else(|| hit.and_then(|id| self.editor.movement_of(id)));
                 if let Some(mi) = clicked.filter(|mi| *mi != self.editor.movement) {
                     self.editor.switch_movement(mi);
                     self.sync();
@@ -353,10 +353,10 @@ impl App {
             }
             ViewEvent::SlurDragEnd => self.editor.end_gesture(),
             ViewEvent::Context { target, at, screen } => {
-                self.export_menu = false;
+                self.dialogs.export_menu = false;
                 self.editor.status.clear();
                 let Some(p) = at else { return Some(Task::none()) };
-                if let Some(mi) = self.page_movements.get(p.page).copied().filter(|mi| *mi != self.editor.movement) {
+                if let Some(mi) = self.score.page_movements.get(p.page).copied().filter(|mi| *mi != self.editor.movement) {
                     self.editor.switch_movement(mi);
                     self.sync();
                 }
@@ -369,7 +369,7 @@ impl App {
                 let Some(lane) = self.lane_of_staff(p.part) else { return None };
                 self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
                 self.sync();
-                self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
+                self.score.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });
                 return Some(iced::widget::operation::focus(POPOVER_INPUT));
             }
             ViewEvent::DoubleClick { hit } => {

@@ -7,7 +7,8 @@ One process, one window (iced on wgpu), one project file (SQLite).
 
 ```
 rust/
-  corinzia-app       the application: UI, editor, playback glue, files
+  corinzia-app       the application: UI, playback glue, files
+  corinzia-editor    the editing session: selection, undo, every edit of a project (no UI)
   corinzia-edit      pure editing operations (note input, ranges, structure, names)
   corinzia-model     project model + .project storage
   corinzia-byz       Byzantine chant: neumes, modes, scales in moria, the melody
@@ -121,13 +122,13 @@ and dotted rhythms, the onsets on a sixteenth grid, pitch classes and the
 top line's scale degrees in the key, open or closed ending, notes outside
 the key, internal repetition, articulation and dynamics. It guesses no
 roles: the user chooses the passage and says what it is. In the app,
-`editor/motifs.rs` takes a motif from the selection and keeps the bank
+`corinzia-editor`'s `motifs.rs` takes a motif from the selection and keeps the bank
 (undoable), the Motif card (`dialogs/motif.rs`) names and tags it, and
 `motif_view.rs` draws the bank (the Motifs side-panel page and the
 Explore tab). The Explore tab is where accompaniment and composition from
 the bank, played from a performer's MIDI input, will live.
 
-## 3. Editing (`corinzia-edit`, `corinzia-app::editor`)
+## 3. Editing (`corinzia-edit`, `corinzia-editor`)
 
 * `corinzia-edit` holds the pure functions. Each takes a voice's events (or
   a movement) and returns the new state.
@@ -392,7 +393,7 @@ renderer; at scale 1 an em is 4 staff spaces in both fonts.
 
 In the app, `Project::chants` holds the chants (saved as JSON in the `setting` table) and the
 editor's `chant` names the one shown in place of the movement, with a caret
-between its elements (`editor/chant.rs`; every change one undo step).
+between its elements (`corinzia-editor`'s `chant.rs`; every change one undo step).
 `app/chant.rs` maps keys and clicks to it; the Notes panel becomes a neume
 palette, and PDF export prints the chant shown.
 
@@ -528,19 +529,25 @@ output), automation, VST3 state in the project.
 
 ## 7. The application (`corinzia-app`)
 
+The editing session is its own crate, `corinzia-editor` (§3), which builds
+and tests without the interface: `lib.rs` holds the state, undo/redo and
+movements, with one file per area (input, selection, spanners, structure,
+page items, clipboard, filters, players, tracks, mixer, automation, chant,
+motifs) and `instruments.rs` (typed instrument lists through the catalogue,
+and new blank projects). The app uses it as `crate::editor`.
+
 | Module | Holds |
 |---|---|
 | `main.rs` | startup: the module list, fonts, `main()` (headless `--export`, `--scan-plugin`, the window) |
 | `cli.rs` | command-line arguments, `--keys` parsing, saving screenshots |
-| `app/` | the iced application: `mod.rs` holds `App`, `Message` and the shared work (engraving, syncing playback, scrolling); `update.rs` and `view.rs`; `actions.rs` (keys and menus), `document.rs` (open, save, export), `mixing.rs` (the Mix tab), `piano_roll.rs`, `midi_keys.rs`; the app's tests in `tests/` (score, dialogs, document, playback, mixing; shared helpers in `tests/mod.rs`) |
+| `app/` | the iced application: `mod.rs` holds `App` (its state grouped by area: `score` the pages on screen and the side panel, `mix` the Mix tab, `dialogs` the cards, `exports` audio exports under way, `doc` the file and autosave, `midi` the MIDI keyboard), `Message` and the shared work (engraving, syncing playback, scrolling); `update.rs` and `view.rs`; `actions.rs` (keys and menus), `document.rs` (open, save, export), `mixing.rs` (the Mix tab), `piano_roll.rs`, `midi_keys.rs`; the app's tests in `tests/` (score, dialogs, document, playback, mixing, and editing with the demo piece; shared helpers in `tests/mod.rs`) |
 | `dialogs/` | the modal cards, each with its state, messages, handler and view: New score, Players, Layout, Preferences, the shortcut help |
-| `editor/` | the editing controller (§3): `mod.rs` holds the state, undo/redo and movements; one file per area (input, selection, spanners, structure, page items, clipboard, filters, players, tracks, mixer, automation) |
 | `keys.rs` | the keyboard map |
 | `score_view.rs` | the score canvas |
 | `panels.rs` | the Notes and Structure panels (SMuFL glyph buttons) |
 | `playback.rs` | the engine handle, PipeWire output, plugin pool; the plan kept in step with the editor |
 | `mix.rs`, `arrange.rs` | mixer strips (a click on the instrument shows its editor), plugin browser, arrange view |
-| `files.rs` | New Score from an instrument list; PDF/MIDI/MusicXML export |
+| `files.rs` | score templates; PDF/MIDI/MusicXML export |
 
 **The score canvas** (`score_view.rs`):
 * Pages are drawn as vector geometry and cached until the engraving, zoom,
@@ -619,7 +626,9 @@ distributions:
   pipewire` plays through a private PipeWire daemon. WirePlumber links the
   stream to a null sink.
 * **The real app:** `scripts/screenshot.sh out.png [--keys "…"]` runs it
-  headless (Xvfb and Mesa lavapipe) and saves a screenshot.
+  headless (Xvfb and Mesa lavapipe) on a 1920x1080 virtual display
+  (`SHOT_SIZE` overrides it; the app's `--size WxH` sets the window) and
+  saves a screenshot.
 * **LilyPond** is the reference for engraving: the spacing test compares
   note positions with LilyPond's (from the dev shell, and in `nix build`).
 * **MusicXML** is checked against LilyPond's `musicxml2ly` from the dev

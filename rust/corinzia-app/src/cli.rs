@@ -21,10 +21,12 @@ pub(crate) struct Args {
     pub(crate) stdin: bool,
     /// Serve the Model Context Protocol on standard input and output.
     pub(crate) mcp: bool,
+    /// The window's size in logical pixels ("1920x1080").
+    pub(crate) size: Option<(f32, f32)>,
 }
 
 pub(crate) fn args() -> Args {
-    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None, chant: None, commands: vec![], script: None, stdin: false, mcp: false };
+    let mut a = Args { file: None, view: View::Page, screenshot: None, keys: vec![], export: None, part: None, chant: None, commands: vec![], script: None, stdin: false, mcp: false, size: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -36,6 +38,7 @@ pub(crate) fn args() -> Args {
             "--script" => a.script = it.next().map(PathBuf::from),
             "--stdin" => a.stdin = true,
             "--mcp" => a.mcp = true,
+            "--size" => a.size = it.next().and_then(|s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))),
             // Scripted key presses (testing and demos): "n c d shift+e ctrl+z".
             // Export the (edited) movement and exit: format from the extension.
             "--export" => a.export = it.next().map(PathBuf::from),

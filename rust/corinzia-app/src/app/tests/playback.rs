@@ -67,9 +67,9 @@ fn a_midi_keyboard_enters_notes_and_chords() {
     let path = std::env::temp_dir().join(format!("corinzia-midi-{}", std::process::id()));
     std::fs::write(&path, [0x90, 72, 100, 76, 90, 79, 80, 0x80, 72, 0, 76, 0, 79, 0, 0x90, 74, 70, 74, 0]).unwrap();
     a.open_midi(&path.to_string_lossy());
-    assert!(a.midi.is_some());
+    assert!(a.midi.input.is_some());
     let mut tries = 0;
-    while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || a.midi_held.len() > 0 {
+    while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || a.midi.held.len() > 0 {
         std::thread::sleep(std::time::Duration::from_millis(10));
         a.midi_poll();
         tries += 1;
@@ -83,13 +83,13 @@ fn a_midi_keyboard_enters_notes_and_chords() {
     assert_eq!(names(&evs[1]), "D5");
     assert!(evs.len() >= first.min(2));
     a.open_midi("");
-    assert!(a.midi.is_none());
+    assert!(a.midi.input.is_none());
     std::fs::remove_file(&path).ok();
 }
 
 #[test]
 fn entering_a_note_auditions_it() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
     render(&mut a, 1024);
     assert!(render(&mut a, 1024) < 1e-6);
     key(&mut a, "n");
@@ -108,7 +108,7 @@ fn go_to_a_bar_or_a_rehearsal_mark_and_the_metronome() {
     let _ = a.update(Message::Act(Action::Popover(PopoverKind::GoTo)));
     type_into_popover(&mut a, "B");
     let _ = a.update(Message::Popover(PopoverMsg::Submit));
-    assert!(a.popover.is_none(), "{:?}", a.popover.as_ref().and_then(|p| p.error.clone()));
+    assert!(a.score.popover.is_none(), "{:?}", a.score.popover.as_ref().and_then(|p| p.error.clone()));
     let at_b = a.editor.caret;
     assert_eq!(corinzia_edit::bar_number(a.editor.movement().unwrap(), at_b).0, 17);
     assert_eq!(a.command("goto 1").unwrap(), serde_json::Value::Null);
@@ -137,7 +137,7 @@ fn scores_saved_and_opened_are_remembered() {
     let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().to_string_lossy().into_owned();
     assert_eq!(a.prefs.recent, [canon(&one), canon(&two)], "the latest first, once each");
     let _ = a.update(Message::OpenRecent(two.clone()));
-    assert_eq!(a.path.as_deref(), Some(two.as_path()));
+    assert_eq!(a.doc.path.as_deref(), Some(two.as_path()));
     assert_eq!(a.prefs.recent[0], canon(&two), "opened: first again");
     for k in 0..10 {
         a.prefs.remember(&dir.join(format!("{k}.project")));

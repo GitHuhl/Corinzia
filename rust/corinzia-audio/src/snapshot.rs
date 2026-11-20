@@ -273,20 +273,6 @@ pub fn db_to_gain(db: f64) -> f32 {
     }
 }
 
-/// A bus and the buses it goes into, in order (a loop is cut).
-pub fn bus_chain(project: &Project, bus: Id) -> Vec<Id> {
-    let mut chain = vec![];
-    let mut at = Some(bus);
-    while let Some(b) = at.and_then(|b| project.bus(b)) {
-        if chain.contains(&b.id) {
-            break;
-        }
-        chain.push(b.id);
-        at = b.output;
-    }
-    chain
-}
-
 /// What solo leaves heard. Soloing a track keeps the buses it reaches
 /// (through its output or sends) heard; soloing a bus keeps what feeds it
 /// and the buses after it heard. A track that only reaches a soloed bus
@@ -297,8 +283,8 @@ type Heard = (Vec<(Id, bool, bool)>, Vec<(Id, bool)>);
 fn solo(project: &Project) -> Heard {
     let soloed: Vec<Id> = project.buses.iter().filter(|b| b.solo).map(|b| b.id).collect();
     let any = !soloed.is_empty() || project.tracks.iter().any(|t| t.solo);
-    let out_chain = |t: &corinzia_model::Track| t.output_bus.map(|b| bus_chain(project, b)).unwrap_or_default();
-    let send_chains = |t: &corinzia_model::Track| t.sends.iter().flat_map(|s| bus_chain(project, s.bus)).collect::<Vec<_>>();
+    let out_chain = |t: &corinzia_model::Track| t.output_bus.map(|b| project.bus_chain(b)).unwrap_or_default();
+    let send_chains = |t: &corinzia_model::Track| t.sends.iter().flat_map(|s| project.bus_chain(s.bus)).collect::<Vec<_>>();
     let meets = |chain: &[Id]| chain.iter().any(|b| soloed.contains(b));
     let tracks = project
         .tracks
@@ -320,8 +306,8 @@ fn solo(project: &Project) -> Heard {
                 return (b.id, !b.mute);
             }
             let fed_by_solo = project.tracks.iter().filter(|t| t.solo).any(|t| out_chain(t).contains(&b.id) || send_chains(t).contains(&b.id))
-                || soloed.iter().any(|s| bus_chain(project, *s).contains(&b.id));
-            (b.id, !b.mute && (meets(&bus_chain(project, b.id)) || fed_by_solo))
+                || soloed.iter().any(|s| project.bus_chain(*s).contains(&b.id));
+            (b.id, !b.mute && (meets(&project.bus_chain(b.id)) || fed_by_solo))
         })
         .collect();
     (tracks, buses)
@@ -546,7 +532,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
     };
     // Buses into others come before them: deepest chains first.
     let mut levels = bus_mix(project);
-    levels.sort_by_key(|l| std::cmp::Reverse(bus_chain(project, l.0).len()));
+    levels.sort_by_key(|l| std::cmp::Reverse(project.bus_chain(l.0).len()));
     let order: Vec<Id> = levels.iter().map(|l| l.0).collect();
     let buses: Vec<BusStrip> = levels
         .into_iter()
