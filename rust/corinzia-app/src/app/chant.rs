@@ -158,9 +158,9 @@ impl App {
         let (sung, _) = c.sing();
         let Some(s) = sung.iter().rev().find(|s| quarters(s.start) / 4.0 <= beat + 1e-9) else { return };
         let id = corinzia_layout::byz::element_id(s.element);
-        if !(self.selected.len() == 1 && self.selected.contains(&id)) {
-            self.selected = std::iter::once(id).collect();
-            self.cache.clear();
+        if !(self.score.selected.len() == 1 && self.score.selected.contains(&id)) {
+            self.score.selected = std::iter::once(id).collect();
+            self.score.cache.clear();
         }
     }
 }

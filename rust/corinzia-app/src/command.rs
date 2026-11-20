@@ -169,7 +169,7 @@ impl App {
                 _ => return Err("motif add \"name\" [as roles] [tags tags] | motif delete <n>".into()),
             },
             "panel" => {
-                self.panel = match arg(0) {
+                self.score.panel = match arg(0) {
                     "notes" => crate::panels::Panel::Notes,
                     "structure" => crate::panels::Panel::Structure,
                     "motifs" => crate::panels::Panel::Motifs,
@@ -283,7 +283,7 @@ impl App {
                 Value::Null
             }
             "save" => {
-                let path = if args.is_empty() { self.path.clone().ok_or("save <file>: the score has no file yet")? } else { PathBuf::from(text()) };
+                let path = if args.is_empty() { self.doc.path.clone().ok_or("save <file>: the score has no file yet")? } else { PathBuf::from(text()) };
                 self.save(path);
                 if !self.editor.status.starts_with("Saved") {
                     return Err(self.editor.status.clone());
@@ -341,7 +341,7 @@ impl App {
             "project" => json!({
                 "title": p.title,
                 "composer": p.composer,
-                "file": self.path,
+                "file": self.doc.path,
                 "movements": p.movements.iter().enumerate().map(|(i, m)| json!({"number": i + 1, "title": m.title, "bars": edit::bar_starts(m).len(), "shown": i == ed.movement && ed.chant.is_none()})).collect::<Vec<_>>(),
                 "players": p.players.iter().map(|pl| json!({"name": pl.name, "instruments": pl.instruments.iter().filter_map(|i| p.instrument(*i)).map(|i| i.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
                 "chants": p.chants.iter().enumerate().map(|(i, c)| json!({"number": i + 1, "title": c.title, "mode": c.mode.echos.greek(), "shown": ed.chant == Some(i)})).collect::<Vec<_>>(),

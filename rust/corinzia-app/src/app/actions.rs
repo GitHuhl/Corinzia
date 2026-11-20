@@ -54,7 +54,7 @@ impl App {
             }
             return false;
         };
-        let above = score_view::slur_above(&self.pages, id).unwrap_or(true);
+        let above = score_view::slur_above(&self.score.pages, id).unwrap_or(true);
         let ed = &mut self.editor;
         match a {
             Action::Extend(d) => ed.step_slur(editor::SlurHandle::End, *d),
@@ -109,7 +109,7 @@ impl App {
                 }
             }
             Action::ShowPanel(n) => {
-                self.panel = match n {
+                self.score.panel = match n {
                     0 => Panel::Notes,
                     1 => Panel::Structure,
                     _ => Panel::Motifs,
@@ -120,12 +120,12 @@ impl App {
                 ed.set_input_mode(false);
             }
             Action::AddMotif => match ed.motif_from_selection() {
-                Ok(m) => self.motif_dialog = Some(MotifDialog::new(&ed.project, m, true)),
+                Ok(m) => self.dialogs.motif = Some(MotifDialog::new(&ed.project, m, true)),
                 Err(e) => ed.status = e,
             },
             Action::EditMotif(id) => {
                 if let Some(m) = ed.project.motifs.iter().find(|m| m.id == id).cloned() {
-                    self.motif_dialog = Some(MotifDialog::new(&ed.project, m, false));
+                    self.dialogs.motif = Some(MotifDialog::new(&ed.project, m, false));
                 }
             }
             Action::DeleteMotif(id) => ed.delete_motif(id),
@@ -140,10 +140,10 @@ impl App {
             Action::ToggleInput => ed.set_input_mode(!ed.input_mode),
             Action::SetInput(on) => ed.set_input_mode(on),
             Action::Escape => {
-                if self.help || self.export_menu {
-                    self.help = false;
-                    self.export_menu = false;
-                } else if self.popover.take().is_some() {
+                if self.dialogs.help || self.dialogs.export_menu {
+                    self.dialogs.help = false;
+                    self.dialogs.export_menu = false;
+                } else if self.score.popover.take().is_some() {
                 } else if ed.input_mode {
                     ed.set_input_mode(false)
                 } else {
@@ -217,9 +217,9 @@ impl App {
             Action::Transposed => {
                 ed.transposed = !ed.transposed;
                 ed.status = if ed.transposed { "Transposed score: written pitches; letters you type are written pitches" } else { "Concert pitch" }.into();
-                self.engraved = None;
+                self.score.engraved = None;
             }
-            Action::Help => self.help = !self.help,
+            Action::Help => self.dialogs.help = !self.dialogs.help,
             Action::Flip => {} // a slur's (slur_action)
             Action::Extend(d) => ed.extend_step(d),
             Action::Edge { last } => ed.select_edge(last),
@@ -237,23 +237,23 @@ impl App {
             Action::Beam(mode) => ed.set_beam(mode),
             Action::Break { page } => {
                 // In the part shown, or the full score.
-                if let Err(e) = ed.toggle_break(page, self.part) {
+                if let Err(e) = ed.toggle_break(page, self.score.part) {
                     ed.status = e;
                 }
             }
             Action::AllMovements => {
-                self.all_movements = !self.all_movements;
-                if self.all_movements && self.view != View::Page {
-                    self.view = View::Page;
+                self.score.all_movements = !self.score.all_movements;
+                if self.score.all_movements && self.score.view != View::Page {
+                    self.score.view = View::Page;
                 }
-                self.engraved = None;
-                ed.status = if self.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
+                self.score.engraved = None;
+                ed.status = if self.score.all_movements { "All movements, one after another" } else { "One movement at a time" }.into();
             }
             Action::Preferences => self.prefs_msg(PrefsMsg::Open),
             Action::Layout => {
                 let p = &ed.project;
-                self.layout = Some(LayoutDialog {
-                    parts: self.part.is_some(),
+                self.dialogs.layout = Some(LayoutDialog {
+                    parts: self.score.part.is_some(),
                     fields: [LayoutFields::of(&p.layout), LayoutFields::of(&p.part_layout)],
                     texts: [p.subtitle.clone(), p.lyricist.clone(), p.arranger.clone(), p.copyright.clone()],
                     error: None,
@@ -275,11 +275,11 @@ impl App {
             Action::FirstSecondEndings => ed.add_first_second_endings(),
             Action::Undo => ed.undo(),
             Action::Redo => ed.redo(),
-            Action::Save if self.path.is_some() => self.save(self.path.clone().unwrap()),
+            Action::Save if self.doc.path.is_some() => self.save(self.doc.path.clone().unwrap()),
             Action::Save | Action::SaveAs => return self.ask_save_path(),
             Action::Open => return Task::done(Message::Guarded(Box::new(Message::Open))),
             Action::New => {
-                self.new_score = Some(NewScore { bars: "32".into(), key: "C".into(), time: "4/4".into(), ..Default::default() });
+                self.dialogs.new_score = Some(NewScore { bars: "32".into(), key: "C".into(), time: "4/4".into(), ..Default::default() });
                 return iced::widget::operation::focus(NEW_TITLE);
             }
             Action::Popover(kind) => {
@@ -290,8 +290,8 @@ impl App {
             Action::Rehearsal => {
                 let _ = ed.apply_popover(PopoverKind::Rehearsal, "");
             }
-            Action::ZoomIn => self.zoom = (self.zoom * 1.25).min(8.0),
-            Action::ZoomOut => self.zoom = (self.zoom / 1.25).max(0.25),
+            Action::ZoomIn => self.score.zoom = (self.score.zoom * 1.25).min(8.0),
+            Action::ZoomOut => self.score.zoom = (self.score.zoom / 1.25).max(0.25),
         }
         self.sync();
         Task::none()
@@ -410,7 +410,7 @@ impl App {
 
     pub(crate) fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {
         let anchor = self.popover_anchor();
-        self.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor });
+        self.score.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor });
         iced::widget::operation::focus(POPOVER_INPUT)
     }
 
@@ -418,11 +418,11 @@ impl App {
     /// else the passage start or the caret on its staff.
     pub(crate) fn popover_anchor(&self) -> Option<iced::Point> {
         let ed = &self.editor;
-        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
-        let at = ed.structure_target().and_then(|(lane, pos)| Some(Caret { part: self.staff_lanes.iter().position(|&l| l == lane)?, quarter: quarters(pos) }));
-        let desk = score_view::anchor(&self.pages, &origins, &self.pages_of(ed.movement), ed.selection, at)?;
-        let px = self.zoom * score_view::BASE_PX;
-        Some(iced::Point::new(desk.x * px + self.pan.x, desk.y * px + self.pan.y))
+        let origins = score_view::page_origins(&self.score.pages, self.score.view == View::Page);
+        let at = ed.structure_target().and_then(|(lane, pos)| Some(Caret { part: self.score.staff_lanes.iter().position(|&l| l == lane)?, quarter: quarters(pos) }));
+        let desk = score_view::anchor(&self.score.pages, &origins, &self.pages_of(ed.movement), ed.selection, at)?;
+        let px = self.score.zoom * score_view::BASE_PX;
+        Some(iced::Point::new(desk.x * px + self.score.pan.x, desk.y * px + self.score.pan.y))
     }
 
     /// A double-click on the page: a title, tempo mark, text, chord symbol,
@@ -445,7 +445,7 @@ impl App {
         };
         self.sync();
         let anchor = self.popover_anchor();
-        self.popover = Some(Popover { kind, input: text, error: None, target, anchor });
+        self.score.popover = Some(Popover { kind, input: text, error: None, target, anchor });
         iced::widget::operation::focus(POPOVER_INPUT)
     }
 
@@ -453,7 +453,7 @@ impl App {
     /// stream: space (or, for lyrics, a hyphen or an extender) commits and
     /// moves on.
     pub(crate) fn popover_input(&mut self, s: String) {
-        let Some(p) = self.popover.as_mut() else { return };
+        let Some(p) = self.score.popover.as_mut() else { return };
         p.error = None;
         // Lyrics and chord symbols are entered as a stream: space (or,
         // for lyrics, a hyphen or an extender) commits and moves on.
@@ -481,7 +481,7 @@ impl App {
             }
             _ => self.editor.apply_popover(kind, &word).map(|_| self.editor.advance_target()),
         };
-        let p = self.popover.as_mut().unwrap();
+        let p = self.score.popover.as_mut().unwrap();
         match result {
             Ok(()) => p.input.clear(),
             Err(e) => {
@@ -498,7 +498,7 @@ impl App {
     /// Enter in the popover: applies it, closing it unless it was refused.
     pub(crate) fn popover_submit(&mut self) {
         let mut went = false;
-        if let Some(p) = self.popover.as_mut() {
+        if let Some(p) = self.score.popover.as_mut() {
             let done = match p.target {
                 Some(id) => self.editor.edit_item(id, &p.input),
                 None => self.editor.apply_popover(p.kind, &p.input),
@@ -506,7 +506,7 @@ impl App {
             match done {
                 Ok(()) => {
                     went = p.kind == PopoverKind::GoTo;
-                    self.popover = None;
+                    self.score.popover = None;
                 }
                 Err(e) => p.error = Some(e),
             }
@@ -521,6 +521,6 @@ impl App {
     pub(crate) fn show_caret(&mut self) {
         self.reveal();
         let q = super::quarters(self.editor.caret) as f32;
-        self.arrange_scroll = crate::arrange::clamp_scroll(q * self.arrange_ppq - 40.0, &self.arrange, self.arrange_ppq);
+        self.mix.arrange_scroll = crate::arrange::clamp_scroll(q * self.mix.arrange_ppq - 40.0, &self.mix.arrange, self.mix.arrange_ppq);
     }
 }

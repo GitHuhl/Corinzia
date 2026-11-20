@@ -17,18 +17,18 @@ fn neume(a: &App, i: usize) -> &corinzia_byz::Neume {
 #[test]
 fn the_demo_chant_is_shown_in_place_of_the_movement_and_back() {
     let mut a = app(View::Page);
-    let western = a.pages[0].items.len();
+    let western = a.score.pages[0].items.len();
     let _ = a.update(Message::Act(Action::Chant(Some(0))));
     assert_eq!(shown(&a).title, "Κύριε ἐλέησον");
     assert_eq!(a.editor.chant_caret, shown(&a).elements.len(), "the caret at the end");
     let byz = corinzia_layout::byz_font::BYZ;
-    assert!(a.pages[0].items.iter().any(|i| matches!(i, Item::Glyph { glyph, .. } if glyph & byz != 0)));
+    assert!(a.score.pages[0].items.iter().any(|i| matches!(i, Item::Glyph { glyph, .. } if glyph & byz != 0)));
     assert!(a.editor.caret_label().starts_with("Ἦχος α΄"), "{}", a.editor.caret_label());
     // The element before the caret is highlighted.
-    assert!(a.selected.contains(&corinzia_layout::byz::element_id(a.editor.chant_caret - 1)));
+    assert!(a.score.selected.contains(&corinzia_layout::byz::element_id(a.editor.chant_caret - 1)));
     let _ = a.update(Message::Act(Action::Movement(0)));
     assert!(a.editor.chant.is_none());
-    assert_eq!(a.pages[0].items.len(), western);
+    assert_eq!(a.score.pages[0].items.len(), western);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn neumes_signs_and_syllables_are_typed() {
     // Syllables as a stream, from the start.
     key(&mut a, "home");
     key(&mut a, "ctrl+l");
-    assert_eq!(a.popover.as_ref().map(|p| p.kind), Some(PopoverKind::ChantLyric));
+    assert_eq!(a.score.popover.as_ref().map(|p| p.kind), Some(PopoverKind::ChantLyric));
     type_into_popover(&mut a, "Κύ-ρι-ε ");
     assert_eq!([neume(&a, 0).lyric.as_str(), neume(&a, 1).lyric.as_str(), neume(&a, 2).lyric.as_str()], ["Κύ-", "ρι-", "ε"]);
     // The mode, typed.

@@ -1,7 +1,7 @@
 //! Corinzia: a music notation editor and CLAP DAW (iced).
 //!
 //! `corinzia [file.project] [--view page|panorama] [--keys "n c d"]
-//! [--screenshot out.png] [--export out.pdf|mid|musicxml] [--part N] [--chant N]`
+//! [--screenshot out.png] [--size 1920x1080] [--export out.pdf|mid|musicxml] [--part N] [--chant N]`
 //! (in `--keys`, `type:TEXT` and `enter` fill and submit an open popover)
 //!
 //! The score is engraved by the native engraver (corinzia-layout) and drawn
@@ -59,7 +59,7 @@ fn load_text_fonts() -> Vec<Vec<u8>> {
 /// or `--do` stops at the first failure; standard input goes on.
 fn run_scripted_in(app: &mut App, a: &cli::Args) -> bool {
     // A file that does not open is an error here, not the demo instead.
-    if a.file.is_some() && app.path.is_none() && app.editor.status.starts_with("Could not open") {
+    if a.file.is_some() && app.doc.path.is_none() && app.editor.status.starts_with("Could not open") {
         let error = app.editor.status.trim_end_matches(" — showing the demo");
         println!("{}", serde_json::json!({"ok": false, "command": "open", "error": error}));
         return false;
@@ -127,7 +127,7 @@ fn main() -> iced::Result {
             std::process::exit(2);
         };
         if format == files::Format::Audio {
-            let folder = app.path.as_deref().and_then(|p| p.parent());
+            let folder = app.doc.path.as_deref().and_then(|p| p.parent());
             let done = corinzia_audio::bounce::Bounce::new(&app.editor.project, app.editor.movement, app.playback.sample_rate, 1024, folder, out.clone()).and_then(|mut b| {
                 for w in &b.warnings {
                     eprintln!("corinzia: {w}");
@@ -166,7 +166,7 @@ fn main() -> iced::Result {
         .title(App::title)
         .subscription(App::subscription)
         .theme(|_: &App| theme::theme())
-        .window_size(Size::new(1280.0, 860.0))
+        .window_size(cli::args().size.map_or(Size::new(1280.0, 860.0), |(w, h)| Size::new(w, h)))
         .antialiasing(true)
         .font(corinzia_layout::font::FONT_DATA)
         .font(corinzia_layout::byz_font::BYZ_FONT_DATA);

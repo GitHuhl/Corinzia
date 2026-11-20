@@ -12,7 +12,7 @@ fn a_passage_on_one_staff_becomes_a_motif() {
     a.editor.select_bar(0, Frac::ZERO, false);
     a.editor.select_bar(0, Frac::int(1), true);
     let _ = a.update(Message::Act(Action::AddMotif));
-    let d = a.motif_dialog.as_ref().expect("the card asks what it is");
+    let d = a.dialogs.motif.as_ref().expect("the card asks what it is");
     assert!(d.new && !d.draft.notes.is_empty() && d.draft.roles.is_empty());
     assert!(d.name.contains("bars 1–2"), "{}", d.name);
     assert!(d.facts.iter().any(|f| f.0 == "Range"));
@@ -22,7 +22,7 @@ fn a_passage_on_one_staff_becomes_a_motif() {
     let _ = a.update(mm(MotifMsg::Role(Role::Call)));
     let _ = a.update(mm(MotifMsg::Tags("lyrical, rising ,".into())));
     let _ = a.update(mm(MotifMsg::Save));
-    assert!(a.motif_dialog.is_none());
+    assert!(a.dialogs.motif.is_none());
     let bank = &a.editor.project.motifs;
     assert_eq!(bank.len(), 1);
     let m = &bank[0];
@@ -36,7 +36,7 @@ fn a_passage_on_one_staff_becomes_a_motif() {
     assert_eq!(a.editor.project.motifs.len(), 1);
     // Edited: renamed, a role dropped.
     let _ = a.update(Message::Act(Action::EditMotif(id)));
-    assert!(!a.motif_dialog.as_ref().unwrap().new);
+    assert!(!a.dialogs.motif.as_ref().unwrap().new);
     let _ = a.update(mm(MotifMsg::Name("Call".into())));
     let _ = a.update(mm(MotifMsg::Role(Role::Melody)));
     let _ = a.update(mm(MotifMsg::Save));
@@ -65,17 +65,17 @@ fn a_motif_needs_one_staff_and_a_name() {
     // Nothing selected, or two staves: refused with a reason.
     a.editor.clear_selection();
     let _ = a.update(Message::Act(Action::AddMotif));
-    assert!(a.motif_dialog.is_none() && a.editor.status.contains("one staff"), "{}", a.editor.status);
+    assert!(a.dialogs.motif.is_none() && a.editor.status.contains("one staff"), "{}", a.editor.status);
     a.editor.select_bar(0, Frac::ZERO, false);
     a.editor.select_bar(1, Frac::ZERO, true);
     let _ = a.update(Message::Act(Action::AddMotif));
-    assert!(a.motif_dialog.is_none() && a.editor.status.contains("one staff"));
+    assert!(a.dialogs.motif.is_none() && a.editor.status.contains("one staff"));
     // An unnamed motif is not filed.
     a.editor.select_bar(0, Frac::ZERO, false);
     let _ = a.update(Message::Act(Action::AddMotif));
     let _ = a.update(Message::Motif(MotifMsg::Name("  ".into())));
     let _ = a.update(Message::Motif(MotifMsg::Save));
-    assert!(a.motif_dialog.as_ref().is_some_and(|d| d.error.is_some()));
+    assert!(a.dialogs.motif.as_ref().is_some_and(|d| d.error.is_some()));
     assert!(a.editor.project.motifs.is_empty());
     // The keys: Ctrl+M adds, Ctrl+3 shows Explore.
     let ctrl = |c: &str| keys::map(&iced::keyboard::Key::Character(c.into()), iced::keyboard::Modifiers::CTRL, false);

@@ -150,7 +150,7 @@ pub(crate) fn layout_card(d: &LayoutDialog) -> Element<'_, Message> {
 
 impl App {
     pub(crate) fn layout_msg(&mut self, m: LayoutMsg) {
-        let Some(d) = self.layout.as_mut() else { return };
+        let Some(d) = self.dialogs.layout.as_mut() else { return };
         d.error = None;
         let k = usize::from(d.parts);
         let f = &mut d.fields[k];
@@ -183,7 +183,7 @@ impl App {
             LayoutMsg::Condense(on) => f.condense = on,
             LayoutMsg::Text(i, v) => d.texts[i] = v,
             LayoutMsg::Defaults => *f = LayoutFields::of(&if d.parts { corinzia_model::Layout::parts() } else { corinzia_model::Layout::default() }),
-            LayoutMsg::Cancel => self.layout = None,
+            LayoutMsg::Cancel => self.dialogs.layout = None,
             LayoutMsg::Apply => {
                 let (score, parts) = match (d.fields[0].layout(), d.fields[1].layout()) {
                     (Ok(a), Ok(b)) => (a, b),
@@ -197,7 +197,7 @@ impl App {
                     }
                 };
                 let texts = d.texts.clone();
-                self.layout = None;
+                self.dialogs.layout = None;
                 self.editor.set_layout(score, parts, texts);
             }
         }

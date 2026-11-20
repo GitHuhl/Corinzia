@@ -12,7 +12,7 @@ fn effects_buses_and_sends_from_the_mix_tab() {
     // A gain insert on the flute, its level from the parameter list.
     let gain = index(&a, "org.corinzia.gain");
     let _ = a.update(mx(mix::MixMsg::AddEffect(flute, gain)));
-    let node = a.fx.expect("the new effect is selected");
+    let node = a.mix.fx.expect("the new effect is selected");
     assert_eq!(a.editor.project.tracks[0].inserts, [node]);
     a.sync();
     assert!(a.playback.pool.effect(node).is_some(), "loaded with the new plan");
@@ -21,7 +21,7 @@ fn effects_buses_and_sends_from_the_mix_tab() {
     // A bus with a reverb; the flute sends to it.
     let _ = a.update(mx(mix::MixMsg::AddBus));
     let bus = a.editor.project.buses[0].id;
-    assert_eq!((a.strip, a.editor.project.buses[0].name.as_str()), (Some(bus), "Bus 1"));
+    assert_eq!((a.mix.strip, a.editor.project.buses[0].name.as_str()), (Some(bus), "Bus 1"));
     let reverb = index(&a, "org.corinzia.reverb");
     let _ = a.update(mx(mix::MixMsg::AddEffect(bus, reverb)));
     let _ = a.update(mx(mix::MixMsg::ToggleSend(flute, bus)));
@@ -56,17 +56,17 @@ fn presets_and_programs_from_the_mix_tab() {
     let reverb = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.reverb").unwrap();
     let _ = a.update(mx(mix::MixMsg::AddEffect(flute, reverb)));
     a.sync();
-    let node = a.fx.unwrap();
+    let node = a.mix.fx.unwrap();
     let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.9)));
     let _ = a.update(mx(mix::MixMsg::PresetName("Wet".into())));
     let _ = a.update(mx(mix::MixMsg::SavePreset(mix::Target::Effect(node))));
-    assert_eq!(a.preset_names, ["Wet"], "{}", a.editor.status);
+    assert_eq!(a.mix.preset_names, ["Wet"], "{}", a.editor.status);
     let _ = a.update(mx(mix::MixMsg::Param(node, 0, 0.1)));
     let _ = a.update(mx(mix::MixMsg::LoadPreset(mix::Target::Effect(node), "Wet".into())));
     assert_eq!(a.playback.pool.effect(node).unwrap().param_value(0), Some(0.9));
     assert!(a.editor.project.plugin_state.contains_key(&node), "kept with the project");
     let _ = a.update(mx(mix::MixMsg::DeletePreset(mix::Target::Effect(node), "Wet".into())));
-    assert!(a.preset_names.is_empty());
+    assert!(a.mix.preset_names.is_empty());
     // A program for the flute: in the plan.
     let _ = a.update(mx(mix::MixMsg::Program(flute, "74 Flute".into())));
     assert_eq!(a.editor.project.tracks[0].program, Some(73));
@@ -85,7 +85,7 @@ fn audio_clips_are_added_moved_trimmed_faded_copied_and_deleted() {
     a.playback.pool.media.insert("tone.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.5; (rate * 10.0) as usize]], rate));
     a.editor.caret = Frac::int(1); // bar 2 in 4/4: four quarters in
     let _ = a.update(Message::AudioChosen(0, Some("tone.wav".into()))); // no such track: a new one
-    let (track, clip) = a.selected_clip.expect("a clip, selected");
+    let (track, clip) = a.mix.selected_clip.expect("a clip, selected");
     let t = a.editor.project.track(track).unwrap();
     assert!(t.audio && t.name == "tone" && t.clips.len() == 1);
     let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
@@ -93,9 +93,9 @@ fn audio_clips_are_added_moved_trimmed_faded_copied_and_deleted() {
     assert!((c(&a).at - sec(&a, 4.0)).abs() < 1e-9, "at the caret");
     // Drawn on its lane, ten seconds long.
     a.sync();
-    let b = a.arrange_clips.iter().find(|b| b.clip == clip).unwrap();
+    let b = a.mix.arrange_clips.iter().find(|b| b.clip == clip).unwrap();
     assert!((b.start_q - 4.0).abs() < 1e-6 && (b.length - 10.0).abs() < 1e-9);
-    assert!(a.arrange.lanes[b.lane].audio);
+    assert!(a.mix.arrange.lanes[b.lane].audio);
 
     let ar = |a: &mut App, e: E| {
         let _ = a.update(Message::Arrange(e));
@@ -144,7 +144,7 @@ fn audio_clips_are_added_moved_trimmed_faded_copied_and_deleted() {
     let clips = &a.editor.project.track(track).unwrap().clips;
     assert_eq!(clips.len(), 2);
     assert!(clips.iter().any(|x| x.id == clip && x.at == at));
-    let copy = a.selected_clip.unwrap().1;
+    let copy = a.mix.selected_clip.unwrap().1;
     assert_ne!(copy, clip);
 
     // Delete removes the selected clip.
@@ -158,7 +158,7 @@ fn audio_clips_are_added_moved_trimmed_faded_copied_and_deleted() {
         repeat: false,
     }));
     assert_eq!(a.editor.project.track(track).unwrap().clips.len(), 1);
-    assert!(a.selected_clip.is_none());
+    assert!(a.mix.selected_clip.is_none());
 
     // The plan plays it: a node with the clip.
     a.sync();
@@ -172,8 +172,8 @@ fn a_clip_cued_on_a_staff_is_engraved_there() {
     a.playback.pool.media.insert("rain.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.1; (rate * 3.0) as usize]], rate));
     a.editor.caret = Frac::new(1, 2);
     let _ = a.update(Message::AudioChosen(0, Some("rain.wav".into())));
-    let (_, clip) = a.selected_clip.unwrap();
-    let drawn = |a: &App| a.pages.iter().flat_map(|p| p.items.iter()).filter(|i| i.id() == clip).cloned().collect::<Vec<Item>>();
+    let (_, clip) = a.mix.selected_clip.unwrap();
+    let drawn = |a: &App| a.score.pages.iter().flat_map(|p| p.items.iter()).filter(|i| i.id() == clip).cloned().collect::<Vec<Item>>();
     a.sync();
     // Not cued: only on its track's own staff, as the file's name.
     let texts = |a: &App| drawn(a).into_iter().filter_map(|i| match i { Item::Text { text, .. } => Some(text), _ => None }).collect::<Vec<_>>();
@@ -190,7 +190,7 @@ fn a_clip_cued_on_a_staff_is_engraved_there() {
     a.sync();
     assert!(lines(&a) >= on_its_staff + 2, "a line and its hook besides the clip's own staff");
     // On the second player's staff: below the first staff's top.
-    let first = a.pages[0].staves.iter().find(|s| s.part == 0).unwrap().top;
+    let first = a.score.pages[0].staves.iter().find(|s| s.part == 0).unwrap().top;
     let y = drawn(&a).iter().find_map(|i| match i { Item::Text { at, text, .. } if text == "rain ▸" => Some(at.y), _ => None }).unwrap();
     assert!(y > first + 4.0, "{y} under the first staff ({first})");
 }
@@ -204,7 +204,7 @@ fn a_clip_splits_into_two_that_play_as_it_did() {
     a.playback.pool.media.insert("tone.wav", corinzia_audio::media::AudioData::from_channels(vec![vec![0.5; (rate * 10.0) as usize]], rate));
     a.editor.caret = Frac::int(1); // quarter 4
     let _ = a.update(Message::AudioChosen(0, Some("tone.wav".into())));
-    let (track, clip) = a.selected_clip.unwrap();
+    let (track, clip) = a.mix.selected_clip.unwrap();
     a.editor.edit_clip(track, clip, "fades", false, |c| (c.fade_in, c.fade_out) = (0.5, 1.0));
     let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
     let clips = |a: &App| a.editor.project.track(track).unwrap().clips.clone();
@@ -218,7 +218,7 @@ fn a_clip_splits_into_two_that_play_as_it_did() {
     assert!((first.length - cut).abs() < 1e-9 && first.fade_in == 0.5 && first.fade_out == 0.0, "{first:?}");
     assert!((second.at - sec(&a, 8.0)).abs() < 1e-9 && (second.offset - cut).abs() < 1e-9 && (second.length - (10.0 - cut)).abs() < 1e-9, "{second:?}");
     assert!(second.fade_in == 0.0 && second.fade_out == 1.0 && second.file == first.file);
-    assert_eq!(a.selected_clip, Some((track, second.id)), "the second half selected");
+    assert_eq!(a.mix.selected_clip, Some((track, second.id)), "the second half selected");
     // One undo puts it back whole.
     a.editor.undo();
     assert_eq!(clips(&a).len(), 1);
@@ -230,7 +230,7 @@ fn a_clip_splits_into_two_that_play_as_it_did() {
     assert_eq!(clips(&a).len(), 2);
     assert!(a.editor.status.contains("split"), "{}", a.editor.status);
     // Alt+click on a clip: split there.
-    let second = a.selected_clip.unwrap().1;
+    let second = a.mix.selected_clip.unwrap().1;
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ClipSplit { track, clip: second, q: 10.0 }));
     let cs = clips(&a);
     assert_eq!(cs.len(), 3);
@@ -256,7 +256,7 @@ fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     let _ = a.view(); // the window outlined
     let _ = a.update(Message::DroppedAt(vec!["a.wav".into()], iced::Point::new(300.0, 300.0)));
     assert_eq!(tracks(&a), 1);
-    let (track, _) = a.selected_clip.expect("the clip, selected");
+    let (track, _) = a.mix.selected_clip.expect("the clip, selected");
     let _ = a.update(Message::Act(Action::ShowMix));
     a.sync();
     let sec = |a: &App, q: f64| arrange::seconds_of(a.movement_section(), q);
@@ -264,8 +264,8 @@ fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     // Over the arrange view: onto the audio track under the pointer, at
     // the beat under it; a second file on a track of its own.
     let layout = a.prefs.layout;
-    let row = a.arrange.rows.iter().position(|r| matches!(r, arrange::Row::Lane(l) if a.arrange.lanes[*l].track == track)).unwrap();
-    let at = iced::Point::new(layout.header_width + 12.0 * a.arrange_ppq - a.arrange_scroll + 1.0, 47.0 + arrange::RULER + (row as f32 + 0.5) * layout.lane_height - a.arrange_scroll_y);
+    let row = a.mix.arrange.rows.iter().position(|r| matches!(r, arrange::Row::Lane(l) if a.mix.arrange.lanes[*l].track == track)).unwrap();
+    let at = iced::Point::new(layout.header_width + 12.0 * a.mix.arrange_ppq - a.mix.arrange_scroll + 1.0, 47.0 + arrange::RULER + (row as f32 + 0.5) * layout.lane_height - a.mix.arrange_scroll_y);
     assert_eq!(a.drop_target(at), Some((Some(track), 12.0)));
     let _ = a.update(Message::DragOver(Some(at)));
     let _ = a.view(); // highlighted where it would land
@@ -282,13 +282,13 @@ fn sounds_dropped_from_a_file_manager_land_where_they_fall() {
     // In the score: a staff for each audio track, its clips by file name.
     let _ = a.update(Message::Act(Action::ShowScore));
     a.sync();
-    let texts: Vec<String> = a.pages.iter().flat_map(|p| p.items.iter()).filter_map(|i| match i { Item::Text { text, bold: true, .. } => Some(text.clone()), _ => None }).collect();
+    let texts: Vec<String> = a.score.pages.iter().flat_map(|p| p.items.iter()).filter_map(|i| match i { Item::Text { text, bold: true, .. } => Some(text.clone()), _ => None }).collect();
     for f in ["a.wav", "b.wav", "c.flac"] {
         assert!(texts.iter().any(|t| t == f), "{f} in {texts:?}");
     }
-    assert!(a.pages[0].staves.iter().filter(|s| s.single).count() >= 2);
+    assert!(a.score.pages[0].staves.iter().filter(|s| s.single).count() >= 2);
     // A click on an audio staff is no player's.
-    let audio = a.pages[0].staves.iter().find(|s| s.single).unwrap().part;
+    let audio = a.score.pages[0].staves.iter().find(|s| s.single).unwrap().part;
     assert_eq!(a.lane_of_staff(audio), None);
     assert_eq!(a.lane_of_staff(0), Some(0));
 }
@@ -325,12 +325,12 @@ fn buses_route_into_buses_without_loops_and_folders_fold_in_the_arrange_view() {
     mx(&mut a, mix::MixMsg::Color(ids[1], Some(mix::TRACK_COLORS[6])));
     a.sync();
     use arrange::Row;
-    assert_eq!(a.arrange.rows[..4], [Row::Folder { name: "Winds".into(), collapsed: false, tracks: 2 }, Row::Lane(0), Row::Lane(2), Row::Lane(1)]);
-    assert_eq!(a.arrange.lanes[1].color, mix::color_of(mix::TRACK_COLORS[6]));
+    assert_eq!(a.mix.arrange.rows[..4], [Row::Folder { name: "Winds".into(), collapsed: false, tracks: 2 }, Row::Lane(0), Row::Lane(2), Row::Lane(1)]);
+    assert_eq!(a.mix.arrange.lanes[1].color, mix::color_of(mix::TRACK_COLORS[6]));
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ToggleFolder("Winds".into())));
     a.sync();
-    assert_eq!(a.arrange.rows[..2], [Row::Folder { name: "Winds".into(), collapsed: true, tracks: 2 }, Row::Lane(1)]);
-    assert_eq!((a.arrange.row_of[0], a.arrange.row_of[2], a.arrange.row_of[1]), (None, None, Some(1)));
+    assert_eq!(a.mix.arrange.rows[..2], [Row::Folder { name: "Winds".into(), collapsed: true, tracks: 2 }, Row::Lane(1)]);
+    assert_eq!((a.mix.arrange.row_of[0], a.mix.arrange.row_of[2], a.mix.arrange.row_of[1]), (None, None, Some(1)));
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn strips_meter_their_levels_and_latch_a_clip() {
     let gain = a.playback.plugins.iter().position(|p| p.id == "org.corinzia.gain").unwrap();
     for _ in 0..2 {
         let _ = a.update(Message::Mix(mix::MixMsg::AddEffect(master, gain)));
-        let node = a.fx.unwrap();
+        let node = a.mix.fx.unwrap();
         a.sync();
         let _ = a.update(Message::Mix(mix::MixMsg::Param(node, 0, 12.0)));
     }
@@ -408,7 +408,7 @@ fn the_piano_roll_tweaks_how_notes_play_and_leaves_the_score_alone() {
     let _ = a.act(Action::ShowMix);
     let track = a.editor.project.tracks[0].id;
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::OpenRoll(track)));
-    let notes = a.roll.as_ref().unwrap().content.notes.clone();
+    let notes = a.mix.roll.as_ref().unwrap().content.notes.clone();
     assert!(notes.len() > 4, "the track's notes");
     let score_before = format!("{:?}", a.editor.project.movements[0].lanes);
     let (h0, h1) = (notes[0].head, notes[1].head);
@@ -443,13 +443,13 @@ fn the_piano_roll_tweaks_how_notes_play_and_leaves_the_score_alone() {
     let n0 = perf.notes.iter().find(|n| n.element == h0).unwrap();
     assert!((n0.velocity - 0.2).abs() < 0.01);
     a.sync();
-    let r = a.roll.as_ref().unwrap();
+    let r = a.mix.roll.as_ref().unwrap();
     assert_eq!(r.content.notes[0].start, notes[0].start, "the roll keeps the written place; the tweak moves it");
     // R resets the selection: played as written again.
     let _ = a.update(Message::Roll(RollMsg::Reset));
     assert!(a.editor.tweak_of(h0).is_none() && a.editor.tweak_of(h1).is_some());
     let _ = a.update(Message::Roll(RollMsg::Close));
-    assert!(a.roll.is_none());
+    assert!(a.mix.roll.is_none());
 }
 
 #[test]
@@ -492,7 +492,7 @@ fn automation_lanes_in_the_arrange_view() {
     let mx = |m: mix::MixMsg| Message::Mix(m);
     let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Gain".into())));
     a.sync();
-    assert_eq!(a.arrange_curves[0].as_ref().map(|c| (c.min, c.max, c.points.len())), Some((fader::MIN_DB, 6.0, 0)));
+    assert_eq!(a.mix.arrange_curves[0].as_ref().map(|c| (c.min, c.max, c.points.len())), Some((fader::MIN_DB, 6.0, 0)));
     let ar = |e: arrange::ArrangeEvent| Message::Arrange(e);
     let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 0.0, value: 0.0 }));
     let _ = a.update(ar(arrange::ArrangeEvent::AutoAdd { lane: 0, q: 8.0, value: -20.0 }));
@@ -518,7 +518,7 @@ fn automation_lanes_in_the_arrange_view() {
     assert_eq!(a.editor.project.tracks[0].dynamics_cc, Some(11));
     let _ = a.update(mx(mix::MixMsg::AutoShow(flute, "Off".into())));
     a.sync();
-    assert!(a.arrange_curves[0].is_none());
+    assert!(a.mix.arrange_curves[0].is_none());
 }
 
 #[test]
@@ -556,14 +556,14 @@ fn a_strip_click_shows_the_plugin_editor() {
     let track = a.editor.project.tracks[0].id;
     // The built-in instrument has no editor: the strip says so.
     let _ = a.update(Message::Mix(mix::MixMsg::Editor(track)));
-    assert_eq!(a.strip, Some(track), "the click selects the strip");
+    assert_eq!(a.mix.strip, Some(track), "the click selects the strip");
     assert!(!a.playback.pool.editor_is_open(track));
     assert_eq!(a.editor.status, "Corinzia Ensemble has no editor of its own");
     assert!(!a.playback.editors_busy());
     // Selecting by name leaves editors alone.
     let cello = a.editor.project.tracks[1].id;
     let _ = a.update(Message::Mix(mix::MixMsg::Select(cello)));
-    assert_eq!(a.strip, Some(cello));
+    assert_eq!(a.mix.strip, Some(cello));
 }
 
 #[test]
@@ -571,13 +571,13 @@ fn mixer_edits_are_live_and_undoable() {
     let mut a = app(View::Page);
     let _ = a.update(Message::Act(Action::ShowMix));
     assert!(a.playback.plugins.iter().any(|p| p.id == "org.corinzia.ensemble"));
-    let (engraved, track) = (a.engraved, a.editor.project.tracks[0].id);
+    let (engraved, track) = (a.score.engraved, a.editor.project.tracks[0].id);
     for db in [-1.0, -2.5, -4.0] {
         let _ = a.update(Message::Mix(mix::MixMsg::Gain(track, db)));
     }
     let _ = a.update(Message::Mix(mix::MixMsg::Released));
     assert_eq!(a.editor.project.tracks[0].gain_db, -4.0);
-    assert_eq!(a.engraved, engraved, "mixer edits do not re-engrave");
+    assert_eq!(a.score.engraved, engraved, "mixer edits do not re-engrave");
     // A second drag is a step of its own.
     let _ = a.update(Message::Mix(mix::MixMsg::Gain(track, -10.0)));
     let _ = a.update(Message::Mix(mix::MixMsg::Released));
@@ -601,15 +601,15 @@ fn the_mix_tab_panes_scroll_and_resize() {
     let mut a = App::new(crate::demo::orchestra(), None, View::Page, String::new());
     let _ = a.update(Message::Act(Action::ShowMix));
     a.sync();
-    let rows = a.arrange.rows.len();
+    let rows = a.mix.arrange.rows.len();
     assert!(rows >= 14, "the orchestra's tracks (and the master)");
     // The tracks scroll down, no further than the last one at the top.
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(120.0)));
-    assert_eq!(a.arrange_scroll_y, 120.0);
+    assert_eq!(a.mix.arrange_scroll_y, 120.0);
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(1.0e6)));
-    assert_eq!(a.arrange_scroll_y, (rows - 1) as f32 * a.prefs.layout.lane_height);
+    assert_eq!(a.mix.arrange_scroll_y, (rows - 1) as f32 * a.prefs.layout.lane_height);
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ScrollY(-1.0e6)));
-    assert_eq!(a.arrange_scroll_y, 0.0);
+    assert_eq!(a.mix.arrange_scroll_y, 0.0);
     // Taller tracks, within limits; a wider header.
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(90.0)));
     assert_eq!(a.prefs.layout.lane_height, 90.0);
@@ -674,7 +674,7 @@ fn the_score_follows_a_recordings_tempo() {
     a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
     a.editor.caret = Frac::new(8, 4);
     let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
-    let (track, clip) = a.selected_clip.unwrap();
+    let (track, clip) = a.mix.selected_clip.unwrap();
     assert!((a.editor.clip(track, clip).unwrap().at - at).abs() < 1e-9);
     let marks = |a: &App| corinzia_model::notation::score_as(&a.editor.project, a.editor.movement().unwrap(), false).tempo.len();
     let shown = marks(&a);
@@ -721,18 +721,18 @@ fn the_mix_tab_answers_daw_keys_and_wheel() {
     assert_eq!(a.editor.project.tracks.len(), tracks + 1);
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::AddTrack));
     assert_eq!(a.editor.project.tracks.len(), tracks + 2);
-    assert_eq!(a.strip, a.editor.project.tracks.last().map(|t| t.id), "the new one selected");
+    assert_eq!(a.mix.strip, a.editor.project.tracks.last().map(|t| t.id), "the new one selected");
     // Ctrl+M hides the mixer, and back.
     let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
-    assert!(a.mixer_hidden);
+    assert!(a.mix.mixer_hidden);
     let _ = a.view();
     let _ = a.mix_key(&ch("m"), Modifiers::CTRL);
-    assert!(!a.mixer_hidden);
+    assert!(!a.mix.mixer_hidden);
     // + and − zoom along time; PageUp and PageDown the tracks' height.
-    let ppq = a.arrange_ppq;
+    let ppq = a.mix.arrange_ppq;
     press(&mut a, ch("+"), Modifiers::default());
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::Zoom(1.25)));
-    assert!(a.arrange_ppq > ppq);
+    assert!(a.mix.arrange_ppq > ppq);
     let h = a.prefs.layout.lane_height;
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::LaneHeight(h * 1.25)));
     assert!(a.prefs.layout.lane_height > h);
@@ -740,26 +740,26 @@ fn the_mix_tab_answers_daw_keys_and_wheel() {
     // Ctrl+PageDown: the whole movement in view.
     let _ = a.mix_key(&Key::Named(Named::PageDown), Modifiers::CTRL);
     let width = a.window.width - a.prefs.layout.header_width;
-    assert!((a.arrange.length_q as f32 * a.arrange_ppq - width).abs() < 1.0 || a.arrange_ppq == 2.0);
+    assert!((a.mix.arrange.length_q as f32 * a.mix.arrange_ppq - width).abs() < 1.0 || a.mix.arrange_ppq == 2.0);
     // Ctrl+Alt+Down selects the next track.
-    a.strip = a.arrange.lanes.first().map(|l| l.track);
+    a.mix.strip = a.mix.arrange.lanes.first().map(|l| l.track);
     let _ = a.mix_key(&Key::Named(Named::ArrowDown), Modifiers::CTRL | Modifiers::ALT);
-    assert_eq!(a.strip, a.arrange.lanes.get(1).map(|l| l.track));
+    assert_eq!(a.mix.strip, a.mix.arrange.lanes.get(1).map(|l| l.track));
     // The wheel zooms around the pointer: the beat under it stays there.
-    a.arrange_ppq = 20.0;
-    a.arrange_scroll = 100.0;
+    a.mix.arrange_ppq = 20.0;
+    a.mix.arrange_scroll = 100.0;
     let header = a.prefs.layout.header_width;
     let x = header + 300.0;
-    let q = (x - header + a.arrange_scroll) / a.arrange_ppq;
+    let q = (x - header + a.mix.arrange_scroll) / a.mix.arrange_ppq;
     let _ = a.update(Message::Arrange(arrange::ArrangeEvent::ZoomAt { factor: 1.5, x }));
-    assert!((a.arrange_ppq - 30.0).abs() < 1e-4);
-    assert!(((x - header + a.arrange_scroll) / a.arrange_ppq - q).abs() < 1e-3, "the beat under the pointer stays");
+    assert!((a.mix.arrange_ppq - 30.0).abs() < 1e-4);
+    assert!(((x - header + a.mix.arrange_scroll) / a.mix.arrange_ppq - q).abs() < 1e-3, "the beat under the pointer stays");
 }
 
 #[test]
 fn notes_gather_into_items_split_by_a_bar_of_rest() {
     let a = app(View::Page);
-    let c = &a.arrange;
+    let c = &a.mix.arrange;
     // Every note lies inside an item of its lane, and items start and end
     // on bar lines.
     for b in &c.blocks {
@@ -786,7 +786,7 @@ fn silence_strips_gain_drags_and_fades_take_shapes() {
     a.playback.pool.media.insert("take.wav", corinzia_audio::media::AudioData::from_channels(vec![x], rate));
     a.editor.caret = Frac::int(1);
     let _ = a.update(Message::AudioChosen(0, Some("take.wav".into())));
-    let (track, clip) = a.selected_clip.unwrap();
+    let (track, clip) = a.mix.selected_clip.unwrap();
     let at = a.editor.clip(track, clip).unwrap().at;
     // Fade shapes from the clip panel.
     let _ = a.update(Message::Mix(mix::MixMsg::FadeInShape("S-curve".into())));

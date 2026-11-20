@@ -76,69 +76,9 @@ pub(crate) enum Tab {
     Explore,
 }
 
-/// Live audio output (PipeWire) for the windowed app; tests and --export run without.
-
-pub(crate) struct App {
-    pub(crate) editor: Editor,
-    pub(crate) playback: playback::Playback,
-    pub(crate) tab: Tab,
-    pub(crate) strip: Option<corinzia_model::Id>, // the Mix tab's selected strip
-    pub(crate) fx: Option<corinzia_model::Id>,    // and its selected effect (audio node)
-    /// The presets of the plugin shown in the Mix tab, and the name being typed.
-    pub(crate) preset_names: Vec<String>,
-    pub(crate) preset_name: String,
-    /// The automation each track's arrange lane shows (none: notes only),
-    /// and the curves drawn for them.
-    pub(crate) auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
-    pub(crate) arrange_curves: Vec<Option<arrange::Curve>>,
-    pub(crate) arrange_clips: Vec<arrange::ClipBlock>,
-    /// The piano roll open in the Mix tab.
-    pub(crate) roll: Option<RollState>,
-    /// An audio export under way.
-    pub(crate) bounce: Option<corinzia_audio::bounce::Bounce>,
-    /// Stems still to render after the one rendering: (track, its file),
-    /// and how many there were with the folder they go in.
-    pub(crate) stems: std::collections::VecDeque<(corinzia_model::Id, PathBuf)>,
-    pub(crate) stems_done: Option<(usize, PathBuf)>,
-    /// Folders folded away in the arrange view.
-    pub(crate) folded: HashSet<String>,
-    /// The clip selected in the arrange view (track, clip), and while it is
-    /// dragged, the clip as it was (its length made explicit).
-    pub(crate) selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
-    /// How "Follow this clip" reads a recording's beats.
-    pub(crate) follow: mix::FollowOptions,
-    /// The Mix tab's mixer hidden (Ctrl+M): the arrange view takes its room.
-    pub(crate) mixer_hidden: bool,
-    pub(crate) clip_origin: Option<corinzia_model::AudioClip>,
-    pub(crate) clip_dragged: bool,
-    /// Ctrl was held at the press: the first drag step makes the copy.
-    pub(crate) clip_copy: bool,
-    pub(crate) arrange: arrange::Content,
-    pub(crate) arrange_cache: canvas::Cache,
-    pub(crate) arrange_ppq: f32,
-    pub(crate) arrange_scroll: f32,
-    pub(crate) arrange_scroll_y: f32,
-    /// Autosave (projects with a file): the revision on disk, and when the
-    /// next coalesced save is due.
-    pub(crate) saved_revision: u64,
-    pub(crate) autosave_at: Option<std::time::Instant>,
-    pub(crate) saving: bool,
-    pub(crate) undo_tip: String,
-    pub(crate) new_score: Option<NewScore>,
-    pub(crate) players: Option<PlayersDialog>,
-    pub(crate) layout: Option<LayoutDialog>,
-    /// The preferences in use, and the card that edits them.
-    pub(crate) prefs: prefs::Prefs,
-    pub(crate) prefs_dialog: Option<PrefsDialog>,
-    pub(crate) motif_dialog: Option<MotifDialog>,
-    /// The MIDI keyboard, when one is chosen, and the keys held on it.
-    pub(crate) midi: Option<midi_in::Input>,
-    pub(crate) midi_held: Vec<u8>,
-    /// Corinzia's own file browser, when the system's dialog cannot open.
-    pub(crate) browser: Option<browser::Browser>,
-    /// What waits for "discard unsaved changes?" to be answered.
-    pub(crate) confirm: Option<Box<Message>>,
-    pub(crate) path: Option<PathBuf>,
+/// The score on screen: the engraved pages, how they are shown, and the
+/// side panel and popover over them.
+pub(crate) struct ScoreState {
     pub(crate) view: View,
     pub(crate) pages: Vec<DisplayList>,
     pub(crate) engraved: Option<u64>, // editor revision of `pages`
@@ -149,16 +89,6 @@ pub(crate) struct App {
     pub(crate) cache: canvas::Cache,
     pub(crate) panel: Panel,
     pub(crate) popover: Option<Popover>,
-    pub(crate) screenshot: Option<PathBuf>,
-    pub(crate) frames: u32,
-    /// The window's size (logical pixels), for keeping the selection in view.
-    pub(crate) window: Size,
-    /// Files being dragged over the window, there (Wayland).
-    pub(crate) drag_over: Option<iced::Point>,
-    /// The keyboard shortcut overview (F1).
-    pub(crate) help: bool,
-    /// The Export menu is open.
-    pub(crate) export_menu: bool,
     /// The part shown (a player), or the full score.
     pub(crate) part: Option<corinzia_model::Id>,
     /// The lane each engraved staff shows.
@@ -169,6 +99,107 @@ pub(crate) struct App {
     pub(crate) page_movements: Vec<usize>,
     /// The movement edited when the view was last brought up to date.
     pub(crate) shown_movement: usize,
+}
+
+/// The Mix tab: the mixer's selection, the arrange view and the piano roll.
+pub(crate) struct MixView {
+    pub(crate) strip: Option<corinzia_model::Id>, // the selected strip
+    pub(crate) fx: Option<corinzia_model::Id>,    // and its selected effect (audio node)
+    /// The presets of the plugin shown, and the name being typed.
+    pub(crate) preset_names: Vec<String>,
+    pub(crate) preset_name: String,
+    /// The mixer hidden (Ctrl+M): the arrange view takes its room.
+    pub(crate) mixer_hidden: bool,
+    /// The automation each track's arrange lane shows (none: notes only),
+    /// and the curves drawn for them.
+    pub(crate) auto_shown: std::collections::HashMap<corinzia_model::Id, corinzia_model::AutoTarget>,
+    pub(crate) arrange_curves: Vec<Option<arrange::Curve>>,
+    pub(crate) arrange_clips: Vec<arrange::ClipBlock>,
+    pub(crate) arrange: arrange::Content,
+    pub(crate) arrange_cache: canvas::Cache,
+    pub(crate) arrange_ppq: f32,
+    pub(crate) arrange_scroll: f32,
+    pub(crate) arrange_scroll_y: f32,
+    /// Folders folded away in the arrange view.
+    pub(crate) folded: HashSet<String>,
+    /// The clip selected in the arrange view (track, clip), and while it is
+    /// dragged, the clip as it was (its length made explicit).
+    pub(crate) selected_clip: Option<(corinzia_model::Id, corinzia_model::Id)>,
+    pub(crate) clip_origin: Option<corinzia_model::AudioClip>,
+    pub(crate) clip_dragged: bool,
+    /// Ctrl was held at the press: the first drag step makes the copy.
+    pub(crate) clip_copy: bool,
+    /// How "Follow this clip" reads a recording's beats.
+    pub(crate) follow: mix::FollowOptions,
+    /// The piano roll, when open.
+    pub(crate) roll: Option<RollState>,
+}
+
+/// The cards open over the window, at most one of each.
+#[derive(Default)]
+pub(crate) struct Dialogs {
+    pub(crate) new_score: Option<NewScore>,
+    pub(crate) players: Option<PlayersDialog>,
+    pub(crate) layout: Option<LayoutDialog>,
+    pub(crate) prefs: Option<PrefsDialog>,
+    pub(crate) motif: Option<MotifDialog>,
+    /// Corinzia's own file browser, when the system's dialog cannot open.
+    pub(crate) browser: Option<browser::Browser>,
+    /// What waits for "discard unsaved changes?" to be answered.
+    pub(crate) confirm: Option<Box<Message>>,
+    /// The keyboard shortcut overview (F1).
+    pub(crate) help: bool,
+    /// The Export menu is open.
+    pub(crate) export_menu: bool,
+}
+
+/// Audio exports under way.
+#[derive(Default)]
+pub(crate) struct Exports {
+    /// The one rendering.
+    pub(crate) bounce: Option<corinzia_audio::bounce::Bounce>,
+    /// Stems still to render after it: (track, its file), and how many
+    /// there were with the folder they go in.
+    pub(crate) stems: std::collections::VecDeque<(corinzia_model::Id, PathBuf)>,
+    pub(crate) stems_done: Option<(usize, PathBuf)>,
+}
+
+/// The project's file, and autosave (projects with a file): the revision
+/// on disk, and when the next coalesced save is due.
+#[derive(Default)]
+pub(crate) struct Document {
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) saved_revision: u64,
+    pub(crate) autosave_at: Option<std::time::Instant>,
+    pub(crate) saving: bool,
+}
+
+/// The MIDI keyboard, when one is chosen, and the keys held on it.
+#[derive(Default)]
+pub(crate) struct MidiKeys {
+    pub(crate) input: Option<midi_in::Input>,
+    pub(crate) held: Vec<u8>,
+}
+
+pub(crate) struct App {
+    pub(crate) editor: Editor,
+    pub(crate) playback: playback::Playback,
+    /// The preferences in use (the card that edits them is in `dialogs`).
+    pub(crate) prefs: prefs::Prefs,
+    pub(crate) tab: Tab,
+    pub(crate) score: ScoreState,
+    pub(crate) mix: MixView,
+    pub(crate) dialogs: Dialogs,
+    pub(crate) exports: Exports,
+    pub(crate) doc: Document,
+    pub(crate) midi: MidiKeys,
+    pub(crate) undo_tip: String,
+    pub(crate) screenshot: Option<PathBuf>,
+    pub(crate) frames: u32,
+    /// The window's size (logical pixels), for keeping the selection in view.
+    pub(crate) window: Size,
+    /// Files being dragged over the window, there (Wayland).
+    pub(crate) drag_over: Option<iced::Point>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,14 +292,14 @@ impl App {
         };
         let mut app = App::new(project, path, a.view, status);
         app.screenshot = a.screenshot;
-        app.part = a.part.and_then(|n| app.editor.project.players.get(n.wrapping_sub(1))).map(|p| p.id);
+        app.score.part = a.part.and_then(|n| app.editor.project.players.get(n.wrapping_sub(1))).map(|p| p.id);
         if let Some(n) = a.chant {
             app.editor.show_chant(n.checked_sub(1));
         }
-        app.engraved = None;
+        app.score.engraved = None;
         for t in &a.keys {
             // An open popover takes typed text ("type:5:4") and Enter.
-            if app.popover.is_some() {
+            if app.score.popover.is_some() {
                 if let Some(text) = t.strip_prefix("type:") {
                     let _ = app.update(Message::Popover(PopoverMsg::Input(text.to_string())));
                     continue;
@@ -306,66 +337,56 @@ impl App {
         let mut app = App {
             editor,
             playback,
-            tab: Tab::Score,
-            strip: None,
-            fx: None,
-            preset_names: Vec::new(),
-            preset_name: String::new(),
-            auto_shown: Default::default(),
-            arrange_curves: Vec::new(),
-            arrange_clips: Vec::new(),
-            stems: Default::default(),
-            stems_done: None,
-            bounce: None,
-            roll: None,
-            folded: HashSet::new(),
-            selected_clip: None,
-            follow: Default::default(),
-            mixer_hidden: false,
-            clip_origin: None,
-            clip_dragged: false,
-            clip_copy: false,
-            arrange: arrange::Content::default(),
-            arrange_cache: canvas::Cache::new(),
-            arrange_ppq: 40.0,
-            arrange_scroll: 0.0,
-            arrange_scroll_y: 0.0,
-            saved_revision: 0,
-            autosave_at: None,
-            saving: false,
-            undo_tip: String::new(),
-            new_score: None,
-            players: None,
-            layout: None,
             prefs: prefs::Prefs::default(),
-            prefs_dialog: None,
-            motif_dialog: None,
-            midi: None,
-            midi_held: Vec::new(),
-            all_movements: false,
-            page_movements: Vec::new(),
-            shown_movement: 0,
-            browser: None,
-            confirm: None,
-            path,
-            view,
-            pages: vec![],
-            engraved: None,
-            engrave_ms: 0.0,
-            zoom: 0.9, // an A4 page fits the default window
-            pan: Vector::new(24.0, 24.0),
-            selected: HashSet::new(),
-            cache: canvas::Cache::new(),
-            panel: Panel::Notes,
-            popover: None,
+            tab: Tab::Score,
+            score: ScoreState {
+                view,
+                pages: vec![],
+                engraved: None,
+                engrave_ms: 0.0,
+                zoom: 0.9, // an A4 page fits the default window
+                pan: Vector::new(24.0, 24.0),
+                selected: HashSet::new(),
+                cache: canvas::Cache::new(),
+                panel: Panel::Notes,
+                popover: None,
+                part: None,
+                staff_lanes: Vec::new(),
+                all_movements: false,
+                page_movements: Vec::new(),
+                shown_movement: 0,
+            },
+            mix: MixView {
+                strip: None,
+                fx: None,
+                preset_names: Vec::new(),
+                preset_name: String::new(),
+                mixer_hidden: false,
+                auto_shown: Default::default(),
+                arrange_curves: Vec::new(),
+                arrange_clips: Vec::new(),
+                arrange: arrange::Content::default(),
+                arrange_cache: canvas::Cache::new(),
+                arrange_ppq: 40.0,
+                arrange_scroll: 0.0,
+                arrange_scroll_y: 0.0,
+                folded: HashSet::new(),
+                selected_clip: None,
+                clip_origin: None,
+                clip_dragged: false,
+                clip_copy: false,
+                follow: Default::default(),
+                roll: None,
+            },
+            dialogs: Dialogs::default(),
+            exports: Exports::default(),
+            doc: Document { path, ..Default::default() },
+            midi: MidiKeys::default(),
+            undo_tip: String::new(),
             screenshot: None,
             frames: 0,
             window: Size::new(1280.0, 860.0),
             drag_over: None,
-            help: false,
-            export_menu: false,
-            part: None,
-            staff_lanes: Vec::new(),
         };
         app.sync();
         app
@@ -379,31 +400,31 @@ impl App {
 
     /// The pages showing movement `mi`.
     pub(crate) fn pages_of(&self, mi: usize) -> std::ops::Range<usize> {
-        let first = self.page_movements.iter().position(|&m| m == mi).unwrap_or(0);
-        let n = self.page_movements.iter().filter(|&&m| m == mi).count();
+        let first = self.score.page_movements.iter().position(|&m| m == mi).unwrap_or(0);
+        let n = self.score.page_movements.iter().filter(|&&m| m == mi).count();
         first..first + n
     }
 
     /// Native engraving of the current movement (milliseconds).
     pub(crate) fn engrave(&mut self) {
-        self.engraved = Some(self.editor.music_revision);
+        self.score.engraved = Some(self.editor.music_revision);
         // A Byzantine chant shown in place of the movement.
         if let Some(c) = self.editor.shown_chant() {
             let t = Instant::now();
-            self.pages = corinzia_layout::byz::engrave(c, &corinzia_layout::byz::ByzPage::default());
-            self.staff_lanes.clear();
-            self.page_movements = vec![self.editor.movement; self.pages.len()];
-            self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
-            self.arrange = arrange::content(&self.editor.project, self.editor.movement);
+            self.score.pages = corinzia_layout::byz::engrave(c, &corinzia_layout::byz::ByzPage::default());
+            self.score.staff_lanes.clear();
+            self.score.page_movements = vec![self.editor.movement; self.score.pages.len()];
+            self.score.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
+            self.mix.arrange = arrange::content(&self.editor.project, self.editor.movement);
             return;
         }
         let Some(m) = self.editor.movement() else {
-            self.pages.clear();
+            self.score.pages.clear();
             return;
         };
         let t = Instant::now();
         // A part: the player's staves, as written, with multi-bar rests.
-        let part = self.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
+        let part = self.score.part.filter(|p| m.lanes.iter().any(|l| l.player == *p));
         let project = &self.editor.project;
         let score_of = |mi: usize| {
             let m = &project.movements[mi];
@@ -421,12 +442,12 @@ impl App {
             }
         };
         let ((score, lanes), (opt, spec)) = score_of(self.editor.movement);
-        self.staff_lanes = lanes;
-        self.page_movements.clear();
-        self.pages = match self.view {
+        self.score.staff_lanes = lanes;
+        self.score.page_movements.clear();
+        self.score.pages = match self.score.view {
             // Every movement, as printed: each from a new page, the work's
             // header on the first, page numbers running on.
-            View::Page if self.all_movements => {
+            View::Page if self.score.all_movements => {
                 let mut pages = Vec::new();
                 for mi in 0..project.movements.len() {
                     if part.is_some_and(|p| !project.movements[mi].lanes.iter().any(|l| l.player == p)) {
@@ -440,7 +461,7 @@ impl App {
                     }
                     let spec = corinzia_layout::PageSpec { first_page: pages.len() + 1, ..spec };
                     let these = layout_pages(&score, &opt, &spec);
-                    self.page_movements.extend(std::iter::repeat_n(mi, these.len()));
+                    self.score.page_movements.extend(std::iter::repeat_n(mi, these.len()));
                     pages.extend(these);
                 }
                 pages
@@ -468,32 +489,32 @@ impl App {
                 vec![l]
             }
         };
-        if self.page_movements.len() != self.pages.len() {
-            self.page_movements = vec![self.editor.movement; self.pages.len()];
+        if self.score.page_movements.len() != self.score.pages.len() {
+            self.score.page_movements = vec![self.editor.movement; self.score.pages.len()];
         }
-        self.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
-        self.arrange = arrange::content(&self.editor.project, self.editor.movement);
+        self.score.engrave_ms = t.elapsed().as_secs_f64() * 1000.0;
+        self.mix.arrange = arrange::content(&self.editor.project, self.editor.movement);
     }
 
     /// Brings the engraving and the selection colours up to date.
     pub(crate) fn sync(&mut self) {
-        if self.engraved != Some(self.editor.music_revision) {
+        if self.score.engraved != Some(self.editor.music_revision) {
             self.engrave();
         }
-        self.arrange_curves = self.arrange.lanes.iter().map(|l| self.curve(l.track)).collect();
+        self.mix.arrange_curves = self.mix.arrange.lanes.iter().map(|l| self.curve(l.track)).collect();
         // Another movement edited, its pages out of sight: go to its first.
-        if self.shown_movement != self.editor.movement {
-            self.shown_movement = self.editor.movement;
+        if self.score.shown_movement != self.editor.movement {
+            self.score.shown_movement = self.editor.movement;
             self.show_movement_pages();
         }
-        self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.path.as_deref().and_then(|p| p.parent()));
-        arrange::layout_rows(&mut self.arrange, &self.editor.project, &self.folded);
-        self.arrange_clips = arrange::clips(&self.editor.project, self.editor.movement, self.movement_section(), &self.playback.pool.media);
-        if self.selected_clip.is_some_and(|(t, c)| self.editor.clip(t, c).is_none()) {
-            self.selected_clip = None;
+        self.playback.sync(&self.editor.project, self.editor.music_revision, self.editor.revision, self.doc.path.as_deref().and_then(|p| p.parent()));
+        arrange::layout_rows(&mut self.mix.arrange, &self.editor.project, &self.mix.folded);
+        self.mix.arrange_clips = arrange::clips(&self.editor.project, self.editor.movement, self.movement_section(), &self.playback.pool.media);
+        if self.mix.selected_clip.is_some_and(|(t, c)| self.editor.clip(t, c).is_none()) {
+            self.mix.selected_clip = None;
         }
-        if self.path.is_some() && self.editor.revision != self.saved_revision && self.autosave_at.is_none() && !self.saving {
-            self.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
+        if self.doc.path.is_some() && self.editor.revision != self.doc.saved_revision && self.doc.autosave_at.is_none() && !self.doc.saving {
+            self.doc.autosave_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(800));
         }
         self.sync_roll();
         let mut sel = HashSet::new();
@@ -525,10 +546,10 @@ impl App {
         sel.extend(self.editor.selected_slur());
         sel.extend(self.editor.selected_hairpin().map(corinzia_score::score::ids::hairpin));
         sel.extend(self.editor.picked.iter().copied());
-        self.selected = sel;
+        self.score.selected = sel;
         self.undo_tip = self.editor.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)")).unwrap_or_else(|| "Nothing to undo".into());
-        self.cache.clear();
-        self.arrange_cache.clear();
+        self.score.cache.clear();
+        self.mix.arrange_cache.clear();
     }
 
     /// The score canvas's size: the window less the toolbar, side panel and
@@ -554,13 +575,13 @@ impl App {
                 }
             }
         }
-        if ids.is_empty() || self.pages.is_empty() {
+        if ids.is_empty() || self.score.pages.is_empty() {
             return;
         }
         let font = corinzia_layout::font::Font::bravura();
-        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
+        let origins = score_view::page_origins(&self.score.pages, self.score.view == View::Page);
         let mut r: Option<[f32; 4]> = None;
-        for (p, o) in self.pages.iter().zip(&origins) {
+        for (p, o) in self.score.pages.iter().zip(&origins) {
             for it in p.items.iter().filter(|it| ids.contains(&it.id())) {
                 let b = it.bounds(font);
                 let b = [b[0] + o.x, b[1] + o.y, b[2] + o.x, b[3] + o.y];
@@ -571,8 +592,8 @@ impl App {
             }
         }
         let Some(r) = r else { return };
-        let px = self.zoom * score_view::BASE_PX;
-        let (x0, y0, x1, y1) = (r[0] * px + self.pan.x, r[1] * px + self.pan.y, r[2] * px + self.pan.x, r[3] * px + self.pan.y);
+        let px = self.score.zoom * score_view::BASE_PX;
+        let (x0, y0, x1, y1) = (r[0] * px + self.score.pan.x, r[1] * px + self.score.pan.y, r[2] * px + self.score.pan.x, r[3] * px + self.score.pan.y);
         let vp = self.viewport();
         let margin = 60.0;
         let shift = |lo: f32, hi: f32, size: f32| -> f32 {
@@ -586,34 +607,34 @@ impl App {
                 0.0
             }
         };
-        self.pan = self.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
+        self.score.pan = self.score.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
     }
 
     /// Scrolls to the current movement's first page if none of its pages
     /// is in view (several movements shown).
     pub(crate) fn show_movement_pages(&mut self) {
         let pages = self.pages_of(self.editor.movement);
-        if !self.all_movements || pages.is_empty() {
+        if !self.score.all_movements || pages.is_empty() {
             return;
         }
-        let origins = score_view::page_origins(&self.pages, self.view == View::Page);
-        let px = self.zoom * score_view::BASE_PX;
+        let origins = score_view::page_origins(&self.score.pages, self.score.view == View::Page);
+        let px = self.score.zoom * score_view::BASE_PX;
         let vp = self.viewport();
         let visible = pages.clone().any(|k| {
-            let (y0, y1) = (origins[k].y * px + self.pan.y, (origins[k].y + self.pages[k].height) * px + self.pan.y);
+            let (y0, y1) = (origins[k].y * px + self.score.pan.y, (origins[k].y + self.score.pages[k].height) * px + self.score.pan.y);
             y1 > 0.0 && y0 < vp.height
         });
         if !visible {
-            self.pan.y = 24.0 - origins[pages.start].y * px;
+            self.score.pan.y = 24.0 - origins[pages.start].y * px;
         }
     }
 
     /// Ctrl+0: the page fills the canvas's width.
     pub(crate) fn fit_width(&mut self) {
-        let Some(page) = self.pages.first() else { return };
+        let Some(page) = self.score.pages.first() else { return };
         let vp = self.viewport();
-        self.zoom = ((vp.width - 48.0) / (page.width * score_view::BASE_PX)).clamp(0.25, 8.0);
-        self.pan = Vector::new(24.0, self.pan.y.min(24.0));
+        self.score.zoom = ((vp.width - 48.0) / (page.width * score_view::BASE_PX)).clamp(0.25, 8.0);
+        self.score.pan = Vector::new(24.0, self.score.pan.y.min(24.0));
     }
 
     pub(crate) fn subscription(&self) -> Subscription<Message> {
@@ -624,8 +645,8 @@ impl App {
         });
         let keys = Subscription::batch([iced::keyboard::listen().map(Message::Key), window, Subscription::run(dnd_events)]);
         let keys = if self.playback.editors_busy() { Subscription::batch([keys, Subscription::run(plugin_clock)]) } else { keys };
-        let keys = if self.midi.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
-        if self.screenshot.is_some() || self.playback.busy() || self.autosave_at.is_some() || self.bounce.is_some() {
+        let keys = if self.midi.input.is_some() { Subscription::batch([keys, Subscription::run(midi_clock)]) } else { keys };
+        if self.screenshot.is_some() || self.playback.busy() || self.doc.autosave_at.is_some() || self.exports.bounce.is_some() {
             Subscription::batch([keys, iced::window::frames().map(|_| Message::Frame)])
         } else {
             keys

@@ -47,23 +47,23 @@ impl App {
     pub(crate) fn score_view(&self) -> ScoreView<'_> {
         let ed = &self.editor;
         // Lanes to the staves they are engraved on (a part shows some).
-        let staff_of = |lane: usize| self.staff_lanes.iter().position(|&l| l == lane);
+        let staff_of = |lane: usize| self.score.staff_lanes.iter().position(|&l| l == lane);
         let caret = ed.input_mode.then(|| staff_of(ed.caret_lane)).flatten().map(|s| Caret { part: s, quarter: quarters(ed.caret) });
         let highlight = ed.range.and_then(|r| {
             let shown: Vec<usize> = (r.lane_from..=r.lane_to).filter_map(staff_of).collect();
             Some(Highlight { part_from: *shown.first()?, part_to: *shown.last()?, start: quarters(r.from), end: quarters(r.to) })
         });
         ScoreView {
-            pages: &self.pages,
-            vertical: self.view == View::Page,
-            zoom: self.zoom,
-            pan: self.pan,
-            selected: &self.selected,
+            pages: &self.score.pages,
+            vertical: self.score.view == View::Page,
+            zoom: self.score.zoom,
+            pan: self.score.pan,
+            selected: &self.score.selected,
             caret,
             highlight,
             playhead: self.playback.playhead().and_then(|(id, q)| {
                 let mi = ed.project.movements.iter().position(|m| m.id == id)?;
-                (self.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
+                (self.score.all_movements || mi == ed.movement).then(|| (q, self.pages_of(mi)))
             }),
             active: self.pages_of(ed.movement),
             slur: ed.selected_slur().or(ed.selected_hairpin().map(corinzia_score::score::ids::hairpin)),
@@ -78,7 +78,7 @@ impl App {
                 let grid = corinzia_edit::DurationSpec { dots: 0, ..ed.spec }.value();
                 score_view::Ghost { glyph: glyph.codepoint(), dots: ed.spec.dots, grid: quarters(grid) }
             }),
-            cache: &self.cache,
+            cache: &self.score.cache,
         }
     }
 
@@ -126,7 +126,7 @@ impl App {
                     button(text("✎  Note input").size(13)).padding([5, 10]).style(theme::tool(ed.input_mode)).on_press(Message::Act(Action::SetInput(!ed.input_mode))),
                     "Note input (N)",
                 ))
-                .push(segmented(vec![("Page", self.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.view == View::Panorama, Message::SetView(View::Panorama))]))
+                .push(segmented(vec![("Page", self.score.view == View::Page, Message::SetView(View::Page)), ("Panorama", self.score.view == View::Panorama, Message::SetView(View::Panorama))]))
                 .push(panels::tip(self.part_picker(), "Full score or one player's part (written pitch, multi-bar rests)"))
                 .push(panels::tip(
                     button(text("Transposed").size(13)).padding([5, 10]).style(theme::tool(ed.transposed)).on_press(Message::Act(Action::Transposed)),
@@ -148,14 +148,14 @@ impl App {
                 flat("Save", true, Message::Act(Action::Save)),
                 "Save (Ctrl+S)",
             ))
-            .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.export_menu)).on_press(Message::ExportMenu(!self.export_menu)));
+            .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.dialogs.export_menu)).on_press(Message::ExportMenu(!self.dialogs.export_menu)));
         let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
 
         let score = canvas(self.score_view())
         .width(Length::Fill)
         .height(Length::Fill);
         let mut desk = stack![container(Element::from(score).map(Message::Canvas)).width(Length::Fill).height(Length::Fill)];
-        if let Some(p) = &self.popover {
+        if let Some(p) = &self.score.popover {
             let mut card = column![
                 row![
                     text(match p.kind {
@@ -188,31 +188,31 @@ impl App {
             });
         }
 
-        if let Some(n) = &self.new_score {
+        if let Some(n) = &self.dialogs.new_score {
             desk = desk.push(container(iced::widget::opaque(container(new_score_card(n)).padding(20).style(theme::card))).center(Length::Fill));
         }
 
-        if let Some(d) = &self.motif_dialog {
+        if let Some(d) = &self.dialogs.motif {
             desk = desk.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
-        if let Some(d) = &self.prefs_dialog {
+        if let Some(d) = &self.dialogs.prefs {
             desk = desk.push(container(iced::widget::opaque(container(prefs_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
-        if let Some(d) = &self.layout {
+        if let Some(d) = &self.dialogs.layout {
             desk = desk.push(container(iced::widget::opaque(container(layout_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
-        if let Some(d) = &self.players {
+        if let Some(d) = &self.dialogs.players {
             // Anchored at the top, so its controls stay put as the list grows.
             desk = desk.push(container(iced::widget::opaque(container(players_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
-        if self.help {
+        if self.dialogs.help {
             desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
         }
-        if let Some(b) = &self.browser {
+        if let Some(b) = &self.dialogs.browser {
             let card = b.view().map(Message::Browser);
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
-        if self.confirm.is_some() {
+        if self.dialogs.confirm.is_some() {
             let card = column![
                 text("Discard the changes to this score?").size(16).font(bold),
                 text("They have not been saved.").size(12).style(theme::dim),
@@ -227,7 +227,7 @@ impl App {
             .width(420);
             desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
         }
-        if self.export_menu {
+        if self.dialogs.export_menu {
             let item = |label: &'static str, hint: &'static str, f: files::Format| {
                 button(column![text(label).size(13), text(hint).size(11).style(theme::dim)].spacing(1)).width(Length::Fill).padding([6, 10]).style(theme::flat(false)).on_press(Message::Export(f))
             };
@@ -250,12 +250,12 @@ impl App {
         }
 
         let tabs = container(segmented(vec![
-            ("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
-            ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
-            ("Motifs", self.panel == Panel::Motifs, Message::SetPanel(Panel::Motifs)),
+            ("Notes", self.score.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
+            ("Structure", self.score.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
+            ("Motifs", self.score.panel == Panel::Motifs, Message::SetPanel(Panel::Motifs)),
         ]))
         .padding([10, 12]);
-        let side = container(column![tabs, panels::panel(ed, self.panel, self.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
+        let side = container(column![tabs, panels::panel(ed, self.score.panel, self.score.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
         let vline = || container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
         let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
 
@@ -281,12 +281,12 @@ impl App {
                 movement_picker(ed, title),
                 Space::new().width(16),
                 panels::tip(
-                    text(format!("{} page{} · {:.0} ms", self.pages.len(), if self.pages.len() == 1 { "" } else { "s" }, self.engrave_ms)).size(12).style(theme::dim),
+                    text(format!("{} page{} · {:.0} ms", self.score.pages.len(), if self.score.pages.len() == 1 { "" } else { "s" }, self.score.engrave_ms)).size(12).style(theme::dim),
                     "Pages, and how long engraving took",
                 ),
                 Space::new().width(12),
                 panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"),
-                text(format!("{:.0}%", self.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center),
+                text(format!("{:.0}%", self.score.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center),
                 panels::tip(flat("+", true, Message::ZoomBy(1.25)), "Zoom in (Ctrl+=)"),
             ]
             .align_y(iced::Alignment::Center)
@@ -300,7 +300,7 @@ impl App {
             Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
             Tab::Explore => {
                 let mut layers = stack![crate::motif_view::explore(ed).map(Message::Act)];
-                if let Some(d) = &self.motif_dialog {
+                if let Some(d) = &self.dialogs.motif {
                     layers = layers.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
                 }
                 layers.height(Length::Fill).into()
@@ -309,9 +309,9 @@ impl App {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
                 // The arrange headers' mute and solo buttons, per lane.
                 // Files dragged over: where they would land.
-                let drop_at = self.drag_over.and_then(|p| self.drop_target(p)).map(|(t, q)| (t.and_then(|t| self.arrange.lanes.iter().position(|l| l.track == t)), q));
-                let mute_solo: Vec<(bool, bool)> = self.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
-                let top: Element<'_, Message> = match &self.roll {
+                let drop_at = self.drag_over.and_then(|p| self.drop_target(p)).map(|(t, q)| (t.and_then(|t| self.mix.arrange.lanes.iter().position(|l| l.track == t)), q));
+                let mute_solo: Vec<(bool, bool)> = self.mix.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
+                let top: Element<'_, Message> = match &self.mix.roll {
                     Some(r) => {
                         let tweaks = ed.movement().map(|m| m.tweaks.as_slice()).unwrap_or(&[]);
                         let view = canvas(roll::RollView { roll: &r.content, tweaks, selected: &r.selected, ppq: r.ppq, scroll_x: r.scroll_x, top_key: r.top_key, playhead }).width(Length::Fill).height(Length::Fill);
@@ -333,23 +333,23 @@ impl App {
                         .into()
                     }
                     None => Element::from(canvas(arrange::ArrangeView {
-                    content: &self.arrange,
-                    pixels_per_quarter: self.arrange_ppq,
-                    scroll_x: self.arrange_scroll,
-                    scroll_y: self.arrange_scroll_y,
+                    content: &self.mix.arrange,
+                    pixels_per_quarter: self.mix.arrange_ppq,
+                    scroll_x: self.mix.arrange_scroll,
+                    scroll_y: self.mix.arrange_scroll_y,
                     header: self.prefs.layout.header_width,
                     lane_height: self.prefs.layout.lane_height,
-                    selected: &self.selected,
+                    selected: &self.score.selected,
                     playhead,
-                    cache: &self.arrange_cache,
-                    curves: &self.arrange_curves,
-                    clips: &self.arrange_clips,
-                    selected_clip: self.selected_clip.map(|s| s.1),
+                    cache: &self.mix.arrange_cache,
+                    curves: &self.mix.arrange_curves,
+                    clips: &self.mix.arrange_clips,
+                    selected_clip: self.mix.selected_clip.map(|s| s.1),
                     cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
                     mute_solo,
                     drop_at,
-                    selected_track: self.strip,
-                    levels: self.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
+                    selected_track: self.mix.strip,
+                    levels: self.mix.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
                 })
                 .width(Length::Fill)
                 .height(Length::Fill))
@@ -357,13 +357,13 @@ impl App {
                 };
                 let layout = self.prefs.layout;
                 // Ctrl+M hides the mixer: the arrange view takes it all.
-                if self.mixer_hidden {
+                if self.mix.mixer_hidden {
                     top
                 } else {
                 column![
                     top,
                     crate::splitter::view(false, Message::SplitMixer),
-                    container(mix::view(&ed.project, &self.playback, self.strip, self.fx, mix::Presets { names: &self.preset_names, name: &self.preset_name }, &self.auto_shown, self.selected_clip, layout, self.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
+                    container(mix::view(&ed.project, &self.playback, self.mix.strip, self.mix.fx, mix::Presets { names: &self.mix.preset_names, name: &self.mix.preset_name }, &self.mix.auto_shown, self.mix.selected_clip, layout, self.mix.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
                 ]
                 .height(Length::Fill)
                 .into()
@@ -439,7 +439,7 @@ impl App {
             names.push(name);
             ids.push(Some(pl.id));
         }
-        let current = ids.iter().position(|&i| i == self.part).map(|k| names[k].clone());
+        let current = ids.iter().position(|&i| i == self.score.part).map(|k| names[k].clone());
         iced::widget::pick_list(names.clone(), current, move |chosen: String| {
             let k = names.iter().position(|n| *n == chosen).unwrap_or(0);
             Message::SetPart(ids[k])

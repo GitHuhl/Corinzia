@@ -7,7 +7,7 @@ fn preferences_change_the_theme_and_restart_audio_at_a_new_rate() {
     let p = crate::editor::instruments::new_project("P", "Flute", 2).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     let _ = a.update(Message::Act(Action::Preferences));
-    assert!(a.prefs_dialog.is_some());
+    assert!(a.dialogs.prefs.is_some());
     let _ = a.update(Message::Prefs(PrefsMsg::Theme("Light".into())));
     assert_eq!(theme::palette().text, theme::LIGHT.text, "seen at once");
     let _ = a.update(Message::Prefs(PrefsMsg::Cancel));
@@ -18,7 +18,7 @@ fn preferences_change_the_theme_and_restart_audio_at_a_new_rate() {
     let _ = a.update(Message::Prefs(PrefsMsg::Buffer(512)));
     let _ = a.update(Message::Prefs(PrefsMsg::Paths("/opt/a; /opt/b".into())));
     let _ = a.update(Message::Prefs(PrefsMsg::Apply));
-    assert!(a.prefs_dialog.is_none());
+    assert!(a.dialogs.prefs.is_none());
     assert_eq!((a.prefs.sample_rate, a.prefs.buffer, a.prefs.plugin_paths.len()), (96000, 512, 2));
     assert_eq!(a.playback.sample_rate, 96000.0, "a new engine");
     assert!(a.playback.search_paths[0].ends_with("opt/a"));
@@ -46,10 +46,10 @@ fn new_score_with_key_time_pickup_tempo_any_instrument_and_an_in_app_confirmatio
             _ => None,
         };
     }
-    assert!(a.confirm.is_some() && a.new_score.is_some(), "asked first");
+    assert!(a.dialogs.confirm.is_some() && a.dialogs.new_score.is_some(), "asked first");
     let _ = a.update(Message::ConfirmDiscard(true));
     let _ = a.update(Message::Proceed(Box::new(Message::New(NewMsg::Create))));
-    assert!(a.new_score.is_none());
+    assert!(a.dialogs.new_score.is_none());
     let p = &a.editor.project;
     assert_eq!((p.title.as_str(), p.composer.as_str()), ("Suite", "J. Doe"));
     assert_eq!(p.instruments.last().unwrap().name, "Kazoo");
@@ -59,7 +59,7 @@ fn new_score_with_key_time_pickup_tempo_any_instrument_and_an_in_app_confirmatio
     assert_eq!((m.tempo[0].bpm, m.tempo[0].text.as_str()), (132.0, "Allegro"));
     assert!(m.meter[0].pickup && (m.meter[1].num, m.meter[1].den) == (3, 4));
     assert_eq!(m.length, Frac::new(1, 4) + Frac::new(3, 4) * Frac::int(8));
-    assert!(!a.pages.is_empty());
+    assert!(!a.score.pages.is_empty());
 }
 
 #[test]
@@ -68,22 +68,22 @@ fn new_score_from_an_instrument_list() {
     let _ = a.update(Message::Act(Action::New));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "".into())));
     a.create_new();
-    assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Name at least one instrument"));
+    assert!(a.dialogs.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Name at least one instrument"));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Time, "7/5".into())));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "Flute".into())));
     a.create_new();
-    assert!(a.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Time not understood"));
+    assert!(a.dialogs.new_score.as_ref().unwrap().error.as_deref().unwrap().starts_with("Time not understood"));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Time, "4/4".into())));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Instruments, "2 Violin, Viola, Cello".into())));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Title, "Quartet".into())));
     let _ = a.update(Message::New(NewMsg::Input(NewField::Bars, "12".into())));
     a.create_new();
-    assert!(a.new_score.is_none());
+    assert!(a.dialogs.new_score.is_none());
     assert_eq!(a.editor.project.title, "Quartet");
     let m = &a.editor.project.movements[0];
     assert_eq!((m.lanes.len(), m.length), (4, Frac::int(12)));
     assert!(a.editor.input_mode, "a new score starts in note input");
-    assert_eq!(a.pages[0].staves.iter().filter(|s| s.system == 0).count(), 4);
+    assert_eq!(a.score.pages[0].staves.iter().filter(|s| s.system == 0).count(), 4);
 }
 
 #[test]
@@ -94,19 +94,19 @@ fn the_players_card_adds_removes_and_reorders_players() {
     let flute = a.editor.project.players[0].id;
     let pl = |m: PlayersMsg| Message::Players(m);
     let _ = a.update(pl(PlayersMsg::Open));
-    assert_eq!(a.players.as_ref().unwrap().rows.len(), 2);
+    assert_eq!(a.dialogs.players.as_ref().unwrap().rows.len(), 2);
     // Escape and Cancel change nothing.
     let _ = a.update(pl(PlayersMsg::Cancel));
-    assert!(a.players.is_none());
+    assert!(a.dialogs.players.is_none());
     let _ = a.update(pl(PlayersMsg::Open));
     // Add a piano (a grand staff) and two violins; a bad list says why.
     let _ = a.update(pl(PlayersMsg::Quick("Piano")));
     let _ = a.update(pl(PlayersMsg::AddInput(" , ".into())));
     let _ = a.update(pl(PlayersMsg::Add));
-    assert!(a.players.as_ref().unwrap().error.is_some());
+    assert!(a.dialogs.players.as_ref().unwrap().error.is_some());
     let _ = a.update(pl(PlayersMsg::AddInput("2 Violin".into())));
     let _ = a.update(pl(PlayersMsg::Add));
-    let d = a.players.as_ref().unwrap();
+    let d = a.dialogs.players.as_ref().unwrap();
     assert!(d.error.is_none() && d.add.is_empty());
     assert_eq!(d.rows.iter().map(|r| r.instruments.as_str()).collect::<Vec<_>>(), ["Flute / Fl.", "Cello / Vc.", "Piano", "Violin 1", "Violin 2"]);
     // Remove the flute, put the piano first.
@@ -115,7 +115,7 @@ fn the_players_card_adds_removes_and_reorders_players() {
     let _ = a.update(pl(PlayersMsg::Move(0, -1))); // already first: nothing
     let tracks_before = a.editor.project.tracks.len();
     let _ = a.update(pl(PlayersMsg::Apply));
-    assert!(a.players.is_none());
+    assert!(a.dialogs.players.is_none());
     assert_eq!(players(&a), ["Piano", "Cello", "Violin 1", "Violin 2"]);
     assert!(a.editor.project.player(flute).is_none());
     assert_eq!(a.editor.project.tracks.len(), tracks_before - 1 + 3);
@@ -142,7 +142,7 @@ fn the_players_card_adds_removes_and_reorders_players() {
     let _ = a.update(pl(PlayersMsg::Remove(0)));
     let _ = a.update(pl(PlayersMsg::Remove(0)));
     let _ = a.update(pl(PlayersMsg::Apply));
-    assert_eq!(a.players.as_ref().unwrap().error.as_deref(), Some("A score needs at least one player"));
+    assert_eq!(a.dialogs.players.as_ref().unwrap().error.as_deref(), Some("A score needs at least one player"));
     assert_eq!(players(&a), ["Flute", "Cello"]);
 }
 
@@ -163,7 +163,7 @@ fn players_change_instrument_and_take_up_doublings() {
     let _ = a.update(pl(PlayersMsg::Open));
     let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe, Cor anglais".into())));
     let _ = a.update(pl(PlayersMsg::Apply));
-    assert!(a.players.is_none(), "{:?}", a.players.as_ref().and_then(|d| d.error.clone()));
+    assert!(a.dialogs.players.is_none(), "{:?}", a.dialogs.players.as_ref().and_then(|d| d.error.clone()));
     let p = &a.editor.project;
     let player = p.player(flute).unwrap();
     assert_eq!(player.instruments.len(), 2);
@@ -179,7 +179,7 @@ fn players_change_instrument_and_take_up_doublings() {
     assert_eq!(a.editor.project.tracks.len(), 3);
     // Dropping the doubling takes its track.
     let _ = a.update(pl(PlayersMsg::Open));
-    assert_eq!(a.players.as_ref().unwrap().rows[0].instruments, "Oboe / Ob., Cor anglais / C. a.");
+    assert_eq!(a.dialogs.players.as_ref().unwrap().rows[0].instruments, "Oboe / Ob., Cor anglais / C. a.");
     let _ = a.update(pl(PlayersMsg::Edit(0, "Oboe".into())));
     let _ = a.update(pl(PlayersMsg::Apply));
     assert_eq!(a.editor.project.player(flute).unwrap().instruments.len(), 1);
@@ -201,7 +201,7 @@ fn players_change_instrument_and_take_up_doublings() {
     let _ = a.update(pl(PlayersMsg::Open));
     let _ = a.update(pl(PlayersMsg::Edit(1, " ".into())));
     let _ = a.update(pl(PlayersMsg::Apply));
-    assert_eq!(a.players.as_ref().unwrap().error.as_deref(), Some("Player 2: Each player needs an instrument"));
+    assert_eq!(a.dialogs.players.as_ref().unwrap().error.as_deref(), Some("Player 2: Each player needs an instrument"));
 }
 
 #[test]
@@ -236,7 +236,7 @@ fn an_instrument_change_switches_sound_clef_and_written_key() {
     assert_eq!(s.parts[0].key_shifts, vec![(bar3, 2)]);
     a.editor.transposed = true;
     a.engrave();
-    assert!(!a.pages.is_empty());
+    assert!(!a.score.pages.is_empty());
     // Back to the flute later, then to a bass-clef instrument: the clef follows.
     a.editor.select(None);
     a.editor.range = None;
@@ -262,7 +262,7 @@ fn layout_card_page_texts_and_breaks() {
     let mut a = app(View::Page);
     let lm = |m: LayoutMsg| Message::Layout(m);
     let _ = a.update(Message::Act(Action::Layout));
-    assert_eq!(a.layout.as_ref().unwrap().fields[0].size, "A4");
+    assert_eq!(a.dialogs.layout.as_ref().unwrap().fields[0].size, "A4");
     // Letter, landscape, a 7 mm staff, four bars a system, page texts.
     let _ = a.update(lm(LayoutMsg::Size("Letter".into())));
     let _ = a.update(lm(LayoutMsg::Landscape(true)));
@@ -272,25 +272,25 @@ fn layout_card_page_texts_and_breaks() {
     let _ = a.update(lm(LayoutMsg::Text(3, "© 2026".into())));
     // The parts keep their own.
     let _ = a.update(lm(LayoutMsg::Tab(true)));
-    assert_eq!(a.layout.as_ref().unwrap().fields[1].staff, "7");
+    assert_eq!(a.dialogs.layout.as_ref().unwrap().fields[1].staff, "7");
     let _ = a.update(lm(LayoutMsg::Field(LayoutField::Spacing, "300".into())));
     let _ = a.update(lm(LayoutMsg::Apply));
-    assert_eq!(a.layout.as_ref().unwrap().error.as_deref(), Some("Parts: Note spacing (%): a number from 50 to 250"));
+    assert_eq!(a.dialogs.layout.as_ref().unwrap().error.as_deref(), Some("Parts: Note spacing (%): a number from 50 to 250"));
     let _ = a.update(lm(LayoutMsg::Field(LayoutField::Spacing, "120".into())));
     let _ = a.update(lm(LayoutMsg::Apply));
-    assert!(a.layout.is_none());
+    assert!(a.dialogs.layout.is_none());
     let l = &a.editor.project.layout;
     assert_eq!((l.page_width_mm, l.landscape, l.staff_mm, l.bars_per_system), (215.9, true, 7.0, 4));
     assert_eq!(a.editor.project.part_layout.spacing, 1.2);
     assert_eq!(a.editor.project.subtitle, "for flute and cello");
     // The page: 279.4 mm wide in 1.75 mm spaces, printed at 4.96 pt.
     a.engrave();
-    assert!((a.pages[0].width - 279.4 / 1.75).abs() < 0.01);
-    assert!((a.pages[0].space_pt - 1.75 * 72.0 / 25.4).abs() < 0.01);
-    let texts: Vec<String> = a.pages[0].items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect();
+    assert!((a.score.pages[0].width - 279.4 / 1.75).abs() < 0.01);
+    assert!((a.score.pages[0].space_pt - 1.75 * 72.0 / 25.4).abs() < 0.01);
+    let texts: Vec<String> = a.score.pages[0].items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.clone()) } else { None }).collect();
     assert!(texts.contains(&"for flute and cello".into()) && texts.contains(&"© 2026".into()));
     // Four bars, then the next four: two systems.
-    let systems = |a: &App| a.pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map_or(0, |m| m + 1)).sum::<u32>();
+    let systems = |a: &App| a.score.pages.iter().map(|p| p.staves.iter().map(|s| s.system).max().map_or(0, |m| m + 1)).sum::<u32>();
     assert_eq!(systems(&a), 2);
     a.editor.undo();
     assert_eq!(a.editor.project.layout, corinzia_model::Layout::default(), "one undo step");
@@ -301,12 +301,12 @@ fn layout_card_page_texts_and_breaks() {
     let _ = a.update(Message::Act(Action::Break { page: false }));
     assert_eq!(a.editor.status, "System break before bar 3");
     a.engrave();
-    let starts: Vec<f64> = a.pages[0].columns.iter().filter(|c| c.system == 1).map(|c| c.quarter).collect();
+    let starts: Vec<f64> = a.score.pages[0].columns.iter().filter(|c| c.system == 1).map(|c| c.quarter).collect();
     assert_eq!(starts.iter().cloned().fold(f64::MAX, f64::min), 8.0, "the second system starts at bar 3");
     // Ctrl+Enter there turns it into a page break; Enter again removes it.
     let _ = a.update(Message::Act(Action::Break { page: true }));
     a.engrave();
-    assert_eq!(a.pages.len(), 2);
+    assert_eq!(a.score.pages.len(), 2);
     let _ = a.update(Message::Act(Action::Break { page: true }));
     assert_eq!(a.editor.status, "Page break removed before bar 3");
     assert!(a.editor.movement().unwrap().breaks.is_empty());
