@@ -71,6 +71,9 @@ pub(crate) struct RollState {
 pub(crate) enum Tab {
     Score,
     Mix,
+    /// The motif bank, and (to come) accompaniment and composition built
+    /// on it, played from a live performer's MIDI input.
+    Explore,
 }
 
 /// Live audio output (PipeWire) for the windowed app; tests and --export run without.
@@ -127,6 +130,7 @@ pub(crate) struct App {
     /// The preferences in use, and the card that edits them.
     pub(crate) prefs: prefs::Prefs,
     pub(crate) prefs_dialog: Option<PrefsDialog>,
+    pub(crate) motif_dialog: Option<MotifDialog>,
     /// The MIDI keyboard, when one is chosen, and the keys held on it.
     pub(crate) midi: Option<midi_in::Input>,
     pub(crate) midi_held: Vec<u8>,
@@ -187,6 +191,7 @@ pub(crate) enum Message {
     Players(PlayersMsg),
     Layout(LayoutMsg),
     Prefs(PrefsMsg),
+    Motif(MotifMsg),
     /// Read the MIDI keyboard.
     MidiPoll,
     /// The answer to "discard unsaved changes?".
@@ -334,6 +339,7 @@ impl App {
             layout: None,
             prefs: prefs::Prefs::default(),
             prefs_dialog: None,
+            motif_dialog: None,
             midi: None,
             midi_held: Vec::new(),
             all_movements: false,

@@ -864,6 +864,8 @@ pub struct Project {
     /// Playback with the phrasing rules (corinzia-perform's `phrasing`):
     /// phrase arches, the final ritardando, accents. Off: as written.
     pub phrasing: bool,
+    /// The motif bank (see [`crate::motif`]).
+    pub motifs: Vec<crate::motif::Motif>,
 }
 
 impl Default for Project {
@@ -890,6 +892,7 @@ impl Default for Project {
             edges: vec![],
             plugin_state: Default::default(),
             phrasing: false,
+            motifs: vec![],
         }
     }
 }

@@ -338,3 +338,23 @@ fn instruments_keep_their_kind_and_older_projects_find_theirs() {
     assert_eq!((r.instruments[0].kind.map(|k| k.id), r.instruments[0].section), (Some("violin"), Some(true)));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn the_motif_bank_is_saved_with_the_project() {
+    use corinzia_model::motif::{self, Role};
+    let dir = std::env::temp_dir().join(format!("corinzia-model-motifs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("motifs.project");
+    let mut p = sample();
+    let m = p.movements[0].clone();
+    let mut motif = motif::capture(&p, &m, 0, Frac::ZERO, Frac::int(1), (1, 1), 77).expect("notes in bar 1");
+    motif.name = "Opening".into();
+    motif.roles = vec![Role::Melody, Role::Call];
+    motif.tags = vec!["bright".into()];
+    motif.comment = "answered by the cellos".into();
+    p.motifs.push(motif.clone());
+    save(&p, &path).unwrap();
+    let q = load(&path).unwrap();
+    assert_eq!(q.motifs, vec![motif]);
+    std::fs::remove_dir_all(&dir).ok();
+}

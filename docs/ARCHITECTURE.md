@@ -102,9 +102,30 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
 * plugin state chunks have their own table, and a hash skips rewriting
   unchanged state;
 * instruments' kinds, drum maps and tunings are settings (JSON by
-  instrument id).
+  instrument id);
+* the motif bank is a setting too (JSON, serde).
 
 `save` upserts every row and deletes rows that no longer exist.
+
+**The motif bank** (`motif.rs`): `Project::motifs` holds passages of one
+staff the user chose, each a `Motif`: its notes relative to its start
+(spelling, length, voice, articulations, dynamic), where it came from
+(movement, staff, player, instrument and kind, passage, bars) and the key,
+meter and tempo there; then what the user says it is: `roles` (melody,
+countermelody, bass, inner voice, pad, accompaniment, arpeggio, ostinato,
+riff, hook, call, response, fill, groove, pedal, intro, cadence,
+transition), free `tags` and a `comment`. `motif::analyse` reads off the
+facts: range, voice range and register, texture, the top line's contour
+(Parsons code) and shape, steps, leaps and repeats, density, syncopation
+and dotted rhythms, the onsets on a sixteenth grid, pitch classes and the
+top line's scale degrees in the key, open or closed ending, notes outside
+the key, internal repetition, articulation and dynamics. It guesses no
+roles: the user chooses the passage and says what it is. In the app,
+`editor/motifs.rs` takes a motif from the selection and keeps the bank
+(undoable), the Motif card (`dialogs/motif.rs`) names and tags it, and
+`motif_view.rs` draws the bank (the Motifs side-panel page and the
+Explore tab). The Explore tab is where accompaniment and composition from
+the bank, played from a performer's MIDI input, will live.
 
 ## 3. Editing (`corinzia-edit`, `corinzia-app::editor`)
 

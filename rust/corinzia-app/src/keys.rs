@@ -108,6 +108,19 @@ pub enum Action {
     Lyrics(u8),
     ShowScore,
     ShowMix,
+    /// The Explore tab: the motif bank and what is built on it.
+    ShowExplore,
+    /// The side panel's page: 0 Notes, 1 Structure, 2 Motifs.
+    ShowPanel(u8),
+    /// The passage selected on one staff into the motif bank (a card asks
+    /// its name and what it is).
+    AddMotif,
+    /// A motif of the bank: its card, listening to it, its passage
+    /// selected in the score, removing it.
+    EditMotif(u64),
+    AuditionMotif(u64),
+    ShowMotif(u64),
+    DeleteMotif(u64),
     /// Zoom so the page fills the width.
     FitWidth,
     /// Concert pitch / transposed score.
@@ -186,6 +199,9 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
     if alt && !ctrl && c == 'm' {
         return Some(Metronome);
     }
+    if alt && !ctrl && ('1'..='3').contains(&c) {
+        return Some(ShowPanel(c as u8 - b'1'));
+    }
     if ctrl {
         return Some(match (c, shift) {
             ('z', false) => Undo,
@@ -214,6 +230,8 @@ pub fn map(key: &Key, mods: Modifiers, input_mode: bool) -> Option<Action> {
             ('k', _) => Popover(PopoverKind::Chord),
             ('1', _) => ShowScore,
             ('2', _) => ShowMix,
+            ('3', _) => ShowExplore,
+            ('m', false) => AddMotif,
             _ => return None,
         });
     }

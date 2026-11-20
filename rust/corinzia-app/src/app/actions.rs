@@ -108,6 +108,35 @@ impl App {
                     self.playback.scan();
                 }
             }
+            Action::ShowPanel(n) => {
+                self.panel = match n {
+                    0 => Panel::Notes,
+                    1 => Panel::Structure,
+                    _ => Panel::Motifs,
+                };
+            }
+            Action::ShowExplore => {
+                self.tab = Tab::Explore;
+                ed.set_input_mode(false);
+            }
+            Action::AddMotif => match ed.motif_from_selection() {
+                Ok(m) => self.motif_dialog = Some(MotifDialog::new(&ed.project, m, true)),
+                Err(e) => ed.status = e,
+            },
+            Action::EditMotif(id) => {
+                if let Some(m) = ed.project.motifs.iter().find(|m| m.id == id).cloned() {
+                    self.motif_dialog = Some(MotifDialog::new(&ed.project, m, false));
+                }
+            }
+            Action::DeleteMotif(id) => ed.delete_motif(id),
+            Action::ShowMotif(id) => {
+                if ed.show_motif(id) {
+                    self.tab = Tab::Score;
+                } else {
+                    ed.status = "Its passage is no longer in the score".into();
+                }
+            }
+            Action::AuditionMotif(id) => self.audition_motif(id),
             Action::ToggleInput => ed.set_input_mode(!ed.input_mode),
             Action::SetInput(on) => ed.set_input_mode(on),
             Action::Escape => {
@@ -288,6 +317,41 @@ impl App {
         let channel = ed.project.track(track).map(|t| t.midi_channel as i16).unwrap_or(0);
         self.sync(); // the plan knows a new track before we preview on it
         self.playback.preview(track, channel, &keys);
+    }
+
+    /// Plays a motif of the bank on the instrument it was taken from (else
+    /// the first instrument's track), at its tempo.
+    pub(crate) fn audition_motif(&mut self, id: corinzia_model::Id) {
+        use corinzia_audio::snapshot::Tone;
+        let p = &self.editor.project;
+        let Some(m) = p.motifs.iter().find(|m| m.id == id) else { return };
+        let track = m
+            .source
+            .as_ref()
+            .and_then(|s| s.instrument)
+            .and_then(|i| p.instrument(i))
+            .and_then(|i| i.track)
+            .and_then(|t| p.track(t))
+            .or_else(|| p.tracks.iter().find(|t| !t.audio));
+        let Some(track) = track else {
+            self.editor.status = "Add a player to hear the motif".into();
+            return;
+        };
+        let (tid, channel) = (track.id, track.midi_channel as i16 & 15);
+        let tones: Vec<Tone> = m
+            .notes
+            .iter()
+            .map(|n| {
+                let velocity = corinzia_perform::velocity_for_dynamic(n.dynamic);
+                Tone { on: n.start_q(), off: n.end_q() - 0.02, key: n.key().clamp(0, 127) as i16, bend: 0.0, channel, velocity, element: 0 }
+            })
+            .collect();
+        let (bpm, length, name) = (m.bpm, m.length_q(), m.name.clone());
+        if self.playback.is_playing() {
+            self.playback.stop();
+        }
+        self.playback.play_tones(&self.editor.project, self.editor.music_revision, super::chant::MOTIF_SECTION, bpm, length, tid, &tones, 0.0);
+        self.editor.status = format!("Listening: {name}");
     }
 
     pub(crate) fn play_stop(&mut self) {

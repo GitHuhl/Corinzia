@@ -102,6 +102,8 @@ impl App {
 
 /// The chant's place on the playback timeline.
 pub(crate) const CHANT_SECTION: corinzia_model::Id = u64::MAX - 1;
+/// The timeline section a motif of the bank plays in (see `audition_motif`).
+pub(crate) const MOTIF_SECTION: corinzia_model::Id = u64::MAX - 2;
 
 /// A chant as tones: the melody on `channel`, each note the nearest key
 /// bent to its pitch in moria, and the ison (if sung) held on the next

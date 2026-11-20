@@ -8,10 +8,11 @@
 //! `store` reads and writes `.project` files (SQLite, schema/project.sql);
 //! `notation` converts a movement into the engraver's
 //! `corinzia_score::score::Score`; `catalog` says what each kind of
-//! instrument is.
+//! instrument is; `motif` is the motif bank and its analysis.
 
 pub mod catalog;
 pub mod model;
+pub mod motif;
 pub mod notation;
 pub mod store;
 
