@@ -89,7 +89,7 @@ fn a_midi_keyboard_enters_notes_and_chords() {
 
 #[test]
 fn entering_a_note_auditions_it() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
     render(&mut a, 1024);
     assert!(render(&mut a, 1024) < 1e-6);
     key(&mut a, "n");

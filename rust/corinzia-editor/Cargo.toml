@@ -1,0 +1,17 @@
+[package]
+name = "corinzia-editor"
+description = "Corinzia's editing session: the selection, undo and redo, and every edit of a project, independent of the interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+corinzia-score.workspace = true
+corinzia-model.workspace = true
+corinzia-edit.workspace = true
+corinzia-byz.workspace = true
+
+[dev-dependencies]
+corinzia-perform.workspace = true
+corinzia-import.workspace = true

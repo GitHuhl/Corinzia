@@ -17,7 +17,7 @@ mod command_mix;
 mod mcp;
 mod demo;
 mod dialogs;
-mod editor;
+pub(crate) use corinzia_editor as editor;
 mod fader;
 mod files;
 mod keys;

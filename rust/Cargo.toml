@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-import", "corinzia-layout", "corinzia-edit", "corinzia-byz", "corinzia-perform", "corinzia-ensemble", "corinzia-audio", "corinzia-app"]
+members = ["corinzia-score", "corinzia-model", "corinzia-export", "corinzia-import", "corinzia-layout", "corinzia-edit", "corinzia-editor", "corinzia-byz", "corinzia-perform", "corinzia-ensemble", "corinzia-audio", "corinzia-app"]
 
 [workspace.package]
 version = "0.3.1"
@@ -15,6 +15,7 @@ corinzia-export = { path = "corinzia-export" }
 corinzia-import = { path = "corinzia-import" }
 corinzia-model = { path = "corinzia-model" }
 corinzia-edit = { path = "corinzia-edit" }
+corinzia-editor = { path = "corinzia-editor" }
 corinzia-byz = { path = "corinzia-byz" }
 corinzia-perform = { path = "corinzia-perform" }
 corinzia-ensemble = { path = "corinzia-ensemble" }

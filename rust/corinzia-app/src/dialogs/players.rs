@@ -1,7 +1,7 @@
 //! The Players card: the instrumentation being edited, applied as one undo step.
 
 use crate::app::*;
-use crate::{editor, files, panels, theme};
+use crate::{editor, panels, theme};
 use iced::widget::{button, column, row, text, text_input};
 use iced::{Element, Length};
 
@@ -128,7 +128,7 @@ impl App {
         }
         let Some(d) = self.players.as_mut() else { return };
         d.error = None;
-        let add = |d: &mut PlayersDialog, text: &str| match files::parse_instruments(text) {
+        let add = |d: &mut PlayersDialog, text: &str| match crate::editor::instruments::parse_instruments(text) {
             Ok(list) => {
                 for (name, _, clef) in list {
                     let staves = clef.split('+').count();
@@ -174,7 +174,7 @@ impl App {
             PlayersMsg::Apply => {
                 let mut slots = Vec::new();
                 for (k, r) in d.rows.iter().enumerate() {
-                    match files::parse_instrument_list(&r.instruments) {
+                    match crate::editor::instruments::parse_instrument_list(&r.instruments) {
                         Ok(instruments) => slots.push(match r.player {
                             Some(id) => editor::PlayerSlot::Keep { id, instruments },
                             None => editor::PlayerSlot::New { instruments },

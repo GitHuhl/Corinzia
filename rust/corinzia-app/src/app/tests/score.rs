@@ -281,7 +281,7 @@ fn zoom_keeps_the_point_under_the_cursor() {
 
 #[test]
 fn condensing_puts_two_flutes_on_one_staff() {
-    let p = files::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
+    let p = crate::editor::instruments::new_project("Duo", "Flute 1, Flute 2, Cello", 2).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     // Bar 1 in unison, bar 2 apart; the cello rests.
     for (lane, notes) in [(0, [0, 1, 2, 3, 4, 4, 4, 4]), (1, [0, 1, 2, 3, 2, 2, 2, 2])] {
@@ -316,7 +316,7 @@ fn condensing_puts_two_flutes_on_one_staff() {
 
 #[test]
 fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
-    let p = files::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
+    let p = crate::editor::instruments::new_project("Trio", "Flute, Clarinet, Piano", 8).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     a.sync();
     assert_eq!(a.staff_lanes, [0, 1, 2, 3]);
@@ -352,7 +352,7 @@ fn a_part_shows_one_player_as_written_and_maps_staves_to_lanes() {
 
 #[test]
 fn typing_in_input_mode_re_engraves() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
     let before = a.engraved;
     for t in ["n", "4", "c", "d", "e", "shift+c"] {
         key(&mut a, t);
@@ -368,7 +368,7 @@ fn typing_in_input_mode_re_engraves() {
 
 #[test]
 fn clicking_a_staff_in_input_mode_enters_a_note() {
-    let mut a = App::new(demo::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
+    let mut a = App::new(crate::editor::instruments::blank("T", &[("Flute", "Fl.", "treble")], 2), None, View::Page, String::new());
     key(&mut a, "n");
     let origins = score_view::page_origins(&a.pages, true);
     let st = a.pages[0].staves[0].clone();
@@ -522,7 +522,7 @@ fn filters_and_select_similar_pick_elements_to_edit() {
 fn explode_and_reduce_move_music_between_staves() {
     use corinzia_model::{Event, EventKind, Head, Pitch};
     use corinzia_score::Frac;
-    let project = files::new_project("T", "Violin, Viola, Cello, Piano", 2).unwrap();
+    let project = crate::editor::instruments::new_project("T", "Violin, Viola, Cello, Piano", 2).unwrap();
     let mut ed = editor::Editor::new(project);
     // Lanes: violin, viola, cello, piano right hand, piano left hand.
     let chord = |id: u64, k: i64| Event {

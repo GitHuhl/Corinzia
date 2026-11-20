@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn preferences_change_the_theme_and_restart_audio_at_a_new_rate() {
-    let p = files::new_project("P", "Flute", 2).unwrap();
+    let p = crate::editor::instruments::new_project("P", "Flute", 2).unwrap();
     let mut a = App::new(p, None, View::Page, String::new());
     let _ = a.update(Message::Act(Action::Preferences));
     assert!(a.prefs_dialog.is_some());

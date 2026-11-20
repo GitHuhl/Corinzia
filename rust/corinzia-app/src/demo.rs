@@ -87,66 +87,7 @@ pub fn project() -> Project {
     p
 }
 
-/// A new, empty project: these instruments (name, abbreviation, clef), each
-/// on its own player, over `bars` bars of 4/4 filled with whole-bar rests.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn blank(title: &str, instruments: &[(&str, &str, &str)], bars: i64) -> Project {
-    let with: Vec<(&str, &str, &str, Interval)> = instruments.iter().map(|(a, b, c)| (*a, *b, *c, Interval::default())).collect();
-    blank_with(title, &with, bars)
-}
 
-/// As [`blank`], with each instrument's transposition.
-pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bars: i64) -> Project {
-    let mut p = Project { title: title.into(), sample_rate: 48000.0, next_id: 1, ..Default::default() };
-    let mut lanes = Vec::new();
-    for (k, (name, abbr, clefs, transposition)) in instruments.iter().enumerate() {
-        // "treble+bass": a grand staff, one staff per clef.
-        let clefs: Vec<&str> = clefs.split('+').collect();
-        let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
-        // A drum set starts with its map, and plays on the drum channel (10).
-        let (kind, section) = Instrument::kind_from_name(name);
-        let drums = if clefs[0] == "percussion" { kind.map(|k| k.default_drums()).unwrap_or_default() } else { vec![] };
-        // Channel 10 is the drums' (General MIDI): others skip it.
-        let midi_channel = if !drums.is_empty() { 9 } else { [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15][k % 15] };
-        p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track), drums, tuning: kind.map(|k| k.default_tuning()).unwrap_or_default(), kind, section });
-        p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
-        for (si, clef) in clefs.iter().enumerate() {
-            let rests: Vec<Event> = (0..bars)
-                .map(|b| Event { id: p.allocate_id(), kind: EventKind::Rest, start: Frac::int(b), duration: Frac::int(1), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] })
-                .collect();
-            let (change, voice) = (p.allocate_id(), p.allocate_id());
-            let clef_changes = if si == 0 { vec![] } else { vec![ClefChange { id: p.allocate_id(), at: Frac::ZERO, clef: clef.to_string() }] };
-            lanes.push(Lane {
-                player,
-                changes: vec![InstrumentChange { id: change, at: Frac::ZERO, instrument: inst }],
-                clefs: clef_changes,
-                texts: vec![],
-                chords: vec![],
-                lines: vec![],
-                voices: vec![Voice { id: voice, index: 1, events: Arc::new(rests), tuplets: vec![] }],
-            });
-        }
-    }
-    let id = p.allocate_id();
-    p.movements.push(Movement {
-        id,
-        ordinal: 0,
-        title: String::new(),
-        length: Frac::int(bars.max(1)),
-        revision: 0,
-        tempo: vec![Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false }],
-        meter: vec![Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] }],
-        keys: vec![Key { at: Frac::ZERO, fifths: 0, minor: false }],
-        barlines: vec![],
-        rehearsal: vec![],
-        navigation: vec![],
-        slurs: vec![],
-        endings: vec![],
-        lanes, breaks: vec![], cross: vec![], automation: vec![], tweaks: vec![],
-    });
-    p
-}
 
 /// The piece the app opens on: "A Festival Prelude", an original piece
 /// for full orchestra (assets/demo, written by scripts/festival-prelude.py)

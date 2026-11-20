@@ -917,6 +917,20 @@ impl Project {
     pub fn bus(&self, id: Id) -> Option<&Bus> {
         self.buses.iter().find(|b| b.id == id)
     }
+
+    /// A bus and the buses it goes into, in order (a loop is cut).
+    pub fn bus_chain(&self, bus: Id) -> Vec<Id> {
+        let mut chain = vec![];
+        let mut at = Some(bus);
+        while let Some(b) = at.and_then(|b| self.bus(b)) {
+            if chain.contains(&b.id) {
+                break;
+            }
+            chain.push(b.id);
+            at = b.output;
+        }
+        chain
+    }
     pub fn track(&self, id: Id) -> Option<&Track> {
         self.tracks.iter().find(|t| t.id == id)
     }

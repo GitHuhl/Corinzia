@@ -82,7 +82,7 @@ impl App {
                 None => return n.error = Some(format!("Tempo not understood: {} (try Allegro, Andante 84, q=96)", n.tempo.trim())),
             }
         };
-        match files::new_project(title, &n.instruments, bars).map(|mut p| {
+        match crate::editor::instruments::new_project(title, &n.instruments, bars).map(|mut p| {
             p.composer = n.composer.trim().to_string();
             if let Some(m) = p.movements.first_mut() {
                 if let Some(k) = key {

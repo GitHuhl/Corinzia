@@ -10,6 +10,7 @@ mod chant;
 mod command;
 mod dialogs;
 mod document;
+mod editing;
 mod mixing;
 mod motifs;
 mod playback;

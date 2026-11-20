@@ -794,6 +794,7 @@ dependencies = [
  "corinzia-audio",
  "corinzia-byz",
  "corinzia-edit",
+ "corinzia-editor",
  "corinzia-import",
  "corinzia-layout",
  "corinzia-model",
@@ -849,6 +850,19 @@ version = "0.3.1"
 dependencies = [
  "corinzia-model",
  "corinzia-score",
+]
+
+[[package]]
+name = "corinzia-editor"
+version = "0.3.1"
+dependencies = [
+ "corinzia-byz",
+ "corinzia-edit",
+ "corinzia-import",
+ "corinzia-model",
+ "corinzia-perform",
+ "corinzia-score",
+ "serde",
 ]
 
 [[package]]

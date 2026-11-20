@@ -13,6 +13,7 @@ path = "src/main.rs"
 corinzia-score.workspace = true
 corinzia-model.workspace = true
 corinzia-edit.workspace = true
+corinzia-editor.workspace = true
 corinzia-byz.workspace = true
 corinzia-perform.workspace = true
 corinzia-audio.workspace = true
