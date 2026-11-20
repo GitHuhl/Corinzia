@@ -88,27 +88,25 @@ pub enum PlayerFeel {
 }
 
 impl PlayerFeel {
-    /// From what the project knows of an instrument: its name, and its
-    /// drum sounds (written key -> General MIDI key). Three or more sounds
-    /// make a kit; a single drum plays as orchestral percussion.
-    pub fn for_instrument(name: &str, drums: &[(i32, i32)]) -> PlayerFeel {
-        let n = name.to_lowercase();
-        if drums.len() >= 3 {
+    /// From what the project knows of an instrument: its kind (see
+    /// `corinzia_model::catalog`), and its drum sounds (written key ->
+    /// General MIDI key). A kit, or three or more sounds, play as a kit; a
+    /// single drum as orchestral percussion.
+    pub fn for_instrument(kind: Option<&corinzia_model::catalog::Kind>, drums: &[(i32, i32)]) -> PlayerFeel {
+        use corinzia_model::catalog::Feel as K;
+        let class = kind.map(|k| k.feel);
+        if drums.len() >= 3 || class == Some(K::Kit) && !drums.is_empty() {
             return PlayerFeel::Kit(drums.iter().copied().collect());
         }
-        if ["piano", "organ", "celesta", "harpsichord", "keyboard", "synth", "accordion"].iter().any(|w| n.contains(w)) {
-            return PlayerFeel::One(Feel::KEYBOARD);
-        }
-        if ["harp", "guitar", "lute", "mandolin", "banjo", "ukulele"].iter().any(|w| n.contains(w)) {
-            return PlayerFeel::One(Feel::PLUCKED);
-        }
-        PlayerFeel::One(match corinzia_model::notation::family(name) {
-            Some("strings") => Feel::STRINGS,
-            Some("woodwinds") => Feel::WOODWINDS,
-            Some("brass") => Feel::BRASS,
-            Some("voices") => Feel::VOICES,
-            Some("percussion") => Feel::PERCUSSION,
-            _ => Feel::DEFAULT,
+        PlayerFeel::One(match class {
+            Some(K::Strings) => Feel::STRINGS,
+            Some(K::Woodwinds) => Feel::WOODWINDS,
+            Some(K::Brass) => Feel::BRASS,
+            Some(K::Voices) => Feel::VOICES,
+            Some(K::Keyboard) => Feel::KEYBOARD,
+            Some(K::Plucked) => Feel::PLUCKED,
+            Some(K::Percussion | K::Kit) => Feel::PERCUSSION,
+            None => Feel::DEFAULT,
         })
     }
 

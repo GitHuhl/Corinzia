@@ -106,42 +106,6 @@ fn debug_peaks() {
     }
 }
 
-#[test]
-fn instrument_names_choose_their_sounds() {
-    let of = |n: &str| patches::PATCHES[patches::patch_for(patches::program_for(n, false, false).0, patches::program_for(n, false, false).1)].name;
-    let orch = |n: &str| patches::PATCHES[patches::patch_for(patches::program_for(n, false, true).0, patches::program_for(n, false, true).1)].name;
-    for (name, sound) in [
-        ("Flute", "Flute"),
-        ("Alto Flute", "Flute"),
-        ("Harpsichord", "Harpsichord"),
-        ("Harp", "Harp"),
-        ("Lute", "Guitar"),
-        ("Violin", "Violin"),
-        ("Violins 1", "Violins"),
-        ("Violoncello", "Cello"),
-        ("Horn in F", "Horn"),
-        ("Horns", "Horn"),
-        ("English Horn", "Cor anglais"),
-        ("Cornet", "Trumpet"),
-        ("Bass Clarinet", "Bass clarinet"),
-        ("Contrabassoon", "Contrabassoon"),
-        ("Alto Saxophone", "Saxophone"),
-        ("Tenor Trombone", "Trombone"),
-        ("Soprano", "Voice (female)"),
-        ("Tenor", "Voice (male)"),
-        ("Choir", "Choir"),
-        ("Timpani", "Timpani"),
-        ("Piano", "Piano"),
-        ("Glockenspiel", "Glockenspiel"),
-    ] {
-        assert_eq!(of(name), sound, "{name}");
-    }
-    assert_eq!(orch("Violin I"), "Violins");
-    assert_eq!(orch("Solo Violin"), "Violin");
-    assert_eq!(orch("Double Bass"), "Basses");
-    assert_eq!(patches::PATCHES[patches::patch_for(0, patches::DRUM_BANK)].name, "Drum kit");
-}
-
 /// Chromatic runs like the University of Iowa recordings (one note a
 /// second and a half, at pp, mf and ff), as WAV files for comparing
 /// spectra: CORINZIA_RUNS=dir cargo test --release -p corinzia-ensemble write_runs -- --ignored

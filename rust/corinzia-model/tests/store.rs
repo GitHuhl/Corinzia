@@ -6,7 +6,7 @@ use std::sync::Arc;
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
+    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![], kind: None, section: None });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
         id,
@@ -313,5 +313,28 @@ fn the_phrasing_choice_is_saved() {
         corinzia_model::store::save(&p, &path).unwrap();
         assert_eq!(corinzia_model::store::load(&path).unwrap().phrasing, on);
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn instruments_keep_their_kind_and_older_projects_find_theirs() {
+    let dir = std::env::temp_dir().join(format!("corinzia-model-kinds-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("kinds.project");
+    // A cello section renamed "Leader": still a cello section.
+    let mut p = sample();
+    p.instruments[0].name = "Leader".into();
+    p.instruments[0].kind = catalog::kind("cello");
+    p.instruments[0].section = Some(true);
+    save(&p, &path).unwrap();
+    let q = load(&path).unwrap();
+    assert_eq!((q.instruments[0].kind.map(|k| k.id), q.instruments[0].section), (Some("cello"), Some(true)));
+    // Saved before kinds: found from the name, once.
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute("DELETE FROM setting WHERE key = 'kinds'", []).unwrap();
+    db.execute("UPDATE instrument SET name = 'Violins 1'", []).unwrap();
+    drop(db);
+    let r = load(&path).unwrap();
+    assert_eq!((r.instruments[0].kind.map(|k| k.id), r.instruments[0].section), (Some("violin"), Some(true)));
     std::fs::remove_dir_all(&dir).ok();
 }

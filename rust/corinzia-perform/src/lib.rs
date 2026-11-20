@@ -511,7 +511,7 @@ impl Style {
             .iter()
             .map(|i| {
                 let drums: Vec<(i32, i32)> = i.drums.iter().map(|d| (d.position.midi_key(), d.key as i32)).collect();
-                (i.id, timing::PlayerFeel::for_instrument(&i.name, &drums))
+                (i.id, timing::PlayerFeel::for_instrument(i.kind, &drums))
             })
             .collect();
         Style { phrasing: project.phrasing, feels }

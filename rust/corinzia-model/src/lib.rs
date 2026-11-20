@@ -7,8 +7,10 @@
 //!
 //! `store` reads and writes `.project` files (SQLite, schema/project.sql);
 //! `notation` converts a movement into the engraver's
-//! `corinzia_score::score::Score`.
+//! `corinzia_score::score::Score`; `catalog` says what each kind of
+//! instrument is.
 
+pub mod catalog;
 pub mod model;
 pub mod notation;
 pub mod store;

@@ -549,19 +549,13 @@ pub struct Instrument {
     /// A fretted instrument's open strings (MIDI keys, lowest first): a
     /// tablature staff goes under its staff. Empty: no tablature.
     pub tuning: Vec<u8>,
-}
-
-/// The usual tuning of a fretted instrument shown with tablature: electric
-/// and bass guitars (others start without, see `GUITAR_TUNING`).
-pub fn default_tuning(name: &str) -> Vec<u8> {
-    let n = name.to_ascii_lowercase();
-    if n.contains("bass guitar") || n.contains("electric bass") {
-        BASS_TUNING.to_vec()
-    } else if n.contains("electric guitar") || n.contains("tab") && n.contains("guitar") {
-        GUITAR_TUNING.to_vec()
-    } else {
-        vec![]
-    }
+    /// What it is (its family, sound, timing; see [`crate::catalog`]),
+    /// fixed when it is added: renaming the staff changes none of it. None:
+    /// an instrument the catalogue does not know.
+    pub kind: Option<&'static crate::catalog::Kind>,
+    /// Strings: one player (false) or a section (true); None: a section in
+    /// an orchestral score, else one player.
+    pub section: Option<bool>,
 }
 
 /// E2 A2 D3 G3 B3 E4 and E1 A1 D2 G2.
@@ -611,39 +605,18 @@ impl Notehead {
     }
 }
 
-/// The sounds an instrument of this name starts with: a drum set's (the
-/// usual positions, General MIDI keys), a single drum's, or none.
-pub fn default_drums(name: &str) -> Vec<DrumSound> {
-    let n = name.to_lowercase();
-    let p = |step: i8, octave: i8| Pitch { step, alter: 0, octave };
-    let s = |name: &str, position: Pitch, key: u8, head: Notehead| DrumSound { name: name.into(), position, key, head };
-    if n.contains("drum set") || n.contains("drum kit") || n == "drums" || n == "kit" {
-        vec![
-            s("Bass drum", p(3, 4), 36, Notehead::Normal),
-            s("Floor tom", p(5, 4), 41, Notehead::Normal),
-            s("Snare drum", p(0, 5), 38, Notehead::Normal),
-            s("Low tom", p(1, 5), 45, Notehead::Normal),
-            s("High tom", p(2, 5), 48, Notehead::Normal),
-            s("Ride cymbal", p(3, 5), 51, Notehead::X),
-            s("Hi-hat", p(4, 5), 42, Notehead::X),
-            s("Open hi-hat", p(5, 5), 46, Notehead::CircleX),
-            s("Crash cymbal", p(6, 5), 49, Notehead::X),
-            s("Hi-hat pedal", p(1, 4), 44, Notehead::X),
-            s("Side stick", p(4, 4), 37, Notehead::X),
-            s("Cowbell", p(2, 4), 56, Notehead::Triangle),
-        ]
-    } else if n.contains("snare") {
-        vec![s("Snare drum", p(0, 5), 38, Notehead::Normal)]
-    } else if n.contains("bass drum") {
-        vec![s("Bass drum", p(0, 5), 36, Notehead::Normal)]
-    } else if n.contains("cymbal") {
-        vec![s("Crash cymbal", p(0, 5), 49, Notehead::X)]
-    } else {
-        vec![]
-    }
-}
-
 impl Instrument {
+    /// The kind and players a name means, for an instrument being added,
+    /// imported, or loaded from a project saved before kinds.
+    pub fn kind_from_name(name: &str) -> (Option<&'static crate::catalog::Kind>, Option<bool>) {
+        (crate::catalog::infer(name), crate::catalog::section_of(name))
+    }
+
+    /// Its family, for brackets.
+    pub fn family(&self) -> Option<crate::catalog::Family> {
+        self.kind.and_then(|k| k.family)
+    }
+
     /// The drum sound written at a pitch's staff position.
     pub fn drum_at(&self, p: Pitch) -> Option<&DrumSound> {
         self.drums.iter().find(|d| d.position.step == p.step && d.position.octave == p.octave)
