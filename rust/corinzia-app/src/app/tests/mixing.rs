@@ -652,7 +652,7 @@ fn the_score_follows_a_recordings_tempo() {
     let m = a.editor.movement().unwrap().clone();
     // A recording placed two bars in, its beat a little slower than the
     // score's and slowing further: clicks over a decaying tone.
-    let tempo = perform_with(&m, style).tempo;
+    let tempo = perform_with(&m, style.clone()).tempo;
     let at = tempo.seconds_at(8.0);
     let unit = corinzia_perform::follow::beat_unit(&m, 8.0);
     let beat = unit * 60.0 / tempo.tempo_at(8.0);

@@ -92,7 +92,7 @@ impl App {
             }
             Action::Phrasing(on) => {
                 ed.set_phrasing(on);
-                ed.status = if on { "Phrasing on: phrases shaped, the end slowing, accents" } else { "Phrasing off: played as written" }.into();
+                ed.status = if on { "Phrasing on: phrases shaped, the end slowing, accents, players' timing" } else { "Phrasing off: played as written" }.into();
             }
             Action::Lyrics(v) => {
                 ed.lyric_verse = v;
@@ -293,16 +293,55 @@ impl App {
     pub(crate) fn play_stop(&mut self) {
         if self.playback.is_playing() {
             self.playback.stop();
+            self.playback.release_only(&self.editor.project);
             return;
         }
+        self.playback.release_only(&self.editor.project);
         if self.editor.chant.is_some() {
             self.play_chant();
             return;
         }
-        // From the selection, else the caret.
+        // A passage selected in the score: only its staves, from its start
+        // to its end (the preference, on by default, as in other score
+        // editors). Otherwise from the selection, else the caret, everything.
         let ed = &self.editor;
         let (Some(m), Some((_, at))) = (ed.movement(), ed.structure_target()) else { return };
+        if let (true, Tab::Score, Some(r)) = (self.prefs.play_selection_only, self.tab, ed.range) {
+            let tracks: std::collections::HashSet<corinzia_model::Id> = m
+                .lanes
+                .iter()
+                .enumerate()
+                .filter(|(li, _)| (r.lane_from..=r.lane_to).contains(li))
+                .flat_map(|(_, l)| l.changes.iter().filter(|c| c.at < r.to).map(|c| c.instrument))
+                .filter_map(|i| ed.project.instrument(i).and_then(|i| i.track))
+                .collect();
+            if !tracks.is_empty() {
+                // With the cycle on, it loops instead of stopping at the end.
+                let until = (!self.playback.cycling).then_some(quarters(r.to));
+                let id = m.id;
+                self.playback.play_only(&self.editor.project, tracks, id, quarters(r.from), until);
+                return;
+            }
+        }
         self.playback.play_from(m.id, quarters(at));
+    }
+
+    /// Playing a selected passage alone: stops at its end, and every track
+    /// sounds again once playback stops.
+    pub(crate) fn watch_selection_play(&mut self) {
+        if !self.playback.playing_only() {
+            return;
+        }
+        if !self.playback.is_playing() {
+            self.playback.release_only(&self.editor.project);
+            return;
+        }
+        if let (Some((m, end)), Some((pm, q))) = (self.playback.until, self.playback.playhead()) {
+            if m == pm && q >= end - 1e-6 {
+                self.playback.stop();
+                self.playback.release_only(&self.editor.project);
+            }
+        }
     }
 
     pub(crate) fn open_popover(&mut self, kind: PopoverKind) -> Task<Message> {

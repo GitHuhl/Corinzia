@@ -180,6 +180,7 @@ impl App {
             }
             Message::Frame => {
                 self.playback.tick();
+                self.watch_selection_play();
                 if let Some(report) = self.playback.overload.take() {
                     self.editor.status = report;
                 }

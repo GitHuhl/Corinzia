@@ -27,7 +27,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("open <file> | save [file] | export <file.pdf|mid|musicxml|wav>", "Files"),
     ("undo | redo", "Undo or redo the last edit"),
     ("goto <bar>|<mark>", "Go to a bar (goto 25) or a rehearsal mark (goto B): the bar selected on the caret's staff"),
-    ("phrasing on|off", "Playback with the phrasing rules (phrase arches, final ritardando, accents) or as written"),
+    ("phrasing on|off", "Playback with the phrasing rules (phrase arches, final ritardando, accents, players' timing) or as written"),
     ("movement <n> | chant <n|off>", "Show movement n or chant n (from 1)"),
     ("select all | select none | select bar <a>[-<b>] [staff <s>[-<t>]]", "Select (bars as numbered in the score, staves from 1)"),
     ("input on|off", "Note input"),

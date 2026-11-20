@@ -590,7 +590,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let list: Vec<&corinzia_perform::PerformedNote> = idx.iter().map(|&i| &perf.notes[i]).collect();
             for (k, e) in corinzia_perform::expression(t, &list).into_iter().enumerate() {
                 channels[idx[k]] = e.channel;
-                let on = start + (perf.tempo.seconds_at(perf.notes[idx[k]].on_q) * sample_rate).round() as i64;
+                let on = start + (perf.notes[idx[k]].on_sec(&perf.tempo) * sample_rate).round() as i64;
                 let channel = t.midi_channel as i16 & 15;
                 let ev = |kind: Kind, at: i64, key: i16, on: bool, velocity: f32| ScheduledNote { kind, at: at.max(0), node, note_id: -1, port: 0, channel, key, on, velocity, element: 0 };
                 for a in e.before {
@@ -640,12 +640,13 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let Some(node) = node_of(track) else { continue };
             let channel = channels[ni].map(|c| c as i16).unwrap_or_else(|| project.track(track).map(|t| t.midi_channel as i16 & 15).unwrap_or(0));
             let port = project.track(track).map(|t| t.note_port as i16).unwrap_or(0);
-            let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
+            let on_sec = n.on_sec(&perf.tempo);
             let last = end_of(ni);
             let mut off_sec = if merged.contains_key(&ni) {
-                perf.tempo.seconds_at(last.on_q) + (perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(last.on_q)) * last.gate
+                let last_on = perf.tempo.seconds_at(last.on_q) + last.timing_sec;
+                last_on + (perf.tempo.seconds_at(last.full_off_q) + last.timing_sec - last_on) * last.gate
             } else {
-                on_sec + (perf.tempo.seconds_at(n.full_off_q) - on_sec) * n.gate
+                n.off_sec(&perf.tempo)
             };
             // Slurred on the built-in instruments: held into the next note,
             // which joins it (CC68).
@@ -675,7 +676,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             for (ni, n) in list {
                 let tremolo = merged.contains_key(&ni);
                 let last = end_of(ni);
-                let on_sec = perf.tempo.seconds_at(n.on_q) + n.roll_sec;
+                let on_sec = n.on_sec(&perf.tempo);
                 let on = at(on_sec);
                 let chord = (n.on_q - last_on).abs() < 1e-9;
                 last_on = n.on_q;
@@ -701,7 +702,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                     level = Some(d0);
                     if (d1 - d0).abs() > 0.004 {
                         // A ramp through the note, every 25 ms.
-                        let off_sec = perf.tempo.seconds_at(last.on_q) + (perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(last.on_q)) * last.gate;
+                        let off_sec = last.off_sec(&perf.tempo);
                         let steps = (((off_sec - on_sec) / 0.025).ceil() as i64).clamp(1, 400);
                         for k in 1..=steps {
                             let x = k as f32 / steps as f32;
@@ -732,7 +733,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             if last_cc.insert(t.id, value) == Some(value) {
                 continue;
             }
-            let at = start + ((perf.tempo.seconds_at(n.on_q) * sample_rate).round() as i64 - 1).max(0);
+            let at = start + ((n.on_sec(&perf.tempo) * sample_rate).round() as i64 - 1).max(0);
             let channel = t.midi_channel as i16 & 15;
             notes.push(ScheduledNote { kind: Kind::Cc(cc), at, node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: value as f32 / 127.0, element: 0 });
         }

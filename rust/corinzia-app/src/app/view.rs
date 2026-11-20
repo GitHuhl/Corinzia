@@ -109,7 +109,7 @@ impl App {
             ),
             panels::tip(
                 button(text("Phrasing").size(13)).padding([5, 10]).style(theme::tool(ed.project.phrasing)).on_press(Message::Act(Action::Phrasing(!ed.project.phrasing))),
-                "Phrasing: play with phrase arches, a final ritardando and accents, as players do (off: as written)",
+                "Phrasing: play with phrase arches, a final ritardando, accents and players' timing, as players do (off: as written)",
             ),
             panels::tip(flat("↶", ed.can_undo(), Message::Act(Action::Undo)), self.undo_tip.as_str()),
             panels::tip(flat("↷", ed.can_redo(), Message::Act(Action::Redo)), "Redo (Ctrl+Shift+Z)"),
