@@ -57,7 +57,7 @@ static DESCRIPTOR: Sync<clap_plugin_descriptor> = Sync(clap_plugin_descriptor {
     url: c"".as_ptr(),
     manual_url: c"".as_ptr(),
     support_url: c"".as_ptr(),
-    version: c"0.3.0".as_ptr(),
+    version: c"0.3.1".as_ptr(),
     description: c"Synthesized orchestral, keyboard and percussion instruments".as_ptr(),
     features: &FEATURES.0 as *const _ as *const *const c_char,
 });
