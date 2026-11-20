@@ -154,6 +154,24 @@ The app's canvas, the PDF writer (`pdf.rs`, glyph and text outlines with no
 fonts embedded) and the tiny-skia previews in the tests all draw the same
 list.
 
+**Code.** `layout/mod.rs` holds the options, the data the engraver's
+modules share (measures, notes, spanners) and the `Engraver`'s core: its
+construction, the order things are drawn in, and the skylines. The rest is
+one module per concern:
+* `music`: clefs and keys, measures, events split at barlines into notes;
+* `spacing`: horizontal spacing and justification;
+* `staff`: staff lines, clefs, keys, times, barlines, names, brackets;
+* `notes`: heads, stems, flags, rests, graces, tablature, accidentals, dots;
+* `beams`: beam groups, and drawing beams placed by `beam.rs`;
+* `ties`: ties;
+* `scripts`: articulations, ornaments, fermatas and fingering;
+* `spanners`: slurs, placed by `slur.rs`, and the spanners of a system;
+* `tuplets`: tuplet brackets and numbers;
+* `dynamics`: dynamics and hairpins;
+* `text`: octave and pedal lines, text, chord symbols, lyrics, tempo marks
+  and endings;
+* `pages`: line breaking and systems on pages.
+
 **Spacing** follows LilyPond's model and defaults, on rhythmic columns
 shared by all staves:
 * The movement's *common shortest duration* is the shortest note most bars
