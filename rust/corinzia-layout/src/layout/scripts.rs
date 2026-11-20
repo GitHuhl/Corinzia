@@ -76,9 +76,17 @@ impl<'a> Engraver<'a> {
                     edge = centre + dir * half;
                 }
                 if n.art & art::TREMOLO != 0 && n.has_stem() {
+                    // Through the stem, midway along its free part (from the
+                    // head at its root to its end). SMuFL's tremolo glyphs
+                    // are centred on their origin.
                     let g = Glyph::Tremolo3;
-                    let sy = (self.notes[i].stem_end + if n.stem_up { 1.0 } else { -1.0 } + self.y(n.part, n.heads[0].pos)) / 2.0;
-                    self.push(Item::glyph(g, n.stem_x - self.width(g) / 2.0, sy, n.id));
+                    let b = self.font.bbox(g);
+                    let root = if n.stem_up { n.heads[n.heads.len() - 1].pos } else { n.heads[0].pos };
+                    let head_edge = self.y(n.part, root) + if n.stem_up { -0.5 } else { 0.5 };
+                    let centre = (self.notes[i].stem_end + head_edge) / 2.0;
+                    let x = n.stem_x - (b.sw.0 + b.ne.0) / 2.0;
+                    let y = centre + (b.ne.1 + b.sw.1) / 2.0;
+                    self.push(Item::glyph(g, x, y, n.id));
                 }
                 if n.art & art::ARPEGGIO != 0 && n.heads.len() > 1 {
                     let (ylo, yhi) = (self.y(n.part, n.heads[0].pos) + 0.5, self.y(n.part, n.heads[n.heads.len() - 1].pos) - 0.5);

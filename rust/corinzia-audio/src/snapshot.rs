@@ -450,13 +450,30 @@ pub fn plays_builtin(project: &Project, track: Id) -> bool {
 /// Whether the score is for orchestra (its strings play as sections): it
 /// has a double bass, or five string staves or more.
 pub fn orchestral(project: &Project) -> bool {
-    let names: Vec<String> = project.instruments.iter().map(|i| i.name.to_lowercase()).collect();
-    let strings = names.iter().filter(|n| ["violin", "viola", "cello", "celli", "bass"].iter().any(|w| n.contains(w)) && !n.contains("guitar") && !n.contains("clarinet") && !n.contains("trombone")).count();
-    names.iter().any(|n| n.contains("double bass") || n.contains("contrabass") || n.contains("basses")) || strings >= 5
+    let kinds: Vec<&str> = project.instruments.iter().filter_map(|i| i.kind).map(|k| k.id).collect();
+    let strings = project.instruments.iter().filter(|i| i.kind.is_some_and(|k| k.section_strings)).count();
+    kinds.contains(&"double-bass") || strings >= 5
+}
+
+/// The General MIDI program and bank the built-in instruments play an
+/// instrument with: its kind's (see `corinzia_model::catalog`); a drum map
+/// plays the drum kit; bowed strings play as a section when marked one, or
+/// (unless marked one player) in an orchestral score. An instrument the
+/// catalogue does not know plays the piano.
+pub fn instrument_program(inst: &corinzia_model::Instrument, orchestral: bool) -> (u8, u16) {
+    use corinzia_ensemble::patches::{DRUM_BANK, SECTION_BANK};
+    if !inst.drums.is_empty() {
+        return (0, DRUM_BANK);
+    }
+    let Some(kind) = inst.kind else { return (0, 0) };
+    if kind.section_strings && inst.section.unwrap_or(orchestral) {
+        return (kind.program, SECTION_BANK);
+    }
+    (kind.program, kind.bank)
 }
 
 /// The sound the built-in instruments give a track: its own program if it
-/// has one, else the one its (first) instrument's name chooses.
+/// has one, else its (first) instrument's (see `instrument_program`).
 pub fn builtin_program(project: &Project, track: Id) -> Option<(u8, u8, Option<u16>)> {
     let t = project.track(track)?;
     let ch = t.midi_channel & 15;
@@ -464,7 +481,7 @@ pub fn builtin_program(project: &Project, track: Id) -> Option<(u8, u8, Option<u
         return Some((ch, p, t.bank));
     }
     let inst = project.instruments.iter().find(|i| i.track == Some(track))?;
-    let (program, bank) = corinzia_ensemble::patches::program_for(&inst.name, !inst.drums.is_empty(), orchestral(project));
+    let (program, bank) = instrument_program(inst, orchestral(project));
     Some((ch, program, Some(bank)))
 }
 

@@ -390,13 +390,19 @@ impl<'a> Engraver<'a> {
             }
             printed = bpm;
             let mut x = if t.at == Frac::ZERO { self.left + 1.0 } else { self.col_x(t.at) - 0.5 };
-            let words = if t.text.is_empty() { String::new() } else { format!("{} (", t.text) };
-            let tail = format!(" = {bpm}{}", if t.text.is_empty() { "" } else { ")" });
-            let total = text_width(&words, TEMPO_SIZE, true) + 1.0 + text_width(&tail, TEMPO_SIZE, false);
+            // The words bold; the metronome mark, in parentheses after
+            // words, in the regular weight, both parentheses alike.
+            let words = t.text.clone();
+            let open = if words.is_empty() { String::new() } else { " (".to_string() };
+            let tail = format!(" = {bpm}{}", if words.is_empty() { "" } else { ")" });
+            let total = text_width(&words, TEMPO_SIZE, true) + text_width(&open, TEMPO_SIZE, false) + 1.0 + text_width(&tail, TEMPO_SIZE, false);
             let y = (self.sky[0].top_over(x, x + total) - 0.6).min(self.top(0) - 2.0);
             if !words.is_empty() {
                 let item = Item::Text { text: words.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: true, anchor: 0, id: t.id };
-                x += text_width(&words, TEMPO_SIZE, true) + 0.35;
+                x += text_width(&words, TEMPO_SIZE, true);
+                self.place(0, item);
+                let item = Item::Text { text: open.clone(), at: pt(x, y), size: TEMPO_SIZE, italic: false, bold: false, anchor: 0, id: t.id };
+                x += text_width(&open, TEMPO_SIZE, false) + 0.35;
                 self.place(0, item);
             }
             self.place(0, Item::glyph_scaled(Glyph::MetNoteQuarterUp, x, y - 0.1, 0.6, t.id));

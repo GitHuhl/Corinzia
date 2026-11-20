@@ -190,6 +190,13 @@ fn players_change_instrument_and_take_up_doublings() {
     let _ = a.update(pl(PlayersMsg::Apply));
     assert_eq!(a.editor.project.instrument(flute_inst).unwrap().engraver_name, "Hb.");
     assert_eq!(a.editor.status, "1 instrument changed");
+    // A name the catalogue does not know only renames: still an oboe, in
+    // its clef, sounding as one.
+    let _ = a.update(pl(PlayersMsg::Open));
+    let _ = a.update(pl(PlayersMsg::Edit(0, "Principal / Pr.".into())));
+    let _ = a.update(pl(PlayersMsg::Apply));
+    let i = a.editor.project.instrument(flute_inst).unwrap();
+    assert_eq!((i.name.as_str(), i.kind.map(|k| k.id), i.clef.as_str()), ("Principal", Some("oboe"), "treble"));
     // A row without an instrument is refused.
     let _ = a.update(pl(PlayersMsg::Open));
     let _ = a.update(pl(PlayersMsg::Edit(1, " ".into())));

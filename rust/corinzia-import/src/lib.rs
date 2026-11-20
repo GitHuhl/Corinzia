@@ -17,7 +17,6 @@
 use corinzia_model::{
     BarKind, Barline, ChordSymbol, ClefChange, Ending, Event, EventKind, Head, Id, Instrument, InstrumentChange, Key, Lane, Meter, Movement, Pitch, Player, Project,
     RehearsalMark, Shown, Tempo, TextItem, TextKind, Track, Tuplet, Voice, DYNAMICS, Grace, LineKind, LineSpan, Nav, NavMark, NavTo, Break, DrumSound, Notehead,
-    default_drums,
 };
 use corinzia_score::score::{art, span, Lyric, Slur};
 use corinzia_score::Frac;
@@ -598,12 +597,13 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                 });
             }
             if drums.is_empty() {
-                drums = default_drums(&name);
+                drums = corinzia_model::catalog::infer(&name).map(|k| k.default_drums()).unwrap_or_default();
             }
         }
         let tuning: Vec<u8> = tuning.iter().map(|t| t.1).collect();
         let clef1 = clef0.clone();
-        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track), drums, tuning });
+        let (kind, section) = Instrument::kind_from_name(&name);
+        p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: to_concert.inverse(), clef: clef0, track: Some(track), drums, tuning, kind, section });
         // Instrument changes: notes for another of the part's instruments.
         let mut held = vec![inst];
         let mut changes: Vec<(Frac, Id)> = Vec::new();
@@ -619,7 +619,8 @@ pub fn musicxml_str(xml: &str) -> Result<Project, String> {
                     None => {
                         let iname = scored.iter().find(|x| x.0 == *iid).map(|x| x.1.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| iid.clone());
                         let id = p.allocate_id();
-                        p.instruments.push(Instrument { id, player, name: iname, engraver_name: String::new(), transposition: to_concert.inverse(), clef: clef1.clone(), track: Some(track), drums: vec![], tuning: vec![] });
+                        let (kind, section) = Instrument::kind_from_name(&iname);
+                        p.instruments.push(Instrument { id, player, name: iname, engraver_name: String::new(), transposition: to_concert.inverse(), clef: clef1.clone(), track: Some(track), drums: vec![], tuning: vec![], kind, section });
                         held.push(id);
                         ids.insert(iid.clone(), id);
                         id

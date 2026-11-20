@@ -174,6 +174,10 @@ fn outer_marks_avoid_each_other() {
     s.parts[1].clefs = vec![ClefChange { at: Frac::new(3, 2), clef: "tenor".into() }];
     let l = layout_line(&s, &Options::default());
     preview("outer_marks", &l);
+    // The tempo's words bold, its metronome mark (parentheses and all) not.
+    let texts: Vec<(&str, bool)> = l.items.iter().filter_map(|i| match i { Item::Text { text, bold, .. } => Some((text.as_str(), *bold)), _ => None }).collect();
+    assert!(texts.contains(&("Allegro", true)), "{texts:?}");
+    assert!(texts.iter().filter(|t| t.0.contains('(') || t.0.contains(')')).all(|t| !t.1), "both parentheses regular: {texts:?}");
 
     // No two outer marks overlap (texts, dynamics, ornaments, numbers, brackets of the top staff).
     let font = corinzia_layout::font::Font::bravura();
@@ -200,7 +204,7 @@ fn outer_marks_avoid_each_other() {
     assert!(curves >= 2, "slurs drawn: {curves}");
     assert_eq!(glyphs(&l, Glyph::TupletDigit(3)).len(), 2);
     assert!(l.items.iter().any(|i| matches!(i, Item::Glyph { scale, .. } if (*scale - 0.8).abs() < 1e-6)));
-    assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "Allegro (")));
+    assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "Allegro")));
     assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, bold: true, .. } if text == "A")));
     assert!(l.items.iter().any(|i| matches!(i, Item::Text { text, .. } if text == "1.")));
     // The staves start after the instrument names.
@@ -1232,4 +1236,33 @@ fn a_run_of_hairpins_and_dynamics_shares_one_line() {
     assert!((mid - (pp_y - 0.6)).abs() < 0.05, "hairpin centre {mid}, pp baseline {pp_y}");
     let mid2 = (centres[2] + centres[3]) / 2.0;
     assert!((mid2 - mid).abs() < 0.05);
+}
+
+#[test]
+fn tremolo_slashes_cross_the_stem() {
+    // Stem up, stem down, and a stem-up chord.
+    let mut s = score(&[("treble", &["g'4 d''4 <e' g' b'>4 r4"])], (4, 4), 0);
+    for e in s.parts[0].voices[0].events.iter_mut().filter(|e| !e.pitches.is_empty()) {
+        e.art |= corinzia_score::score::art::TREMOLO;
+    }
+    let l = layout_line(&s, &Options::default());
+    let font = corinzia_layout::font::Font::bravura();
+    let stems: Vec<(f32, f32, f32)> = l
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Line { from, to, .. } if (from.x - to.x).abs() < 1e-4 && (to.y - from.y).abs() > 2.5 && (to.y - from.y).abs() < 6.0 => Some((from.x, from.y.min(to.y), from.y.max(to.y))),
+            _ => None,
+        })
+        .collect();
+    let heads: Vec<[f32; 4]> = l.items.iter().filter(|i| matches!(i, Item::Glyph { glyph, .. } if *glyph == Glyph::NoteheadBlack.codepoint())).map(|i| i.bounds(font)).collect();
+    let slashes: Vec<[f32; 4]> = l.items.iter().filter(|i| matches!(i, Item::Glyph { glyph, .. } if *glyph == Glyph::Tremolo3.codepoint())).map(|i| i.bounds(font)).collect();
+    assert_eq!(slashes.len(), 3);
+    for r in &slashes {
+        let (cx, cy) = ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+        let stem = stems.iter().find(|s| (s.0 - cx).abs() < 0.05 && cy > s.1 && cy < s.2);
+        assert!(stem.is_some(), "centred on a stem: {r:?} vs {stems:?}");
+        assert!(heads.iter().all(|h| r[3] <= h[1] + 0.05 || r[1] >= h[3] - 0.05 || r[2] <= h[0] || r[0] >= h[2]), "clear of the heads: {r:?}");
+    }
+    preview("tremolo", &l);
 }

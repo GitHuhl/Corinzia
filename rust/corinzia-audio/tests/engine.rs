@@ -15,7 +15,7 @@ const SR: f64 = 48000.0;
 fn project() -> Project {
     let mut p = Project { title: "T".into(), sample_rate: SR, next_id: 1000, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: Some(79), bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-    p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![] });
+    p.instruments.push(Instrument { id: 2, player: 3, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![], kind: corinzia_model::catalog::kind("flute"), section: None });
     p.players.push(Player { id: 3, name: "Flute".into(), instruments: vec![2] });
     let note = |id, start: Frac, step| Event { id, kind: EventKind::Note, start, duration: Frac::new(1, 4), heads: vec![Head { id: id + 1, pitch: Pitch { step, alter: 0, octave: 5 }, tie: false, velocity: 0 }], articulations: 0, dynamic: Some(5), spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
     let rest = |id, start: Frac| Event { id, kind: EventKind::Rest, start, duration: Frac::new(1, 2), heads: vec![], articulations: 0, dynamic: None, spans: 0, lyrics: vec![], graces: vec![], fingering: vec![] };
@@ -923,4 +923,47 @@ fn the_metronome_clicks_on_the_beats_and_counts_in() {
     let (l, _) = eng.render_offline(beat);
     assert!(ui.is_playing() && ui.position() > 0);
     assert!(rms(&l[2000..]) > 0.01, "then the music (c''): {} at {}", rms(&l[2000..]), ui.position());
+}
+
+/// Names, through the catalogue, reach the built-in sounds they mean.
+#[test]
+fn instrument_names_choose_their_sounds() {
+    use corinzia_ensemble::patches;
+    let sound = |n: &str, orchestral: bool| {
+        let (kind, section) = Instrument::kind_from_name(n);
+        let inst = Instrument { id: 1, player: 1, name: n.into(), engraver_name: String::new(), transposition: Interval::default(), clef: "treble".into(), track: None, drums: vec![], tuning: vec![], kind, section };
+        let (program, bank) = snapshot::instrument_program(&inst, orchestral);
+        patches::PATCHES[patches::patch_for(program, bank)].name
+    };
+    for (name, expect) in [
+        ("Flute", "Flute"),
+        ("Alto Flute", "Flute"),
+        ("Harpsichord", "Harpsichord"),
+        ("Harp", "Harp"),
+        ("Lute", "Guitar"),
+        ("Violin", "Violin"),
+        ("Violins 1", "Violins"),
+        ("Violoncello", "Cello"),
+        ("Horn in F", "Horn"),
+        ("Horns", "Horn"),
+        ("English Horn", "Cor anglais"),
+        ("Cornet", "Trumpet"),
+        ("Bass Clarinet", "Bass clarinet"),
+        ("Contrabassoon", "Contrabassoon"),
+        ("Alto Saxophone", "Saxophone"),
+        ("Tenor Trombone", "Trombone"),
+        ("Soprano", "Voice (female)"),
+        ("Tenor", "Voice (male)"),
+        ("Bass", "Voice (male)"),
+        ("Choir", "Choir"),
+        ("Timpani", "Timpani"),
+        ("Piano", "Piano"),
+        ("Glockenspiel", "Glockenspiel"),
+    ] {
+        assert_eq!(sound(name, false), expect, "{name}");
+    }
+    assert_eq!(sound("Violin I", true), "Violins");
+    assert_eq!(sound("Solo Violin", true), "Violin");
+    assert_eq!(sound("Double Bass", true), "Basses");
+    assert_eq!(patches::PATCHES[patches::patch_for(0, patches::DRUM_BANK)].name, "Drum kit");
 }

@@ -719,7 +719,7 @@ fn musicxml_round_trip_keeps_the_newer_notation() {
         let flute_player = p.players[0].id;
         let picc = p.allocate_id();
         let track = p.instruments[0].track;
-        p.instruments.push(Instrument { id: picc, player: flute_player, name: "Piccolo".into(), engraver_name: "Picc.".into(), transposition: Default::default(), clef: "treble".into(), track, drums: vec![], tuning: vec![] });
+        p.instruments.push(Instrument { id: picc, player: flute_player, name: "Piccolo".into(), engraver_name: "Picc.".into(), transposition: Default::default(), clef: "treble".into(), track, drums: vec![], tuning: vec![], kind: None, section: None });
         p.players[0].instruments.push(picc);
         let m = &mut p.movements[0];
         m.lanes[0].changes.push(InstrumentChange { id: 9001, at: piccolo_at, instrument: picc });

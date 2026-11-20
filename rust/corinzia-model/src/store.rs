@@ -215,6 +215,8 @@ pub fn load(path: &Path) -> Result<Project> {
                 transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
                 clef: r.get(6)?,
                 track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![], tuning: vec![],
+                kind: None,
+                section: None,
             })
         })?;
         for i in rows {
@@ -223,6 +225,18 @@ pub fn load(path: &Path) -> Result<Project> {
                 pl.instruments.push(i.id);
             }
             p.instruments.push(i);
+        }
+    }
+    // What each instrument is (see `catalog`); projects saved before kinds
+    // find theirs from the names, once.
+    let kinds = setting("kinds")?;
+    for i in p.instruments.iter_mut() {
+        match kinds.as_ref().map(|k| &k[i.id.to_string()]).filter(|v| v.is_object()) {
+            Some(v) => {
+                i.kind = v["kind"].as_str().and_then(crate::catalog::kind);
+                i.section = v["section"].as_bool();
+            }
+            None => (i.kind, i.section) = Instrument::kind_from_name(&i.name),
         }
     }
     // Percussion maps, by instrument.
@@ -685,7 +699,8 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
     });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?), ("performance", json!({"phrasing": project.phrasing}))] {
+    let kinds: serde_json::Map<String, Value> = project.instruments.iter().map(|i| (i.id.to_string(), json!({"kind": i.kind.map(|k| k.id), "section": i.section}))).collect();
+    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("kinds", Value::Object(kinds)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?), ("performance", json!({"phrasing": project.phrasing}))] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
     let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();

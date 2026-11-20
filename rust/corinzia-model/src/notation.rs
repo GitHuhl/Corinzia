@@ -44,38 +44,10 @@ pub fn transpose_chord_text(text: &str, by: Interval) -> String {
     out
 }
 
-/// The orchestral family an instrument belongs to, from its name (English,
-/// with common Italian, German and French names): brackets join a family's
-/// staves. Keyboards, harps and guitars belong to none.
-pub fn family(name: &str) -> Option<&'static str> {
-    let n = name.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-    if has(&["piano", "organ", "celesta", "harpsichord", "harp", "guitar", "keyboard", "synth", "accordion"]) {
-        None
-    } else if has(&["flute", "piccolo", "oboe", "cor anglais", "english horn", "clarinet", "bassoon", "sax", "recorder", "flauto", "clarinetto", "fagott", "flöte", "klarinette"]) {
-        Some("woodwinds")
-    } else if has(&["horn", "trumpet", "trombone", "tuba", "cornet", "euphonium", "flugel", "corno", "tromba", "trompete", "posaune"]) {
-        Some("brass")
-    } else if has(&["timpani", "percussion", "drum", "cymbal", "triangle", "glock", "xylo", "marimba", "vibra", "tam-tam", "gong", "bells", "pauken"]) {
-        Some("percussion")
-    } else if has(&["violin", "viola", "cello", "violoncell", "contrabass", "double bass", "string bass", "strings", "violon", "geige", "kontrabass"]) {
-        Some("strings")
-    } else if has(&["soprano", "mezzo", "alto", "tenor", "baritone", "voice", "choir", "chorus", "contralto"]) || n.trim_start().starts_with("bass") {
-        // ("Bass" alone is the choir's; the orchestra's is a double bass.)
-        Some("voices")
-    } else {
-        None
-    }
-}
-
 /// Bracket groups per lane: a run of at least two lanes of one family gets
 /// a number (from 1); others 0. The staves of one player stay together.
 fn bracket_groups(project: &Project, m: &Movement) -> Vec<u32> {
-    let fam: Vec<Option<&str>> = m
-        .lanes
-        .iter()
-        .map(|l| l.changes.first().and_then(|c| project.instrument(c.instrument)).and_then(|i| family(&i.name)))
-        .collect();
+    let fam: Vec<Option<crate::catalog::Family>> = m.lanes.iter().map(|l| l.changes.first().and_then(|c| project.instrument(c.instrument)).and_then(|i| i.family())).collect();
     let mut out = vec![0; fam.len()];
     let mut next = 1;
     let mut i = 0;

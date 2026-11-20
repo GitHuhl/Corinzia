@@ -111,7 +111,7 @@ fn a_string_players_double_stop_is_one_gesture() {
 #[test]
 fn a_pianists_melody_leads_the_chord() {
     let m = movement(16, vec![(4, vec![vec![p(0, 4), p(4, 4), p(0, 5)]; 64], Frac::new(1, 4))]);
-    let perf = perform_with(&m, style(&[(4, PlayerFeel::for_instrument("Piano", &[]))]));
+    let perf = perform_with(&m, style(&[(4, PlayerFeel::for_instrument(corinzia_model::catalog::kind("piano"), &[]))]));
     let mut lead = Vec::new();
     for chord in perf.notes.chunks(3).skip(1) {
         let top = chord.iter().max_by_key(|n| n.key).unwrap();
@@ -126,7 +126,7 @@ fn a_pianists_melody_leads_the_chord() {
 fn a_drum_kit_keeps_time_on_the_hats_and_lays_the_snare_back() {
     // Hi-hat (written g'', GM 42) in eighths; snare (c'', GM 38) on 2 and 4;
     // bass drum (f', GM 36) on 1 and 3: three lanes of one kit.
-    let kit = PlayerFeel::for_instrument("Drum Set", &[(79, 42), (72, 38), (65, 36)]);
+    let kit = PlayerFeel::for_instrument(corinzia_model::catalog::kind("drum-set"), &[(79, 42), (72, 38), (65, 36)]);
     assert!(matches!(kit, PlayerFeel::Kit(_)));
     let hats = vec![vec![p(4, 5)]; 256];
     let snare: Vec<Vec<Pitch>> = (0..64).map(|i| if i % 2 == 1 { vec![p(0, 5)] } else { vec![] }).collect();

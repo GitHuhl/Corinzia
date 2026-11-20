@@ -189,6 +189,11 @@ pub struct InstrumentSpec {
     /// "treble", "bass"…; "treble+bass" for a grand staff.
     pub clef: String,
     pub transposition: Interval,
+    /// What it is (see `corinzia_model::catalog`); None: a name the
+    /// catalogue does not know.
+    pub kind: Option<&'static corinzia_model::catalog::Kind>,
+    /// Strings: one player, a section, or as the score suggests.
+    pub section: Option<bool>,
 }
 
 /// A player in the Players dialog's list: one already in the score, or one
@@ -218,11 +223,11 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     let (track, inst) = (p.allocate_id(), p.allocate_id());
     let used: Vec<u8> = p.tracks.iter().map(|t| t.midi_channel).collect();
     // A drum set starts with its map, and plays on the drum channel (10).
-    let drums = if spec.clef == "percussion" { default_drums(&spec.name) } else { vec![] };
+    let drums = if spec.clef == "percussion" { spec.kind.map(|k| k.default_drums()).unwrap_or_default() } else { vec![] };
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
     p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
-    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: default_tuning(&spec.name) });
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: spec.kind.map(|k| k.default_tuning()).unwrap_or_default(), kind: spec.kind, section: spec.section });
     inst
 }
 
@@ -251,15 +256,21 @@ fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) 
         }
         changed += 1;
         if !free.is_empty() {
-            // The instrument changes; its music and track stay.
+            // The instrument changes; its music and track stay. A name the
+            // catalogue does not know only renames it: what it is (its kind,
+            // clef, transposition) stays.
             let id = free.remove(0);
             let clef = s.clef.split('+').next().unwrap_or("treble").to_string();
             let mut track = None;
             if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id) {
                 i.name = s.name.clone();
                 i.engraver_name = s.abbr.clone();
-                i.clef = clef;
-                i.transposition = s.transposition;
+                if s.kind.is_some() {
+                    i.clef = clef;
+                    i.transposition = s.transposition;
+                    i.kind = s.kind;
+                    i.section = s.section;
+                }
                 track = i.track;
             }
             if let Some(t) = p.tracks.iter_mut().find(|t| Some(t.id) == track) {

@@ -6,71 +6,11 @@ use corinzia_layout::{layout_pages, Options, PageSpec};
 use corinzia_model::{Interval, Project};
 use std::path::Path;
 
-/// Known instruments: names (lower case, with aliases), display name,
-/// abbreviation, clef ("treble+bass": a grand staff, one staff per clef).
-/// Scores are written at concert pitch.
-const INSTRUMENTS: &[(&[&str], &str, &str, &str)] = &[
-    (&["piccolo"], "Piccolo", "Picc.", "treble"),
-    (&["flute", "fl"], "Flute", "Fl.", "treble"),
-    (&["oboe", "ob"], "Oboe", "Ob.", "treble"),
-    (&["cor anglais", "english horn"], "Cor anglais", "C. a.", "treble"),
-    (&["clarinet", "cl", "clarinet in bb", "bb clarinet"], "Clarinet in B♭", "Cl.", "treble"),
-    (&["clarinet in a", "a clarinet"], "Clarinet in A", "Cl.", "treble"),
-    (&["bass clarinet"], "Bass clarinet", "B. Cl.", "bass"),
-    (&["bassoon", "bsn"], "Bassoon", "Bsn.", "bass"),
-    (&["contrabassoon"], "Contrabassoon", "Cbsn.", "bass_8"),
-    (&["soprano saxophone", "soprano sax"], "Soprano saxophone", "S. Sax.", "treble"),
-    (&["saxophone", "alto saxophone", "alto sax", "sax"], "Alto saxophone", "A. Sax.", "treble"),
-    (&["tenor saxophone", "tenor sax"], "Tenor saxophone", "T. Sax.", "treble"),
-    (&["baritone saxophone", "baritone sax", "bari sax"], "Baritone saxophone", "Bar. Sax.", "bass"),
-    (&["horn", "french horn", "hn", "horn in f"], "Horn in F", "Hn.", "treble"),
-    (&["trumpet", "tpt", "trumpet in bb", "bb trumpet"], "Trumpet in B♭", "Tpt.", "treble"),
-    (&["trumpet in c", "c trumpet"], "Trumpet in C", "Tpt.", "treble"),
-    (&["trombone", "tbn"], "Trombone", "Tbn.", "bass"),
-    (&["bass trombone"], "Bass trombone", "B. Tbn.", "bass"),
-    (&["tuba"], "Tuba", "Tba.", "bass"),
-    (&["timpani", "timp"], "Timpani", "Timp.", "bass"),
-    (&["percussion", "perc"], "Percussion", "Perc.", "percussion"),
-    (&["drum set", "drums", "drum kit", "kit"], "Drum set", "Dr.", "percussion"),
-    (&["snare drum", "snare"], "Snare drum", "S.D.", "percussion"),
-    (&["bass drum"], "Bass drum", "B.D.", "percussion"),
-    (&["cymbals", "cymbal"], "Cymbals", "Cym.", "percussion"),
-    (&["harp"], "Harp", "Hp.", "treble+bass"),
-    (&["piano", "pno"], "Piano", "Pno.", "treble+bass"),
-    (&["organ", "org"], "Organ", "Org.", "treble+bass"),
-    (&["celesta"], "Celesta", "Cel.", "treble+bass"),
-    (&["guitar", "gtr"], "Guitar", "Gtr.", "treble_8"),
-    (&["electric guitar", "e. gtr", "e-guitar"], "Electric guitar", "E. Gtr.", "treble_8"),
-    (&["guitar tab", "guitar with tab", "guitar (tab)"], "Guitar (tab)", "Gtr.", "treble_8"),
-    (&["bass guitar", "electric bass", "e. bass"], "Bass guitar", "B. Gtr.", "bass_8"),
-    (&["soprano", "s"], "Soprano", "S.", "treble"),
-    (&["alto", "a", "mezzo"], "Alto", "A.", "treble"),
-    (&["tenor", "t"], "Tenor", "T.", "treble_8"),
-    (&["baritone"], "Baritone", "Bar.", "bass"),
-    (&["bass", "b"], "Bass", "B.", "bass"),
-    (&["violin", "vln", "violin i", "violin ii"], "Violin", "Vln.", "treble"),
-    (&["viola", "vla"], "Viola", "Vla.", "alto"),
-    (&["cello", "violoncello", "vc"], "Cello", "Vc.", "bass"),
-    (&["double bass", "contrabass", "db", "cb"], "Double bass", "D.B.", "bass_8"),
-];
-
-/// Transposing instruments: display name -> written minus sounding.
-/// (Octave-transposing ones use octave clefs instead, e.g. "treble_8".)
-const TRANSPOSITIONS: &[(&str, Interval)] = &[
-    ("Clarinet in B♭", Interval::new(1, 2)),
-    ("Clarinet in A", Interval::new(2, 3)),
-    ("Bass clarinet", Interval::new(1, 2)),
-    ("Cor anglais", Interval::new(4, 7)),
-    ("Soprano saxophone", Interval::new(1, 2)),
-    ("Alto saxophone", Interval::new(5, 9)),
-    ("Tenor saxophone", Interval::new(8, 14)),
-    ("Baritone saxophone", Interval::new(12, 21)),
-    ("Horn in F", Interval::new(4, 7)),
-    ("Trumpet in B♭", Interval::new(1, 2)),
-];
-
+/// The transposition a name not in the catalogue's aliases borrows: its
+/// kind's, if the name starts with the kind's own ("Clarinet in B♭ (Bb)"),
+/// else none ("Clarinet in E♭" is not a B♭ clarinet).
 pub fn transposition_of(name: &str) -> Interval {
-    TRANSPOSITIONS.iter().find(|(n, _)| name.starts_with(n)).map(|t| t.1).unwrap_or_default()
+    corinzia_model::catalog::infer(name).filter(|k| name.starts_with(k.name)).map(|k| k.transposition).unwrap_or_default()
 }
 
 /// Ready-made ensembles for the New score card: (label, instrument list).
@@ -85,22 +25,6 @@ pub const TEMPLATES: &[(&str, &str)] = &[
     ("Orchestra", "2 Flute, 2 Oboe, 2 Clarinet, 2 Bassoon, 2 Horn, 2 Trumpet, Timpani, 2 Violin, Viola, Cello, Double bass"),
 ];
 
-/// The staff clef for an instrument not in the list, from its name.
-fn guess_clef(name: &str) -> &'static str {
-    let n = name.to_lowercase();
-    if ["bass", "cello", "tuba", "bassoon", "trombone", "baritone", "contra", "timpani"].iter().any(|w| n.contains(w)) {
-        "bass"
-    } else if n.contains("viola") {
-        "alto"
-    } else if ["keyboard", "synth", "piano", "harpsichord", "marimba"].iter().any(|w| n.contains(w)) {
-        "treble+bass"
-    } else if ["drum", "perc", "kit"].iter().any(|w| n.contains(w)) {
-        "percussion"
-    } else {
-        "treble"
-    }
-}
-
 /// A comma-separated instrument list ("Flute, 2 Violin, Cello") ->
 /// (name, abbreviation, clef) per staff. A leading count repeats an
 /// instrument, numbered. A name not in the list is taken as written, with
@@ -112,9 +36,8 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
             Some((n, rest)) if n.parse::<u32>().is_ok() => (n.parse::<u32>().unwrap().clamp(1, 16), rest.trim()),
             _ => (1, item),
         };
-        let key = name.to_lowercase();
-        match INSTRUMENTS.iter().find(|(names, ..)| names.contains(&key.as_str())) {
-            Some((_, full, abbr, clef)) => {
+        match corinzia_model::catalog::lookup(name).map(|k| (k.name, k.abbr, k.clef)) {
+            Some((full, abbr, clef)) => {
                 for i in 1..=count {
                     let suffix = if count > 1 { format!(" {i}") } else { String::new() };
                     out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), clef.to_string()));
@@ -129,7 +52,7 @@ pub fn parse_instruments(text: &str) -> Result<Vec<(String, String, String)>, St
                 let abbr = format!("{}.", full.chars().take(3).collect::<String>());
                 for i in 1..=count {
                     let suffix = if count > 1 { format!(" {i}") } else { String::new() };
-                    out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), guess_clef(name).to_string()));
+                    out.push((format!("{full}{suffix}"), format!("{abbr}{suffix}"), corinzia_model::catalog::guess_clef(name).to_string()));
                 }
             }
         }
@@ -160,9 +83,9 @@ pub fn instrument_spec(name: &str) -> Option<crate::editor::InstrumentSpec> {
         _ => (name, None),
     };
     let suffix = number.map(|n| format!(" {n}")).unwrap_or_default();
-    let key = base.to_lowercase();
-    let (full, abbr, clef) = match INSTRUMENTS.iter().find(|(names, ..)| names.contains(&key.as_str())) {
-        Some((_, full, abbr, clef)) => (format!("{full}{suffix}"), format!("{abbr}{suffix}"), clef.to_string()),
+    let known = corinzia_model::catalog::lookup(base);
+    let (full, abbr, clef) = match known {
+        Some(k) => (format!("{}{suffix}", k.name), format!("{}{suffix}", k.abbr), k.clef.to_string()),
         None => {
             let full: String = name.chars().take(40).collect();
             let full = match full.get(..1) {
@@ -170,11 +93,14 @@ pub fn instrument_spec(name: &str) -> Option<crate::editor::InstrumentSpec> {
                 None => full,
             };
             let abbr = format!("{}.", full.chars().take(3).collect::<String>());
-            (full, abbr, guess_clef(base).to_string())
+            (full, abbr, corinzia_model::catalog::guess_clef(base).to_string())
         }
     };
     let transposition = transposition_of(&full);
-    Some(crate::editor::InstrumentSpec { name: full, abbr, clef, transposition })
+    // What it is: the kind typed, else the kind its words suggest (None: a
+    // name the catalogue does not know, which only renames an instrument).
+    let kind = known.or_else(|| corinzia_model::catalog::infer(name));
+    Some(crate::editor::InstrumentSpec { name: full, abbr, clef, transposition, kind, section: corinzia_model::catalog::section_of(name) })
 }
 
 /// A player's instruments, comma separated: the first one, then doublings.

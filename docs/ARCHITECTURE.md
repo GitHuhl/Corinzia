@@ -65,6 +65,17 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   slashed, at most half the note) from the note.
 * Every object has a persistent element id. The id is used in the file, in
   the engraving (hit testing) and in playback (highlighting).
+* **The instrument catalogue** (`catalog.rs`) says what each kind of
+  instrument is, in one table: its family (brackets), the name,
+  abbreviation, clef and transposition it is added with, the General MIDI
+  program the built-in instruments play, whether strings may play as a
+  section, its players' timing feel, and the drum map or tablature tuning
+  it starts with. Each `Instrument` remembers its `kind` (and, for strings,
+  whether it is one player or a `section`), fixed when it is added or
+  imported, so renaming a staff changes none of this. A name is read once
+  (`catalog::infer`): an exact alias first ("fl", "Horn in F"), else the
+  most specific kind whose words it contains ("Flauto 2", "Violins I").
+  Projects saved before kinds find theirs from their names when opened.
 * `notation::score` converts a movement into the engraver's input
   (`corinzia_score::score::Score`), at concert pitch. `notation::score_as`
   can instead give a transposed score:
@@ -89,7 +100,9 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
 * structure marks, clefs, text and chord symbols go in one JSONB column per
   movement;
 * plugin state chunks have their own table, and a hash skips rewriting
-  unchanged state.
+  unchanged state;
+* instruments' kinds, drum maps and tunings are settings (JSON by
+  instrument id).
 
 `save` upserts every row and deletes rows that no longer exist.
 
@@ -246,7 +259,7 @@ position (`-dbackend=null`), and compares the gaps. The current corpus has
   Coda (with a small coda sign), Fine and the jumps in italics end at
   theirs, all stacked against the skyline.
 * Staves of one instrument family next to each other (woodwinds, brass,
-  percussion, voices, strings; from the instrument names) share a bracket
+  percussion, voices, strings; from the instruments' kinds) share a bracket
   with serifs, as LilyPond's StaffGroup, and their barlines run through.
 * Fingering (SMuFL digits) sits just above the note, or above its stem
   tip, stacked for a chord; bowings stack above the staff with fermatas
@@ -408,8 +421,8 @@ Every example score in the W3C MusicXML repository imports and engraves
   its beat by its player's `Feel`, mostly close, never far. A slow,
   correlated drift (smooth noise over 0.5–16 s, a 1/f^0.8 spectrum, as
   measured in human playing) plus note-to-note jitter, shared by one
-  player's chord. Feels by family (`PlayerFeel::for_instrument`, chosen in
-  `Style::of`): strings 14/8 ms (drift/jitter), winds and brass 12/7,
+  player's chord. Feels by the instrument's kind (`PlayerFeel::for_instrument`,
+  chosen in `Style::of`): strings 14/8 ms (drift/jitter), winds and brass 12/7,
   voices 16/10, keyboards 9/5 with a 15 ms melody lead and a 4 ms chord
   spread, plucked 10/6, percussion 8/5. A drum kit (three or more drum
   sounds) is placed per sound: hi-hat and ride 5/3, the snare 6 ms behind,
@@ -521,7 +534,8 @@ new ones), each with its instruments (the first, then doublings), and
 applies it with `Editor::set_players` as one undo step. A kept player's
 instruments are matched by name: a name still listed keeps its instrument,
 a new one takes the place of one no longer listed (changed in place, so
-its music and track stay), and further ones are doublings with tracks of
+its music and track stay; a name the catalogue does not know only renames
+it, keeping its kind, clef and transposition), and further ones are doublings with tracks of
 their own. Otherwise: dropped players take their
 staves in every movement, their instruments and the tracks only they used
 (with plugin nodes); new ones get an instrument, a track on a free MIDI
