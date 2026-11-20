@@ -27,6 +27,9 @@ pub struct Prefs {
     /// before playback starts (0..=2).
     pub metronome: bool,
     pub count_in: u8,
+    /// With a passage selected, Play sounds only its staves, from its start
+    /// to its end (as other score editors do); off: everything from there on.
+    pub play_selection_only: bool,
     /// Scores opened or saved lately, the latest first.
     pub recent: Vec<String>,
 }
@@ -62,7 +65,7 @@ impl Layout {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new(), layout: Layout::default(), metronome: false, count_in: 0, recent: vec![] }
+        Prefs { theme: "Dark".into(), output_device: String::new(), sample_rate: 48000, buffer: 2048, plugin_paths: vec![], default_plugin_paths: true, midi_input: String::new(), layout: Layout::default(), metronome: false, count_in: 0, play_selection_only: true, recent: vec![] }
     }
 }
 

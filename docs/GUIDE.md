@@ -42,7 +42,9 @@ the output), automation playback and saving plugin settings.
 
 * **Score tab:** Page and Panorama views, vector-sharp at any zoom. Note
   input from the keyboard, the mouse and the Notes panel; passages by
-  marquee, Shift-click, a click in a bar's empty space or Ctrl+A;
+  marquee, Shift-click, a click in a bar's empty space or Ctrl+A (click a
+  note, then Shift+click a note on another staff to take in every staff
+  between them over those beats);
   copy/paste/repeat; articulations, ornaments, ties, hairpins and dynamics
   (Shift+D types any of pppp…ffff, sf, sfz, fp, rfz…); slurs that nest,
   overlap and cross between voices and staves, placed and curved as
@@ -301,7 +303,11 @@ the output), automation playback and saving plugin settings.
   engraved as F♯m7♭5/E). Staves move apart where they need the room.
 * **Playback:** Space plays from the selection or caret with a playhead in
   the score; repeats, endings, ties, ornaments, dynamics and hairpins are
-  performed. Tracks without a plugin play through **Corinzia Ensemble**,
+  performed. With a passage selected, only its staves play, from its start
+  to its end, as in other score editors (with the cycle on, it loops);
+  turn this off in Preferences ("Play only the selected passage") to play
+  everything from the passage on. A single selected note plays everything
+  from there. Tracks without a plugin play through **Corinzia Ensemble**,
   the built-in instruments (also installed as
   `lib/clap/Corinzia Ensemble.clap` for other hosts). Entered notes are
   auditioned. If the computer cannot render a block in time (a click or a

@@ -24,6 +24,7 @@ pub(crate) enum PrefsMsg {
     Rate(u32),
     Buffer(u32),
     CountIn(u8),
+    SelectionOnly(bool),
     Midi(String),
     Paths(String),
     DefaultPaths(bool),
@@ -59,6 +60,7 @@ pub(crate) fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
         ]
         .spacing(10),
         column![label("Count-in before playing (with or without the metronome)"), pick(COUNT_INS.map(String::from).to_vec(), COUNT_INS[d.draft.count_in.min(2) as usize].to_string(), |v| PrefsMsg::CountIn(COUNT_INS.iter().position(|x| *x == v).unwrap_or(0) as u8))].spacing(3),
+        button(text("Play only the selected passage (its staves, to its end)").size(13)).padding([5, 10]).style(theme::tool(d.draft.play_selection_only)).on_press(pm(PrefsMsg::SelectionOnly(!d.draft.play_selection_only))),
         column![
             label("More plugin folders (separated by ;)"),
             text_input("/path/to/plugins", &d.paths).on_input(move |v| pm(PrefsMsg::Paths(v))).padding(5).size(14),
@@ -104,6 +106,7 @@ impl App {
             PrefsMsg::Midi(label) => d.draft.midi_input = d.midi_ports.iter().find(|x| x.1 == label).map(|x| x.0.clone()).unwrap_or_default(),
             PrefsMsg::Buffer(b) => d.draft.buffer = b,
             PrefsMsg::CountIn(n) => d.draft.count_in = n.min(2),
+            PrefsMsg::SelectionOnly(on) => d.draft.play_selection_only = on,
             PrefsMsg::Paths(t) => d.paths = t,
             PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
             PrefsMsg::Cancel => {

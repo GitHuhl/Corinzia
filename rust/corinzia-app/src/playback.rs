@@ -52,6 +52,11 @@ pub struct Playback {
     pub sample_rate: f64,
     /// Where plugins are looked for (from the preferences).
     pub search_paths: Vec<std::path::PathBuf>,
+    /// Playing the selection only: the tracks that sound (the rest are
+    /// silenced in the engine for this run, the project untouched), and
+    /// where to stop (movement, written quarter).
+    only: Option<std::collections::HashSet<Id>>,
+    pub until: Option<(Id, f64)>,
 }
 
 impl Playback {
@@ -107,6 +112,8 @@ impl Playback {
             scan_errors: Vec::new(),
             sample_rate: rate,
             search_paths: prefs.plugin_search_paths(),
+            only: None,
+            until: None,
         }
     }
 
@@ -143,15 +150,47 @@ impl Playback {
             self.handle.swap(snap);
             // Its samples move with the plan.
             self.send_cycle();
+            if self.only.is_some() {
+                self.send_mix(project);
+            }
         } else if self.mixed != Some(revision) {
             self.mixed = Some(revision);
-            for (track, gain, pan, audible, direct) in snapshot::mix(project) {
-                if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
-                    let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
-                }
-            }
+            self.send_mix(project);
             self.send_levels(project);
         }
+    }
+
+    /// Every track's gain, pan and whether it sounds (only the selection's
+    /// while playing it alone).
+    fn send_mix(&mut self, project: &Project) {
+        for (track, gain, pan, audible, direct) in snapshot::mix(project) {
+            if let Some(node) = self.node_tracks.iter().position(|t| *t == track) {
+                let audible = audible && self.only.as_ref().is_none_or(|o| o.contains(&track));
+                let _ = self.handle.send(Command::Mix { node: node as u32, gain, pan, audible, direct });
+            }
+        }
+    }
+
+    /// Plays only these tracks from a written position, stopping at `until`
+    /// (the selection's end) if given.
+    pub fn play_only(&mut self, project: &Project, tracks: std::collections::HashSet<Id>, movement: Id, from: f64, until: Option<f64>) {
+        self.only = Some(tracks);
+        self.until = until.map(|q| (movement, q));
+        self.send_mix(project);
+        self.play_from(movement, from);
+    }
+
+    /// After playing the selection: every track sounds again.
+    pub fn release_only(&mut self, project: &Project) {
+        self.until = None;
+        if self.only.take().is_some() {
+            self.send_mix(project);
+        }
+    }
+
+    /// Playing the selection alone.
+    pub fn playing_only(&self) -> bool {
+        self.only.is_some()
     }
 
     /// Buses, sends and the master: their levels, live.

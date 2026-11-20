@@ -145,3 +145,78 @@ fn scores_saved_and_opened_are_remembered() {
     assert_eq!(a.prefs.recent.len(), 8);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Two staves with notes starting together: (lower lane, its head, upper
+/// lane, its head, the time).
+fn two_staves_together(a: &App) -> (usize, u64, usize, u64, Frac) {
+    let m = a.editor.movement().unwrap();
+    for (li, l) in m.lanes.iter().enumerate().rev() {
+        for e in l.voices[0].events.iter().filter(|e| !e.heads.is_empty()) {
+            for (lj, k) in m.lanes.iter().enumerate().take(li) {
+                if let Some(o) = k.voices[0].events.iter().find(|o| o.start == e.start && !o.heads.is_empty()) {
+                    return (li, e.heads[0].id, lj, o.heads[0].id, e.start);
+                }
+            }
+        }
+    }
+    panic!("no two staves sound together");
+}
+
+#[test]
+fn shift_click_on_another_staff_selects_across_the_staves() {
+    let mut a = app(View::Page);
+    let (low_lane, low, high_lane, high, at) = two_staves_together(&a);
+    let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(low), at: None, shift: false }));
+    assert_eq!(a.editor.selection, Some(low));
+    // Shift+click the note above on the same beat: a passage over both
+    // staves (and any between), from that beat.
+    let _ = a.update(Message::Canvas(ViewEvent::Click { hit: Some(high), at: None, shift: true }));
+    let r = a.editor.range.expect("a passage");
+    assert_eq!((r.lane_from, r.lane_to, r.from), (high_lane, low_lane, at));
+    assert!(r.to > at);
+}
+
+#[test]
+fn play_sounds_only_the_selected_passage_and_stops_at_its_end() {
+    let mut a = app(View::Page);
+    a.sync();
+    let (low_lane, _, high_lane, _, at) = two_staves_together(&a);
+    let (mid, m) = (a.editor.movement().unwrap().id, a.editor.movement().unwrap().clone());
+    let track_of = |a: &App, lane: usize| a.editor.project.instrument(m.lanes[lane].instrument_at(at).unwrap()).unwrap().track.unwrap();
+    let (low_track, high_track) = (track_of(&a, low_lane), track_of(&a, high_lane));
+    // The bar on the upper staff only.
+    a.editor.select_bar(high_lane, at, false);
+    let r = a.editor.range.unwrap();
+    let _ = a.update(Message::Act(Action::PlayStop));
+    assert!(a.playback.playing_only() && a.playback.until == Some((mid, quarters(r.to))));
+    for _ in 0..20 {
+        render(&mut a, 2400);
+        a.playback.tick();
+    }
+    assert!(a.playback.level(high_track).0 > 0.0, "the selected staff sounds");
+    assert_eq!(a.playback.level(low_track), (0.0, 0.0), "the other is silent");
+    // At the passage's end it stops, and every track sounds again.
+    let mut frames = 0.0;
+    while a.playback.is_playing() && frames < 10.0 * a.playback.sample_rate {
+        render(&mut a, 2400);
+        let _ = a.update(Message::Frame);
+        frames += 2400.0;
+    }
+    assert!(!a.playback.is_playing(), "stopped at the end of the bar: {:?} until {:?}", a.playback.playhead(), a.playback.until);
+    // (a bar of 4/4 at the demo's tempo is well under ten seconds)
+    assert!(!a.playback.playing_only());
+    // Off in the preferences: everything plays from the passage on.
+    render(&mut a, 9600); // the release
+    a.prefs.play_selection_only = false;
+    let _ = a.update(Message::Act(Action::PlayStop));
+    render(&mut a, 256);
+    assert!(a.playback.is_playing() && !a.playback.playing_only() && a.playback.until.is_none());
+    let _ = a.update(Message::Act(Action::PlayStop));
+    render(&mut a, 9600);
+    // A single note selected: from it, everything.
+    a.prefs.play_selection_only = true;
+    a.editor.select(Some(m.lanes[high_lane].voices[0].events.iter().find(|e| e.start == at).unwrap().heads[0].id));
+    let _ = a.update(Message::Act(Action::PlayStop));
+    render(&mut a, 256);
+    assert!(a.playback.is_playing() && !a.playback.playing_only());
+}

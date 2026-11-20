@@ -13,20 +13,24 @@ impl Editor {
 
     /// Selects the slur `id`; false if there is none.
     pub fn select_slur(&mut self, id: Id) -> bool {
+        // Not a slur or hairpin: the selection stays as it was (a Shift+click
+        // on a note extends it).
+        let before = (self.slur, self.selection, self.range, self.range_anchor);
+        let restore = |ed: &mut Self| (ed.slur, ed.selection, ed.range, ed.range_anchor) = before;
         self.slur = Some(id);
         self.selection = None;
         self.range = None;
         self.range_anchor = None;
         if ids::as_hairpin(id).is_some() {
             if self.selected_hairpin().is_none() {
-                self.slur = None;
+                restore(self);
                 return false;
             }
             self.status = "Hairpin · drag an end to another note · Shift+←→ end · Alt+←→ start · Delete removes it".into();
             return true;
         }
         if self.selected_slur().is_none() {
-            self.slur = None;
+            restore(self);
             return false;
         }
         self.status = "Slur · drag an end to another note · Shift+←→ end · Alt+←→ start · X flips".into();
