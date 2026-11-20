@@ -55,6 +55,10 @@ plays in real time on an ordinary four-core computer.
   ahead and behind, in the way of their instrument, from a string
   section's breadth to a drummer's tight hi-hat and laid-back snare. Turn
   it off to hear exactly what's on the page.
+* **A bank of your motifs.** Select a melody, a bass line, a call or its
+  answer, and keep it in the motif bank, named and tagged with what it
+  is, drawn and ready to hear. It is the material for Explore, where
+  Corinzia will accompany and compose alongside you as you play.
 
 Open Corinzia and it greets you with *A Festival Prelude*, a short original
 piece for full orchestra: long string lines, woodwind solos over

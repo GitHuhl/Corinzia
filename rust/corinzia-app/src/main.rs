@@ -23,6 +23,7 @@ mod files;
 mod keys;
 mod midi_in;
 mod mix;
+mod motif_view;
 mod panels;
 mod playback;
 mod prefs;

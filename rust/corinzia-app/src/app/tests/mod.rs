@@ -11,6 +11,7 @@ mod command;
 mod dialogs;
 mod document;
 mod mixing;
+mod motifs;
 mod playback;
 mod score;
 

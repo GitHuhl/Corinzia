@@ -28,6 +28,7 @@ mod filters;
 mod clipboard;
 mod page;
 mod chant;
+mod motifs;
 
 
 /// A passage: staves `lane_from..=lane_to`, time `[from, to)`.

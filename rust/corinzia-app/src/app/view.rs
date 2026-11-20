@@ -93,6 +93,7 @@ impl App {
             segmented(vec![
                 ("Score", self.tab == Tab::Score, Message::Act(Action::ShowScore)),
                 ("Mix", self.tab == Tab::Mix, Message::Act(Action::ShowMix)),
+                ("Explore", self.tab == Tab::Explore, Message::Act(Action::ShowExplore)),
             ]),
             rule(),
             panels::tip(
@@ -191,6 +192,9 @@ impl App {
             desk = desk.push(container(iced::widget::opaque(container(new_score_card(n)).padding(20).style(theme::card))).center(Length::Fill));
         }
 
+        if let Some(d) = &self.motif_dialog {
+            desk = desk.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+        }
         if let Some(d) = &self.prefs_dialog {
             desk = desk.push(container(iced::widget::opaque(container(prefs_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
         }
@@ -248,6 +252,7 @@ impl App {
         let tabs = container(segmented(vec![
             ("Notes", self.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
             ("Structure", self.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
+            ("Motifs", self.panel == Panel::Motifs, Message::SetPanel(Panel::Motifs)),
         ]))
         .padding([10, 12]);
         let side = container(column![tabs, panels::panel(ed, self.panel, self.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
@@ -293,6 +298,13 @@ impl App {
         .style(theme::status);
         let body: Element<'_, Message> = match self.tab {
             Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
+            Tab::Explore => {
+                let mut layers = stack![crate::motif_view::explore(ed).map(Message::Act)];
+                if let Some(d) = &self.motif_dialog {
+                    layers = layers.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
+                }
+                layers.height(Length::Fill).into()
+            }
             Tab::Mix => {
                 let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
                 // The arrange headers' mute and solo buttons, per lane.

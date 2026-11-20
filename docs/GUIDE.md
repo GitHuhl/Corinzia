@@ -376,6 +376,24 @@ the output), automation playback and saving plugin settings.
   window and change its sound; click again (or close the window) to close
   it. Click the track name to select the strip without opening anything.
   Plugin settings are not saved with the project yet.
+* **The motif bank:** the Score tab's side panel has a third page,
+  Motifs (Alt+3; Alt+1 and Alt+2 are Notes and Structure). Select the
+  notes of a motif on one staff (a melody, a bass line, a call and its
+  response) and press "Add the selection as a motif" (Ctrl+M). A card
+  shows the notes and what can be read off them (range and voice type,
+  register, contour, intervals, rhythm, scale degrees, whether it ends
+  open or closed) and asks what it is: a name, its roles (melody,
+  countermelody, bass, inner voice, pad, accompaniment, arpeggio, ostinato,
+  riff, hook, call, response, fill, groove, pedal point, intro, cadence,
+  transition: any that apply), tags in your own words and a note. Each
+  motif is drawn as a small piano roll; ▶ plays it on its instrument, Show
+  selects its passage in the score, Edit reopens its card (and can delete
+  it). The bank is saved with the project; adding, editing and deleting
+  are undoable. From scripts: `motif add "Opening call" as melody,call
+  tags lyrical` (the selection), `motif delete 2`, `get motifs`.
+* **Explore tab** (Ctrl+3): the motif bank, grouped by role, as the
+  material for accompaniment and composition played from a performer's
+  MIDI keyboard (coming next).
 * **Files:** New (a template or an instrument list, e.g. "Flute, 2 Violin,
   Cello", with title, key, time and pickup, tempo and length),
   Open, Save and autosave to a single SQLite `.project` file. Import (or

@@ -1,5 +1,5 @@
-//! The side panels: Notes (input state, marks, dynamics, lines, editing)
-//! and Structure (popovers, bars). Buttons show SMuFL glyphs from Bravura;
+//! The side panels: Notes (input state, marks, dynamics, lines, editing),
+//! Structure (popovers, bars) and Motifs (the motif bank). Buttons show SMuFL glyphs from Bravura;
 //! the active state is highlighted; tooltips name the keyboard shortcut.
 
 use crate::editor::{Editor, PopoverKind};
@@ -15,6 +15,8 @@ pub const MUSIC: Font = Font::with_name("Bravura");
 pub enum Panel {
     Notes,
     Structure,
+    /// The motif bank (see `motif_view`).
+    Motifs,
 }
 
 pub fn tip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: &'a str) -> Element<'a, M> {
@@ -249,6 +251,7 @@ pub fn panel(ed: &Editor, which: Panel, all_movements: bool) -> Element<'_, Acti
         Panel::Notes if ed.chant.is_some() => neumes(ed),
         Panel::Notes => notes(ed),
         Panel::Structure => structure(ed, all_movements),
+        Panel::Motifs => crate::motif_view::page(ed),
     };
     container(scrollable(container(body).padding(iced::Padding { top: 0.0, right: 12.0, bottom: 16.0, left: 12.0 })).height(Length::Fill)).width(WIDTH).height(Length::Fill).into()
 }

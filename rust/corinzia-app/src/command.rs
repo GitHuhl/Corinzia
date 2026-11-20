@@ -23,7 +23,7 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("help [actions|popovers]", "This list, the actions `act` takes, or the popover kinds"),
     ("act <action as JSON>", "Any keyboard or menu action: act \"Undo\", act {\"Duration\":2}"),
     ("popover <kind> <text>", "Type into a popover: popover Tempo \"Allegro 132\""),
-    ("get project|selection|notes [bar A[-B]] [staff S]|chant|status", "Queries, answered with JSON"),
+    ("get project|selection|notes [bar A[-B]] [staff S]|chant|motifs|status", "Queries, answered with JSON"),
     ("open <file> | save [file] | export <file.pdf|mid|musicxml|wav>", "Files"),
     ("undo | redo", "Undo or redo the last edit"),
     ("goto <bar>|<mark>", "Go to a bar (goto 25) or a rehearsal mark (goto B): the bar selected on the caret's staff"),
@@ -36,6 +36,8 @@ pub(crate) const HELP: &[(&str, &str)] = &[
     ("pitch <A-G> | sharp | flat | natural", "Change the selected notes"),
     ("key|time|tempo|clef|barline|text|technique|expression|dynamic|ending|rehearsal|ornament|tuplet|instrument|transpose|lyrics|chord <text>", "The popover of that name: key Eb, time 6/8, transpose \"up M2\""),
     ("title|composer <text>", "The score's title or composer"),
+    ("motif add \"<name>\" [as <role>,<role>…] [tags <tag>,<tag>…] | motif delete <n>", "The passage selected on one staff into the motif bank, named and tagged (roles: melody, countermelody, bass, inner voice, pad, accompaniment, arpeggio, ostinato, riff, hook, call, response, fill, groove, pedal, intro, cadence, transition); or remove motif n (from 1). get motifs lists the bank"),
+    ("panel notes|structure|motifs | tab score|mix|explore", "The side panel's page, or the tab shown"),
     ("neume <name> | mode <text> | syllables <text>", "In a chant: a neume at the caret (neume Oligon), the mode (mode \"πλ. β΄\"), syllables from the caret"),
 ];
 
@@ -130,6 +132,56 @@ impl App {
                 "on" => self.run_action(Action::Phrasing(true)),
                 "off" => self.run_action(Action::Phrasing(false)),
                 _ => return Err("phrasing on|off".into()),
+            },
+            "motif" | "motifs" => match arg(0) {
+                "add" => {
+                    let mut m = self.editor.motif_from_selection()?;
+                    let mut i = 1;
+                    if !arg(1).is_empty() && arg(1) != "as" && arg(1) != "tags" {
+                        m.name = arg(1).to_string();
+                        i = 2;
+                    }
+                    while i < args.len() {
+                        let list = || args.get(i + 1).map(|v| v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>()).unwrap_or_default();
+                        match arg(i) {
+                            "as" => {
+                                for r in list() {
+                                    let role = corinzia_model::motif::Role::parse(&r).ok_or_else(|| format!("No role {r}: see help"))?;
+                                    if !m.roles.contains(&role) {
+                                        m.roles.push(role);
+                                    }
+                                }
+                            }
+                            "tags" => m.tags = list(),
+                            other => return Err(format!("Unexpected {other}: motif add \"name\" as melody,call tags lyrical")),
+                        }
+                        i += 2;
+                    }
+                    let id = self.editor.save_motif(m);
+                    json!({"motif": id})
+                }
+                "delete" => {
+                    let n = span(arg(1))?.0;
+                    let id = self.editor.project.motifs.get(n.wrapping_sub(1)).map(|m| m.id).ok_or_else(|| format!("No motif {n}: there are {}", self.editor.project.motifs.len()))?;
+                    self.editor.delete_motif(id);
+                    Value::Null
+                }
+                _ => return Err("motif add \"name\" [as roles] [tags tags] | motif delete <n>".into()),
+            },
+            "panel" => {
+                self.panel = match arg(0) {
+                    "notes" => crate::panels::Panel::Notes,
+                    "structure" => crate::panels::Panel::Structure,
+                    "motifs" => crate::panels::Panel::Motifs,
+                    _ => return Err("panel notes|structure|motifs".into()),
+                };
+                Value::Null
+            }
+            "tab" => match arg(0) {
+                "score" => self.run_action(Action::ShowScore),
+                "mix" => self.run_action(Action::ShowMix),
+                "explore" => self.run_action(Action::ShowExplore),
+                _ => return Err("tab score|mix|explore".into()),
             },
             "undo" => self.run_action(Action::Undo),
             "redo" => self.run_action(Action::Redo),
@@ -277,6 +329,15 @@ impl App {
         let p = &ed.project;
         let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
         Ok(match arg(0) {
+            "motifs" => json!(p
+                .motifs
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let facts: serde_json::Map<String, Value> = crate::motif_view::facts(p, m).into_iter().map(|(k, v)| (k.to_lowercase(), json!(v))).collect();
+                    json!({"number": i + 1, "name": m.name, "roles": m.roles, "tags": m.tags, "comment": m.comment, "notes": m.notes.len(), "facts": facts})
+                })
+                .collect::<Vec<_>>()),
             "project" => json!({
                 "title": p.title,
                 "composer": p.composer,

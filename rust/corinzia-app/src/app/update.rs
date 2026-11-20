@@ -78,7 +78,7 @@ impl App {
                 self.editor.status = "Audio export stopped".into();
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
+                if self.popover.is_some() || self.new_score.is_some() || self.players.is_some() || self.layout.is_some() || self.prefs_dialog.is_some() || self.motif_dialog.is_some() || self.confirm.is_some() || self.browser.is_some() {
                     if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
                         if self.confirm.take().is_none() && self.browser.take().is_none() {
                             self.popover = None;
@@ -86,6 +86,7 @@ impl App {
                             self.players = None;
                             self.layout = None;
                             self.prefs_dialog = None;
+                            self.motif_dialog = None;
                         }
                     }
                 } else if let Some(t) = self.press(&key, modifiers) {
@@ -110,6 +111,7 @@ impl App {
             Message::Players(m) => self.players_msg(m),
             Message::Layout(m) => self.layout_msg(m),
             Message::Prefs(m) => self.prefs_msg(m),
+            Message::Motif(m) => self.motif_msg(m),
             Message::MidiPoll => self.midi_poll(),
             Message::New(NewMsg::Create) => return Task::done(Message::Guarded(Box::new(Message::Proceed(Box::new(Message::New(NewMsg::Create)))))),
             Message::Guarded(next) => {
