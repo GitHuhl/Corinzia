@@ -825,3 +825,85 @@ mod techniques {
         assert_eq!(new.technique(), tech::TREM);
     }
 }
+
+#[cfg(test)]
+mod demo {
+    use super::*;
+    use voice::tech;
+
+    /// Writes a demo of the strings' techniques and a slurred phrase:
+    /// CORINZIA_DEMO=file.wav cargo test --release -p corinzia-ensemble write_techniques -- --ignored
+    #[test]
+    #[ignore]
+    fn write_techniques() {
+        let Ok(path) = std::env::var("CORINZIA_DEMO") else { return };
+        let mut all = Vec::new();
+        for section in [true, false] {
+            let s = unsafe { Synth::from(factory_create(ptr::null(), ptr::null(), PLUGIN_ID.as_ptr())) };
+            if section {
+                s.control(0, 0, (patches::SECTION_BANK >> 7) as u8);
+                s.control(0, 32, (patches::SECTION_BANK & 0x7f) as u8);
+            }
+            s.program(0, 40);
+            s.control(0, PLAYERS_CC, 8);
+            s.control(0, 1, 85);
+            let mut id = 0;
+            let mut play = |s: &mut Synth, t: u8, keys: &[i16], secs: f32, out: &mut Vec<f32>| {
+                s.control(0, 3, t);
+                for &k in keys {
+                    id += 1;
+                    s.note_on(id, 0, 0, k, 0.7);
+                    let n = (48000.0 * secs) as usize;
+                    let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+                    for (lc, rc) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+                        s.render(lc, rc, ptr::null(), 0);
+                    }
+                    s.note_off(id, 0, k);
+                    out.extend(l);
+                }
+            };
+            for t in [tech::ORD, tech::PIZZ, tech::TREM, tech::COL_LEGNO, tech::HARMONICS, tech::ORD] {
+                play(s, t, &[67, 71, 74, 79], 0.45, &mut all);
+            }
+            // A slur: the players' fingers each in their own time.
+            s.control(0, 68, 127);
+            play(s, tech::ORD, &[69, 71, 72, 74, 76, 77, 79, 81], 0.35, &mut all);
+            s.control(0, 68, 0);
+            play(s, tech::ORD, &[], 0.0, &mut all);
+            let n = 48000;
+            let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+            for (lc, rc) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+                s.render(lc, rc, ptr::null(), 0);
+            }
+            all.extend(l);
+        }
+        let peak = all.iter().fold(0.0f32, |m, x| m.max(x.abs())).max(1e-6);
+        let mut bytes = Vec::new();
+        let data = (all.len() * 2) as u32;
+        for (tag, v) in [(b"RIFF", 36 + data), (b"WAVE", 0)] {
+            bytes.extend_from_slice(tag);
+            if &tag[..] == b"RIFF" {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(b"fmt ");
+        for v in [16u32] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [1u16, 1] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [48000u32, 96000] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in [2u16, 16] {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        for x in all {
+            bytes.extend_from_slice(&((x / peak * 0.5 * 32767.0) as i16).to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+}

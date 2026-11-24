@@ -124,6 +124,11 @@ const CONTROL: usize = 16; // samples between control updates
 pub const MAX_SECTION: usize = 32;
 /// Players in the shared pool (see [`PlayerPool`]).
 pub const POOL: usize = 128;
+/// How hard a finger pulls a string aside, against the model's own pluck:
+/// further than the bow drives it, so a pizzicato speaks about as loud as
+/// a bowed note at its dynamic (3 dB under, over its first tenth of a
+/// second), then dies away.
+const PLUCK_PULL: f32 = 4.6;
 
 /// Physically modelled string players ([`crate::bowed`]), shared by the
 /// voices: a bowed note takes as many as its part has, and gives them back
@@ -770,9 +775,9 @@ impl Voice {
             let (width, strength) = if section { (0.003 + 0.004 * self.rng.unit(), 0.8 + 0.4 * self.rng.unit()) } else { (0.004, 1.0) };
             if self.tech == tech::COL_LEGNO {
                 // The wood: a short, hard tap, lighter than a finger's pull.
-                inst.set_pluck(0.0012, 0.5 * strength);
+                inst.set_pluck(0.0012, 0.5 * PLUCK_PULL * strength);
             } else {
-                inst.set_pluck(width, strength * 0.004 / width);
+                inst.set_pluck(width, PLUCK_PULL * strength * 0.004 / width);
             }
             inst.note(self.freq * (self.ph_detune[q] / 1200.0).exp2(), self.key as i32, pluck, self.vel);
         }
