@@ -498,6 +498,9 @@ pub struct Instrument {
     intonation: f32,
     velocity: f32,
     pluck_time: f32,
+    /// How long a pluck pulls the string (seconds), and how hard.
+    pluck_width: f32,
+    pluck_strength: f32,
     tuned: [f32; 4],
     dc_in: f32,
     dc_out: f32,
@@ -527,6 +530,8 @@ impl Instrument {
             intonation: 1.0,
             velocity: 1.0,
             pluck_time: 0.0,
+            pluck_width: 0.004,
+            pluck_strength: 1.0,
             tuned: [0.0; 4],
             dc_in: 0.0,
             dc_out: 0.0,
@@ -602,8 +607,15 @@ impl Instrument {
         self.pizzicato = pluck;
         self.played = (0..4).rfind(|&s| key >= OPEN[self.instrument][s]).unwrap_or(0);
         if pluck {
-            self.pluck_time = 0.004;
+            self.pluck_time = self.pluck_width;
         }
+    }
+
+    /// How the next pluck pulls the string: for `width` seconds (a finger's
+    /// soft pad is longer than its tip), `strength` times as hard.
+    pub fn set_pluck(&mut self, width: f32, strength: f32) {
+        self.pluck_width = width.clamp(0.001, 0.02);
+        self.pluck_strength = strength.max(0.0);
     }
 
     fn set_oversampling(&mut self, os: u32) {
@@ -691,7 +703,7 @@ impl Instrument {
         let (mut force, _) = self.bow.solve(bow_velocity - free, compliance, if self.pizzicato { 0.0 } else { normal }, c.rosin, self.rate);
         if self.pizzicato && self.pluck_time > 0.0 {
             // A plucked string: a short half-sine of force.
-            force = impedance * self.velocity * 0.7 * (std::f32::consts::PI * self.pluck_time / 0.004).sin();
+            force = impedance * self.velocity * self.pluck_strength * 0.7 * (std::f32::consts::PI * self.pluck_time / self.pluck_width).sin();
             self.pluck_time = (self.pluck_time - (1.0 / self.rate) as f32).max(0.0);
         }
         for (s, string) in self.strings.iter_mut().enumerate() {

@@ -351,12 +351,6 @@ const fn spec(tilt_pp: f32, tilt_ff: f32, peaks: [(f32, f32, f32); 3], even: (f3
     Some(Spectrum { tilt_pp, tilt_ff, peaks, even_db: even.0, even_below: even.1, rise, noise_db, exciter, physical, body: None })
 }
 
-/// A bowed string on a measured body ([`crate::body`]): its noise part
-/// through `peaks` at `noise_db`.
-const fn bowed(body: u8, peaks: [(f32, f32, f32); 3], noise_db: f32) -> Option<Spectrum> {
-    Some(Spectrum { tilt_pp: 0.0, tilt_ff: 0.0, peaks, even_db: 0.0, even_below: 0.0, rise: 0.15, noise_db, exciter: Exciter::Bow, physical: 0.1, body: Some(body) })
-}
-
 const NO_EVEN: (f32, f32) = (0.0, 0.0);
 const P0: (f32, f32, f32) = (1000.0, 1.0, 0.0);
 
@@ -366,22 +360,6 @@ const P0: (f32, f32, f32) = (1000.0, 1.0, 0.0);
 /// the strings, the woodwinds' formant regions, the brass bells).
 static SPECTRA: [Option<Spectrum>; COUNT] = {
     let mut s: [Option<Spectrum>; COUNT] = [None; COUNT];
-    let violin = [(280.0, 0.4, 4.0), (480.0, 0.5, 3.0), (2800.0, 0.6, 5.0)];
-    let viola = [(230.0, 0.4, 4.0), (400.0, 0.5, 3.0), (2200.0, 0.6, 4.0)];
-    let cello = [(100.0, 0.4, 3.0), (220.0, 0.5, 4.0), (1800.0, 0.6, 3.0)];
-    let bass = [(60.0, 0.4, 3.0), (130.0, 0.5, 3.0), (900.0, 0.6, 2.0)];
-    use crate::body::{DOUBLE_BASS as BASS, CELLO, VIOLA, VIOLIN};
-    // Noise levels matched to the recordings' bow noise between the
-    // harmonics (about -37 dB on the violin, -36 cello, -40 bass).
-    s[0] = bowed(VIOLIN, violin, -24.0);
-    s[1] = bowed(VIOLA, viola, -23.0);
-    s[2] = bowed(CELLO, cello, -21.0);
-    s[3] = bowed(BASS, bass, -22.0);
-    s[4] = bowed(VIOLA, [(250.0, 0.6, 3.0), (480.0, 0.6, 2.0), (2500.0, 0.7, 4.0)], -23.0);
-    s[5] = bowed(VIOLIN, violin, -24.0);
-    s[6] = bowed(VIOLA, viola, -23.0);
-    s[7] = bowed(CELLO, cello, -21.0);
-    s[8] = bowed(BASS, bass, -22.0);
     s[12] = spec(-18.0, -9.0, [(1500.0, 1.0, 1.0), P0, P0], NO_EVEN, 0.3, -24.0, Exciter::Jet, 0.2);
     s[13] = spec(-16.0, -8.0, [(1500.0, 1.0, 2.0), P0, P0], NO_EVEN, 0.3, -22.0, Exciter::Jet, 0.2);
     s[14] = spec(-5.0, -2.0, [(1100.0, 0.35, 10.0), (2900.0, 0.3, 6.0), (4400.0, 0.3, 2.0)], NO_EVEN, 0.2, -32.0, Exciter::Reed(0.18), 0.3);

@@ -47,19 +47,7 @@ pub const PLUGIN_ID: &CStr = c"org.corinzia.ensemble";
 /// The controller giving how many players play a channel's part (a string
 /// section's size, 1 to 32; 0: the sound's own).
 pub const PLAYERS_CC: u8 = 86;
-/// The controller choosing the bowed strings' engine: below 64 (the
-/// default) physically modelled players, 64 and above the earlier spectral
-/// one.
-pub const CLASSIC_STRINGS_CC: u8 = 87;
 
-static CLASSIC_STRINGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Bowed strings on the earlier, spectral engine rather than physically
-/// modelled players, in every instance in this process (Corinzia's
-/// preference); a channel's controller (`CLASSIC_STRINGS_CC`) chooses too.
-pub fn set_classic_strings(on: bool) {
-    CLASSIC_STRINGS.store(on, std::sync::atomic::Ordering::Relaxed);
-}
 /// The id of the instrument this one replaced; projects that name it get this.
 pub const OLD_PLUGIN_ID: &CStr = c"org.corinzia.sine";
 
@@ -104,15 +92,13 @@ struct Channel {
     volume: f32,
     /// Pitch bend in semitones (the usual ±2 range).
     bend: f32,
-    /// How many play its part (0: the sound's own), and whether bowed
-    /// strings play on the earlier engine (see [`CLASSIC_STRINGS_CC`]).
+    /// How many play its part (0: the sound's own).
     players: u8,
-    classic: bool,
 }
 
 impl Default for Channel {
     fn default() -> Self {
-        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0, players: 0, classic: false }
+        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0, players: 0 }
     }
 }
 
@@ -183,18 +169,35 @@ impl Synth {
         self.channels[ch].down_bow = !down;
         self.voices[i].articulate(c.articulation, down);
         // Bowed strings: physically modelled players, as many as the part
-        // has (else the sound's own); none free: the earlier engine.
-        let classic = c.classic || CLASSIC_STRINGS.load(std::sync::atomic::Ordering::Relaxed);
-        if !classic && self.voices[i].wants_players() {
+        // has (else the sound's own). With every player busy, the oldest
+        // notes already ending give theirs up, then the oldest held.
+        if self.voices[i].wants_players() {
             let n = if c.players > 0 { c.players as usize } else { patches::PATCHES[c.patch].unison.max(1) as usize };
             let mut slots = [0u16; voice::MAX_SECTION];
-            let voices = &self.voices;
-            let k = self.pool.take(i as u32, n, |o, slot| voices.get(o as usize).is_some_and(|v| v.players().contains(&slot)), &mut slots);
+            let mut k = self.take_players(i, n, &mut slots);
+            if k == 0 {
+                let mut order: Vec<usize> = (0..self.voices.len()).filter(|&o| o != i && !self.voices[o].players().is_empty()).collect();
+                order.sort_by_key(|&o| (!self.voices[o].releasing, self.voices[o].age));
+                for o in order {
+                    // Silenced, its players free.
+                    self.voices[o].active = false;
+                    k = self.take_players(i, n, &mut slots);
+                    if k > 0 {
+                        break;
+                    }
+                }
+            }
             self.voices[i].attach_players(&slots[..k], &mut self.pool, down);
         }
         if follows && self.voices[i].sustained {
             self.voices[i].connect();
         }
+    }
+
+    /// Up to `n` free players for voice `i`.
+    fn take_players(&mut self, i: usize, n: usize, slots: &mut [u16; voice::MAX_SECTION]) -> usize {
+        let voices = &self.voices;
+        self.pool.take(i as u32, n, |o, slot| voices.get(o as usize).is_some_and(|v| v.players().contains(&slot)), slots)
     }
 
     fn note_off(&mut self, note_id: i32, channel: i16, key: i16) {
@@ -221,7 +224,7 @@ impl Synth {
             }
             3 => {
                 c.technique = value;
-                for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
+                for v in self.voices.iter_mut().filter(|v| v.active && !v.releasing && v.channel as usize == ch) {
                     v.set_technique(value);
                 }
             }
@@ -230,7 +233,6 @@ impl Synth {
             9 => c.articulation = value,
             68 => c.legato = value >= 64,
             PLAYERS_CC => c.players = value.min(voice::MAX_SECTION as u8),
-            CLASSIC_STRINGS_CC => c.classic = value >= 64,
             120 | 123 => {
                 for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
                     if cc == 120 {
@@ -638,13 +640,10 @@ mod tests {
     use super::*;
 
     fn synth() -> &'static mut Synth {
-        unsafe {
-            let p = factory_create(ptr::null(), ptr::null(), PLUGIN_ID.as_ptr());
-            Synth::from(p)
-        }
+        unsafe { Synth::from(factory_create(ptr::null(), ptr::null(), PLUGIN_ID.as_ptr())) }
     }
 
-    /// A violin section (or the solo violin) on channel 0, `players` strong.
+    /// A violin section of `players` (or the solo violin) on channel 0.
     fn violins(s: &mut Synth, section: bool, players: u8) {
         if section {
             s.control(0, 0, (patches::SECTION_BANK >> 7) as u8);
@@ -654,26 +653,36 @@ mod tests {
         s.control(0, PLAYERS_CC, players);
     }
 
-    fn rms_db(s: &mut Synth, seconds: f32) -> f32 {
+    fn render(s: &mut Synth, seconds: f32) -> Vec<f32> {
         let n = (s.sample_rate as f32 * seconds) as usize;
         let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
-        for (lc, rc) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+        for (lc, rc) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
             s.render(lc, rc, ptr::null(), 0);
         }
-        let tail = &l[n / 2..];
-        10.0 * (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).log10()
+        l
+    }
+
+    fn db(x: &[f32]) -> f32 {
+        10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).max(1e-20).log10()
     }
 
     #[test]
     fn a_section_plays_with_as_many_players_as_it_has() {
+        // Over several notes: one note's sum of a few players is a throw of
+        // the dice (their tuning and timing are each their own).
         let mut levels = Vec::new();
         for players in [4u8, 14] {
-            let s = synth();
-            violins(s, true, players);
-            s.note_on(1, 0, 0, 69, 0.6);
-            let v = s.voices.iter().find(|v| v.active).unwrap();
-            assert_eq!(v.players().len(), players as usize, "physically modelled players");
-            levels.push(rms_db(s, 0.8));
+            let mut power = 0.0;
+            for key in [62i16, 64, 66, 67, 69, 71, 72, 74] {
+                let s = synth();
+                violins(s, true, players);
+                s.note_on(1, 0, 0, key, 0.6);
+                let v = s.voices.iter().find(|v| v.active).unwrap();
+                assert_eq!(v.players().len(), players as usize, "physically modelled players");
+                let x = render(s, 0.8);
+                power += 10f32.powf(db(&x[x.len() / 2..]) / 10.0);
+            }
+            levels.push(10.0 * power.log10());
         }
         // More players, louder: as their number, not in step with it.
         let more = levels[1] - levels[0];
@@ -682,29 +691,137 @@ mod tests {
     }
 
     #[test]
-    fn the_earlier_engine_answers_its_controller() {
+    fn with_every_player_busy_the_oldest_ending_notes_give_theirs_up() {
         let s = synth();
-        violins(s, true, 8);
-        s.control(0, CLASSIC_STRINGS_CC, 127);
-        s.note_on(1, 0, 0, 69, 0.6);
-        let v = s.voices.iter().find(|v| v.active).unwrap();
-        assert!(!v.physical && v.players().is_empty());
-        assert!(rms_db(s, 0.5) > -80.0, "sounds");
+        violins(s, true, 32);
+        // Four notes of 32 players fill the pool; the first two end.
+        for (i, key) in [57i16, 62, 67, 71].into_iter().enumerate() {
+            s.note_on(i as i32, 0, 0, key, 0.6);
+        }
+        s.note_off(0, 0, 57);
+        s.note_off(1, 0, 62);
+        render(s, 0.05);
+        // A fifth: the oldest ending note gives way, the held ones sound on.
+        s.note_on(4, 0, 0, 76, 0.6);
+        let playing: Vec<&Voice> = s.voices.iter().filter(|v| v.active).collect();
+        assert!(playing.iter().all(|v| v.physical && !v.players().is_empty()), "every note on its players");
+        assert!(playing.iter().any(|v| v.key == 76) && playing.iter().any(|v| v.key == 67) && playing.iter().any(|v| v.key == 71));
+        assert!(!playing.iter().any(|v| v.key == 57), "the oldest ending note gave way");
+        assert!(db(&render(s, 0.3)) > -80.0);
+    }
+}
+
+#[cfg(test)]
+mod techniques {
+    use super::*;
+    use voice::tech;
+
+    fn synth() -> &'static mut Synth {
+        unsafe { Synth::from(factory_create(ptr::null(), ptr::null(), PLUGIN_ID.as_ptr())) }
+    }
+
+    fn section(s: &mut Synth) {
+        s.control(0, 0, (patches::SECTION_BANK >> 7) as u8);
+        s.control(0, 32, (patches::SECTION_BANK & 0x7f) as u8);
+        s.program(0, 40);
+        s.control(0, PLAYERS_CC, 8);
+        s.control(0, 1, 79);
+    }
+
+    fn render(s: &mut Synth, seconds: f32) -> Vec<f32> {
+        let n = (s.sample_rate as f32 * seconds) as usize;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        for (lc, rc) in l.chunks_mut(64).zip(r.chunks_mut(64)) {
+            s.render(lc, rc, ptr::null(), 0);
+        }
+        l
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    /// The level every 5 ms.
+    fn envelope(x: &[f32]) -> Vec<f32> {
+        x.chunks(240).map(rms).collect()
     }
 
     #[test]
-    fn with_every_player_busy_a_note_still_sounds() {
+    fn arco_pizz_tremolo_and_back_each_on_the_players_in_their_technique() {
         let s = synth();
-        violins(s, true, 32);
-        // Five notes of 32 players: more than the pool has.
-        for (i, key) in [57i16, 62, 67, 71, 76].into_iter().enumerate() {
-            s.note_on(i as i32, 0, 0, key, 0.6);
+        section(s);
+        let mut out = Vec::new();
+        for (i, (t, name)) in [(tech::ORD, "arco"), (tech::PIZZ, "pizz."), (tech::TREM, "trem."), (tech::COL_LEGNO, "col legno"), (tech::HARMONICS, "harmonics"), (tech::ORD, "arco")].into_iter().enumerate() {
+            s.control(0, 3, t);
+            s.note_on(i as i32, 0, 0, 69, 0.62);
+            let v = s.voices.iter().filter(|v| v.active && !v.releasing).max_by_key(|v| v.age).unwrap();
+            assert!(v.physical && v.players().len() == 8, "{name}: on its players");
+            assert_eq!(v.technique(), t, "{name}");
+            assert_eq!(v.plucked(), matches!(t, tech::PIZZ | tech::COL_LEGNO), "{name}: plucked or bowed");
+            let x = render(s, 0.6);
+            s.note_off(i as i32, 0, 69);
+            assert!(rms(&x) > 1e-4, "{name}: sounds");
+            out.extend(x);
         }
-        let playing: Vec<&Voice> = s.voices.iter().filter(|v| v.active).collect();
-        assert_eq!(playing.len(), 5);
-        let used: usize = playing.iter().map(|v| v.players().len()).sum();
-        assert!(used <= voice::POOL);
-        assert!(playing.iter().any(|v| !v.physical), "one played on the earlier engine");
-        assert!(rms_db(s, 0.5) > -80.0);
+        // No click at any change: no 5 ms step jumps out of its neighbours.
+        let d: Vec<f32> = out.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+        let typical = rms(&d);
+        assert!(d.iter().all(|&x| x < 25.0 * typical), "a click: {} against {typical}", d.iter().fold(0.0f32, |m, &x| m.max(x)));
+    }
+
+    #[test]
+    fn a_pizzicato_dies_away_and_a_bowed_note_holds() {
+        for (t, holds) in [(tech::ORD, true), (tech::PIZZ, false)] {
+            let s = synth();
+            section(s);
+            s.control(0, 3, t);
+            s.note_on(1, 0, 0, 62, 0.62);
+            let e = envelope(&render(s, 1.5));
+            let (early, late) = (e[10..30].iter().cloned().fold(0.0, f32::max), e[250..290].iter().sum::<f32>() / 40.0);
+            if holds {
+                assert!(late > 0.5 * early, "arco holds: {late} against {early}");
+            } else {
+                assert!(late < 0.3 * early, "pizz. dies away: {late} against {early}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tremolo_comes_in_quick_strokes() {
+        let s = synth();
+        s.program(0, 40); // one player: the strokes are clear
+        s.control(0, 1, 79);
+        s.control(0, 3, tech::TREM);
+        s.note_on(1, 0, 0, 69, 0.62);
+        let e = envelope(&render(s, 2.0));
+        // Strokes: the level dips at each change of bow; count them over a second.
+        let e = &e[100..300];
+        let mean = e.iter().sum::<f32>() / e.len() as f32;
+        let dips = e.windows(2).filter(|w| w[0] >= 0.7 * mean && w[1] < 0.7 * mean).count();
+        assert!((8..=16).contains(&dips), "{dips} strokes a second");
+        // Arco on the same pitch: steady.
+        let s = synth();
+        s.program(0, 40);
+        s.control(0, 1, 79);
+        s.note_on(1, 0, 0, 69, 0.62);
+        let e = envelope(&render(s, 2.0));
+        let e = &e[100..300];
+        let mean = e.iter().sum::<f32>() / e.len() as f32;
+        assert!(e.windows(2).filter(|w| w[0] >= 0.7 * mean && w[1] < 0.7 * mean).count() <= 2, "arco is steady");
+    }
+
+    #[test]
+    fn a_new_technique_leaves_an_ending_note_as_it_was() {
+        let s = synth();
+        section(s);
+        s.note_on(1, 0, 0, 69, 0.62);
+        render(s, 0.3);
+        s.note_off(1, 0, 69);
+        s.control(0, 3, tech::TREM);
+        s.note_on(2, 0, 0, 72, 0.62);
+        let ending = s.voices.iter().find(|v| v.active && v.releasing).unwrap();
+        assert_eq!(ending.technique(), tech::ORD, "its tail is not tremolo");
+        let new = s.voices.iter().find(|v| v.active && !v.releasing).unwrap();
+        assert_eq!(new.technique(), tech::TREM);
     }
 }
