@@ -70,10 +70,13 @@ in about 3 ms in a release build. Every edit re-engraves the movement.
   instrument is, in one table: its family (brackets), the name,
   abbreviation, clef and transposition it is added with, the General MIDI
   program the built-in instruments play, whether strings may play as a
-  section, its players' timing feel, and the drum map or tablature tuning
-  it starts with. Each `Instrument` remembers its `kind` (and, for strings,
-  whether it is one player or a `section`), fixed when it is added or
-  imported, so renaming a staff changes none of this. A name is read once
+  section (and a section's usual size: `section_size`), its players'
+  timing feel, and the drum map or tablature tuning it starts with. Each
+  `Instrument` remembers its `kind` and how many `players` play it (none:
+  as the score suggests, a section of the usual size for bowed strings in
+  an orchestral score; 1: one player; n: a section of n, set in the
+  Players card), fixed when it is added or imported, so renaming a staff
+  changes none of this. A name is read once
   (`catalog::infer`): an exact alias first ("fl", "Horn in F"), else the
   most specific kind whose words it contains ("Flauto 2", "Violins I").
   Projects saved before kinds find theirs from their names when opened.
@@ -526,6 +529,40 @@ Every example score in the W3C MusicXML repository imports and engraves
 
 Not yet: buses and plugin delay compensation (tracks mix straight to the
 output), automation, VST3 state in the project.
+
+### Corinzia Ensemble's bowed strings (`corinzia-ensemble`)
+
+* **The model** (`bowed.rs`, adapted from Strings, MIT; see
+  `THIRD-PARTY-NOTICES.md`): per player, four strings with two
+  polarisations each (waveguides with loss and dispersion, split at the
+  bow), stick-slip friction at the bow (a friction curve, solved by
+  bisection every sample, warmed by its own work) and an eight-mode passive
+  body behind the bridge that the open strings ring along with; the
+  body's radiation (a shelf and a low-pass by the instrument's size) on
+  its output. High notes run at 2 to 8 times the sample rate so their
+  short segments are placed exactly; a slur keeps the rate.
+* **Intonation** (`bowed_tuning.rs`): the model's own deviation (open
+  strings pulling their neighbours, the discretisation high up), measured
+  per instrument and key at 44.1, 48, 88.2 and 96 kHz and corrected as a
+  player corrects by ear. Within about 5 cents over most of the range,
+  10 to 18 at a few of the highest violin and viola notes.
+* **Bowing** (`voice::bowing`): the dynamic chosen as bow speed and
+  pressure (heavy enough at every dynamic for the string to speak; see the
+  `playability` test), the contact point for sul ponticello and sul tasto,
+  the body damped for con sordino, the bow reversed for tremolo.
+* **Level** (`bowed_levels.rs`): the model's level per instrument, key and
+  dynamic, so a note's loudness follows the sound's calibrated dynamics
+  (`patches::trims`, the same balance as the other instruments); the model
+  gives the timbre. A section's players add up against the sound's own
+  size, so more players are louder.
+* **Players** (`voice::PlayerPool`): 128 instruments allocated with the
+  voices; a note takes as many as its channel's part has (CC86, sent with
+  the program) and gives them back when it ends. Pizzicato, col legno and
+  harmonics, a busy pool, and the earlier-engine preference (CC87, or the
+  process-wide `set_classic_strings`) play on the spectral engine.
+  One player costs about 11 ms of computing a second of sound.
+* The two tables are made by ignored tests (`make_tuning_table`,
+  `make_level_table`); run them when the model or the bowing changes.
 
 ## 7. The application (`corinzia-app`)
 
