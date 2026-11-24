@@ -40,9 +40,6 @@ cargo test --release -p corinzia-ensemble make_tuning_table -- --ignored
 cargo test --release -p corinzia-ensemble make_level_table -- --ignored
 ```
 
-`CORINZIA_STRINGS=classic` or `physical` overrides the strings' engine
-preference (to compare them, e.g. on `--export out.wav`).
-
 ## Layout
 
 | Path | What |

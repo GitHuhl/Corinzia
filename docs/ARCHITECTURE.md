@@ -548,19 +548,28 @@ output), automation, VST3 state in the project.
   10 to 18 at a few of the highest violin and viola notes.
 * **Bowing** (`voice::bowing`): the dynamic chosen as bow speed and
   pressure (heavy enough at every dynamic for the string to speak; see the
-  `playability` test), the contact point for sul ponticello and sul tasto,
-  the body damped for con sordino, the bow reversed for tremolo.
-* **Level** (`bowed_levels.rs`): the model's level per instrument, key and
-  dynamic, so a note's loudness follows the sound's calibrated dynamics
-  (`patches::trims`, the same balance as the other instruments); the model
-  gives the timbre. A section's players add up against the sound's own
+  `playability` test), an accent's or marked attack's bite as a faster,
+  harder stroke on a brighter string, the contact point for sul
+  ponticello, sul tasto and harmonics, the body damped for con sordino,
+  the bow reversed for tremolo (10 to 13 strokes a second). Pizzicato
+  plucks the string (each player's finger its own width, strength and
+  moment); col legno taps it with the wood.
+* **Level** (`bowed_levels.rs`): a soloist's level per instrument, key and
+  dynamic, measured by playing voices (attack, vibrato, bowing), so a
+  note's loudness follows the sound's calibrated dynamics (the same
+  balance as the other instruments) and the model gives the timbre; every
+  technique goes through it, so a pluck against a bowed note is the
+  instrument's own. A section's players add up against the sound's own
   size, so more players are louder.
 * **Players** (`voice::PlayerPool`): 128 instruments allocated with the
   voices; a note takes as many as its channel's part has (CC86, sent with
-  the program) and gives them back when it ends. Pizzicato, col legno and
-  harmonics, a busy pool, and the earlier-engine preference (CC87, or the
-  process-wide `set_classic_strings`) play on the spectral engine.
-  One player costs about 11 ms of computing a second of sound.
+  the program) and gives them back when it ends; with every one busy, the
+  oldest notes already ending give theirs up. In a section each has their
+  own tuning and its slow wander, vibrato rate (4.8 to 6.8 a second) and
+  start, entry (together on an accent), and in a slur their own moment and
+  pace of sliding. One player costs about 11 ms of computing a second of
+  sound. Bowed strings have no other engine (the earlier spectral one is
+  in the history before 0def168).
 * The two tables are made by ignored tests (`make_tuning_table`,
   `make_level_table`); run them when the model or the bowing changes.
 
