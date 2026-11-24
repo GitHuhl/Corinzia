@@ -138,9 +138,9 @@ pub fn beats_from(o: &Onsets, guess: Option<f64>) -> Vec<f64> {
     let (lo, hi) = ((period * 2.0).round() as usize, (period / 2.0).round().max(1.0) as usize);
     for t in 0..n {
         let mut best = (f64::NEG_INFINITY, usize::MAX);
-        for prev in t.saturating_sub(lo)..t.saturating_sub(hi).min(t) {
+        for (prev, before) in score.iter().enumerate().take(t.saturating_sub(hi).min(t)).skip(t.saturating_sub(lo)) {
             let gap = (t - prev) as f64;
-            let s = score[prev] - TIGHTNESS * (gap / period).ln().powi(2);
+            let s = before - TIGHTNESS * (gap / period).ln().powi(2);
             if s > best.0 {
                 best = (s, prev);
             }

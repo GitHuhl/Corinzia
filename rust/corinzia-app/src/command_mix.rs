@@ -235,7 +235,7 @@ impl App {
                         for w in &args[2..] {
                             match w.as_str() {
                                 "pre" | "post" => {
-                                    let pre = app.editor.project.track(t).map_or(false, |x| x.sends[i].pre);
+                                    let pre = app.editor.project.track(t).is_some_and(|x| x.sends[i].pre);
                                     if pre != (w == "pre") {
                                         app.mix_now(MixMsg::SendPre(t, i));
                                     }

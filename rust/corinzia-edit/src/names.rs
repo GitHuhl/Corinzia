@@ -35,7 +35,7 @@ pub fn spell_key(key: i32, fifths: i32) -> Pitch {
 
 /// The key signature (fifths) in force at a position.
 pub fn key_fifths_at(m: &Movement, pos: Frac) -> i32 {
-    m.keys.iter().filter(|k| k.at <= pos).last().map(|k| k.fifths).unwrap_or(0)
+    m.keys.iter().rfind(|k| k.at <= pos).map(|k| k.fifths).unwrap_or(0)
 }
 
 /// "up a major 2nd", "down a perfect 5th".
@@ -104,7 +104,7 @@ pub fn top_line(clef: &str) -> i32 {
 /// the instrument's own clef.
 pub fn clef_at(project: &Project, m: &Movement, lane: usize, at: Frac) -> String {
     let l = &m.lanes[lane];
-    if let Some(c) = l.clefs.iter().filter(|c| c.at <= at).last() {
+    if let Some(c) = l.clefs.iter().rfind(|c| c.at <= at) {
         return c.clef.clone();
     }
     l.instrument_at(at).and_then(|i| project.instrument(i)).map(|i| i.clef.clone()).unwrap_or_else(|| "treble".into())

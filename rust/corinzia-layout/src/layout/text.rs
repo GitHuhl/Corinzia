@@ -375,7 +375,7 @@ impl<'a> Engraver<'a> {
         }
         // Tempo marks: words (bold) and a metronome mark; repeated only when they change.
         let mut tempo = self.score.tempo.clone();
-        tempo.sort_by(|a, b| a.at.cmp(&b.at));
+        tempo.sort_by_key(|a| a.at);
         let mut printed = -1i64;
         for t in tempo {
             if t.at < r0 || t.at >= r1 {

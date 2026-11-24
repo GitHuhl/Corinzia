@@ -90,6 +90,9 @@ impl App {
     }
 
     /// Faders, pans, mute, solo and send levels (heard at once), and the end of a gesture.
+    // The guards pick the kind of strip and the inner tests whether anything
+    // changed: merged, an unchanged bus would fall through to the track arms.
+    #[allow(clippy::collapsible_match)]
     fn mix_levels(&mut self, m: mix::MixMsg) {
         use mix::MixMsg::*;
         match m {

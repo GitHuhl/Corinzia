@@ -448,7 +448,7 @@ impl App {
                 let (bar, beat) = m.map_or((0, 0), |m| {
                     let pos = Frac::new((q * 16.0).round() as i64, 64);
                     let (bar, offset) = corinzia_edit::bar_number(m, pos);
-                    let den = m.meter.iter().filter(|x| x.at <= pos).last().map(|x| x.den).unwrap_or(4);
+                    let den = m.meter.iter().rfind(|x| x.at <= pos).map(|x| x.den).unwrap_or(4);
                     (bar, (offset.num * den / offset.den.max(1)) as usize + 1)
                 });
                 let s = secs.max(0.0);

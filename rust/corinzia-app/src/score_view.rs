@@ -607,9 +607,7 @@ impl canvas::Program<ViewEvent> for ScoreView<'_> {
     }
 
     fn mouse_interaction(&self, state: &Interaction, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        if state.panning.is_some() {
-            mouse::Interaction::Grabbing
-        } else if state.slur_drag.is_some() {
+        if state.panning.is_some() || state.slur_drag.is_some() {
             mouse::Interaction::Grabbing
         } else if cursor.position_in(bounds).and_then(|p| self.slur_target(self.to_desk(p))).is_some() {
             mouse::Interaction::Grab

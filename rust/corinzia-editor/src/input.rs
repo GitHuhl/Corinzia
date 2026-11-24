@@ -69,7 +69,7 @@ impl Editor {
             let fifths = if perc { 0 } else { corinzia_model::shift_key(key_fifths_at(m, caret), by.fifths()) };
             let concert = |p: Pitch| p.transposed(by.inverse());
             // Chord: add above the event just entered (the one ending at the caret).
-            let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
+            let last = evs.iter().rfind(|e| e.start < caret && e.end() == caret && !e.heads.is_empty());
             let r = if let (true, Some(last)) = (chord, last) {
                 let top = last.heads.last().unwrap().pitch.transposed(by);
                 let mut p = edit::nearest_pitch(step, alter, fifths, top);
@@ -126,7 +126,7 @@ impl Editor {
             let Some(vi) = voice_slot(m, lane, voice, true, ids) else { return false };
             let p = drum.unwrap_or_else(|| spell_key(key as i32, key_fifths_at(m, caret)));
             let evs = m.lanes[lane].voices[vi].events.clone();
-            let last = evs.iter().filter(|e| e.start < caret && e.end() == caret && !e.heads.is_empty()).last();
+            let last = evs.iter().rfind(|e| e.start < caret && e.end() == caret && !e.heads.is_empty());
             let r = match (add_to_chord, last) {
                 (true, Some(last)) => {
                     chorded = true;
@@ -323,7 +323,7 @@ impl Editor {
             });
             return;
         }
-        let Some(prev) = v.events.iter().filter(|e| e.start < caret && e.end() <= caret).last().cloned() else { return };
+        let Some(prev) = v.events.iter().rfind(|e| e.start < caret && e.end() <= caret).cloned() else { return };
         // A voice-1 rest is already "empty": just step over it.
         if !(prev.kind == EventKind::Rest && voice == 1) {
             self.transact("Delete", |m, ids| {

@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// A slur drawn: (part, above, its midline sampled).
+type DrawnSlur = (usize, bool, Vec<(f32, f32)>);
+
 impl<'a> Engraver<'a> {
     /// Slurs and hairpins of the whole movement, so a system can draw the
     /// part of one that started or ends in another system.
@@ -47,7 +50,7 @@ impl<'a> Engraver<'a> {
     pub(super) fn score_bar_end(&self, t: Frac) -> Frac {
         let mut at = Frac::ZERO;
         loop {
-            let m = self.score.meter.iter().filter(|m| m.at <= at).last();
+            let m = self.score.meter.iter().rfind(|m| m.at <= at);
             let len = m.map(|m| Frac::new(m.num, m.den)).unwrap_or(Frac::int(1));
             if at + len > t || len.is_zero() {
                 return (at + len).min(self.score.length.max(t));
@@ -78,9 +81,9 @@ impl<'a> Engraver<'a> {
         let mut items = Vec::new();
         // Shortest first: a slur around others clears them.
         let mut slurs: Vec<Spanner> = self.spanners().into_iter().filter(|s| s.kind == SpanKind::Slur && s.from < r1 && s.to >= r0).collect();
-        slurs.sort_by(|a, b| (a.to - a.from).cmp(&(b.to - b.from)));
+        slurs.sort_by_key(|a| a.to - a.from);
         // Drawn so far: (part, above, midline samples).
-        let mut drawn: Vec<(usize, bool, Vec<(f32, f32)>)> = Vec::new();
+        let mut drawn: Vec<DrawnSlur> = Vec::new();
         for sp in slurs {
             let si = if sp.from >= r0 { self.note_at(sp.part, sp.voice, sp.from) } else { None };
             let ei = if sp.to < r1 { self.note_at(sp.to_part, sp.to_voice, sp.to) } else { None };

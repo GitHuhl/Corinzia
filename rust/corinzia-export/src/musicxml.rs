@@ -91,7 +91,7 @@ struct Measure {
 
 fn measures(s: &Score) -> Vec<Measure> {
     let mut meters = s.meter.clone();
-    meters.sort_by(|a, b| a.at.cmp(&b.at));
+    meters.sort_by_key(|a| a.at);
     if meters.is_empty() || meters[0].at > Frac::ZERO {
         meters.insert(0, crate::doc::Meter { at: Frac::ZERO, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
@@ -184,7 +184,7 @@ impl<'a> Writer<'a> {
         self.inst_ids = if !self.percussion && part.instruments.len() > 1 { part.instruments.iter().enumerate().map(|(k, x)| (x.0, format!("P{}-I{}", pi + 1, k + 1))).collect() } else { vec![] };
         let _ = writeln!(self.out, "  <part id=\"P{}\">", pi + 1);
         let mut keys = s.keys.clone();
-        keys.sort_by(|a, b| a.at.cmp(&b.at));
+        keys.sort_by_key(|a| a.at);
         let mut wedge_open = false;
         let mut prev_meter = (0, 0);
         let pickup = ms.first().is_some_and(|m| m.implicit) as usize;
@@ -319,7 +319,7 @@ impl<'a> Writer<'a> {
         let mut directions: Vec<(Frac, String)> = Vec::new();
         if pi == 0 {
             let mut tempo = s.tempo.clone();
-            tempo.sort_by(|a, b| a.at.cmp(&b.at));
+            tempo.sort_by_key(|a| a.at);
             for t in tempo.iter().filter(|t| t.at >= m.start && t.at < end) {
                 let mut d = String::from("      <direction placement=\"above\">\n");
                 if !t.text.is_empty() {
@@ -390,7 +390,7 @@ impl<'a> Writer<'a> {
                     }
                 }
             }
-            dirs.sort_by(|a, b| a.0.cmp(&b.0));
+            dirs.sort_by_key(|a| a.0);
         }
         per_staff
     }
@@ -678,7 +678,7 @@ impl<'a> Writer<'a> {
         let e = p.ev;
         let is_rest = e.pitches.is_empty();
         // Dynamics and hairpins go before the event's first note.
-        if event_start && voice == 1 || event_start && !is_rest {
+        if event_start && (voice == 1 || !is_rest) {
             if (e.spans & span::HAIRPIN_END != 0 || e.dynamic.is_some()) && *wedge_open {
                 self.line("      <direction><direction-type><wedge type=\"stop\"/></direction-type></direction>");
                 *wedge_open = false;

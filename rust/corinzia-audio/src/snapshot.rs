@@ -387,6 +387,7 @@ pub struct Tone {
 /// project's mixer, as one section (`section`: its id on the timeline,
 /// `bpm`: the beat, `length`: in beats). Each tone's bend is set on its
 /// channel just before it starts.
+#[allow(clippy::too_many_arguments)] // the plan's whole context, each needed
 pub fn build_tones_from_pool(project: &Project, sample_rate: f64, generation: u64, section: Id, bpm: f64, length: f64, track: Id, tones: &[Tone], pool: &mut crate::pool::PluginPool) -> Snapshot {
     let mut snap = build_from_pool(project, sample_rate, generation, &[], pool);
     let tempo = TempoMap::new(&[corinzia_perform::tempo::TempoPoint { quarter: 0.0, bpm, ramp_to_next: false }], &[]);
@@ -839,7 +840,7 @@ mod crossfade_tests {
         assert_eq!((c[0].fade_out, c[1].fade_in), (200, 200));
         // Through the overlap the two together keep their power.
         for t in (800..1000).step_by(10) {
-            let (a, b) = (c[0].gain_at(t), c[1].gain_at((t - 800) as usize));
+            let (a, b) = (c[0].gain_at(t), c[1].gain_at(t - 800));
             assert!((a * a + b * b - 1.0).abs() < 0.02, "{t}: {a} {b}");
         }
         // Not touching: no fades; a clip inside another: laid over.

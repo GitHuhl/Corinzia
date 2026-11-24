@@ -22,7 +22,7 @@ impl<'a> Engraver<'a> {
                 groups.push((depth, t.2.actual, notes));
             }
         }
-        groups.sort_by(|a, b| b.0.cmp(&a.0));
+        groups.sort_by_key(|g| std::cmp::Reverse(g.0));
         // Triplet values outside any explicit tuplet: grouped by whole
         // undotted spans (imported or typed as durations alone).
         let mut cur: Vec<usize> = Vec::new();

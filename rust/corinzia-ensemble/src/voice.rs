@@ -102,7 +102,7 @@ impl Spectrum {
                 l += g * (-0.5 * x * x).exp();
             }
         }
-        if n % 2 == 0 && hz < self.even_below {
+        if n.is_multiple_of(2) && hz < self.even_below {
             l += self.even_db;
         }
         l
@@ -420,9 +420,9 @@ impl Voice {
         // A section's players: none quite in tune with the others, each
         // with a vibrato of their own, coming in a little apart.
         const DETUNE: [f32; PLAYERS] = [0.0, 0.8, -0.7, 0.35, -0.3, 0.55];
-        for q in 0..PLAYERS {
+        for (q, detune) in DETUNE.iter().enumerate() {
             let section = p.unison > 1;
-            self.pl_detune[q] = if section { p.spread * (DETUNE[q] + 0.3 * self.rng.noise()) } else { 0.0 };
+            self.pl_detune[q] = if section { p.spread * (detune + 0.3 * self.rng.noise()) } else { 0.0 };
             self.pl_rate[q] = p.vib_rate * (0.92 + 0.16 * self.rng.unit());
             self.pl_vib[q] = self.rng.unit();
             self.pl_depth[q] = 0.8 + 0.4 * self.rng.unit();

@@ -27,6 +27,8 @@ pub use structure::*;
 #[derive(Clone, Copy, Debug)]
 pub struct Ids(pub u64);
 impl Ids {
+    // Not an iterator: an allocator never runs out.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> u64 {
         let id = self.0;
         self.0 += 1;

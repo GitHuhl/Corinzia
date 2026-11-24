@@ -444,7 +444,7 @@ fn slurs_nest_overlap_and_follow_their_notes() {
     e.set_range(Range { lane_from: 0, lane_to: 0, from: f(1, 1), to: f(2, 1) });
     e.paste();
     assert_eq!(e.movement().unwrap().slurs.len(), 2);
-    let last = events(&e, 0, 0).iter().filter(|x| !x.is_rest()).last().unwrap().heads[0].id;
+    let last = events(&e, 0, 0).iter().rfind(|x| !x.is_rest()).unwrap().heads[0].id;
     e.select(Some(last));
     e.delete_selection();
     assert_eq!(e.movement().unwrap().slurs.len(), 1, "a slur goes with its note");

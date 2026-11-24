@@ -284,7 +284,7 @@ fn navigate(m: &Movement, first: Vec<(Frac, Frac)>) -> Vec<(Frac, Frac)> {
     }
     let (target, to) = match jump.kind {
         Nav::DaCapo(to) => (Frac::ZERO, to),
-        Nav::DalSegno(to) => (m.navigation.iter().filter(|n| n.kind == Nav::Segno && n.at < jump.at).map(|n| n.at).last().unwrap_or(Frac::ZERO), to),
+        Nav::DalSegno(to) => (m.navigation.iter().filter(|n| n.kind == Nav::Segno && n.at < jump.at).map(|n| n.at).next_back().unwrap_or(Frac::ZERO), to),
         _ => unreachable!(),
     };
     let find = |kind: Nav| m.navigation.iter().find(|n| n.kind == kind && n.at > target).map(|n| n.at);
@@ -487,7 +487,7 @@ pub struct Performance {
 impl Performance {
     /// Performed -> written quarters (for the playhead).
     pub fn written_quarter(&self, performed: f64) -> f64 {
-        let s = self.spans.iter().filter(|s| s.performed_q <= performed + 1e-12).last().copied().unwrap_or(Span { performed_q: 0.0, written_q: 0.0, length_q: 0.0 });
+        let s = self.spans.iter().rfind(|s| s.performed_q <= performed + 1e-12).copied().unwrap_or(Span { performed_q: 0.0, written_q: 0.0, length_q: 0.0 });
         s.written_q + (performed - s.performed_q)
     }
 }
@@ -534,13 +534,13 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
     let (mut tempo_points, mut meter_points, mut spans) = (Vec::new(), Vec::new(), Vec::new());
     let mut performed = 0.0;
     for &(a, b) in &order {
-        if let Some(t0) = m.tempo.iter().filter(|t| t.at <= a).last().or(m.tempo.first()) {
+        if let Some(t0) = m.tempo.iter().rfind(|t| t.at <= a).or(m.tempo.first()) {
             tempo_points.push(TempoPoint { quarter: performed, bpm: t0.bpm, ramp_to_next: t0.ramp && t0.at == a });
         }
         for t in m.tempo.iter().filter(|t| t.at > a && t.at < b) {
             tempo_points.push(TempoPoint { quarter: performed + q(t.at - a), bpm: t.bpm, ramp_to_next: t.ramp });
         }
-        if let Some(m0) = m.meter.iter().filter(|x| x.at <= a).last().or(m.meter.first()) {
+        if let Some(m0) = m.meter.iter().rfind(|x| x.at <= a).or(m.meter.first()) {
             meter_points.push(MeterPoint { quarter: performed, num: m0.num, den: m0.den });
         }
         for x in m.meter.iter().filter(|x| x.at > a && x.at < b) {
@@ -550,7 +550,7 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
         performed += q(b - a);
     }
     let tempo = TempoMap::new(&tempo_points, &meter_points);
-    let key_at = |at: Frac| m.keys.iter().filter(|k| k.at <= at).last().map(|k| k.fifths).unwrap_or(0);
+    let key_at = |at: Frac| m.keys.iter().rfind(|k| k.at <= at).map(|k| k.fifths).unwrap_or(0);
     // Each voice's slurs, as times (a slur between voices is in both).
     let places = m.note_places();
     let mut voice_slurs: std::collections::HashMap<(usize, usize), Vec<(Frac, Frac)>> = Default::default();

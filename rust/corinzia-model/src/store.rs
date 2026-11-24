@@ -361,13 +361,17 @@ fn technique_json(x: &TechniqueSwitch) -> Value {
     }
 }
 
+/// A `movement` row: id, ordinal, title, length (numerator, denominator),
+/// revision, and tempo, meter, keys and notation as JSON.
+type MovementRow = (i64, i64, String, i64, i64, i64, String, String, String, Option<String>);
+
 /// The movements, in order.
 fn load_movements(db: &Connection, p: &mut Project) -> Result<()> {
     let mut sm = db.prepare(
         "SELECT id, ordinal, title, length_num, length_den, revision, json(tempo), json(meter), json(keys), json(notation) \
          FROM movement ORDER BY ordinal",
     )?;
-    let movements: Vec<(i64, i64, String, i64, i64, i64, String, String, String, Option<String>)> = sm
+    let movements: Vec<MovementRow> = sm
         .query_map([], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?))
         })?

@@ -195,10 +195,17 @@ fn lilypond_stems(ly: &str) -> Option<HashMap<u64, (bool, f32, f32, bool)>> {
     )
 }
 
+/// Noteheads from LilyPond by id: (system, x, y).
+type HeadsAt = HashMap<u64, (u32, f32, f32)>;
+/// Slurs from LilyPond by their first head's id: the control points.
+type SlursAt = HashMap<u64, [(f32, f32); 4]>;
+/// A hairpin from LilyPond: (start head, end head, x0, x1, y top, y bottom).
+type HairpinAt = (u64, u64, f32, f32, f32, f32);
+
 /// id -> (system, x, y) from LilyPond; None without LilyPond.
-fn lilypond_positions(ly: &str) -> Option<HashMap<u64, (u32, f32, f32)>> {
+fn lilypond_positions(ly: &str) -> Option<HeadsAt> {
     let text = run_lilypond(ly)?;
-    let mut map: HashMap<u64, (u32, f32, f32)> = HashMap::new();
+    let mut map: HeadsAt = HashMap::new();
     for l in text.lines() {
         let f: Vec<&str> = l.split_whitespace().collect();
         if f.len() == 5 && f[0] == "NH" {
@@ -497,7 +504,7 @@ fn staff_distances_against_lilypond() {
 }
 
 /// Slurs from LilyPond: first head's id -> control points (x, y down).
-fn lilypond_slurs(ly: &str) -> Option<(HashMap<u64, [(f32, f32); 4]>, HashMap<u64, (u32, f32, f32)>)> {
+fn lilypond_slurs(ly: &str) -> Option<(SlursAt, HeadsAt)> {
     let text = run_lilypond(ly)?;
     let mut slurs = HashMap::new();
     let mut heads = HashMap::new();
@@ -586,7 +593,7 @@ fn slurs_against_lilypond() {
 
 /// Hairpins from LilyPond: (start head id, end head id, x0, x1, y top, y
 /// bottom), y down.
-fn lilypond_hairpins(ly: &str) -> Option<(Vec<(u64, u64, f32, f32, f32, f32)>, HashMap<u64, (u32, f32, f32)>)> {
+fn lilypond_hairpins(ly: &str) -> Option<(Vec<HairpinAt>, HeadsAt)> {
     let text = run_lilypond(ly)?;
     let mut pins = vec![];
     let mut heads = HashMap::new();

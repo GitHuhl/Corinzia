@@ -30,7 +30,7 @@ fn vlq(out: &mut Vec<u8>, mut v: u32) {
 /// (tick, order, bytes): `order` keeps note-offs before note-ons at one tick.
 type Ev = (u32, u8, Vec<u8>);
 
-fn chunk(events: &mut Vec<Ev>, end: u32) -> Vec<u8> {
+fn chunk(events: &mut [Ev], end: u32) -> Vec<u8> {
     events.sort_by_key(|e| (e.0, e.1));
     let mut data = Vec::new();
     let mut last = 0;

@@ -248,7 +248,7 @@ pub struct Lane {
 }
 impl Lane {
     pub fn instrument_at(&self, at: Frac) -> Option<Id> {
-        self.changes.iter().filter(|c| c.at <= at).last().map(|c| c.instrument)
+        self.changes.iter().rfind(|c| c.at <= at).map(|c| c.instrument)
     }
 }
 

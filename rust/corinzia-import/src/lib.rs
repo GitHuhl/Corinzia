@@ -215,7 +215,7 @@ impl PartSlurs {
                 continue;
             }
             let cands = || open.iter().enumerate().filter(|(_, o)| o.4 == number && o.0 < at && o.2 != note);
-            let pick = cands().filter(|(_, o)| o.1 == voice).next_back().or_else(|| cands().next_back()).map(|(i, _)| i);
+            let pick = cands().rfind(|(_, o)| o.1 == voice).or_else(|| cands().next_back()).map(|(i, _)| i);
             if let Some(i) = pick {
                 let (_, _, from, _, _, dir) = open.remove(i);
                 out.push(Slur { id: p.allocate_id(), from, to: note, dir });
@@ -742,8 +742,8 @@ fn finish_movement(movement: &mut Movement, pickup: Option<Frac>) {
     if movement.tempo.is_empty() {
         movement.tempo.push(Tempo { at: Frac::ZERO, bpm: 120.0, ramp: false, text: String::new(), hidden: false });
     }
-    movement.meter.sort_by(|a, b| a.at.cmp(&b.at));
-    movement.navigation.sort_by(|a, b| a.at.cmp(&b.at));
+    movement.meter.sort_by_key(|a| a.at);
+    movement.navigation.sort_by_key(|a| a.at);
     if let Some(len) = pickup {
         if movement.meter.len() == 1 || movement.meter[1].at != len {
             movement.meter[0].at = len;
@@ -752,8 +752,8 @@ fn finish_movement(movement: &mut Movement, pickup: Option<Frac>) {
         }
         movement.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true, beams: [0; 8] });
     }
-    movement.keys.sort_by(|a, b| a.at.cmp(&b.at));
-    movement.tempo.sort_by(|a, b| a.at.cmp(&b.at));
+    movement.keys.sort_by_key(|a| a.at);
+    movement.tempo.sort_by_key(|a| a.at);
 }
 
 /// "2+2+3" beats: the groups (a single number: none).
@@ -1277,7 +1277,7 @@ fn finish_staff(mut s: StaffMusic, player: Id, inst: Id, length: Frac, p: &mut P
             s.lines.push(LineSpan { id: p.allocate_id(), from, to: length, kind });
         }
     }
-    s.lines.sort_by(|a, b| a.from.cmp(&b.from));
+    s.lines.sort_by_key(|a| a.from);
     let change = p.allocate_id();
     let clefs = s.clefs.into_iter().map(|(at, clef)| ClefChange { id: p.allocate_id(), at, clef }).collect();
     let texts = s.texts.into_iter().map(|(at, text, above)| TextItem { id: p.allocate_id(), at, text, kind: if above { TextKind::Technique } else { TextKind::Expression }, shown: Shown::Both }).collect();

@@ -607,7 +607,7 @@ impl App {
                 0.0
             }
         };
-        self.score.pan = self.score.pan + Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
+        self.score.pan += Vector::new(shift(x0, x1, vp.width), shift(y0, y1, vp.height));
     }
 
     /// Scrolls to the current movement's first page if none of its pages

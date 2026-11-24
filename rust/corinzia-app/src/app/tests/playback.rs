@@ -69,7 +69,7 @@ fn a_midi_keyboard_enters_notes_and_chords() {
     a.open_midi(&path.to_string_lossy());
     assert!(a.midi.input.is_some());
     let mut tries = 0;
-    while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || a.midi.held.len() > 0 {
+    while a.editor.movement().unwrap().lanes[0].voices[0].events.iter().filter(|e| e.heads.len() == 3).count() == 0 || !a.midi.held.is_empty() {
         std::thread::sleep(std::time::Duration::from_millis(10));
         a.midi_poll();
         tries += 1;
