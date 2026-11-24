@@ -392,7 +392,7 @@ pub fn layout_pages(score: &Score, opt: &Options, page: &PageSpec) -> Vec<Displa
         if n < 2 || !page.page_numbers {
             continue;
         }
-        let (x, anchor) = if n % 2 == 0 { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
+        let (x, anchor) = if n.is_multiple_of(2) { (page.margin_x, 0) } else { (page.width - page.margin_x, 2) };
         p.items.push(Item::Text { text: n.to_string(), at: pt(x, page.margin_y * 0.6), size: 2.0, italic: false, bold: false, anchor, id: 0 });
         if !running.is_empty() {
             p.items.push(Item::Text { text: running.clone(), at: pt(page.width / 2.0, page.margin_y * 0.6), size: 1.8, italic: true, bold: false, anchor: 1, id: 0 });

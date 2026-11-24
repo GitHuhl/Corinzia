@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// What a note's beam is: (staff, voice, bar, window in the bar, innermost tuplet).
+type BeamKey = (usize, u8, usize, i64, Option<usize>);
+
 impl<'a> Engraver<'a> {
     /// Beat groups -> beamed runs; their stem direction is the group's.
     /// Beam groups by LilyPond's defaults: one beam per beat (dotted
@@ -18,14 +21,14 @@ impl<'a> Engraver<'a> {
             let mut cur: Vec<usize> = Vec::new();
             let mut cur_key = None;
             // A join merges the note's whole window into the beam before it.
-            let mut joined: Option<((usize, u8, usize, i64, Option<usize>), (usize, u8, usize, i64, Option<usize>))> = None;
+            let mut joined: Option<(BeamKey, BeamKey)> = None;
             for &i in idx {
                 let n = &this.notes[i];
                 let m = &this.ms[n.measure];
                 let window = beam_window(m, n.start - m.start + m.phase, span(m));
                 let mut key = (n.home, n.voice, n.measure, window, n.tuplets.last().copied());
                 if n.beam & span::BEAM_JOIN != 0 {
-                    if let Some(k) = cur_key.filter(|k: &(usize, u8, usize, i64, Option<usize>)| (k.0, k.1, k.2) == (n.home, n.voice, n.measure)) {
+                    if let Some(k) = cur_key.filter(|k: &BeamKey| (k.0, k.1, k.2) == (n.home, n.voice, n.measure)) {
                         joined = Some((key, k));
                         key = k;
                     }

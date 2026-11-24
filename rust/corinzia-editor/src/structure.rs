@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// An edit of a movement, made when the popover's text has been read.
+type MovementEdit = Box<dyn FnOnce(&mut Movement, &mut Ids)>;
+
 impl Editor {
     // ------------------------------------------------------------- layout --
     /// The score's and the parts' layouts and the page texts (subtitle,
@@ -312,7 +315,7 @@ impl Editor {
         let bars = self.selected_bars(m, target);
         let mut at = target;
         let label: String;
-        let change: Box<dyn FnOnce(&mut Movement, &mut Ids)> = match kind {
+        let change: MovementEdit = match kind {
             PopoverKind::Key => {
                 let k = edit::parse_key(&text).ok_or("Key not understood: try C, Eb, f# (minor) or \"a minor\"")?;
                 at = bar;

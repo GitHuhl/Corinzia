@@ -896,7 +896,7 @@ impl Engine {
             return 0;
         }
         let (q0, q1) = (sec.performed_quarter(from), sec.performed_quarter(to.min(sec.end)));
-        let meter = sec.meters.iter().filter(|m| m.quarter <= q0 + 1e-9).last().copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
+        let meter = sec.meters.iter().rfind(|m| m.quarter <= q0 + 1e-9).copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
         let (beat, num) = beat_of(sec, q0);
         let mut k = ((q0 - meter.quarter) / beat - 1e-9).ceil();
         let mut n = 0;
@@ -1199,7 +1199,7 @@ struct CountIn {
 /// The beat (quarters) and the beats in a bar at a performed quarter: the
 /// meter's denominator, but a dotted quarter in 6/8, 9/8, 12/8.
 fn beat_of(sec: &crate::snapshot::Section, q: f64) -> (f64, u32) {
-    let m = sec.meters.iter().filter(|m| m.quarter <= q + 1e-9).last().copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
+    let m = sec.meters.iter().rfind(|m| m.quarter <= q + 1e-9).copied().unwrap_or(corinzia_perform::tempo::MeterPoint { quarter: 0.0, num: 4, den: 4 });
     if m.den == 8 && m.num % 3 == 0 && m.num > 3 {
         (1.5, (m.num / 3) as u32)
     } else {

@@ -326,6 +326,8 @@ pub const REFERENCE_RMS: f32 = 0.012;
 
 use crate::voice::{Exciter, Spectrum};
 
+// One row of the patch table: each argument a column.
+#[allow(clippy::too_many_arguments)]
 const fn spec(tilt_pp: f32, tilt_ff: f32, peaks: [(f32, f32, f32); 3], even: (f32, f32), rise: f32, noise_db: f32, exciter: Exciter, physical: f32) -> Option<Spectrum> {
     Some(Spectrum { tilt_pp, tilt_ff, peaks, even_db: even.0, even_below: even.1, rise, noise_db, exciter, physical, body: None })
 }

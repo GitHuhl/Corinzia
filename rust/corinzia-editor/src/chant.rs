@@ -61,7 +61,7 @@ impl Editor {
     }
 
     /// The neume just before the caret.
-    fn neume_before_caret<'c>(c: &'c mut Chant, caret: usize) -> Option<&'c mut Neume> {
+    fn neume_before_caret(c: &mut Chant, caret: usize) -> Option<&mut Neume> {
         match c.elements[..caret].iter_mut().next_back() {
             Some(Element::Neume(n)) => Some(n),
             _ => None,

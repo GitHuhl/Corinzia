@@ -79,8 +79,8 @@ impl App {
             }
             Message::Key(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) => {
                 if self.score.popover.is_some() || self.dialogs.new_score.is_some() || self.dialogs.players.is_some() || self.dialogs.layout.is_some() || self.dialogs.prefs.is_some() || self.dialogs.motif.is_some() || self.dialogs.confirm.is_some() || self.dialogs.browser.is_some() {
-                    if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)) {
-                        if self.dialogs.confirm.take().is_none() && self.dialogs.browser.take().is_none() {
+                    if matches!(key, iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape))
+                        && self.dialogs.confirm.take().is_none() && self.dialogs.browser.take().is_none() {
                             self.score.popover = None;
                             self.dialogs.new_score = None;
                             self.dialogs.players = None;
@@ -88,7 +88,6 @@ impl App {
                             self.dialogs.prefs = None;
                             self.dialogs.motif = None;
                         }
-                    }
                 } else if let Some(t) = self.press(&key, modifiers) {
                     return t;
                 }
@@ -314,7 +313,7 @@ impl App {
     /// (without the usual sync).
     pub(crate) fn canvas_event(&mut self, e: ViewEvent) -> Option<Task<Message>> {
         match e {
-            ViewEvent::Pan(d) => self.score.pan = self.score.pan + d,
+            ViewEvent::Pan(d) => self.score.pan += d,
             ViewEvent::Zoom { factor, around } => {
                 let z = (self.score.zoom * factor).clamp(0.25, 8.0);
                 let k = z / self.score.zoom;
@@ -366,7 +365,7 @@ impl App {
                     score_view::ContextTarget::Time => PopoverKind::Time,
                     score_view::ContextTarget::Barline => PopoverKind::Barline,
                 };
-                let Some(lane) = self.lane_of_staff(p.part) else { return None };
+                let lane = self.lane_of_staff(p.part)?;
                 self.editor.target_mark(lane, Frac::new((p.quarter * 1024.0).round() as i64, 4096), kind);
                 self.sync();
                 self.score.popover = Some(Popover { kind, input: String::new(), error: None, target: None, anchor: Some(screen) });

@@ -44,9 +44,12 @@ pub struct Range {
 /// A note in the clipboard: (staff offset, voice index, time from the start).
 type ClipNote = (usize, u8, Frac);
 
+/// One staff of a copied passage: (voice index, events and tuplets from 0) per voice.
+type StaffClip = Vec<(u8, Vec<Event>, Vec<Tuplet>)>;
+
 #[derive(Clone, Debug)]
 struct Clip {
-    lanes: Vec<Vec<(u8, Vec<Event>, Vec<Tuplet>)>>, // per staff: (voice index, events and tuplets from 0)
+    lanes: Vec<StaffClip>, // per staff: (voice index, events and tuplets from 0)
     length: Frac,
     /// Slurs within the passage, and their sides.
     slurs: Vec<([ClipNote; 2], i8)>,
@@ -632,7 +635,7 @@ impl Editor {
         }
         let Some(m) = self.movement() else { return String::new() };
         let (bar, offset) = edit::bar_number(m, self.caret);
-        let den = m.meter.iter().filter(|x| x.at <= self.caret).last().map(|x| x.den).unwrap_or(4);
+        let den = m.meter.iter().rfind(|x| x.at <= self.caret).map(|x| x.den).unwrap_or(4);
         let beat = offset * Frac::int(den);
         let beat = beat.num as f64 / beat.den as f64 + 1.0;
         let beat = if (beat - beat.round()).abs() < 1e-6 { format!("{}", beat.round() as i64) } else { format!("{beat:.2}") };

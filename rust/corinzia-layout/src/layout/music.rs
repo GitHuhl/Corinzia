@@ -91,9 +91,9 @@ pub(super) fn common_shortest(ms: &[Measure], notes: &[Note]) -> Frac {
 
 pub(super) fn measures(s: &Score) -> Vec<Measure> {
     let mut meters = s.meter.clone();
-    meters.sort_by(|a, b| a.at.cmp(&b.at));
+    meters.sort_by_key(|a| a.at);
     let mut keys = s.keys.clone();
-    keys.sort_by(|a, b| a.at.cmp(&b.at));
+    keys.sort_by_key(|a| a.at);
     let mut out: Vec<Measure> = Vec::new();
     let mut at = Frac::ZERO;
     while at < s.length && out.len() < 100_000 {
@@ -374,7 +374,7 @@ pub(super) fn split(score: &Score, ms: &[Measure]) -> Vec<Note> {
             }
         }
     }
-    out.sort_by(|a, b| (a.part, a.voice, a.start).cmp(&(b.part, b.voice, b.start)));
+    out.sort_by_key(|a| (a.part, a.voice, a.start));
     out
 }
 

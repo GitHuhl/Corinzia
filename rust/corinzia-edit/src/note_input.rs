@@ -121,7 +121,7 @@ fn rest_of(ids: &mut Ids, start: Frac, dur: Frac) -> Event {
 }
 
 fn sort_events(v: &mut [Event]) {
-    v.sort_by(|a, b| a.start.cmp(&b.start)); // stable
+    v.sort_by_key(|a| a.start); // stable
 }
 
 fn first_focus(e: &Event) -> Id {
@@ -310,7 +310,7 @@ pub fn event_at(list: &[Event], pos: Frac) -> Option<&Event> {
 }
 
 pub fn previous_pitch(list: &[Event], pos: Frac) -> Option<Pitch> {
-    list.iter().filter(|e| e.start < pos && !e.heads.is_empty()).last().map(|e| e.heads[0].pitch)
+    list.iter().rfind(|e| e.start < pos && !e.heads.is_empty()).map(|e| e.heads[0].pitch)
 }
 
 pub fn voice_end(list: &[Event]) -> Frac {

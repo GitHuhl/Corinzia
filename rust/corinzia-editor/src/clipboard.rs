@@ -15,7 +15,7 @@ impl Editor {
             }
         }
         let (Some(r), Some(m)) = (self.range, self.movement()) else { return };
-        let lanes: Vec<Vec<(u8, Vec<Event>, Vec<Tuplet>)>> = (r.lane_from..=r.lane_to)
+        let lanes: Vec<crate::StaffClip> = (r.lane_from..=r.lane_to)
             .filter_map(|li| m.lanes.get(li))
             .map(|l| l.voices.iter().map(|v| (v.index, edit::slice_range(&v.events, r.from, r.to), edit::tuplets::slice(&v.tuplets, r.from, r.to))).collect())
             .collect();

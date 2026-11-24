@@ -256,7 +256,7 @@ impl<'a> Engraver<'a> {
             .enumerate()
             .flat_map(|(pi, p)| p.clefs.iter().filter(|c| c.at > range.0 && c.at < range.1).map(move |c| (pi, c.at, c.clef.clone())))
             .collect();
-        clef_changes.sort_by(|a, b| a.1.cmp(&b.1));
+        clef_changes.sort_by_key(|a| a.1);
         Engraver {
             score,
             font: Font::bravura(),

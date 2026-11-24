@@ -246,7 +246,7 @@ pub fn parse_tempo(text: &str) -> Option<TempoSpec> {
     let bpm = match number {
         Some(n) => {
             let b: f64 = n.parse().ok()?;
-            if !(10.0..=400.0).contains(&b) {
+            if !corinzia_model::TEMPO_RANGE.contains(&b) {
                 return None;
             }
             b
@@ -435,12 +435,12 @@ pub fn parse_chord(text: &str) -> Option<String> {
 
 // ------------------------------------------------------------ positions --
 pub fn bar_length(m: &Movement, pos: Frac) -> Frac {
-    m.meter.iter().filter(|x| x.at <= pos).last().map(|x| Frac::new(x.num, x.den)).unwrap_or(Frac::int(1))
+    m.meter.iter().rfind(|x| x.at <= pos).map(|x| Frac::new(x.num, x.den)).unwrap_or(Frac::int(1))
 }
 
 /// Start of the bar containing `pos`.
 pub fn bar_start_at_or_before(m: &Movement, pos: Frac) -> Frac {
-    let start = m.meter.iter().filter(|x| x.at <= pos).last().map(|x| x.at).unwrap_or(Frac::ZERO);
+    let start = m.meter.iter().rfind(|x| x.at <= pos).map(|x| x.at).unwrap_or(Frac::ZERO);
     let len = bar_length(m, pos);
     let rel = pos - start;
     let bars = (rel.num * len.den) / (rel.den * len.num);
@@ -503,7 +503,7 @@ pub fn round_up_to_bar(m: &Movement, end: Frac) -> Frac {
 fn replace_at<T>(v: &mut Vec<T>, at: Frac, item: T, at_of: impl Fn(&T) -> Frac) {
     v.retain(|x| at_of(x) != at);
     v.push(item);
-    v.sort_by(|a, b| at_of(a).cmp(&at_of(b)));
+    v.sort_by_key(|a| at_of(a));
 }
 
 pub fn set_key(m: &mut Movement, at: Frac, key: KeySig) {
@@ -585,7 +585,7 @@ pub fn set_pickup(m: &mut Movement, len: Option<Frac>) {
         m.meter.push(Meter { at: len, num: 4, den: 4, pickup: false, beams: [0; 8] });
     }
     m.meter.insert(0, Meter { at: Frac::ZERO, num: len.num, den: len.den, pickup: true, beams: [0; 8] });
-    m.meter.sort_by(|a, b| a.at.cmp(&b.at));
+    m.meter.sort_by_key(|a| a.at);
 }
 
 /// Pickup lengths typed into the time popover: "pickup 1/4" (a note value
@@ -612,7 +612,7 @@ pub fn set_barline(m: &mut Movement, at: Frac, kind: BarKind, ids: &mut Ids) {
 pub fn set_ending(m: &mut Movement, from: Frac, to: Frac, passes: u8, ids: &mut Ids) {
     m.endings.retain(|e| !(e.from < to && from < e.to));
     m.endings.push(Ending { id: ids.next(), from, to, passes });
-    m.endings.sort_by(|a, b| a.from.cmp(&b.from));
+    m.endings.sort_by_key(|a| a.from);
 }
 /// The navigation popover (Shift+R, with endings): "segno", "coda",
 /// "to coda", "fine", "D.C.", "D.C. al Fine", "DS al Coda"...
@@ -651,7 +651,7 @@ pub fn toggle_nav(m: &mut Movement, at: Frac, kind: Nav, ids: &mut Ids) {
     m.navigation.retain(|x| !(x.at == at && x.kind == kind));
     if m.navigation.len() == n {
         m.navigation.push(NavMark { id: ids.next(), at, kind });
-        m.navigation.sort_by(|a, b| a.at.cmp(&b.at));
+        m.navigation.sort_by_key(|a| a.at);
     }
 }
 
@@ -688,7 +688,7 @@ pub fn set_line(m: &mut Movement, lane: usize, from: Frac, to: Frac, kind: LineK
     remove_lines(m, lane, from, to, kind == LineKind::Pedal, ids);
     if let Some(l) = m.lanes.get_mut(lane) {
         l.lines.push(LineSpan { id: ids.next(), from, to, kind });
-        l.lines.sort_by(|a, b| a.from.cmp(&b.from));
+        l.lines.sort_by_key(|a| a.from);
     }
 }
 
@@ -757,7 +757,7 @@ pub fn add_text(m: &mut Movement, player: Id, at: Frac, text: &str, kind: TextKi
     let (shown, text) = parse_shown(text);
     for l in m.lanes.iter_mut().filter(|l| l.player == player) {
         l.texts.push(TextItem { id: ids.next(), at, text: text.to_string(), kind, shown });
-        l.texts.sort_by(|a, b| a.at.cmp(&b.at));
+        l.texts.sort_by_key(|a| a.at);
     }
 }
 
@@ -965,7 +965,7 @@ pub fn delete_span(m: &mut Movement, from: Frac, to: Frac) {
             b.at = b.at - gap;
         }
     }
-    m.barlines.sort_by(|a, b| a.at.cmp(&b.at));
+    m.barlines.sort_by_key(|a| a.at);
     if let Some(i) = (0..m.barlines.len().saturating_sub(1)).find(|&i| m.barlines[i].at == from && m.barlines[i + 1].at == from) {
         m.barlines.remove(i); // the moved one comes second
     }

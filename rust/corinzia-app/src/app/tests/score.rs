@@ -78,7 +78,7 @@ fn the_note_input_shadow_is_where_a_click_writes() {
     let origins = score_view::page_origins(&a.score.pages, true);
     // Over the first staff, a little into its second bar, a space above the top line.
     let st = a.score.pages[0].staves[0].clone();
-    let col = a.score.pages[0].columns.iter().filter(|c| c.system == st.system && c.quarter >= 4.0).nth(1).unwrap().clone();
+    let col = *a.score.pages[0].columns.iter().filter(|c| c.system == st.system && c.quarter >= 4.0).nth(1).unwrap();
     let desk = iced::Point::new(origins[0].x + col.x + 0.3, origins[0].y + st.top - 1.0);
     let (spot, ..) = score_view::ghost_spot(&a.score.pages, &origins, &a.pages_of(a.editor.movement), desk, g).expect("a shadow");
     let at = score_view::locate(&a.score.pages, &origins, desk);
@@ -221,7 +221,7 @@ fn slurs_are_selected_and_moved_to_other_notes_with_the_mouse() {
     }
     let _ = a.update(Message::Canvas(ViewEvent::SlurDragEnd));
     assert_eq!(slur_of(&a), Some((0, 3)));
-    assert_eq!(a.editor.undo_label().as_deref(), Some("Move slur"));
+    assert_eq!(a.editor.undo_label(), Some("Move slur"));
     a.editor.undo();
     assert_eq!(slur_of(&a), Some((0, 1)), "one drag, one undo step");
     a.editor.redo();

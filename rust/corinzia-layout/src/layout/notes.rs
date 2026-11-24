@@ -242,8 +242,8 @@ impl<'a> Engraver<'a> {
                     n.x
                 };
                 self.push(Item::glyph_scaled(g, x, y, s, n.id));
-                if n.value.base <= 1 && !n.whole_bar || n.value.base > 1 {
-                    self.dots(&n, x + self.width(g), &[if n.value.base <= 1 { 1 } else { 1 }]);
+                if n.value.base > 1 || !n.whole_bar {
+                    self.dots(&n, x + self.width(g), &[1]);
                 }
                 continue;
             }
@@ -503,7 +503,7 @@ impl<'a> Engraver<'a> {
         } else {
             // A voice in polyphony prefers its own side (Dots.direction).
             let poly = self.notes.iter().any(|o| o.part == n.part && o.measure == n.measure && o.voice != n.voice && !o.whole_bar);
-            let dir = if !poly { 0 } else if n.voice % 2 == 0 { -1 } else { 1 };
+            let dir = if !poly { 0 } else if n.voice.is_multiple_of(2) { -1 } else { 1 };
             dot_rows(positions, dir)
         };
         for dp in rows {

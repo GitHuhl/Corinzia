@@ -160,7 +160,7 @@ mod tests {
         let sr = 48_000.0;
         let x: Vec<f32> = (0..4800).map(|i| (std::f64::consts::FRAC_PI_2 * i as f64 + std::f64::consts::FRAC_PI_4).sin() as f32).collect();
         let sample_peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
-        assert!((sample_peak - 0.7071).abs() < 1e-3);
+        assert!((sample_peak - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3);
         let l = measure(&x, &[], sr);
         assert!(l.true_peak > -0.5, "{} dBTP", l.true_peak);
     }

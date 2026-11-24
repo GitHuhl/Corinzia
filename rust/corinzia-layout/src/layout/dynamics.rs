@@ -126,7 +126,7 @@ impl<'a> Engraver<'a> {
         }
         // Hairpins that touch (one ends where the next starts) share one
         // line, below everything under any of them.
-        placed.sort_by(|a, b| (a.sp.part, a.sp.voice, a.sp.from).cmp(&(b.sp.part, b.sp.voice, b.sp.from)));
+        placed.sort_by_key(|a| (a.sp.part, a.sp.voice, a.sp.from));
         let mut k = 0;
         while k < placed.len() {
             let mut end = k + 1;

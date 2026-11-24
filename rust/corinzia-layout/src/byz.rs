@@ -245,7 +245,7 @@ pub fn engrave(chant: &Chant, page: &ByzPage) -> Vec<DisplayList> {
                 let lyric_w = if shown.is_empty() { 0.0 } else { crate::display::text_width(&shown, page.lyric_size, false) };
                 let width = w.max(lyric_w + 0.5) + gap;
                 let glyph_x = (width - gap - w) / 2.0;
-                let lyric = (!shown.is_empty()).then(|| (shown, lyric_w));
+                let lyric = (!shown.is_empty()).then_some((shown, lyric_w));
                 boxes.push(Boxed { width, glyph_x, glyphs, lyric, hyphen, neume: true, break_after: false, id });
             }
             Element::Martyria(d) => {

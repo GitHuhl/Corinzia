@@ -88,8 +88,8 @@ fn loads_the_bundle_from_disk() {
     let bundle = dir.join("vendor/Corinzia Ensemble.clap");
     std::fs::copy(&so, &bundle).unwrap();
     std::fs::write(dir.join("not-a-plugin.clap"), b"nope").unwrap();
-    assert_eq!(host::find_bundles(&[dir.clone()]).len(), 2);
-    let (infos, errors) = host::scan(&[dir.clone()]);
+    assert_eq!(host::find_bundles(std::slice::from_ref(&dir)).len(), 2);
+    let (infos, errors) = host::scan(std::slice::from_ref(&dir));
     assert_eq!(infos.iter().filter(|i| i.id == "org.corinzia.ensemble").count(), 2, "built-in + bundle: {infos:?}");
     assert_eq!(errors.len(), 1, "{errors:?}");
     let lib = Library::load(&bundle).unwrap();

@@ -689,7 +689,7 @@ impl Editor {
         }
         let Some(m) = self.movement() else { return };
         let keys: Vec<(Frac, i32)> = m.keys.iter().map(|k| (k.at, k.fifths)).collect();
-        let key_at = move |at: Frac| keys.iter().filter(|k| k.0 <= at).last().map(|k| k.1).unwrap_or(0);
+        let key_at = move |at: Frac| keys.iter().rfind(|k| k.0 <= at).map(|k| k.1).unwrap_or(0);
         let respell = move |h: &mut Head, by: Interval, at: Frac| {
             let w = h.pitch.transposed(by);
             let fifths = corinzia_model::shift_key(key_at(at), by.fifths());

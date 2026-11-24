@@ -466,7 +466,7 @@ fn lyrics_on_notes() {
     let r3 = set_lyric(&r2.events, v[0].id, 1, "", false, false).unwrap();
     assert_eq!(r3.events[0].lyrics.len(), 1, "empty text removes the syllable");
     let rest = make_event(&mut ids, f(2, 1), f(1, 4), &[], 0);
-    assert!(set_lyric(&[rest.clone()], rest.id, 1, "x", false, false).is_none(), "no lyrics on rests");
+    assert!(set_lyric(std::slice::from_ref(&rest), rest.id, 1, "x", false, false).is_none(), "no lyrics on rests");
 }
 
 // --------------------------------------------------------------- tuplets --

@@ -123,7 +123,7 @@ fn warp(base: &TempoMap, points: &[TempoPoint], regions: &[Region], end: f64) ->
     cuts.retain(|q| *q >= 0.0 && *q <= end.max(0.0) + 1e-9);
     cuts.sort_by(|a, b| a.total_cmp(b));
     cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    let ramps_at = |q: f64| points.iter().filter(|p| p.quarter <= q + 1e-12).last().is_some_and(|p| p.ramp_to_next);
+    let ramps_at = |q: f64| points.iter().rfind(|p| p.quarter <= q + 1e-12).is_some_and(|p| p.ramp_to_next);
     let mut out = Vec::new();
     for (i, &q) in cuts.iter().enumerate() {
         let bpm = base.tempo_at(q) * factor(q);

@@ -92,6 +92,8 @@ impl Default for Rng {
 }
 
 impl Rng {
+    // Not an iterator: the generator never runs out.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> u32 {
         let mut x = self.0;
         x ^= x << 13;

@@ -104,7 +104,7 @@ pub fn follow(m: &Movement, style: &Style, beats: &[f64], unit: f64, how: Follow
     // Kept: what comes before and after; marks on the page inside take the
     // tempo there.
     let mut tempo: Vec<Tempo> = m.tempo.iter().filter(|t| t.at < from || t.at > to || !t.hidden).cloned().collect();
-    let in_force = |points: &[Tempo], a: Frac| points.iter().filter(|p| p.at <= a).last().map(|p| p.bpm);
+    let in_force = |points: &[Tempo], a: Frac| points.iter().rfind(|p| p.at <= a).map(|p| p.bpm);
     for t in tempo.iter_mut().filter(|t| t.at >= from && t.at <= to) {
         if let Some(bpm) = in_force(&points, t.at) {
             t.bpm = bpm;
@@ -113,7 +113,7 @@ pub fn follow(m: &Movement, style: &Style, beats: &[f64], unit: f64, how: Follow
     }
     points.retain(|p| !tempo.iter().any(|t| t.at == p.at));
     tempo.extend(points);
-    tempo.sort_by(|a, b| a.at.cmp(&b.at));
+    tempo.sort_by_key(|a| a.at);
     let mut gaps: Vec<f64> = grid.windows(2).map(|w| w[1].1 - w[0].1).filter(|g| *g > 0.0).collect();
     gaps.sort_by(f64::total_cmp);
     let bpm = gaps.get(gaps.len() / 2).map(|g| 60.0 / g).unwrap_or(0.0);
@@ -123,7 +123,7 @@ pub fn follow(m: &Movement, style: &Style, beats: &[f64], unit: f64, how: Follow
 /// The beat (quarters) the score counts in at `q`: a dotted crotchet in
 /// 6/8, 9/8 and 12/8, else the meter's note.
 pub fn beat_unit(m: &Movement, q: f64) -> f64 {
-    let perf_meter = m.meter.iter().filter(|x| crate::q(x.at) <= q + 1e-9).last().or(m.meter.first());
+    let perf_meter = m.meter.iter().rfind(|x| crate::q(x.at) <= q + 1e-9).or(m.meter.first());
     match perf_meter {
         Some(x) if x.den == 8 && x.num % 3 == 0 && x.num > 3 => 1.5,
         Some(x) if x.den > 0 => 4.0 / x.den as f64,

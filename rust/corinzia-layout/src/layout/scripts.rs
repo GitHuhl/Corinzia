@@ -24,7 +24,7 @@ impl<'a> Engraver<'a> {
                 // Staccato, staccatissimo, tenuto and marcato are quantized
                 // into the staff's spaces; the rest keep clear of the staff
                 // too (it joins their support), by at least staff-padding.
-                let below = if poly { n.voice % 2 == 0 } else { n.stem_up };
+                let below = if poly { n.voice.is_multiple_of(2) } else { n.stem_up };
                 let dir = if below { 1.0 } else { -1.0 }; // y down
                 let stem_side = n.has_stem() && n.stem_up != below;
                 let outer = if below { n.heads[0].pos } else { n.heads[n.heads.len() - 1].pos };
