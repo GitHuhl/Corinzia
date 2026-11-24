@@ -220,7 +220,7 @@ fn exports_midi_and_musicxml_from_the_model() {
     let project = Project {
         title: "T".into(),
         players: vec![Player { id: 2, name: "P".into(), instruments: vec![4] }],
-        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, section: None }],
+        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, players: None }],
         tracks: vec![Track { id: 6, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] }],
         movements: vec![m.clone()],
         ..Default::default()
@@ -314,7 +314,7 @@ fn audio_clips_are_cued_where_they_start_through_the_tempo() {
     };
     let mut project = Project {
         players: vec![Player { id: 2, name: "P".into(), instruments: vec![4] }],
-        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, section: None }],
+        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, players: None }],
         movements: vec![m.clone()],
         ..Default::default()
     };
@@ -347,7 +347,7 @@ fn audio_tracks_are_staves_named_after_them_with_their_clips_files() {
     c.length = 2.0;
     let mut project = Project {
         players: vec![Player { id: 2, name: "P".into(), instruments: vec![4] }],
-        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, section: None }],
+        instruments: vec![Instrument { id: 4, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(6), drums: vec![], tuning: vec![], kind: None, players: None }],
         movements: vec![m.clone()],
         ..Default::default()
     };

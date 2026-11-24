@@ -757,6 +757,7 @@ impl Engine {
         let Some(snap) = self.snap.as_ref() else { return };
         for (i, node) in snap.nodes.iter().enumerate().take(MAX_NODES) {
             let Some((ch, program, bank)) = node.program else { continue };
+            let players = node.players;
             // A guest's program goes to its host's instance (on its channel).
             let to = node.host.map(|h| h as usize).filter(|&h| h < MAX_NODES).unwrap_or(i);
             let events = &mut self.nodes[to].events.events;
@@ -770,6 +771,9 @@ impl Engine {
                 midi([0xb0 | ch, 32, b as u8 & 0x7f]);
             }
             midi([0xc0 | ch, program & 0x7f, 0]);
+            if let Some(n) = players {
+                midi([0xb0 | ch, corinzia_ensemble::PLAYERS_CC, n.min(127)]);
+            }
         }
     }
 

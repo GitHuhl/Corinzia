@@ -44,8 +44,54 @@ const BODY: [[f64; 8]; 4] = [
 ];
 /// The bodies' masses (kg).
 const MASS: [f64; 4] = [0.035, 0.055, 0.16, 0.32];
+/// The body's radiation: above `shelf` Hz down 6 dB, and falling 12 dB an
+/// octave above `top` Hz (a body radiates its high vibrations ever less;
+/// the model's eight modes alone sound far too bright): violin to bass.
+const RADIATION: [(f64, f64); 4] = [(800.0, 4500.0), (650.0, 3800.0), (450.0, 2800.0), (300.0, 1800.0)];
+
+/// A biquad filter (direct form I).
+#[derive(Clone, Copy, Default)]
+struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    x: [f32; 2],
+    y: [f32; 2],
+}
+
+impl Biquad {
+    /// A second-order low-pass (RBJ's cookbook) at `f` Hz.
+    fn low_pass(f: f64, q: f64, rate: f64) -> Biquad {
+        let w = TAU * f.min(rate * 0.45) / rate;
+        let (s, c) = w.sin_cos();
+        let alpha = s / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        let b1 = (1.0 - c) / a0;
+        Biquad { b: [(b1 / 2.0) as f32, b1 as f32, (b1 / 2.0) as f32], a: [(-2.0 * c / a0) as f32, ((1.0 - alpha) / a0) as f32], ..Default::default() }
+    }
+    /// A high shelf (RBJ's cookbook, slope 1) at `f` Hz, `gain_db` above it.
+    fn high_shelf(f: f64, gain_db: f64, rate: f64) -> Biquad {
+        let a = 10f64.powf(gain_db / 40.0);
+        let w = TAU * f.min(rate * 0.45) / rate;
+        let (s, c) = w.sin_cos();
+        let alpha = s / 2.0 * 2f64.sqrt();
+        let k = 2.0 * a.sqrt() * alpha;
+        let a0 = (a + 1.0) - (a - 1.0) * c + k;
+        Biquad {
+            b: [(a * ((a + 1.0) + (a - 1.0) * c + k) / a0) as f32, (-2.0 * a * ((a - 1.0) + (a + 1.0) * c) / a0) as f32, (a * ((a + 1.0) + (a - 1.0) * c - k) / a0) as f32],
+            a: [(2.0 * ((a - 1.0) - (a + 1.0) * c) / a0) as f32, (((a + 1.0) - (a - 1.0) * c - k) / a0) as f32],
+            ..Default::default()
+        }
+    }
+    fn tick(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1] - self.a[0] * self.y[0] - self.a[1] * self.y[1];
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
 /// The lowest note a delay line is long enough for (Hz).
-const LOWEST_HZ: f64 = 20.0;
+const LOWEST_HZ: f64 = 30.0;
 
 fn pitch(key: f32) -> f32 {
     440.0 * ((key - 69.0) / 12.0).exp2()
@@ -456,6 +502,9 @@ pub struct Instrument {
     dc_in: f32,
     dc_out: f32,
     dc_pole: f32,
+    /// The body's radiation (see [`RADIATION`]).
+    shelf: Biquad,
+    top: Biquad,
     pizzicato: bool,
 }
 
@@ -482,6 +531,8 @@ impl Instrument {
             dc_in: 0.0,
             dc_out: 0.0,
             dc_pole: (-TAU * 8.0 / rate).exp() as f32,
+            shelf: Biquad::default(),
+            top: Biquad::default(),
             pizzicato: false,
         };
         for lane in i.strings.iter_mut().flatten() {
@@ -499,12 +550,18 @@ impl Instrument {
         self.body.reset();
         self.bow = Bow::default();
         (self.pluck_time, self.dc_in, self.dc_out) = (0.0, 0.0, 0.0);
+        for f in [&mut self.shelf, &mut self.top] {
+            (f.x, f.y) = ([0.0; 2], [0.0; 2]);
+        }
         self.tuned = [0.0; 4];
     }
 
     /// Which instrument it is ([`VIOLIN`] … [`BASS`]).
     pub fn configure(&mut self, instrument: usize) {
         self.instrument = instrument.min(BASS);
+        let (shelf, top) = RADIATION[self.instrument];
+        self.shelf = Biquad::high_shelf(shelf, -6.0, self.base_rate);
+        self.top = Biquad::low_pass(top, 0.6, self.base_rate);
         self.body.prepare(self.rate, self.instrument, self.player);
         self.tuned = [0.0; 4];
         for (s, string) in self.strings.iter_mut().enumerate() {
@@ -529,6 +586,16 @@ impl Instrument {
             os *= 2;
         }
         self.set_oversampling(os);
+        self.finger(frequency, key, pluck, velocity);
+    }
+
+    /// The next note of a slur: the finger moves, the string sounds on
+    /// (its model's rate kept, so nothing restarts).
+    pub fn slur(&mut self, frequency: f32, key: i32, velocity: f32) {
+        self.finger(frequency, key, false, velocity);
+    }
+
+    fn finger(&mut self, frequency: f32, key: i32, pluck: bool, velocity: f32) {
         self.intonation = (-intonation(self.base_rate, self.instrument, key) / 1200.0).exp2();
         self.fundamental = frequency * self.intonation;
         self.velocity = velocity;
@@ -592,7 +659,7 @@ impl Instrument {
         let out = signal - self.dc_in + self.dc_pole * self.dc_out;
         self.dc_in = signal;
         self.dc_out = out;
-        out
+        self.top.tick(self.shelf.tick(out))
     }
 
     /// One step of the model at its own rate: the bridge's signal.

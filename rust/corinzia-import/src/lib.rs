@@ -660,8 +660,8 @@ fn add_part(mut r: PartReader, pi: usize, pinfo: Option<&PartInfo>, movement: &m
     let percussion = clef == "percussion";
     let scored = pinfo.map(|i| i.instruments.clone()).unwrap_or_default();
     let drums = if percussion { drum_sounds(&r.sounds, &scored, &name) } else { vec![] };
-    let (kind, section) = Instrument::kind_from_name(&name);
-    p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: r.to_concert.inverse(), clef: clef.clone(), track: Some(track), drums, tuning, kind, section });
+    let (kind, players) = Instrument::kind_from_name(&name);
+    p.instruments.push(Instrument { id: inst, player, name: name.clone(), engraver_name: abbr, transposition: r.to_concert.inverse(), clef: clef.clone(), track: Some(track), drums, tuning, kind, players });
     let mut held = vec![inst];
     let mut changes = Vec::new();
     if !percussion && scored.len() > 1 {
@@ -732,8 +732,8 @@ fn instrument_changes(r: &mut PartReader, scored: &[(String, String, Option<u8>)
             None => {
                 let iname = scored.iter().find(|x| x.0 == *iid).map(|x| x.1.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| iid.clone());
                 let id = p.allocate_id();
-                let (kind, section) = Instrument::kind_from_name(&iname);
-                p.instruments.push(Instrument { id, player, name: iname, engraver_name: String::new(), transposition: r.to_concert.inverse(), clef: clef.to_string(), track, drums: vec![], tuning: vec![], kind, section });
+                let (kind, players) = Instrument::kind_from_name(&iname);
+                p.instruments.push(Instrument { id, player, name: iname, engraver_name: String::new(), transposition: r.to_concert.inverse(), clef: clef.to_string(), track, drums: vec![], tuning: vec![], kind, players });
                 held.push(id);
                 ids.insert(iid.clone(), id);
                 id

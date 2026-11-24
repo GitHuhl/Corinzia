@@ -174,6 +174,9 @@ pub struct Node {
     pub sends: Vec<(u32, f32, bool)>,
     /// The MIDI program change (channel, program, bank) sent when playback starts.
     pub program: Option<(u8, u8, Option<u16>)>,
+    /// How many players the built-in instruments play its part with (a
+    /// string section's size), sent with the program.
+    pub players: Option<u8>,
 }
 
 /// A bus: what tracks send or route to it, through its effects and fader,
@@ -453,7 +456,7 @@ pub fn instrument_program(inst: &corinzia_model::Instrument, orchestral: bool) -
         return (0, DRUM_BANK);
     }
     let Some(kind) = inst.kind else { return (0, 0) };
-    if kind.section_strings && inst.section.unwrap_or(orchestral) {
+    if kind.section_strings && inst.players_in(orchestral) > 1 {
         return (kind.program, SECTION_BANK);
     }
     (kind.program, kind.bank)
@@ -470,6 +473,13 @@ pub fn builtin_program(project: &Project, track: Id) -> Option<(u8, u8, Option<u
     let inst = project.instruments.iter().find(|i| i.track == Some(track))?;
     let (program, bank) = instrument_program(inst, orchestral(project));
     Some((ch, program, Some(bank)))
+}
+
+/// How many players the built-in instruments give a track's part: its
+/// (first) instrument's (see `Instrument::players_in`).
+pub fn builtin_players(project: &Project, track: Id) -> Option<u8> {
+    let inst = project.instruments.iter().find(|i| i.track == Some(track))?;
+    Some(inst.players_in(orchestral(project)))
 }
 
 /// The articulation controller's value (CC9) for a note: its written
@@ -554,12 +564,14 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let out = t.and_then(|t| t.output_bus).and_then(bus_index);
             // Indices follow the track's sends (a send to a missing bus goes nowhere).
             let sends = t.map(|t| t.sends.iter().map(|s| (bus_index(s.bus).unwrap_or(u32::MAX), db_to_gain(s.gain_db), s.pre)).collect()).unwrap_or_default();
-            let program = if plays_builtin(project, track) { builtin_program(project, track) } else { t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank))) };
+            let builtin = plays_builtin(project, track);
+            let program = if builtin { builtin_program(project, track) } else { t.and_then(|t| Some((t.midi_channel & 15, t.program?, t.bank))) };
+            let players = if builtin { builtin_players(project, track) } else { None };
             // An instance an earlier track plays already: this one is a guest.
             let host = plugin.as_ref().and_then(|p| nodes.iter().position(|n| n.host.is_none() && n.plugin.as_ref().is_some_and(|q| Arc::ptr_eq(p, q)))).map(|i| i as u32);
             let plugin = if host.is_some() { None } else { plugin };
             let channel = t.map(|t| t.midi_channel & 15).unwrap_or(0);
-            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, host, channel, inserts, out, sends, program });
+            nodes.push(Node { track, plugin, clips: vec![], gain, pan, audible, direct, host, channel, inserts, out, sends, program, players });
         }
     }
     let master_inserts = effects(&project.master.inserts, get);

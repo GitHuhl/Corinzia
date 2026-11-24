@@ -570,9 +570,11 @@ pub struct Instrument {
     /// fixed when it is added: renaming the staff changes none of it. None:
     /// an instrument the catalogue does not know.
     pub kind: Option<&'static crate::catalog::Kind>,
-    /// Strings: one player (false) or a section (true); None: a section in
-    /// an orchestral score, else one player.
-    pub section: Option<bool>,
+    /// How many play it: a section's players (bowed strings), each heard
+    /// on their own; 1 one player. None: as the score suggests (a section
+    /// of the usual size in an orchestral score, else one player; see
+    /// [`Instrument::players_in`]).
+    pub players: Option<u8>,
 }
 
 /// E2 A2 D3 G3 B3 E4 and E1 A1 D2 G2.
@@ -625,8 +627,22 @@ impl Notehead {
 impl Instrument {
     /// The kind and players a name means, for an instrument being added,
     /// imported, or loaded from a project saved before kinds.
-    pub fn kind_from_name(name: &str) -> (Option<&'static crate::catalog::Kind>, Option<bool>) {
-        (crate::catalog::infer(name), crate::catalog::section_of(name))
+    pub fn kind_from_name(name: &str) -> (Option<&'static crate::catalog::Kind>, Option<u8>) {
+        (crate::catalog::infer(name), crate::catalog::players_of(name))
+    }
+
+    /// The most players a part can have.
+    pub const MAX_PLAYERS: u8 = 32;
+
+    /// How many play it in a score (`orchestral`: one with a string
+    /// orchestra's sections): its own count, else a section of the usual
+    /// size for bowed strings in an orchestral score, else one.
+    pub fn players_in(&self, orchestral: bool) -> u8 {
+        match self.players {
+            Some(n) => n.clamp(1, Self::MAX_PLAYERS),
+            None if orchestral && self.kind.is_some_and(|k| k.section_strings) => crate::catalog::section_size(self.kind),
+            None => 1,
+        }
     }
 
     /// Its family, for brackets.

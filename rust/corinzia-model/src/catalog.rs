@@ -238,6 +238,31 @@ pub fn infer(name: &str) -> Option<&'static Kind> {
     KINDS.iter().find(|k| k.words.iter().any(|w| has(w)))
 }
 
+/// How many players a section of an instrument has in a symphony
+/// orchestra (16 first and 14 second violins, 12 violas, 10 cellos and 8
+/// basses in the largest; here the middle of the usual sizes); one for
+/// anything but bowed strings.
+pub fn section_size(kind: Option<&Kind>) -> u8 {
+    match kind.filter(|k| k.section_strings).map(|k| k.id) {
+        Some("violin") => 14,
+        Some("viola") => 10,
+        Some("cello") => 8,
+        Some("double-bass") => 6,
+        Some(_) => 10,
+        None => 1,
+    }
+}
+
+/// How many players a name says (see `Instrument::players`): "Violin
+/// solo" one, "Violins", "Celli", "Strings section" a section of the usual
+/// size; None: either, as the score suggests.
+pub fn players_of(name: &str) -> Option<u8> {
+    match section_of(name)? {
+        false => Some(1),
+        true => Some(section_size(infer(name).or(Some(kind("violin")?)))),
+    }
+}
+
 /// Whether a name says one player or a section: "Violin solo" (one),
 /// "Violins", "Celli", "Strings section" (a section); None: either, as the
 /// score suggests.

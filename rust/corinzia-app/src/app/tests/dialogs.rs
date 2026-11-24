@@ -323,3 +323,34 @@ fn layout_card_page_texts_and_breaks() {
     a.editor.caret = corinzia_score::Frac::ZERO;
     assert!(a.editor.toggle_break(false, None).is_err());
 }
+
+#[test]
+fn the_players_card_sets_a_string_sections_size() {
+    let pl = Message::Players;
+    let p = crate::editor::instruments::new_project("S", "Violins, Flute", 2).unwrap();
+    let mut a = App::new(p, None, View::Page, String::new());
+    // "Violins" is a section of the usual size; the flute one player.
+    assert_eq!(a.editor.project.instruments[0].players, Some(14));
+    let _ = a.update(pl(PlayersMsg::Open));
+    let d = a.dialogs.players.as_ref().unwrap();
+    assert_eq!(d.rows[0].players, "14");
+    // Twelve of them; a bad count says why.
+    let _ = a.update(pl(PlayersMsg::Players(0, "99".into())));
+    let _ = a.update(pl(PlayersMsg::Apply));
+    assert!(a.dialogs.players.as_ref().unwrap().error.is_some());
+    let _ = a.update(pl(PlayersMsg::Players(0, "12".into())));
+    let _ = a.update(pl(PlayersMsg::Apply));
+    assert!(a.dialogs.players.is_none());
+    assert_eq!(a.editor.project.instruments[0].players, Some(12));
+    // Renamed, it keeps its size; the built-in instruments play with twelve.
+    let _ = a.update(pl(PlayersMsg::Open));
+    let _ = a.update(pl(PlayersMsg::Edit(0, "Violins I".into())));
+    let _ = a.update(pl(PlayersMsg::Apply));
+    assert_eq!(a.editor.project.instruments[0].players, Some(12));
+    let track = a.editor.project.instruments[0].track.unwrap();
+    assert_eq!(corinzia_audio::snapshot::builtin_players(&a.editor.project, track), Some(12));
+    // Undone: the usual size again.
+    a.editor.undo();
+    a.editor.undo();
+    assert_eq!(a.editor.project.instruments[0].players, Some(14));
+}
