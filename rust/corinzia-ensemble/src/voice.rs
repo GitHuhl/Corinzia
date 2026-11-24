@@ -226,6 +226,8 @@ pub struct Voice {
     freq: f32,
     cur: f32,
     glide: f32,
+    /// The slide's time (seconds) for a slur, from which each player's own.
+    glide_time: f32,
     t: f32,
     env: f32,
     env_rate: f32,
@@ -315,6 +317,15 @@ pub struct Voice {
     ph_vib_rate: [f32; MAX_SECTION],
     ph_vib_depth: [f32; MAX_SECTION],
     ph_vibf: [f32; MAX_SECTION],
+    /// When each player's vibrato starts (seconds), and its rate's slow
+    /// wander (a fraction).
+    ph_vib_start: [f32; MAX_SECTION],
+    ph_vib_drift: [f32; MAX_SECTION],
+    /// Each player's own slur: where their finger is (Hz), how quickly it
+    /// slides (a smoothing coefficient), and how long until it moves.
+    ph_cur: [f32; MAX_SECTION],
+    ph_glide: [f32; MAX_SECTION],
+    ph_wait: [f32; MAX_SECTION],
     ph_trem: [f32; MAX_SECTION],
     ph_trem_phase: [f32; MAX_SECTION],
     /// Plucked (pizzicato), not bowed.
@@ -382,6 +393,7 @@ impl Voice {
             freq: 440.0,
             cur: 440.0,
             glide: 1.0,
+            glide_time: 0.03,
             t: 0.0,
             env: 0.0,
             env_rate: 0.0,
@@ -453,6 +465,11 @@ impl Voice {
             ph_vib_rate: [0.0; MAX_SECTION],
             ph_vib_depth: [1.0; MAX_SECTION],
             ph_vibf: [1.0; MAX_SECTION],
+            ph_vib_start: [0.15; MAX_SECTION],
+            ph_vib_drift: [0.0; MAX_SECTION],
+            ph_cur: [440.0; MAX_SECTION],
+            ph_glide: [0.0; MAX_SECTION],
+            ph_wait: [0.0; MAX_SECTION],
             ph_trem: [6.0; MAX_SECTION],
             ph_trem_phase: [0.25; MAX_SECTION],
             ph_pluck: false,
@@ -500,6 +517,7 @@ impl Voice {
         self.freq = key_hz(key as f32);
         self.cur = self.freq;
         self.glide = dsp::smoothing(0.03, sr);
+        self.glide_time = 0.03;
         self.t = 0.0;
         self.join = 0.0;
         self.attack_scale = 1.0;
@@ -599,6 +617,7 @@ impl Voice {
         // A string player's finger slides on a wide leap, audibly.
         let time = if self.model == Model::Bowed && leap >= 3.0 { 0.035 + 0.075 * leap / 12.0 } else { time * (0.5 + leap / 12.0) };
         self.glide = dsp::smoothing(time, self.sr);
+        self.glide_time = time;
         self.join = 0.35 + 0.3 * velocity;
         if let Some(s) = crate::patches::spectrum(self.patch) {
             self.tune_waveguide(s);
@@ -719,11 +738,21 @@ impl Voice {
             self.ph_detune[q] = if section { 7.0 * self.rng.noise() } else { 0.0 };
             self.ph_wander[q] = 0.0;
             // A section comes in a little apart (plucks closer together).
-            self.ph_delay[q] = if section && q > 0 { (if pluck { 0.025 } else { 0.03 * (1.2 - self.vel) }) * self.rng.unit() } else { 0.0 };
+            // An accent or a marked attack: they come in together.
+            let together = 1.0 - 0.75 * self.bite.min(1.0);
+            self.ph_delay[q] = if section && q > 0 { (if pluck { 0.025 } else { 0.03 * (1.2 - self.vel) }) * together * self.rng.unit() } else { 0.0 };
             self.ph_vib[q] = self.rng.unit();
-            self.ph_vib_rate[q] = p.vib_rate * (0.9 + 0.2 * self.rng.unit());
+            // Each player's own vibrato: in a section, rates from about 4.8
+            // to 6.8 a second (at a sound's 5.8), starting after the attack
+            // at their own moment.
+            self.ph_vib_rate[q] = p.vib_rate * if section { 0.83 + 0.34 * self.rng.unit() } else { 0.95 + 0.1 * self.rng.unit() };
             self.ph_vib_depth[q] = if section { 0.75 + 0.5 * self.rng.unit() } else { 1.0 };
+            self.ph_vib_start[q] = if section { 0.1 + 0.2 * self.rng.unit() } else { 0.15 };
+            self.ph_vib_drift[q] = 0.0;
             self.ph_vibf[q] = 1.0;
+            self.ph_cur[q] = self.freq;
+            self.ph_glide[q] = self.glide;
+            self.ph_wait[q] = 0.0;
             // Tremolo: the bow's back and forth, 5 to 6.5 times a second (10
             // to 13 strokes), each player at their own pace, starting
             // mid-stroke (the bow already moving).
@@ -774,9 +803,18 @@ impl Voice {
         let blocks = CONTROL as f32 / sr;
         let n = self.ph_n;
         if self.ph_key_changed {
+            // A slur: in a section, each player's finger moves at their own
+            // moment (within 20 ms) and slides at their own pace (0.6 to 1.6
+            // times the slide); a soloist's at once.
             self.ph_key_changed = false;
+            let section = n > 1;
             for q in 0..n {
-                pool.players[self.ph_slots[q] as usize].slur(self.freq, self.key as i32, self.vel);
+                let pace = if section { 0.6 + self.rng.unit() } else { 1.0 };
+                self.ph_glide[q] = dsp::smoothing(self.glide_time * pace, sr);
+                self.ph_wait[q] = if section { 0.02 * self.rng.unit() } else { 0.0 };
+                if self.ph_wait[q] <= 0.0 {
+                    pool.players[self.ph_slots[q] as usize].slur(self.freq, self.key as i32, self.vel);
+                }
             }
         }
         for o in out.iter_mut() {
@@ -790,24 +828,37 @@ impl Voice {
                 self.cur += (self.freq - self.cur) * (1.0 - (1.0 - self.glide).powi(CONTROL as i32));
                 self.scoop *= dsp::decay(0.08, sr / CONTROL as f32);
                 let d = self.dynamic;
-                let base = self.cur * 2f32.powf((bend + self.scoop) / 12.0);
                 let bite = (1.0 - self.t / (p.attack * 3.0 + 0.03)).max(0.0) * self.bite + self.accent * (-self.t / 0.09).exp() + self.join;
                 let controls = bowing(d, self.tech, bite, self.ph_dir);
                 self.join *= dsp::decay(0.12, sr / CONTROL as f32);
                 // Vibrato: after the attack, wider when louder.
-                let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
-                let depth = if self.ph_pluck || self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) };
+                let depth = if self.ph_pluck || self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * (0.6 + 0.7 * d) };
+                let scoop = 2f32.powf((bend + self.scoop) / 12.0);
                 for q in 0..n {
-                    self.ph_vib[q] = (self.ph_vib[q] + self.ph_vib_rate[q] * blocks).fract();
+                    // The finger: waiting to move, then sliding to the note.
+                    if self.ph_wait[q] > 0.0 {
+                        self.ph_wait[q] -= blocks;
+                        if self.ph_wait[q] <= 0.0 {
+                            pool.players[self.ph_slots[q] as usize].slur(self.freq, self.key as i32, self.vel);
+                        }
+                    } else {
+                        self.ph_cur[q] += (self.freq - self.ph_cur[q]) * (1.0 - (1.0 - self.ph_glide[q]).powi(CONTROL as i32));
+                    }
+                    // The rate wanders a little (a few per cent), slowly.
+                    if n > 1 {
+                        self.ph_vib_drift[q] = (self.ph_vib_drift[q] + 0.02 * self.rng.noise() * blocks.sqrt()).clamp(-0.04, 0.04);
+                    }
+                    self.ph_vib[q] = (self.ph_vib[q] + self.ph_vib_rate[q] * (1.0 + self.ph_vib_drift[q]) * blocks).fract();
+                    let fade = ((self.t - self.ph_vib_start[q]) / 0.4).clamp(0.0, 1.0);
                     // Intonation wanders a little, slowly.
                     if n > 1 {
                         self.ph_wander[q] = (self.ph_wander[q] + 6.0 * self.rng.noise() * blocks.sqrt()).clamp(-4.0, 4.0) * 0.999;
                     }
-                    let vib = 100.0 * depth * self.ph_vib_depth[q] * (self.ph_vib[q] * TAU).sin();
+                    let vib = 100.0 * depth * fade * self.ph_vib_depth[q] * (self.ph_vib[q] * TAU).sin();
                     // The period's factor: the vibrato moves the finger.
                     self.ph_vibf[q] = (-vib / 1200.0).exp2();
                     let inst = &mut pool.players[self.ph_slots[q] as usize];
-                    inst.set_frequency(base * ((self.ph_detune[q] + self.ph_wander[q]) / 1200.0).exp2());
+                    inst.set_frequency(self.ph_cur[q] * scoop * ((self.ph_detune[q] + self.ph_wander[q]) / 1200.0).exp2());
                     inst.controls(controls);
                 }
                 // The loudness the sound is calibrated to at this dynamic
@@ -1874,5 +1925,62 @@ mod playability {
             }
             println!("{label}: {unsteady} of {total} unsteady, {falling} quieter than the dynamic below");
         }
+    }
+}
+
+#[cfg(test)]
+mod section_players {
+    use super::*;
+
+    fn violins(players: usize) -> (Voice, PlayerPool) {
+        let patch = (0..PATCHES.len()).find(|&i| PATCHES[i].name == "Violins").unwrap();
+        let mut v = Voice::new(48000.0);
+        v.start(patch, tech::ORD, 0, 0, 0, 69, 0.6, Some(0.6), 0, 5);
+        let mut pool = PlayerPool::new(48000.0, players);
+        let mut slots = [0u16; MAX_SECTION];
+        let k = pool.take(0, players, |_, _| false, &mut slots);
+        v.attach_players(&slots[..k], &mut pool, true);
+        (v, pool)
+    }
+
+    fn spread(x: &[f32]) -> f32 {
+        x.iter().cloned().fold(f32::MIN, f32::max) - x.iter().cloned().fold(f32::MAX, f32::min)
+    }
+
+    #[test]
+    fn a_sections_players_vibrate_and_slur_each_in_their_own_time() {
+        let (mut v, mut pool) = violins(12);
+        let n = 12;
+        let rate = PATCHES[v.patch].vib_rate;
+        // Vibrato rates over more than a cycle a second; their starts apart.
+        assert!(spread(&v.ph_vib_rate[..n]) > 0.2 * rate, "rates {:?}", &v.ph_vib_rate[..n]);
+        assert!(spread(&v.ph_vib_start[..n]) > 0.08, "starts {:?}", &v.ph_vib_start[..n]);
+        let mut out = vec![0.0f32; 4800];
+        v.render_with(&mut out, 0.0, crate::patches::trims(), &mut pool);
+        // A slur: the fingers move at their own moments, slide at their own pace.
+        v.legato_to(1, 72, 0.6, 1);
+        v.render_with(&mut out[..16], 0.0, crate::patches::trims(), &mut pool);
+        assert!(spread(&v.ph_wait[..n]) > 0.005, "moments {:?}", &v.ph_wait[..n]);
+        assert!(spread(&v.ph_glide[..n]) > 0.25 * v.ph_glide[..n].iter().sum::<f32>() / n as f32, "paces {:?}", &v.ph_glide[..n]);
+        // Midway, some have arrived and some not; after, all have.
+        let target = key_hz(72.0);
+        let mut mid = vec![0.0f32; 5760];
+        v.render_with(&mut mid, 0.0, crate::patches::trims(), &mut pool);
+        let near = v.ph_cur[..n].iter().filter(|&&f| (f / target - 1.0).abs() < 0.01).count();
+        assert!(near > 0 && near < n, "{near} of {n} there after 120 ms");
+        let mut long = vec![0.0f32; 24000];
+        v.render_with(&mut long, 0.0, crate::patches::trims(), &mut pool);
+        assert!(v.ph_cur[..n].iter().all(|&f| (f / target - 1.0).abs() < 0.002), "all there");
+        // A soloist: no waiting.
+        let patch = (0..PATCHES.len()).find(|&i| PATCHES[i].name == "Violin").unwrap();
+        let mut s = Voice::new(48000.0);
+        s.start(patch, tech::ORD, 0, 0, 0, 69, 0.6, Some(0.6), 0, 5);
+        let mut pool1 = PlayerPool::new(48000.0, 1);
+        let mut slots = [0u16; MAX_SECTION];
+        let k = pool1.take(0, 1, |_, _| false, &mut slots);
+        s.attach_players(&slots[..k], &mut pool1, true);
+        s.legato_to(1, 72, 0.6, 1);
+        s.render_with(&mut out[..16], 0.0, crate::patches::trims(), &mut pool1);
+        assert_eq!(s.ph_wait[0], 0.0);
     }
 }

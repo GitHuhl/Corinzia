@@ -66,9 +66,9 @@ fn sounds_are_calibrated_to_their_orchestral_level() {
         // Bowed strings through their players (who calibrate themselves).
         let bowed = p.model == Model::Bowed;
         // (A section's players sum differently on each note, as a real
-        // section's do: over seven notes about its reference key.)
+        // section's do: over thirteen notes about its reference key.)
         let measured = if bowed && p.unison > 1 {
-            let keys = (p.ref_key as i16 - 3)..=(p.ref_key as i16 + 3);
+            let keys = (p.ref_key as i16 - 6)..=(p.ref_key as i16 + 6);
             let power: f32 = keys.clone().map(|k| voice::measure_note(i, SR, Some(&mut pool()), tech::ORD, k).powi(2)).sum();
             (power / keys.count() as f32).sqrt()
         } else if bowed {
@@ -78,7 +78,7 @@ fn sounds_are_calibrated_to_their_orchestral_level() {
         };
         // Measured with the trims applied: the target, within 0.5 dB.
         let t = if bowed { 1.0 } else { patches::trims()[i] };
-        // (A section's sum keeps about a decibel's spread over seven notes.)
+        // (A section's sum keeps some spread even over thirteen notes.)
         let tolerance = if bowed && p.unison > 1 { 1.5 } else { 0.5 };
         let target = patches::REFERENCE_RMS * 10f32.powf(p.level_db / 20.0);
         let db = 20.0 * (measured * t / target).log10();
