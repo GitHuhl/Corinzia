@@ -36,6 +36,8 @@ pub mod dsp;
 pub mod effects;
 pub mod patches;
 pub mod body;
+pub mod bowed;
+mod bowed_tuning;
 pub mod voice;
 
 use voice::Voice;
