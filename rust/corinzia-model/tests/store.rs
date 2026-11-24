@@ -6,7 +6,7 @@ use std::sync::Arc;
 fn sample() -> Project {
     let mut p = Project { title: "Serenade".into(), composer: "Anon.".into(), sample_rate: 48000.0, next_id: 100, ..Default::default() };
     p.tracks.push(Track { id: 1, name: "Flute".into(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: 0, gain_db: -3.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![], kind: None, section: None });
+    p.instruments.push(Instrument { id: 3, player: 2, name: "Flute".into(), engraver_name: "Fl.".into(), transposition: corinzia_model::Interval::default(), clef: "treble".into(), track: Some(1), drums: vec![], tuning: vec![], kind: None, players: None });
     p.players.push(Player { id: 2, name: "Player 1".into(), instruments: vec![3] });
     let ev = |id, s, d, step, tie| Event {
         id,
@@ -325,17 +325,25 @@ fn instruments_keep_their_kind_and_older_projects_find_theirs() {
     let mut p = sample();
     p.instruments[0].name = "Leader".into();
     p.instruments[0].kind = catalog::kind("cello");
-    p.instruments[0].section = Some(true);
+    p.instruments[0].players = Some(12);
     save(&p, &path).unwrap();
     let q = load(&path).unwrap();
-    assert_eq!((q.instruments[0].kind.map(|k| k.id), q.instruments[0].section), (Some("cello"), Some(true)));
+    assert_eq!((q.instruments[0].kind.map(|k| k.id), q.instruments[0].players), (Some("cello"), Some(12)));
     // Saved before kinds: found from the name, once.
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute("DELETE FROM setting WHERE key = 'kinds'", []).unwrap();
     db.execute("UPDATE instrument SET name = 'Violins 1'", []).unwrap();
     drop(db);
     let r = load(&path).unwrap();
-    assert_eq!((r.instruments[0].kind.map(|k| k.id), r.instruments[0].section), (Some("violin"), Some(true)));
+    assert_eq!((r.instruments[0].kind.map(|k| k.id), r.instruments[0].players), (Some("violin"), Some(14)));
+    // Saved before section sizes: a section of the usual size, or one player.
+    for (flag, players) in [("true", Some(8)), ("false", Some(1))] {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let id = r.instruments[0].id;
+        db.execute(&format!("INSERT OR REPLACE INTO setting(key, value) VALUES ('kinds', jsonb('{{\"{id}\": {{\"kind\": \"cello\", \"section\": {flag}}}}}'))"), []).unwrap();
+        drop(db);
+        assert_eq!(load(&path).unwrap().instruments[0].players, players, "section: {flag}");
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 

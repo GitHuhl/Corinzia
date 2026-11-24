@@ -25,6 +25,8 @@ pub(crate) enum PrefsMsg {
     Buffer(u32),
     CountIn(u8),
     SelectionOnly(bool),
+    /// Bowed strings on the earlier engine.
+    ClassicStrings(bool),
     Midi(String),
     Paths(String),
     DefaultPaths(bool),
@@ -33,6 +35,8 @@ pub(crate) enum PrefsMsg {
 }
 
 const COUNT_INS: [&str; 3] = ["None", "One bar", "Two bars"];
+/// The bowed strings' engines, as the preferences name them.
+const STRING_ENGINES: [&str; 2] = ["Physically modelled players", "Spectral (the earlier engine)"];
 
 /// The Preferences card.
 pub(crate) fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
@@ -61,6 +65,11 @@ pub(crate) fn prefs_card(d: &PrefsDialog) -> Element<'_, Message> {
         .spacing(10),
         column![label("Count-in before playing (with or without the metronome)"), pick(COUNT_INS.map(String::from).to_vec(), COUNT_INS[d.draft.count_in.min(2) as usize].to_string(), |v| PrefsMsg::CountIn(COUNT_INS.iter().position(|x| *x == v).unwrap_or(0) as u8))].spacing(3),
         button(text("Play only the selected passage (its staves, to its end)").size(13)).padding([5, 10]).style(theme::tool(d.draft.play_selection_only)).on_press(pm(PrefsMsg::SelectionOnly(!d.draft.play_selection_only))),
+        column![
+            label("Strings (the built-in instruments)"),
+            pick(STRING_ENGINES.map(String::from).to_vec(), STRING_ENGINES[d.draft.classic_strings as usize].to_string(), |v| PrefsMsg::ClassicStrings(v == STRING_ENGINES[1])),
+        ]
+        .spacing(3),
         column![
             label("More plugin folders (separated by ;)"),
             text_input("/path/to/plugins", &d.paths).on_input(move |v| pm(PrefsMsg::Paths(v))).padding(5).size(14),
@@ -107,6 +116,7 @@ impl App {
             PrefsMsg::Buffer(b) => d.draft.buffer = b,
             PrefsMsg::CountIn(n) => d.draft.count_in = n.min(2),
             PrefsMsg::SelectionOnly(on) => d.draft.play_selection_only = on,
+            PrefsMsg::ClassicStrings(on) => d.draft.classic_strings = on,
             PrefsMsg::Paths(t) => d.paths = t,
             PrefsMsg::DefaultPaths(on) => d.draft.default_plugin_paths = on,
             PrefsMsg::Cancel => {
@@ -126,6 +136,7 @@ impl App {
                 self.dialogs.prefs = None;
                 theme::set(&next.theme);
                 self.playback.set_metronome(next.metronome, next.count_in);
+                corinzia_ensemble::set_classic_strings(next.classic_strings);
                 if self.prefs.audio_differs(&next) {
                     // A new engine at the new rate: plugins come back with their state.
                     self.playback.stop();

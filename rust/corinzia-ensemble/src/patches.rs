@@ -236,6 +236,25 @@ pub const SECTION_BANK: u16 = 1;
 pub const DRUM_BANK: u16 = 128;
 
 /// The sound a General MIDI program (0-based) and bank select.
+/// The bowed instrument a sound is (for its physically modelled players,
+/// see [`crate::bowed`]): by its name; None for the string orchestra (by
+/// register) and anything not bowed.
+pub fn bowed_instrument(patch: usize) -> Option<usize> {
+    let p = PATCHES.get(patch).filter(|p| p.model == Model::Bowed)?;
+    let n = p.name;
+    if n.starts_with("Violin") {
+        Some(crate::bowed::VIOLIN)
+    } else if n.starts_with("Viola") {
+        Some(crate::bowed::VIOLA)
+    } else if n.starts_with("Cello") {
+        Some(crate::bowed::CELLO)
+    } else if n.contains("bass") || n.starts_with("Bass") {
+        Some(crate::bowed::BASS)
+    } else {
+        None
+    }
+}
+
 pub fn patch_for(program: u8, bank: u16) -> usize {
     match (program, bank) {
         (71, 1) => return 17,

@@ -29,6 +29,20 @@ The README's screenshots are remade by `scripts/readme-screenshots.sh`
 (headless at 1920x1080, with a private PipeWire session), from public-domain scores in
 the music21 corpus and the demo project.
 
+The built-in strings' intonation and level tables are made by ignored
+tests, rerun when the physical model or its bowing changes:
+
+```bash
+cargo test --release -p corinzia-ensemble make_tuning_table -- --ignored
+```
+
+```bash
+cargo test --release -p corinzia-ensemble make_level_table -- --ignored
+```
+
+`CORINZIA_STRINGS=classic` or `physical` overrides the strings' engine
+preference (to compare them, e.g. on `--export out.wav`).
+
 ## Layout
 
 | Path | What |

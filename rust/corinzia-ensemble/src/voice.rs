@@ -18,6 +18,7 @@
 //! Karplus-Strong string, decaying partials, struck modes and synthesized
 //! drums.
 
+use crate::bowed;
 use crate::dsp::{self, db, pulse, saw, Rng, Svf};
 use crate::patches::{Model, Patch, MODES, PATCHES};
 use std::f32::consts::TAU;
@@ -120,6 +121,48 @@ static LOG2: [f32; MAX_HARMONICS + 1] = {
 const PLAYERS: usize = 6;
 const MAX_MODES: usize = 16;
 const CONTROL: usize = 16; // samples between control updates
+
+/// The most players one note can have (a string section's size).
+pub const MAX_SECTION: usize = 32;
+/// Players in the shared pool (see [`PlayerPool`]).
+pub const POOL: usize = 128;
+
+/// Physically modelled string players ([`crate::bowed`]), shared by the
+/// voices: a bowed note takes as many as its part has, and gives them back
+/// when it ends. Allocated with the voices, not while playing.
+pub struct PlayerPool {
+    pub players: Vec<bowed::Instrument>,
+    /// The voice each player is with (`u32::MAX`: none).
+    owner: Vec<u32>,
+}
+
+impl PlayerPool {
+    pub fn new(sample_rate: f64, n: usize) -> PlayerPool {
+        PlayerPool { players: (0..n).map(|i| bowed::Instrument::new(sample_rate, i as u32)).collect(), owner: vec![u32::MAX; n] }
+    }
+
+    pub fn empty() -> PlayerPool {
+        PlayerPool { players: Vec::new(), owner: Vec::new() }
+    }
+
+    /// Up to `n` players for voice `voice`: those with no voice, or with
+    /// one no longer playing them (`playing`); their indices into `out`.
+    pub fn take(&mut self, voice: u32, n: usize, playing: impl Fn(u32, u16) -> bool, out: &mut [u16; MAX_SECTION]) -> usize {
+        let mut k = 0;
+        for i in 0..self.players.len() {
+            if k == n.min(MAX_SECTION) {
+                break;
+            }
+            let o = self.owner[i];
+            if o == u32::MAX || o == voice || !playing(o, i as u16) {
+                self.owner[i] = voice;
+                out[k] = i as u16;
+                k += 1;
+            }
+        }
+        k
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct Mode {
@@ -258,10 +301,54 @@ pub struct Voice {
     n_modes: usize,
     kit: KitSound,
     ctl: usize,
+    // physically modelled strings (see `PlayerPool`): this note's players
+    // in the pool, which instrument, and each player's differences
+    pub physical: bool,
+    ph_n: usize,
+    ph_slots: [u16; MAX_SECTION],
+    ph_kind: usize,
+    /// The square root of the sound's own size (a section's sum is heard
+    /// against it: more players, louder).
+    ph_ref: f32,
+    ph_detune: [f32; MAX_SECTION],
+    ph_wander: [f32; MAX_SECTION],
+    ph_delay: [f32; MAX_SECTION],
+    ph_vib: [f32; MAX_SECTION],
+    ph_vib_rate: [f32; MAX_SECTION],
+    ph_vib_depth: [f32; MAX_SECTION],
+    ph_vibf: [f32; MAX_SECTION],
+    ph_trem: [f32; MAX_SECTION],
+    ph_dir: f32,
+    ph_key_changed: bool,
 }
 
 fn key_hz(key: f32) -> f32 {
     440.0 * 2f32.powf((key - 69.0) / 12.0)
+}
+
+/// How a physically modelled player bows at a dynamic `d` (0..1), with a
+/// technique, and a bite (an accent, a marked attack, a slur's join):
+/// louder, a faster bow pressed harder and a brighter tone; near the
+/// bridge or over the fingerboard; a mute damps the body.
+pub fn bowing(d: f32, technique: u8, bite: f32, direction: f32) -> bowed::Controls {
+    bowed::Controls {
+        // Pressed enough at every dynamic for the string to speak (a
+        // too light bow on a slow stroke only scrapes): see the
+        // `playability` test.
+        force: ((0.55 + 0.4 * d) * (1.0 + 0.4 * bite)).min(1.0),
+        speed: 0.25 + 0.65 * d,
+        direction,
+        engagement: 1.0,
+        position: match technique {
+            tech::SUL_PONT => 0.0,
+            tech::SUL_TASTO => 1.0,
+            _ => 0.35,
+        },
+        brightness: (0.4 + 0.3 * d + if technique == tech::SUL_PONT { 0.25 } else { 0.0 }).min(1.0),
+        coupling: if technique == tech::CON_SORD { 0.2 } else { 0.6 },
+        sympathetic: 0.45,
+        rosin: 0.5,
+    }
 }
 
 impl Voice {
@@ -342,6 +429,21 @@ impl Voice {
             n_modes: 0,
             kit: KitSound::default(),
             ctl: 0,
+            physical: false,
+            ph_n: 0,
+            ph_slots: [0; MAX_SECTION],
+            ph_kind: 0,
+            ph_ref: 1.0,
+            ph_detune: [0.0; MAX_SECTION],
+            ph_wander: [0.0; MAX_SECTION],
+            ph_delay: [0.0; MAX_SECTION],
+            ph_vib: [0.0; MAX_SECTION],
+            ph_vib_rate: [0.0; MAX_SECTION],
+            ph_vib_depth: [1.0; MAX_SECTION],
+            ph_vibf: [1.0; MAX_SECTION],
+            ph_trem: [12.0; MAX_SECTION],
+            ph_dir: 1.0,
+            ph_key_changed: false,
         }
     }
 
@@ -363,6 +465,8 @@ impl Voice {
         self.age = age;
         self.patch = patch;
         self.tech = technique;
+        self.physical = false;
+        self.ph_n = 0;
         self.rng = Rng(0x9E37_79B9 ^ seed.wrapping_mul(2_654_435_761) ^ (key as u32) << 16 | 1);
         self.vel = velocity.clamp(0.0, 1.0);
         self.model = match (p.model, technique) {
@@ -482,6 +586,9 @@ impl Voice {
         if let Some(s) = crate::patches::spectrum(self.patch) {
             self.tune_waveguide(s);
         }
+        // The players' fingers move too (on the next block: the players
+        // are in the pool).
+        self.ph_key_changed = true;
     }
 
     /// How the note speaks ([`articulation`]): its attack, its bite and its
@@ -549,6 +656,128 @@ impl Voice {
     pub fn set_technique(&mut self, t: u8) {
         if self.sustained {
             self.tech = t;
+        }
+    }
+
+    /// Whether a note just started can be played by physically modelled
+    /// players: bowed (arco, tremolo, muted, near the bridge or over the
+    /// fingerboard); pizzicato, col legno and harmonics play as before.
+    pub fn wants_players(&self) -> bool {
+        self.model == Model::Bowed && PATCHES[self.patch].model == Model::Bowed && matches!(self.tech, tech::ORD | tech::TREM | tech::CON_SORD | tech::SUL_PONT | tech::SUL_TASTO)
+    }
+
+    /// Plays the note just started (and articulated) with these players
+    /// from the pool: each its own instrument, a little out of tune with
+    /// the others, with a vibrato of their own, coming in a little apart.
+    /// `down_bow`: the stroke.
+    pub fn attach_players(&mut self, slots: &[u16], pool: &mut PlayerPool, down_bow: bool) {
+        let p = self.p();
+        let n = slots.len().min(MAX_SECTION);
+        if n == 0 {
+            return;
+        }
+        self.physical = true;
+        self.ph_n = n;
+        self.ph_slots[..n].copy_from_slice(&slots[..n]);
+        // The instrument: by the sound's name, else (the string orchestra) by register.
+        self.ph_kind = crate::patches::bowed_instrument(self.patch).unwrap_or(match self.key {
+            55.. => bowed::VIOLIN,
+            48..=54 => bowed::VIOLA,
+            36..=47 => bowed::CELLO,
+            _ => bowed::BASS,
+        });
+        self.ph_ref = (p.unison.max(1) as f32).sqrt();
+        self.ph_dir = if down_bow { 1.0 } else { -1.0 };
+        let section = n > 1;
+        for (q, &slot) in slots.iter().take(n).enumerate() {
+            self.ph_detune[q] = if section { 7.0 * self.rng.noise() } else { 0.0 };
+            self.ph_wander[q] = 0.0;
+            self.ph_delay[q] = if section && q > 0 { 0.03 * self.rng.unit() * (1.2 - self.vel) } else { 0.0 };
+            self.ph_vib[q] = self.rng.unit();
+            self.ph_vib_rate[q] = p.vib_rate * (0.9 + 0.2 * self.rng.unit());
+            self.ph_vib_depth[q] = if section { 0.75 + 0.5 * self.rng.unit() } else { 1.0 };
+            self.ph_vibf[q] = 1.0;
+            self.ph_trem[q] = 11.0 + if section { 3.0 * self.rng.unit() } else { 1.0 };
+            let inst = &mut pool.players[slot as usize];
+            inst.reset();
+            if inst.instrument() != self.ph_kind {
+                inst.configure(self.ph_kind);
+            }
+            inst.note(self.freq * (self.ph_detune[q] / 1200.0).exp2(), self.key as i32, false, self.vel);
+        }
+        self.ph_key_changed = false;
+    }
+
+    /// The players this voice has in the pool (none once it has ended).
+    /// (See `bowing` for how they play.)
+    pub fn players(&self) -> &[u16] {
+        if self.active && self.physical { &self.ph_slots[..self.ph_n] } else { &[] }
+    }
+
+    fn render_physical(&mut self, out: &mut [f32], bend: f32, trims: &[f32], pool: &mut PlayerPool) {
+        let mut p = *self.p();
+        p.attack *= self.attack_scale;
+        let sr = self.sr;
+        let dt = 1.0 / sr;
+        let dyn_rate = dsp::smoothing(0.04, sr);
+        let blocks = CONTROL as f32 / sr;
+        let mut gain = 0.0;
+        let n = self.ph_n;
+        if self.ph_key_changed {
+            self.ph_key_changed = false;
+            for q in 0..n {
+                pool.players[self.ph_slots[q] as usize].slur(self.freq, self.key as i32, self.vel);
+            }
+        }
+        for o in out.iter_mut() {
+            if self.ctl == 0 {
+                self.ctl = CONTROL;
+                // An accent or an fp holds its attack level until the note has
+                // spoken, then settles.
+                if self.t > (p.attack * (1.5 - self.vel) * 1.5).max(0.06) || self.dyn_target > self.dynamic {
+                    self.dynamic += (self.dyn_target - self.dynamic) * (1.0 - (1.0 - dyn_rate).powi(CONTROL as i32));
+                }
+                self.cur += (self.freq - self.cur) * (1.0 - (1.0 - self.glide).powi(CONTROL as i32));
+                self.scoop *= dsp::decay(0.08, sr / CONTROL as f32);
+                let d = self.dynamic;
+                let base = self.cur * 2f32.powf((bend + self.scoop) / 12.0);
+                let bite = (1.0 - self.t / (p.attack * 3.0 + 0.03)).max(0.0) * self.bite + self.accent * (-self.t / 0.09).exp() + self.join;
+                let controls = bowing(d, self.tech, bite, self.ph_dir);
+                self.join *= dsp::decay(0.12, sr / CONTROL as f32);
+                // Vibrato: after the attack, wider when louder.
+                let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
+                let depth = p.vibrato * fade * (0.6 + 0.7 * d);
+                for q in 0..n {
+                    self.ph_vib[q] = (self.ph_vib[q] + self.ph_vib_rate[q] * blocks).fract();
+                    // Intonation wanders a little, slowly.
+                    if n > 1 {
+                        self.ph_wander[q] = (self.ph_wander[q] + 6.0 * self.rng.noise() * blocks.sqrt()).clamp(-4.0, 4.0) * 0.999;
+                    }
+                    let vib = 100.0 * depth * self.ph_vib_depth[q] * (self.ph_vib[q] * TAU).sin();
+                    // The period's factor: the vibrato moves the finger.
+                    self.ph_vibf[q] = (-vib / 1200.0).exp2();
+                    let inst = &mut pool.players[self.ph_slots[q] as usize];
+                    inst.set_frequency(base * ((self.ph_detune[q] + self.ph_wander[q]) / 1200.0).exp2());
+                    inst.controls(controls);
+                }
+                // The loudness the sound is calibrated to at this dynamic
+                // (what `trims` gives the earlier engine), over what the
+                // players give here (see `bowed_levels`); a section's
+                // players add up against the sound's own size.
+                let _ = trims;
+                let target = crate::patches::REFERENCE_RMS * db(p.level_db + p.range_db * (d - 0.62) / 0.84);
+                gain = target / (crate::bowed_levels::level(self.ph_kind, self.key as i32, d) * self.ph_ref);
+            }
+            self.ctl -= 1;
+            self.envelope_step();
+            self.t += dt;
+            let mut x = 0.0;
+            for q in 0..n {
+                let e = if self.t >= self.ph_delay[q] { self.env } else { 0.0 };
+                let gesture = if self.tech == tech::TREM { (TAU * self.ph_trem[q] * self.t).sin() } else { 1.0 };
+                x += pool.players[self.ph_slots[q] as usize].tick(e, self.ph_vibf[q], gesture);
+            }
+            *o += x * gain * self.env;
         }
     }
 
@@ -797,8 +1026,21 @@ impl Voice {
     /// Adds this voice into `out` (mono). `bend`: the channel's pitch bend
     /// in semitones. Returns false once the voice has ended.
     pub fn render(&mut self, out: &mut [f32], bend: f32, trims: &[f32]) -> bool {
+        self.render_with(out, bend, trims, &mut PlayerPool::empty())
+    }
+
+    /// As [`Voice::render`], its bowed strings played by players from the pool.
+    pub fn render_with(&mut self, out: &mut [f32], bend: f32, trims: &[f32], pool: &mut PlayerPool) -> bool {
         if !self.active {
             return false;
+        }
+        if self.physical && self.ph_slots[..self.ph_n].iter().all(|&s| (s as usize) < pool.players.len()) {
+            self.ctl = 0;
+            self.render_physical(out, bend, trims, pool);
+            if self.releasing && self.env < 1e-4 {
+                self.active = false;
+            }
+            return self.active;
         }
         // The host splits its blocks at every event: the control values are
         // the renderers' locals, so they are worked out afresh at the start
@@ -1430,17 +1672,35 @@ impl Voice {
 /// 200 Hz, as the ear does), over the sustain of a held sound or the first
 /// 0.1 s of a struck one (the ear's short-term loudness).
 pub fn measure(patch: usize, sample_rate: f64) -> f32 {
+    measure_with(patch, sample_rate, None)
+}
+
+/// As [`measure`]; bowed strings played by physically modelled players
+/// from `pool` (as many as the sound's own) when given.
+pub fn measure_with(patch: usize, sample_rate: f64, pool: Option<&mut PlayerPool>) -> f32 {
     let p = &PATCHES[patch];
     let mut v = Voice::new(sample_rate);
     let key = if p.model == Model::Kit { 38 } else { p.ref_key as i16 };
     v.start(patch, tech::ORD, 0, 0, 0, key, 0.62, Some(0.62), 0, 1);
+    let mut empty = PlayerPool::empty();
+    let pool = match pool {
+        Some(pool) => {
+            if v.wants_players() {
+                let mut slots = [0u16; MAX_SECTION];
+                let k = pool.take(0, p.unison.max(1) as usize, |_, _| false, &mut slots);
+                v.attach_players(&slots[..k], pool, true);
+            }
+            pool
+        }
+        None => &mut empty,
+    };
     let sr = sample_rate as f32;
     let (from, to) = if v.sustained { (0.3, 0.8) } else { (0.0, 0.1) };
     let n = (to * sr) as usize;
     let mut buf = vec![0.0f32; n];
     let ones = [1.0f32; crate::patches::COUNT];
     for chunk in buf.chunks_mut(256) {
-        v.render(chunk, 0.0, &ones);
+        v.render_with(chunk, 0.0, &ones, pool);
     }
     let a = (-TAU * 200.0 / sr).exp();
     let (mut prev_x, mut prev_y) = (0.0, 0.0);
@@ -1455,4 +1715,152 @@ pub fn measure(patch: usize, sample_rate: f64) -> f32 {
         }
     }
     ((sum / (n - start).max(1) as f64).sqrt()) as f32
+}
+
+#[cfg(test)]
+mod physical_dynamics {
+    use super::*;
+
+    fn level(patch: usize, key: i16, d: f32, physical: bool) -> f32 {
+        let mut v = Voice::new(48000.0);
+        v.start(patch, tech::ORD, 0, 0, 0, key, d, Some(d), 0, 1);
+        let mut pool = PlayerPool::new(48000.0, 8);
+        if physical {
+            let mut slots = [0u16; MAX_SECTION];
+            let k = pool.take(0, PATCHES[patch].unison.max(1) as usize, |_, _| false, &mut slots);
+            v.attach_players(&slots[..k], &mut pool, true);
+        }
+        let n = 48000;
+        let mut buf = vec![0.0f32; n];
+        let ones = crate::patches::trims();
+        for chunk in buf.chunks_mut(256) {
+            v.render_with(chunk, 0.0, ones, &mut pool);
+        }
+        (buf[14400..].iter().map(|x| x * x).sum::<f32>() / (n - 14400) as f32).sqrt()
+    }
+
+    /// Prints the levels (dB) across dynamics and registers (run by hand).
+    #[test]
+    #[ignore]
+    fn levels_across_dynamics() {
+        for (i, p) in PATCHES.iter().enumerate().filter(|(_, p)| p.model == Model::Bowed && p.unison == 1) {
+            for key in [p.ref_key as i16 - 7, p.ref_key as i16, p.ref_key as i16 + 12] {
+                let mut line = format!("{:<12} {key}:", p.name);
+                for d in [0.15f32, 0.35, 0.62, 0.85, 1.0] {
+                    let (c, ph) = (level(i, key, d, false), level(i, key, d, true));
+                    line += &format!("  d{d}: {:+.1}/{:+.1}", 20.0 * c.log10(), 20.0 * ph.log10());
+                }
+                println!("{line}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod levels {
+    use super::*;
+    use crate::bowed_levels::{DYNAMICS, HIGHEST, LOWEST};
+
+    /// One player's level (dB, weighted as `measure` weighs) for a note at
+    /// a dynamic, bowed as `bowing` bows.
+    fn raw(instrument: usize, key: i32, d: f32) -> f32 {
+        let sr = 48000.0;
+        let mut inst = bowed::Instrument::new(sr, 0);
+        inst.configure(instrument);
+        inst.note(key_hz(key as f32), key, false, d);
+        inst.controls(bowing(d, tech::ORD, 0.0, 1.0));
+        let n = (0.6 * sr) as usize;
+        let a = (-TAU * 200.0 / sr as f32).exp();
+        let (mut px, mut py, mut sum) = (0.0f32, 0.0f32, 0.0f64);
+        for i in 0..n {
+            let x = inst.tick(1.0, 1.0, 1.0);
+            let y = a * (py + x - px);
+            (px, py) = (x, y);
+            if i >= n / 2 {
+                sum += (y * y) as f64;
+            }
+        }
+        10.0 * (sum / (n - n / 2) as f64).max(1e-20).log10() as f32
+    }
+
+    /// Writes `src/bowed_levels.rs`'s table: run by hand when the model or
+    /// `bowing` changes (`cargo test --release -p corinzia-ensemble
+    /// make_level_table -- --ignored`).
+    #[test]
+    #[ignore]
+    fn make_level_table() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bowed_levels.rs");
+        let src = std::fs::read_to_string(path).unwrap();
+        let mut table = String::from("pub static DB: [&[[f32; 5]]; 4] = [\n");
+        for instrument in bowed::VIOLIN..=bowed::BASS {
+            table += "    &[\n";
+            for key in LOWEST[instrument]..=HIGHEST[instrument] {
+                let row: Vec<String> = DYNAMICS.iter().map(|&d| format!("{:.1}", raw(instrument, key, d))).collect();
+                table += &format!("        [{}],\n", row.join(", "));
+            }
+            table += "    ],\n";
+        }
+        table += "];";
+        // From the declaration to the end of its initialiser (past the type's own `];`).
+        let start = src.find("pub static DB:").unwrap();
+        let init = start + src[start..].find("= [").unwrap();
+        let end = init + src[init..].find("];").unwrap() + 2;
+        std::fs::write(path, format!("{}{}{}", &src[..start], table, &src[end..])).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod playability {
+    use super::*;
+
+    /// Whether a note speaks evenly: its level (dB) and its pitch's
+    /// steadiness under a mapping (force, speed) at a dynamic.
+    fn speaks(instrument: usize, key: i32, force: f32, speed: f32) -> (f32, bool) {
+        let sr = 48000.0;
+        let mut inst = bowed::Instrument::new(sr, 0);
+        inst.configure(instrument);
+        inst.note(key_hz(key as f32), key, false, 0.5);
+        inst.controls(bowed::Controls { force, speed, ..bowed::Controls::default() });
+        let n = (0.6 * sr) as usize;
+        let x: Vec<f32> = (0..n).map(|_| inst.tick(1.0, 1.0, 1.0)).collect();
+        let rms = |a: &[f32]| (a.iter().map(|v| v * v).sum::<f32>() / a.len() as f32).sqrt();
+        // Steady: the last two tenths alike in level (a Helmholtz motion holds).
+        let (a, b) = (rms(&x[n * 6 / 10..n * 8 / 10]), rms(&x[n * 8 / 10..]));
+        (20.0 * rms(&x[n / 2..]).max(1e-10).log10(), (a / b.max(1e-12)).log10().abs() < 0.05 && a > 1e-5)
+    }
+
+    /// Prints, for some mappings of the dynamic to the bow, how many notes
+    /// fail to speak steadily or get quieter as the dynamic rises (run by hand).
+    #[test]
+    #[ignore]
+    fn mappings() {
+        type Map = fn(f32) -> (f32, f32);
+        let maps: [(&str, Map); 4] = [
+            ("heavier: f .55+.40d, v .25+.65d", |d| (0.55 + 0.4 * d, 0.25 + 0.65 * d)),
+            ("heavier still: f .65+.30d, v .25+.65d", |d| (0.65 + 0.3 * d, 0.25 + 0.65 * d)),
+            ("heavy, faster: f .60+.35d, v .35+.55d", |d| (0.6 + 0.35 * d, 0.35 + 0.55 * d)),
+            ("heavy, slower: f .60+.35d, v .18+.72d", |d| (0.6 + 0.35 * d, 0.18 + 0.72 * d)),
+        ];
+        for (label, map) in maps {
+            let (mut unsteady, mut falling, mut total) = (0, 0, 0);
+            for (instrument, lo, hi) in [(bowed::VIOLIN, 55, 103), (bowed::VIOLA, 48, 91), (bowed::CELLO, 36, 81), (bowed::BASS, 28, 67)] {
+                for key in (lo..=hi).step_by(2) {
+                    let mut last = f32::NEG_INFINITY;
+                    for d in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                        let (f, v) = map(d);
+                        let (level, steady) = speaks(instrument, key, f, v);
+                        total += 1;
+                        if !steady {
+                            unsteady += 1;
+                        }
+                        if level < last - 1.0 {
+                            falling += 1;
+                        }
+                        last = level;
+                    }
+                }
+            }
+            println!("{label}: {unsteady} of {total} unsteady, {falling} quieter than the dynamic below");
+        }
+    }
 }

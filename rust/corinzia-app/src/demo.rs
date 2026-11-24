@@ -21,8 +21,8 @@ pub fn project() -> Project {
         let player = 20 + k as u64;
         let inst = 30 + k as u64;
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel: k as u8, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-        let (kind, section) = Instrument::kind_from_name(name);
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track), drums: vec![], tuning: vec![], kind, section });
+        let (kind, players) = Instrument::kind_from_name(name);
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: corinzia_model::Interval::default(), clef: clef.to_string(), track: Some(track), drums: vec![], tuning: vec![], kind, players });
         p.players.push(Player { id: player, name: format!("Player {}", k + 1), instruments: vec![inst] });
         let (v, s) = notation::voice_and_slurs(music, 1, &mut id);
         slurs.extend(s);

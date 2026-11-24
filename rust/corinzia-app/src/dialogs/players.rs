@@ -18,7 +18,18 @@ pub(crate) struct PlayerRow {
     pub(crate) player: Option<corinzia_model::Id>,
     /// Its instruments as typed: the first, then doublings.
     pub(crate) instruments: String,
+    /// How many play them (bowed strings), as typed; empty: as the name
+    /// and the score suggest.
+    pub(crate) players: String,
     pub(crate) detail: String,
+}
+
+impl PlayerRow {
+    /// Whether its first instrument is bowed strings (a section can play it).
+    fn strings(&self) -> bool {
+        let first = self.instruments.split([',', ';']).next().unwrap_or("");
+        corinzia_model::catalog::infer(first.split('/').next().unwrap_or("").trim()).is_some_and(|k| k.section_strings)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +39,8 @@ pub(crate) enum PlayersMsg {
     Remove(usize),
     /// A row's instruments retyped.
     Edit(usize, String),
+    /// A row's number of players retyped.
+    Players(usize, String),
     AddInput(String),
     Add,
     /// One of the quick-add buttons.
@@ -59,6 +72,19 @@ pub(crate) fn players_card(d: &PlayersDialog) -> Element<'_, Message> {
             ]
             .spacing(2)
             .width(Length::Fill),
+            if r.strings() {
+                panels::tip(
+                    row![
+                        text_input("auto", &r.players).on_input(move |v| Message::Players(PlayersMsg::Players(i, v))).on_submit(Message::Players(PlayersMsg::Apply)).padding([3, 6]).size(13).width(48),
+                        text("players").size(11).style(theme::dim),
+                    ]
+                    .spacing(4)
+                    .align_y(iced::Alignment::Center),
+                    "How many play it: 1 a soloist, more a section, each heard on their own. Empty: as the name and the score suggest (a section in an orchestra).",
+                )
+            } else {
+                Element::from(iced::widget::Space::new().width(0))
+            },
             small("↑", "Move up", (i > 0).then_some(PlayersMsg::Move(i, -1))),
             small("↓", "Move down", (i + 1 < n).then_some(PlayersMsg::Move(i, 1))),
             small("✕", "Remove the player and its music", (n > 1).then_some(PlayersMsg::Remove(i))),
@@ -118,7 +144,8 @@ impl App {
                         .collect();
                     let staves = lanes.iter().filter(|l| l.player == pl.id).count();
                     let detail = if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") };
-                    PlayerRow { player: Some(pl.id), instruments: instruments.join(", "), detail }
+                    let players = pl.instruments.first().and_then(|i| p.instrument(*i)).and_then(|i| i.players).map(|n| n.to_string()).unwrap_or_default();
+                    PlayerRow { player: Some(pl.id), instruments: instruments.join(", "), players, detail }
                 })
                 .collect();
             self.dialogs.players = Some(PlayersDialog { rows, add: String::new(), error: None });
@@ -133,7 +160,7 @@ impl App {
                 for (name, _, clef) in list {
                     let staves = clef.split('+').count();
                     let detail = format!("new · {}", if staves == 1 { "1 staff".to_string() } else { format!("{staves} staves") });
-                    d.rows.push(PlayerRow { player: None, instruments: name, detail });
+                    d.rows.push(PlayerRow { player: None, instruments: name, players: String::new(), detail });
                 }
                 true
             }
@@ -160,6 +187,11 @@ impl App {
                     r.instruments = v;
                 }
             }
+            PlayersMsg::Players(i, v) => {
+                if let Some(r) = d.rows.get_mut(i) {
+                    r.players = v.chars().filter(|c| c.is_ascii_digit()).take(2).collect();
+                }
+            }
             PlayersMsg::AddInput(v) => d.add = v,
             PlayersMsg::Add => {
                 let text = d.add.clone();
@@ -174,10 +206,28 @@ impl App {
             PlayersMsg::Apply => {
                 let mut slots = Vec::new();
                 for (k, r) in d.rows.iter().enumerate() {
+                    let players = match r.players.trim() {
+                        "" => None,
+                        n => match n.parse::<u8>() {
+                            Ok(n) if (1..=corinzia_model::Instrument::MAX_PLAYERS).contains(&n) => Some(n),
+                            _ => {
+                                d.error = Some(format!("Player {}: from 1 to {} players", k + 1, corinzia_model::Instrument::MAX_PLAYERS));
+                                return;
+                            }
+                        },
+                    };
                     match crate::editor::instruments::parse_instrument_list(&r.instruments) {
-                        Ok(instruments) => slots.push(match r.player {
-                            Some(id) => editor::PlayerSlot::Keep { id, instruments },
-                            None => editor::PlayerSlot::New { instruments },
+                        Ok(mut instruments) => slots.push({
+                            // The count typed, for all its instruments.
+                            if players.is_some() {
+                                for spec in instruments.iter_mut().filter(|s| s.kind.is_some_and(|k| k.section_strings)) {
+                                    spec.players = players;
+                                }
+                            }
+                            match r.player {
+                                Some(id) => editor::PlayerSlot::Keep { id, instruments },
+                                None => editor::PlayerSlot::New { instruments },
+                            }
                         }),
                         Err(e) => {
                             d.error = Some(format!("Player {}: {e}", k + 1));

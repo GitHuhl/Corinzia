@@ -795,6 +795,7 @@ dependencies = [
  "corinzia-byz",
  "corinzia-edit",
  "corinzia-editor",
+ "corinzia-ensemble",
  "corinzia-import",
  "corinzia-layout",
  "corinzia-model",

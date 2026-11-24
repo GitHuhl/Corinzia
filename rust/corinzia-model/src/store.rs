@@ -245,7 +245,7 @@ fn load_players(db: &Connection, p: &mut Project) -> Result<()> {
             drums: vec![],
             tuning: vec![],
             kind: None,
-            section: None,
+            players: None,
         })
     })?;
     for i in rows {
@@ -268,9 +268,15 @@ fn load_instrument_settings(db: &Connection, p: &mut Project) -> Result<()> {
         match kinds.as_ref().map(|k| &k[i.id.to_string()]).filter(|v| v.is_object()) {
             Some(v) => {
                 i.kind = v["kind"].as_str().and_then(crate::catalog::kind);
-                i.section = v["section"].as_bool();
+                // Projects saved before section sizes: a section of the usual size.
+                i.players = match (v["players"].as_u64(), v["section"].as_bool()) {
+                    (Some(n), _) => Some(n.clamp(1, Instrument::MAX_PLAYERS as u64) as u8),
+                    (None, Some(true)) => Some(crate::catalog::section_size(i.kind)),
+                    (None, Some(false)) => Some(1),
+                    (None, None) => None,
+                };
             }
-            None => (i.kind, i.section) = Instrument::kind_from_name(&i.name),
+            None => (i.kind, i.players) = Instrument::kind_from_name(&i.name),
         }
     }
     // Percussion maps, by instrument.
@@ -783,7 +789,7 @@ fn save_settings(tx: &rusqlite::Transaction, project: &Project) -> Result<()> {
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
-    let kinds: serde_json::Map<String, Value> = project.instruments.iter().map(|i| (i.id.to_string(), json!({"kind": i.kind.map(|k| k.id), "section": i.section}))).collect();
+    let kinds: serde_json::Map<String, Value> = project.instruments.iter().map(|i| (i.id.to_string(), json!({"kind": i.kind.map(|k| k.id), "players": i.players}))).collect();
     for (key, value) in [
         ("layout", layout_json(&project.layout)),
         ("part_layout", layout_json(&project.part_layout)),

@@ -87,7 +87,7 @@ pub fn instrument_spec(name: &str) -> Option<crate::InstrumentSpec> {
     // What it is: the kind typed, else the kind its words suggest (None: a
     // name the catalogue does not know, which only renames an instrument).
     let kind = known.or_else(|| corinzia_model::catalog::infer(name));
-    Some(crate::InstrumentSpec { name: full, abbr, clef, transposition, kind, section: corinzia_model::catalog::section_of(name) })
+    Some(crate::InstrumentSpec { name: full, abbr, clef, transposition, kind, players: corinzia_model::catalog::players_of(name) })
 }
 
 /// A player's instruments, comma separated: the first one, then doublings.
@@ -123,12 +123,12 @@ pub fn blank_with(title: &str, instruments: &[(&str, &str, &str, Interval)], bar
         let clefs: Vec<&str> = clefs.split('+').collect();
         let (track, player, inst) = (p.allocate_id(), p.allocate_id(), p.allocate_id());
         // A drum set starts with its map, and plays on the drum channel (10).
-        let (kind, section) = Instrument::kind_from_name(name);
+        let (kind, players) = Instrument::kind_from_name(name);
         let drums = if clefs[0] == "percussion" { kind.map(|k| k.default_drums()).unwrap_or_default() } else { vec![] };
         // Channel 10 is the drums' (General MIDI): others skip it.
         let midi_channel = if !drums.is_empty() { 9 } else { [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15][k % 15] };
         p.tracks.push(Track { id: track, name: name.to_string(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
-        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track), drums, tuning: kind.map(|k| k.default_tuning()).unwrap_or_default(), kind, section });
+        p.instruments.push(Instrument { id: inst, player, name: name.to_string(), engraver_name: abbr.to_string(), transposition: *transposition, clef: clefs[0].to_string(), track: Some(track), drums, tuning: kind.map(|k| k.default_tuning()).unwrap_or_default(), kind, players });
         p.players.push(Player { id: player, name: name.to_string(), instruments: vec![inst] });
         for (si, clef) in clefs.iter().enumerate() {
             let rests: Vec<Event> = (0..bars)

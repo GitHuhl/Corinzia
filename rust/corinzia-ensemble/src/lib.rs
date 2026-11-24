@@ -36,11 +36,30 @@ pub mod dsp;
 pub mod effects;
 pub mod patches;
 pub mod body;
+pub mod bowed;
+mod bowed_tuning;
+mod bowed_levels;
 pub mod voice;
 
 use voice::Voice;
 
 pub const PLUGIN_ID: &CStr = c"org.corinzia.ensemble";
+/// The controller giving how many players play a channel's part (a string
+/// section's size, 1 to 32; 0: the sound's own).
+pub const PLAYERS_CC: u8 = 86;
+/// The controller choosing the bowed strings' engine: below 64 (the
+/// default) physically modelled players, 64 and above the earlier spectral
+/// one.
+pub const CLASSIC_STRINGS_CC: u8 = 87;
+
+static CLASSIC_STRINGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Bowed strings on the earlier, spectral engine rather than physically
+/// modelled players, in every instance in this process (Corinzia's
+/// preference); a channel's controller (`CLASSIC_STRINGS_CC`) chooses too.
+pub fn set_classic_strings(on: bool) {
+    CLASSIC_STRINGS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
 /// The id of the instrument this one replaced; projects that name it get this.
 pub const OLD_PLUGIN_ID: &CStr = c"org.corinzia.sine";
 
@@ -85,11 +104,15 @@ struct Channel {
     volume: f32,
     /// Pitch bend in semitones (the usual ±2 range).
     bend: f32,
+    /// How many play its part (0: the sound's own), and whether bowed
+    /// strings play on the earlier engine (see [`CLASSIC_STRINGS_CC`]).
+    players: u8,
+    classic: bool,
 }
 
 impl Default for Channel {
     fn default() -> Self {
-        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0 }
+        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0, players: 0, classic: false }
     }
 }
 
@@ -100,6 +123,8 @@ struct Synth {
     gain: f32,
     channels: [Channel; 16],
     voices: Vec<Voice>,
+    /// The bowed strings' players, shared by the voices.
+    pool: voice::PlayerPool,
     clock: u64,
     trims: &'static [f32; patches::COUNT],
     scratch: Vec<f32>,
@@ -112,6 +137,7 @@ impl Synth {
 
     fn new_voices(&mut self) {
         self.voices = (0..VOICES).map(|_| Voice::new(self.sample_rate)).collect();
+        self.pool = voice::PlayerPool::new(self.sample_rate, voice::POOL);
         self.scratch = vec![0.0; 1024];
     }
 
@@ -156,6 +182,16 @@ impl Synth {
         };
         self.channels[ch].down_bow = !down;
         self.voices[i].articulate(c.articulation, down);
+        // Bowed strings: physically modelled players, as many as the part
+        // has (else the sound's own); none free: the earlier engine.
+        let classic = c.classic || CLASSIC_STRINGS.load(std::sync::atomic::Ordering::Relaxed);
+        if !classic && self.voices[i].wants_players() {
+            let n = if c.players > 0 { c.players as usize } else { patches::PATCHES[c.patch].unison.max(1) as usize };
+            let mut slots = [0u16; voice::MAX_SECTION];
+            let voices = &self.voices;
+            let k = self.pool.take(i as u32, n, |o, slot| voices.get(o as usize).is_some_and(|v| v.players().contains(&slot)), &mut slots);
+            self.voices[i].attach_players(&slots[..k], &mut self.pool, down);
+        }
         if follows && self.voices[i].sustained {
             self.voices[i].connect();
         }
@@ -193,6 +229,8 @@ impl Synth {
             11 => c.expression = x,
             9 => c.articulation = value,
             68 => c.legato = value >= 64,
+            PLAYERS_CC => c.players = value.min(voice::MAX_SECTION as u8),
+            CLASSIC_STRINGS_CC => c.classic = value >= 64,
             120 | 123 => {
                 for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
                     if cc == 120 {
@@ -268,7 +306,7 @@ impl Synth {
             let c = self.channels[(v.channel & 15).max(0) as usize];
             let buf = &mut self.scratch[..n];
             buf.fill(0.0);
-            let alive = v.render(buf, c.bend, trims);
+            let alive = v.render_with(buf, c.bend, trims, &mut self.pool);
             let g = self.gain * c.expression * c.volume;
             for (l, x) in left.iter_mut().zip(buf.iter()) {
                 *l += x * g;
@@ -543,6 +581,7 @@ unsafe extern "C" fn factory_create(_f: *const clap_plugin_factory, host: *const
         gain: 1.0,
         channels: [Channel::default(); 16],
         voices: Vec::new(),
+        pool: voice::PlayerPool::empty(),
         clock: 0,
         trims: {
             // Made here, on the main thread, never on the audio thread.
@@ -592,4 +631,80 @@ pub use clap_sys::entry::clap_plugin_entry;
 /// The entry as a pointer, for in-process hosting.
 pub fn entry() -> &'static clap_plugin_entry {
     &clap_entry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synth() -> &'static mut Synth {
+        unsafe {
+            let p = factory_create(ptr::null(), ptr::null(), PLUGIN_ID.as_ptr());
+            Synth::from(p)
+        }
+    }
+
+    /// A violin section (or the solo violin) on channel 0, `players` strong.
+    fn violins(s: &mut Synth, section: bool, players: u8) {
+        if section {
+            s.control(0, 0, (patches::SECTION_BANK >> 7) as u8);
+            s.control(0, 32, (patches::SECTION_BANK & 0x7f) as u8);
+        }
+        s.program(0, 40);
+        s.control(0, PLAYERS_CC, players);
+    }
+
+    fn rms_db(s: &mut Synth, seconds: f32) -> f32 {
+        let n = (s.sample_rate as f32 * seconds) as usize;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        for (lc, rc) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
+            s.render(lc, rc, ptr::null(), 0);
+        }
+        let tail = &l[n / 2..];
+        10.0 * (tail.iter().map(|x| x * x).sum::<f32>() / tail.len() as f32).log10()
+    }
+
+    #[test]
+    fn a_section_plays_with_as_many_players_as_it_has() {
+        let mut levels = Vec::new();
+        for players in [4u8, 14] {
+            let s = synth();
+            violins(s, true, players);
+            s.note_on(1, 0, 0, 69, 0.6);
+            let v = s.voices.iter().find(|v| v.active).unwrap();
+            assert_eq!(v.players().len(), players as usize, "physically modelled players");
+            levels.push(rms_db(s, 0.8));
+        }
+        // More players, louder: as their number, not in step with it.
+        let more = levels[1] - levels[0];
+        let expected = 10.0 * (14.0f32 / 4.0).log10();
+        assert!((more - expected).abs() < 2.0, "14 players against 4: {more:+.1} dB (about {expected:+.1})");
+    }
+
+    #[test]
+    fn the_earlier_engine_answers_its_controller() {
+        let s = synth();
+        violins(s, true, 8);
+        s.control(0, CLASSIC_STRINGS_CC, 127);
+        s.note_on(1, 0, 0, 69, 0.6);
+        let v = s.voices.iter().find(|v| v.active).unwrap();
+        assert!(!v.physical && v.players().is_empty());
+        assert!(rms_db(s, 0.5) > -80.0, "sounds");
+    }
+
+    #[test]
+    fn with_every_player_busy_a_note_still_sounds() {
+        let s = synth();
+        violins(s, true, 32);
+        // Five notes of 32 players: more than the pool has.
+        for (i, key) in [57i16, 62, 67, 71, 76].into_iter().enumerate() {
+            s.note_on(i as i32, 0, 0, key, 0.6);
+        }
+        let playing: Vec<&Voice> = s.voices.iter().filter(|v| v.active).collect();
+        assert_eq!(playing.len(), 5);
+        let used: usize = playing.iter().map(|v| v.players().len()).sum();
+        assert!(used <= voice::POOL);
+        assert!(playing.iter().any(|v| !v.physical), "one played on the earlier engine");
+        assert!(rms_db(s, 0.5) > -80.0);
+    }
 }

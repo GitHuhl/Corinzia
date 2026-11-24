@@ -197,8 +197,8 @@ pub struct InstrumentSpec {
     /// What it is (see `corinzia_model::catalog`); None: a name the
     /// catalogue does not know.
     pub kind: Option<&'static corinzia_model::catalog::Kind>,
-    /// Strings: one player, a section, or as the score suggests.
-    pub section: Option<bool>,
+    /// How many play it (see `Instrument::players`).
+    pub players: Option<u8>,
 }
 
 /// A player in the Players dialog's list: one already in the score, or one
@@ -232,7 +232,7 @@ fn add_instrument(p: &mut Project, player: Id, spec: &InstrumentSpec) -> Id {
     let midi_channel = if !drums.is_empty() { 9 } else { (0..16).filter(|c| *c != 9).find(|c| !used.contains(c)).unwrap_or((p.tracks.len() % 16) as u8) };
     p.tracks.push(Track { id: track, name: spec.name.clone(), instrument_node: None, note_port: 0, output_bus: None, midi_channel, gain_db: 0.0, pan: 0.0, mute: false, solo: false, inserts: vec![], sends: vec![], dynamics_cc: None, program: None, bank: None, techniques: vec![], color: None, folder: String::new(), audio: false, clips: vec![] });
     let clef = spec.clef.split('+').next().unwrap_or("treble").to_string();
-    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: spec.kind.map(|k| k.default_tuning()).unwrap_or_default(), kind: spec.kind, section: spec.section });
+    p.instruments.push(Instrument { id: inst, player, name: spec.name.clone(), engraver_name: spec.abbr.clone(), transposition: spec.transposition, clef, track: Some(track), drums, tuning: spec.kind.map(|k| k.default_tuning()).unwrap_or_default(), kind: spec.kind, players: spec.players });
     inst
 }
 
@@ -247,9 +247,10 @@ fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) 
     for (k, s) in specs.iter().enumerate() {
         if let Some(pos) = free.iter().position(|i| name_of(p, *i).eq_ignore_ascii_case(&s.name)) {
             let id = free.remove(pos);
-            // The same instrument; its short name may be new.
-            if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id && i.engraver_name != s.abbr) {
+            // The same instrument; its short name and its players may be new.
+            if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id && (i.engraver_name != s.abbr || i.players != s.players)) {
                 i.engraver_name = s.abbr.clone();
+                i.players = s.players;
                 changed += 1;
             }
             result[k] = Some(id);
@@ -270,11 +271,12 @@ fn reconcile_instruments(p: &mut Project, player: Id, specs: &[InstrumentSpec]) 
             if let Some(i) = p.instruments.iter_mut().find(|i| i.id == id) {
                 i.name = s.name.clone();
                 i.engraver_name = s.abbr.clone();
+                // The count the Players card gives (else what the name says).
+                i.players = s.players;
                 if s.kind.is_some() {
                     i.clef = clef;
                     i.transposition = s.transposition;
                     i.kind = s.kind;
-                    i.section = s.section;
                 }
                 track = i.track;
             }

@@ -321,6 +321,14 @@ impl App {
     pub(crate) fn new(project: Project, path: Option<PathBuf>, view: View, status: String) -> App {
         let live = LIVE_AUDIO.load(std::sync::atomic::Ordering::Relaxed);
         let prefs = if cfg!(test) { prefs::Prefs::default() } else { prefs::Prefs::load() };
+        // The strings' engine; CORINZIA_STRINGS=classic or physical overrides
+        // the preference (for comparing them).
+        let classic = match std::env::var("CORINZIA_STRINGS").as_deref() {
+            Ok("classic") => true,
+            Ok("physical") => false,
+            _ => prefs.classic_strings,
+        };
+        corinzia_ensemble::set_classic_strings(classic);
         theme::set(&prefs.theme);
         let pb = playback::Playback::new(live, &prefs);
         let mut app = Self::with_playback(project, path, view, status, pb);
