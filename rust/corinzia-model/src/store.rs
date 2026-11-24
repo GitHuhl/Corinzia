@@ -95,6 +95,27 @@ pub fn load(path: &Path) -> Result<Project> {
     }
     let db = open_db(path)?;
     let mut p = Project { sample_rate: 48000.0, next_id: 1, ..Default::default() };
+    load_header(&db, &mut p)?;
+    load_settings(&db, &mut p)?;
+    load_graph(&db, &mut p)?;
+    load_tracks(&db, &mut p)?;
+    load_players(&db, &mut p)?;
+    load_instrument_settings(&db, &mut p)?;
+    load_movements(&db, &mut p)?;
+    Ok(p)
+}
+
+/// A `setting` row's JSON.
+fn setting(db: &Connection, key: &str) -> Result<Option<Value>> {
+    let v: Option<String> = db.query_row("SELECT json(value) FROM setting WHERE key = ?", [key], |r| r.get(0)).optional()?;
+    Ok(match v {
+        Some(v) => Some(serde_json::from_str(&v)?),
+        None => None,
+    })
+}
+
+/// The `project` row: title, composer, sample rate, the next id.
+fn load_header(db: &Connection, p: &mut Project) -> Result<()> {
     if let Some((title, composer, sr, next)) = db
         .query_row("SELECT title, composer, sample_rate, next_id FROM project WHERE id = 1", [], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?, r.get::<_, i64>(3)?))
@@ -106,133 +127,143 @@ pub fn load(path: &Path) -> Result<Project> {
         p.sample_rate = sr;
         p.next_id = next as u64;
     }
-    // Layouts and page texts.
-    let setting = |key: &str| -> Result<Option<Value>> {
-        let v: Option<String> = db.query_row("SELECT json(value) FROM setting WHERE key = ?", [key], |r| r.get(0)).optional()?;
-        Ok(match v {
-            Some(v) => Some(serde_json::from_str(&v)?),
-            None => None,
-        })
-    };
-    if let Some(v) = setting("layout")? {
+    Ok(())
+}
+
+/// Layouts, page texts, the motif bank, chants and the performance switches.
+fn load_settings(db: &Connection, p: &mut Project) -> Result<()> {
+    if let Some(v) = setting(db, "layout")? {
         p.layout = layout_from(&v, Layout::default());
     }
-    p.part_layout = match setting("part_layout")? {
+    p.part_layout = match setting(db, "part_layout")? {
         Some(v) => layout_from(&v, Layout::parts()),
         None => Layout::parts(),
     };
-    if let Some(m) = setting("motifs")? {
+    if let Some(m) = setting(db, "motifs")? {
         p.motifs = serde_json::from_value(m)?;
     }
-    if let Some(c) = setting("chants")? {
+    if let Some(c) = setting(db, "chants")? {
         p.chants = serde_json::from_value(c)?;
     }
-    if let Some(v) = setting("performance")? {
+    if let Some(v) = setting(db, "performance")? {
         p.phrasing = v["phrasing"].as_bool().unwrap_or(false);
     }
-    if let Some(t) = setting("texts")? {
+    if let Some(t) = setting(db, "texts")? {
         let s = |k: &str| t[k].as_str().unwrap_or("").to_string();
         (p.subtitle, p.lyricist, p.arranger, p.copyright) = (s("subtitle"), s("lyricist"), s("arranger"), s("copyright"));
     }
-    {
-        let mut s = db.prepare("SELECT id, kind, name, clap_bundle, clap_plugin_id, bypassed FROM audio_node ORDER BY id")?;
-        let rows = s.query_map([], |r| {
-            Ok(AudioNode {
-                id: r.get::<_, i64>(0)? as u64,
-                kind: match r.get::<_, String>(1)?.as_str() {
-                    "bus" => NodeKind::Bus,
-                    "master" => NodeKind::Master,
-                    _ => NodeKind::Plugin,
-                },
-                name: r.get(2)?,
-                bundle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                plugin_id: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                bypassed: r.get::<_, i64>(5)? != 0,
-            })
-        })?;
-        for n in rows {
-            p.nodes.push(n?);
-        }
-        let mut s = db.prepare("SELECT from_node, from_port, to_node, to_port, gain FROM audio_edge ORDER BY from_node, to_node")?;
-        let rows = s.query_map([], |r| {
-            Ok(AudioEdge { from: r.get::<_, i64>(0)? as u64, from_port: r.get::<_, i64>(1)? as u32, to: r.get::<_, i64>(2)? as u64, to_port: r.get::<_, i64>(3)? as u32, gain: r.get(4)? })
-        })?;
-        for e in rows {
-            p.edges.push(e?);
-        }
-        let mut s = db.prepare("SELECT node_id, state FROM plugin_state")?;
-        let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, Vec<u8>>(1)?)))?;
-        for row in rows {
-            let (id, state) = row?;
-            p.plugin_state.insert(id, Arc::new(state));
-        }
+    Ok(())
+}
+
+/// The audio graph: nodes, edges and plugin state.
+fn load_graph(db: &Connection, p: &mut Project) -> Result<()> {
+    let mut s = db.prepare("SELECT id, kind, name, clap_bundle, clap_plugin_id, bypassed FROM audio_node ORDER BY id")?;
+    let rows = s.query_map([], |r| {
+        Ok(AudioNode {
+            id: r.get::<_, i64>(0)? as u64,
+            kind: match r.get::<_, String>(1)?.as_str() {
+                "bus" => NodeKind::Bus,
+                "master" => NodeKind::Master,
+                _ => NodeKind::Plugin,
+            },
+            name: r.get(2)?,
+            bundle: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            plugin_id: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            bypassed: r.get::<_, i64>(5)? != 0,
+        })
+    })?;
+    for n in rows {
+        p.nodes.push(n?);
     }
-    {
-        let mut s = db.prepare(
-            "SELECT id, name, instrument_node_id, note_port, output_bus_id, midi_channel, gain_db, pan, mute, solo FROM track ORDER BY ordinal",
-        )?;
-        let rows = s.query_map([], |r| {
-            Ok(Track {
-                id: r.get::<_, i64>(0)? as u64,
-                name: r.get(1)?,
-                instrument_node: r.get::<_, Option<i64>>(2)?.map(|v| v as u64),
-                note_port: r.get::<_, i64>(3)? as u16,
-                output_bus: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                midi_channel: r.get::<_, i64>(5)? as u8,
-                gain_db: r.get(6)?,
-                pan: r.get(7)?,
-                mute: r.get::<_, i64>(8)? != 0,
-                solo: r.get::<_, i64>(9)? != 0,
-                inserts: vec![],
-                sends: vec![],
-                dynamics_cc: None,
-                program: None,
-                bank: None,
-                techniques: vec![],
-                color: None,
-                folder: String::new(),
-                audio: false,
-                clips: vec![],
-            })
-        })?;
-        for t in rows {
-            p.tracks.push(t?);
-        }
+    let mut s = db.prepare("SELECT from_node, from_port, to_node, to_port, gain FROM audio_edge ORDER BY from_node, to_node")?;
+    let rows = s.query_map([], |r| {
+        Ok(AudioEdge { from: r.get::<_, i64>(0)? as u64, from_port: r.get::<_, i64>(1)? as u32, to: r.get::<_, i64>(2)? as u64, to_port: r.get::<_, i64>(3)? as u32, gain: r.get(4)? })
+    })?;
+    for e in rows {
+        p.edges.push(e?);
     }
-    {
-        let mut s = db.prepare("SELECT id, name FROM player ORDER BY ordinal")?;
-        let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?)))?;
-        for row in rows {
-            let (id, name) = row?;
-            p.players.push(Player { id, name, instruments: vec![] });
-        }
-        let mut s = db.prepare(
-            "SELECT id, player_id, name, engraver_name, transposition_steps, transposition_semitones, clef, track_id FROM instrument ORDER BY player_id, ordinal",
-        )?;
-        let rows = s.query_map([], |r| {
-            Ok(Instrument {
-                id: r.get::<_, i64>(0)? as u64,
-                player: r.get::<_, i64>(1)? as u64,
-                name: r.get(2)?,
-                engraver_name: r.get(3)?,
-                transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
-                clef: r.get(6)?,
-                track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64), drums: vec![], tuning: vec![],
-                kind: None,
-                section: None,
-            })
-        })?;
-        for i in rows {
-            let i = i?;
-            if let Some(pl) = p.players.iter_mut().find(|pl| pl.id == i.player) {
-                pl.instruments.push(i.id);
-            }
-            p.instruments.push(i);
-        }
+    let mut s = db.prepare("SELECT node_id, state FROM plugin_state")?;
+    let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, Vec<u8>>(1)?)))?;
+    for row in rows {
+        let (id, state) = row?;
+        p.plugin_state.insert(id, Arc::new(state));
     }
+    Ok(())
+}
+
+/// The tracks (their mixer settings come with the `mixer` setting).
+fn load_tracks(db: &Connection, p: &mut Project) -> Result<()> {
+    let mut s = db.prepare("SELECT id, name, instrument_node_id, note_port, output_bus_id, midi_channel, gain_db, pan, mute, solo FROM track ORDER BY ordinal")?;
+    let rows = s.query_map([], |r| {
+        Ok(Track {
+            id: r.get::<_, i64>(0)? as u64,
+            name: r.get(1)?,
+            instrument_node: r.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+            note_port: r.get::<_, i64>(3)? as u16,
+            output_bus: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+            midi_channel: r.get::<_, i64>(5)? as u8,
+            gain_db: r.get(6)?,
+            pan: r.get(7)?,
+            mute: r.get::<_, i64>(8)? != 0,
+            solo: r.get::<_, i64>(9)? != 0,
+            inserts: vec![],
+            sends: vec![],
+            dynamics_cc: None,
+            program: None,
+            bank: None,
+            techniques: vec![],
+            color: None,
+            folder: String::new(),
+            audio: false,
+            clips: vec![],
+        })
+    })?;
+    for t in rows {
+        p.tracks.push(t?);
+    }
+    Ok(())
+}
+
+/// Players and their instruments.
+fn load_players(db: &Connection, p: &mut Project) -> Result<()> {
+    let mut s = db.prepare("SELECT id, name FROM player ORDER BY ordinal")?;
+    let rows = s.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (id, name) = row?;
+        p.players.push(Player { id, name, instruments: vec![] });
+    }
+    let mut s = db.prepare("SELECT id, player_id, name, engraver_name, transposition_steps, transposition_semitones, clef, track_id FROM instrument ORDER BY player_id, ordinal")?;
+    let rows = s.query_map([], |r| {
+        Ok(Instrument {
+            id: r.get::<_, i64>(0)? as u64,
+            player: r.get::<_, i64>(1)? as u64,
+            name: r.get(2)?,
+            engraver_name: r.get(3)?,
+            transposition: Interval::new(r.get::<_, i64>(4)? as i32, r.get::<_, i64>(5)? as i32),
+            clef: r.get(6)?,
+            track: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+            drums: vec![],
+            tuning: vec![],
+            kind: None,
+            section: None,
+        })
+    })?;
+    for i in rows {
+        let i = i?;
+        if let Some(pl) = p.players.iter_mut().find(|pl| pl.id == i.player) {
+            pl.instruments.push(i.id);
+        }
+        p.instruments.push(i);
+    }
+    Ok(())
+}
+
+/// What each instrument is, its percussion map and tuning, and the mixer
+/// (effects, sends, buses and the master).
+fn load_instrument_settings(db: &Connection, p: &mut Project) -> Result<()> {
     // What each instrument is (see `catalog`); projects saved before kinds
     // find theirs from the names, once.
-    let kinds = setting("kinds")?;
+    let kinds = setting(db, "kinds")?;
     for i in p.instruments.iter_mut() {
         match kinds.as_ref().map(|k| &k[i.id.to_string()]).filter(|v| v.is_object()) {
             Some(v) => {
@@ -243,7 +274,7 @@ pub fn load(path: &Path) -> Result<Project> {
         }
     }
     // Percussion maps, by instrument.
-    if let Some(d) = setting("drums")? {
+    if let Some(d) = setting(db, "drums")? {
         for i in p.instruments.iter_mut() {
             for s in d[i.id.to_string()].as_array().into_iter().flatten() {
                 i.drums.push(DrumSound {
@@ -255,68 +286,83 @@ pub fn load(path: &Path) -> Result<Project> {
             }
         }
     }
-
-    // The mixer: effects, sends, buses and the master.
-    if let Some(m) = setting("mixer")? {
-        let ids = |v: &Value| -> Vec<Id> { v.as_array().into_iter().flatten().filter_map(|x| x.as_u64()).collect() };
-        for t in p.tracks.iter_mut() {
-            let tv = &m["tracks"][t.id.to_string()];
-            t.inserts = ids(&tv["inserts"]);
-            t.techniques = tv["tech"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|x| {
-                    let v = x["v"].as_u64().unwrap_or(0).min(127) as u8;
-                    let action = match x["a"].as_str()? {
-                        "key" => SwitchAction::Keyswitch(v),
-                        "prog" => SwitchAction::Program(v),
-                        "cc" => SwitchAction::Cc(v, x["w"].as_u64().unwrap_or(0).min(127) as u8),
-                        "ch" => SwitchAction::Channel(v.min(15)),
-                        _ => return None,
-                    };
-                    Some(TechniqueSwitch { technique: x["t"].as_str()?.to_string(), action })
-                })
-                .collect();
-            t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
-            t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
-            t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
-            t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0), pre: s["pre"].as_bool().unwrap_or(false) })).collect();
-            t.audio = tv["audio"].as_bool().unwrap_or(false);
-            t.color = tv["color"].as_u64().map(|c| c as u32 & 0xff_ffff);
-            t.folder = tv["folder"].as_str().unwrap_or("").to_string();
-            // A bus output (buses live here, not in the audio graph).
-            if let Some(b) = tv["out"].as_u64() {
-                t.output_bus = Some(b);
-            }
-            t.clips = tv["clips"].as_array().into_iter().flatten().filter_map(clip_from).collect();
-        }
-        p.buses = m["buses"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|b| {
-                Some(Bus {
-                    id: b["id"].as_u64()?,
-                    name: b["name"].as_str().unwrap_or("Bus").to_string(),
-                    inserts: ids(&b["inserts"]),
-                    gain_db: b["db"].as_f64().unwrap_or(0.0),
-                    pan: b["pan"].as_f64().unwrap_or(0.0),
-                    mute: b["mute"].as_bool().unwrap_or(false),
-                    solo: b["solo"].as_bool().unwrap_or(false),
-                    output: b["out"].as_u64(),
-                })
-            })
-            .collect();
-        p.master = Master { inserts: ids(&m["master"]["inserts"]), gain_db: m["master"]["db"].as_f64().unwrap_or(0.0) };
+    if let Some(m) = setting(db, "mixer")? {
+        load_mixer(&m, p);
     }
     // Fretted instruments' tunings, by instrument.
-    if let Some(t) = setting("tunings")? {
+    if let Some(t) = setting(db, "tunings")? {
         for i in p.instruments.iter_mut() {
             i.tuning = t[i.id.to_string()].as_array().into_iter().flatten().filter_map(|k| k.as_u64()).map(|k| k.min(127) as u8).collect();
         }
     }
+    Ok(())
+}
 
+/// The `mixer` setting: each track's effects, sends, technique switches,
+/// colour, folder and clips; the buses and the master.
+fn load_mixer(m: &Value, p: &mut Project) {
+    let ids = |v: &Value| -> Vec<Id> { v.as_array().into_iter().flatten().filter_map(|x| x.as_u64()).collect() };
+    for t in p.tracks.iter_mut() {
+        let tv = &m["tracks"][t.id.to_string()];
+        t.inserts = ids(&tv["inserts"]);
+        t.techniques = tv["tech"].as_array().into_iter().flatten().filter_map(technique_from).collect();
+        t.dynamics_cc = tv["dyn_cc"].as_u64().map(|v| v.min(127) as u8);
+        t.program = tv["program"].as_u64().map(|v| v.min(127) as u8);
+        t.bank = tv["bank"].as_u64().map(|v| v.min(16383) as u16);
+        t.sends = tv["sends"].as_array().into_iter().flatten().filter_map(|s| Some(SendLevel { bus: s["bus"].as_u64()?, gain_db: s["db"].as_f64().unwrap_or(0.0), pre: s["pre"].as_bool().unwrap_or(false) })).collect();
+        t.audio = tv["audio"].as_bool().unwrap_or(false);
+        t.color = tv["color"].as_u64().map(|c| c as u32 & 0xff_ffff);
+        t.folder = tv["folder"].as_str().unwrap_or("").to_string();
+        // A bus output (buses live here, not in the audio graph).
+        if let Some(b) = tv["out"].as_u64() {
+            t.output_bus = Some(b);
+        }
+        t.clips = tv["clips"].as_array().into_iter().flatten().filter_map(clip_from).collect();
+    }
+    p.buses = m["buses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|b| {
+            Some(Bus {
+                id: b["id"].as_u64()?,
+                name: b["name"].as_str().unwrap_or("Bus").to_string(),
+                inserts: ids(&b["inserts"]),
+                gain_db: b["db"].as_f64().unwrap_or(0.0),
+                pan: b["pan"].as_f64().unwrap_or(0.0),
+                mute: b["mute"].as_bool().unwrap_or(false),
+                solo: b["solo"].as_bool().unwrap_or(false),
+                output: b["out"].as_u64(),
+            })
+        })
+        .collect();
+    p.master = Master { inserts: ids(&m["master"]["inserts"]), gain_db: m["master"]["db"].as_f64().unwrap_or(0.0) };
+}
+
+/// A technique switch: the technique and how the track's instrument is told.
+fn technique_from(x: &Value) -> Option<TechniqueSwitch> {
+    let v = x["v"].as_u64().unwrap_or(0).min(127) as u8;
+    let action = match x["a"].as_str()? {
+        "key" => SwitchAction::Keyswitch(v),
+        "prog" => SwitchAction::Program(v),
+        "cc" => SwitchAction::Cc(v, x["w"].as_u64().unwrap_or(0).min(127) as u8),
+        "ch" => SwitchAction::Channel(v.min(15)),
+        _ => return None,
+    };
+    Some(TechniqueSwitch { technique: x["t"].as_str()?.to_string(), action })
+}
+
+fn technique_json(x: &TechniqueSwitch) -> Value {
+    match x.action {
+        SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
+        SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
+        SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
+        SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
+    }
+}
+
+/// The movements, in order.
+fn load_movements(db: &Connection, p: &mut Project) -> Result<()> {
     let mut sm = db.prepare(
         "SELECT id, ordinal, title, length_num, length_den, revision, json(tempo), json(meter), json(keys), json(notation) \
          FROM movement ORDER BY ordinal",
@@ -353,144 +399,164 @@ pub fn load(path: &Path) -> Result<Project> {
             });
         }
         for t in serde_json::from_str::<Vec<Value>>(&meter)? {
-            m.meter.push(Meter { at: frac(&t["at"]), num: t["num"].as_i64().unwrap_or(4), den: t["den"].as_i64().unwrap_or(4), pickup: t["pickup"].as_bool().unwrap_or(false), beams: {
-                let mut b = [0u8; 8];
-                for (d, v) in b.iter_mut().zip(t["beams"].as_array().into_iter().flatten()) {
-                    *d = v.as_u64().unwrap_or(0).min(64) as u8;
-                }
-                b
-            } });
+            let mut beams = [0u8; 8];
+            for (d, v) in beams.iter_mut().zip(t["beams"].as_array().into_iter().flatten()) {
+                *d = v.as_u64().unwrap_or(0).min(64) as u8;
+            }
+            m.meter.push(Meter { at: frac(&t["at"]), num: t["num"].as_i64().unwrap_or(4), den: t["den"].as_i64().unwrap_or(4), pickup: t["pickup"].as_bool().unwrap_or(false), beams });
         }
         for t in serde_json::from_str::<Vec<Value>>(&keys)? {
             m.keys.push(Key { at: frac(&t["at"]), fifths: t["fifths"].as_i64().unwrap_or(0) as i32, minor: t["minor"].as_bool().unwrap_or(false) });
         }
-        // Lanes, instrument changes, voices.
-        let mut sl = db.prepare("SELECT lane_index, player_id FROM lane WHERE movement_id = ? ORDER BY lane_index")?;
-        let lanes: Vec<(i64, i64)> = sl.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
-        for (li, pid) in lanes {
-            let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![] };
-            let mut sc = db.prepare(
-                "SELECT id, at_num, at_den, instrument_id FROM instrument_change WHERE movement_id = ? AND lane_index = ? \
-                 ORDER BY at_num * 1.0 / at_den",
-            )?;
-            for c in sc.query_map(params![id, li], |r| {
-                Ok(InstrumentChange {
-                    id: r.get::<_, i64>(0)? as u64,
-                    at: Frac::new(r.get(1)?, r.get::<_, i64>(2)?.max(1)),
-                    instrument: r.get::<_, i64>(3)? as u64,
-                })
-            })? {
-                lane.changes.push(c?);
-            }
-            let mut sv = db.prepare("SELECT id, voice_index, json(tuplets) FROM voice WHERE movement_id = ? AND lane_index = ? ORDER BY voice_index")?;
-            let voices: Vec<(i64, i64, String)> = sv.query_map(params![id, li], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
-            for (vid, index, tuplets) in voices {
-                let tuplets: Vec<Tuplet> = serde_json::from_str::<Vec<Value>>(&tuplets)?
-                    .iter()
-                    .map(|t| Tuplet { start: frac(&t["s"]), length: frac(&t["l"]), actual: t["a"].as_i64().unwrap_or(3), normal: t["n"].as_i64().unwrap_or(2) })
-                    .collect();
-                let mut sch = db.prepare("SELECT json(events) FROM voice_chunk WHERE voice_id = ? ORDER BY chunk_index")?;
-                let chunks: Vec<String> = sch.query_map([vid], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
-                let mut events = Vec::new();
-                for c in chunks {
-                    for e in serde_json::from_str::<Vec<StoredEvent>>(&c)? {
-                        events.push(e.into_event());
-                    }
-                }
-                lane.voices.push(Voice { id: vid as u64, index: index as u8, events: Arc::new(events), tuplets });
-            }
-            m.lanes.push(lane);
-        }
-        // Structure marks, clefs, texts, chord symbols.
+        m.lanes = load_lanes(db, id)?;
         if let Some(n) = notation {
-            let n: Value = serde_json::from_str(&n)?;
-            for b in n["barlines"].as_array().into_iter().flatten() {
-                m.barlines.push(Barline { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), kind: BarKind::from_code(b["k"].as_str().unwrap_or("||")) });
-            }
-            for r in n["marks"].as_array().into_iter().flatten() {
-                m.rehearsal.push(RehearsalMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]) });
-            }
-            for r in n["nav"].as_array().into_iter().flatten() {
-                if let Some(kind) = r["k"].as_str().and_then(Nav::from_code) {
-                    m.navigation.push(NavMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]), kind });
-                }
-            }
-            for s in n["slurs"].as_array().into_iter().flatten() {
-                let id = |k: &str| s[k].as_u64().unwrap_or(0);
-                m.slurs.push(Slur { id: id("id"), from: id("from"), to: id("to"), dir: s["dir"].as_i64().unwrap_or(0) as i8 });
-            }
-            for b in n["breaks"].as_array().into_iter().flatten() {
-                m.breaks.push(Break { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), page: b["page"].as_bool().unwrap_or(false), part: b["part"].as_u64() });
-            }
-            for a in n["automation"].as_array().into_iter().flatten() {
-                let id = |k: &str| a[k].as_u64().unwrap_or(0);
-                let target = match a["t"].as_str() {
-                    Some("gain") => AutoTarget::Gain(id("track")),
-                    Some("pan") => AutoTarget::Pan(id("track")),
-                    Some("send") => AutoTarget::Send { track: id("track"), bus: id("bus") },
-                    Some("cc") => AutoTarget::Cc { track: id("track"), cc: id("cc").min(127) as u8 },
-                    Some("bend") => AutoTarget::PitchBend(id("track")),
-                    _ => AutoTarget::Param { node: id("node"), param: id("param") as u32 },
-                };
-                let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()?, hold: p[3].as_bool().unwrap_or(false) })).collect();
-                m.automation.push(AutoLane { id: id("id"), target, points });
-            }
-            for t in n["tweaks"].as_array().into_iter().flatten() {
-                let Some(head) = t["h"].as_u64() else { continue };
-                m.tweaks.push(Tweak { head, velocity: t["v"].as_f64(), shift: t["s"].as_f64().unwrap_or(0.0), length: t["l"].as_f64() });
-            }
-            m.tweaks.sort_by_key(|t| t.head);
-            for c in n["cross"].as_array().into_iter().flatten() {
-                m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
-            }
-            for e in n["endings"].as_array().into_iter().flatten() {
-                m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
-            }
-            // Per-lane items name their lane by index (a player's staves
-            // share the player id).
-            fn lane_of<'a>(lanes: &'a mut [Lane], v: &Value) -> Option<&'a mut Lane> {
-                match v["li"].as_u64() {
-                    Some(i) => lanes.get_mut(i as usize),
-                    None => {
-                        let pid = v["p"].as_u64().unwrap_or(0);
-                        lanes.iter_mut().find(|l| l.player == pid)
-                    }
-                }
-            }
-            for c in n["clefs"].as_array().into_iter().flatten() {
-                if let Some(l) = lane_of(&mut m.lanes, c) {
-                    l.clefs.push(ClefChange { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), clef: c["c"].as_str().unwrap_or("treble").into() });
-                }
-            }
-            for t in n["texts"].as_array().into_iter().flatten() {
-                if let Some(l) = lane_of(&mut m.lanes, t) {
-                    l.texts.push(TextItem {
-                        id: t["id"].as_u64().unwrap_or(0),
-                        at: frac(&t["at"]),
-                        text: t["t"].as_str().unwrap_or("").into(),
-                        kind: if t["k"].as_str() == Some("t") { TextKind::Technique } else { TextKind::Expression },
-                        shown: match t["s"].as_str() {
-                            Some("s") => Shown::Score,
-                            Some("p") => Shown::Parts,
-                            _ => Shown::Both,
-                        },
-                    });
-                }
-            }
-            for c in n["chords"].as_array().into_iter().flatten() {
-                if let Some(l) = lane_of(&mut m.lanes, c) {
-                    l.chords.push(ChordSymbol { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), text: c["c"].as_str().unwrap_or("").into() });
-                }
-            }
-            for c in n["lines"].as_array().into_iter().flatten() {
-                if let (Some(l), Some(kind)) = (lane_of(&mut m.lanes, c), c["k"].as_str().and_then(LineKind::from_code)) {
-                    l.lines.push(LineSpan { id: c["id"].as_u64().unwrap_or(0), from: frac(&c["from"]), to: frac(&c["to"]), kind });
-                }
-            }
+            load_notation(&serde_json::from_str(&n)?, &mut m);
         }
         p.movements.push(m);
     }
-    Ok(p)
+    Ok(())
+}
+
+/// A movement's lanes: instrument changes and voices (their events in chunks).
+fn load_lanes(db: &Connection, movement: i64) -> Result<Vec<Lane>> {
+    let mut out = Vec::new();
+    let mut sl = db.prepare("SELECT lane_index, player_id FROM lane WHERE movement_id = ? ORDER BY lane_index")?;
+    let lanes: Vec<(i64, i64)> = sl.query_map([movement], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+    for (li, pid) in lanes {
+        let mut lane = Lane { player: pid as u64, changes: vec![], clefs: vec![], texts: vec![], chords: vec![], lines: vec![], voices: vec![] };
+        let mut sc = db.prepare(
+            "SELECT id, at_num, at_den, instrument_id FROM instrument_change WHERE movement_id = ? AND lane_index = ? \
+             ORDER BY at_num * 1.0 / at_den",
+        )?;
+        for c in sc.query_map(params![movement, li], |r| {
+            Ok(InstrumentChange { id: r.get::<_, i64>(0)? as u64, at: Frac::new(r.get(1)?, r.get::<_, i64>(2)?.max(1)), instrument: r.get::<_, i64>(3)? as u64 })
+        })? {
+            lane.changes.push(c?);
+        }
+        let mut sv = db.prepare("SELECT id, voice_index, json(tuplets) FROM voice WHERE movement_id = ? AND lane_index = ? ORDER BY voice_index")?;
+        let voices: Vec<(i64, i64, String)> = sv.query_map(params![movement, li], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+        for (vid, index, tuplets) in voices {
+            let tuplets: Vec<Tuplet> = serde_json::from_str::<Vec<Value>>(&tuplets)?
+                .iter()
+                .map(|t| Tuplet { start: frac(&t["s"]), length: frac(&t["l"]), actual: t["a"].as_i64().unwrap_or(3), normal: t["n"].as_i64().unwrap_or(2) })
+                .collect();
+            let mut sch = db.prepare("SELECT json(events) FROM voice_chunk WHERE voice_id = ? ORDER BY chunk_index")?;
+            let chunks: Vec<String> = sch.query_map([vid], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+            let mut events = Vec::new();
+            for c in chunks {
+                for e in serde_json::from_str::<Vec<StoredEvent>>(&c)? {
+                    events.push(e.into_event());
+                }
+            }
+            lane.voices.push(Voice { id: vid as u64, index: index as u8, events: Arc::new(events), tuplets });
+        }
+        out.push(lane);
+    }
+    Ok(out)
+}
+
+/// A movement's `notation` JSON: structure marks, slurs, breaks,
+/// automation, tweaks, cross-staff notes, endings; and per lane clefs,
+/// texts, chord symbols and lines.
+fn load_notation(n: &Value, m: &mut Movement) {
+    for b in n["barlines"].as_array().into_iter().flatten() {
+        m.barlines.push(Barline { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), kind: BarKind::from_code(b["k"].as_str().unwrap_or("||")) });
+    }
+    for r in n["marks"].as_array().into_iter().flatten() {
+        m.rehearsal.push(RehearsalMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]) });
+    }
+    for r in n["nav"].as_array().into_iter().flatten() {
+        if let Some(kind) = r["k"].as_str().and_then(Nav::from_code) {
+            m.navigation.push(NavMark { id: r["id"].as_u64().unwrap_or(0), at: frac(&r["at"]), kind });
+        }
+    }
+    for s in n["slurs"].as_array().into_iter().flatten() {
+        let id = |k: &str| s[k].as_u64().unwrap_or(0);
+        m.slurs.push(Slur { id: id("id"), from: id("from"), to: id("to"), dir: s["dir"].as_i64().unwrap_or(0) as i8 });
+    }
+    for b in n["breaks"].as_array().into_iter().flatten() {
+        m.breaks.push(Break { id: b["id"].as_u64().unwrap_or(0), at: frac(&b["at"]), page: b["page"].as_bool().unwrap_or(false), part: b["part"].as_u64() });
+    }
+    m.automation.extend(n["automation"].as_array().into_iter().flatten().map(automation_from));
+    for t in n["tweaks"].as_array().into_iter().flatten() {
+        let Some(head) = t["h"].as_u64() else { continue };
+        m.tweaks.push(Tweak { head, velocity: t["v"].as_f64(), shift: t["s"].as_f64().unwrap_or(0.0), length: t["l"].as_f64() });
+    }
+    m.tweaks.sort_by_key(|t| t.head);
+    for c in n["cross"].as_array().into_iter().flatten() {
+        m.cross.push((c["e"].as_u64().unwrap_or(0), c["d"].as_i64().unwrap_or(0) as i8));
+    }
+    for e in n["endings"].as_array().into_iter().flatten() {
+        m.endings.push(Ending { id: e["id"].as_u64().unwrap_or(0), from: frac(&e["from"]), to: frac(&e["to"]), passes: e["n"].as_u64().unwrap_or(1) as u8 });
+    }
+    // Per-lane items name their lane by index (a player's staves
+    // share the player id).
+    fn lane_of<'a>(lanes: &'a mut [Lane], v: &Value) -> Option<&'a mut Lane> {
+        match v["li"].as_u64() {
+            Some(i) => lanes.get_mut(i as usize),
+            None => {
+                let pid = v["p"].as_u64().unwrap_or(0);
+                lanes.iter_mut().find(|l| l.player == pid)
+            }
+        }
+    }
+    for c in n["clefs"].as_array().into_iter().flatten() {
+        if let Some(l) = lane_of(&mut m.lanes, c) {
+            l.clefs.push(ClefChange { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), clef: c["c"].as_str().unwrap_or("treble").into() });
+        }
+    }
+    for t in n["texts"].as_array().into_iter().flatten() {
+        if let Some(l) = lane_of(&mut m.lanes, t) {
+            l.texts.push(TextItem {
+                id: t["id"].as_u64().unwrap_or(0),
+                at: frac(&t["at"]),
+                text: t["t"].as_str().unwrap_or("").into(),
+                kind: if t["k"].as_str() == Some("t") { TextKind::Technique } else { TextKind::Expression },
+                shown: match t["s"].as_str() {
+                    Some("s") => Shown::Score,
+                    Some("p") => Shown::Parts,
+                    _ => Shown::Both,
+                },
+            });
+        }
+    }
+    for c in n["chords"].as_array().into_iter().flatten() {
+        if let Some(l) = lane_of(&mut m.lanes, c) {
+            l.chords.push(ChordSymbol { id: c["id"].as_u64().unwrap_or(0), at: frac(&c["at"]), text: c["c"].as_str().unwrap_or("").into() });
+        }
+    }
+    for c in n["lines"].as_array().into_iter().flatten() {
+        if let (Some(l), Some(kind)) = (lane_of(&mut m.lanes, c), c["k"].as_str().and_then(LineKind::from_code)) {
+            l.lines.push(LineSpan { id: c["id"].as_u64().unwrap_or(0), from: frac(&c["from"]), to: frac(&c["to"]), kind });
+        }
+    }
+}
+
+/// An automation lane: its target and points (time, value, held?).
+fn automation_from(a: &Value) -> AutoLane {
+    let id = |k: &str| a[k].as_u64().unwrap_or(0);
+    let target = match a["t"].as_str() {
+        Some("gain") => AutoTarget::Gain(id("track")),
+        Some("pan") => AutoTarget::Pan(id("track")),
+        Some("send") => AutoTarget::Send { track: id("track"), bus: id("bus") },
+        Some("cc") => AutoTarget::Cc { track: id("track"), cc: id("cc").min(127) as u8 },
+        Some("bend") => AutoTarget::PitchBend(id("track")),
+        _ => AutoTarget::Param { node: id("node"), param: id("param") as u32 },
+    };
+    let points = a["points"].as_array().into_iter().flatten().filter_map(|p| Some(AutoPoint { at: corinzia_score::Frac::new(p[0].as_i64()?, p[1].as_i64()?.max(1)), value: p[2].as_f64()?, hold: p[3].as_bool().unwrap_or(false) })).collect();
+    AutoLane { id: id("id"), target, points }
+}
+
+fn automation_json(a: &AutoLane) -> Value {
+    let points: Vec<Value> = a.points.iter().map(|p| if p.hold { json!([p.at.num, p.at.den, p.value, true]) } else { json!([p.at.num, p.at.den, p.value]) }).collect();
+    match a.target {
+        AutoTarget::Gain(t) => json!({"id": a.id, "t": "gain", "track": t, "points": points}),
+        AutoTarget::Pan(t) => json!({"id": a.id, "t": "pan", "track": t, "points": points}),
+        AutoTarget::Param { node, param } => json!({"id": a.id, "t": "param", "node": node, "param": param, "points": points}),
+        AutoTarget::Send { track, bus } => json!({"id": a.id, "t": "send", "track": track, "bus": bus, "points": points}),
+        AutoTarget::Cc { track, cc } => json!({"id": a.id, "t": "cc", "track": track, "cc": cc, "points": points}),
+        AutoTarget::PitchBend(t) => json!({"id": a.id, "t": "bend", "track": t, "points": points}),
+    }
 }
 
 #[derive(Deserialize)]
@@ -684,6 +750,26 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
          sample_rate=excluded.sample_rate, next_id=excluded.next_id",
         params![project.title, project.composer, project.sample_rate, project.next_id as i64],
     )?;
+    save_settings(&tx, project)?;
+    save_graph(&tx, project)?;
+    save_tracks(&tx, project)?;
+    save_players(&tx, project)?;
+    for m in &project.movements {
+        save_movement(&tx, m)?;
+    }
+    tx.execute("DELETE FROM movement WHERE id NOT IN (SELECT value FROM json_each(?))", [id_list(project.movements.iter().map(|m| m.id))])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ids as a JSON array, for `json_each`.
+fn id_list(ids: impl Iterator<Item = u64>) -> String {
+    Value::Array(ids.map(|i| json!(i)).collect()).to_string()
+}
+
+/// The `setting` rows: layouts, page texts, instruments' kinds, drums and
+/// tunings, the mixer, chants, motifs and the performance switches.
+fn save_settings(tx: &rusqlite::Transaction, project: &Project) -> Result<()> {
     let texts = json!({"subtitle": project.subtitle, "lyricist": project.lyricist, "arranger": project.arranger, "copyright": project.copyright});
     let drums: serde_json::Map<String, Value> = project
         .instruments
@@ -691,24 +777,60 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
         .filter(|i| !i.drums.is_empty())
         .map(|i| (i.id.to_string(), json!(i.drums.iter().map(|d| json!({"name": d.name, "step": d.position.step, "octave": d.position.octave, "key": d.key, "head": d.head.code()})).collect::<Vec<_>>())))
         .collect();
-    let mixer = json!({
-        "tracks": project.tracks.iter().filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio || t.color.is_some() || !t.folder.is_empty() || t.output_bus.is_some()).map(|t| (t.id.to_string(), json!({"tech": t.techniques.iter().map(|x| match x.action {
-            SwitchAction::Keyswitch(k) => json!({"t": x.technique, "a": "key", "v": k}),
-            SwitchAction::Program(p) => json!({"t": x.technique, "a": "prog", "v": p}),
-            SwitchAction::Cc(c, v) => json!({"t": x.technique, "a": "cc", "v": c, "w": v}),
-            SwitchAction::Channel(c) => json!({"t": x.technique, "a": "ch", "v": c}),
-        }).collect::<Vec<_>>(), "dyn_cc": t.dynamics_cc, "inserts": t.inserts, "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db, "pre": s.pre})).collect::<Vec<_>>(), "program": t.program, "bank": t.bank, "color": t.color, "folder": t.folder, "out": t.output_bus.filter(|b| project.bus(*b).is_some()), "audio": t.audio, "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>()}))).collect::<serde_json::Map<String, Value>>(),
-        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute, "solo": b.solo, "out": b.output})).collect::<Vec<_>>(),
-        "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
-    });
     let tunings: serde_json::Map<String, Value> = project.instruments.iter().filter(|i| !i.tuning.is_empty()).map(|i| (i.id.to_string(), json!(i.tuning))).collect();
     let kinds: serde_json::Map<String, Value> = project.instruments.iter().map(|i| (i.id.to_string(), json!({"kind": i.kind.map(|k| k.id), "section": i.section}))).collect();
-    for (key, value) in [("layout", layout_json(&project.layout)), ("part_layout", layout_json(&project.part_layout)), ("texts", texts), ("drums", Value::Object(drums)), ("tunings", Value::Object(tunings)), ("kinds", Value::Object(kinds)), ("mixer", mixer), ("chants", serde_json::to_value(&project.chants)?), ("motifs", serde_json::to_value(&project.motifs)?), ("performance", json!({"phrasing": project.phrasing}))] {
+    for (key, value) in [
+        ("layout", layout_json(&project.layout)),
+        ("part_layout", layout_json(&project.part_layout)),
+        ("texts", texts),
+        ("drums", Value::Object(drums)),
+        ("tunings", Value::Object(tunings)),
+        ("kinds", Value::Object(kinds)),
+        ("mixer", mixer_json(project)),
+        ("chants", serde_json::to_value(&project.chants)?),
+        ("motifs", serde_json::to_value(&project.motifs)?),
+        ("performance", json!({"phrasing": project.phrasing})),
+    ] {
         tx.execute("INSERT INTO setting(key, value) VALUES (?, jsonb(?)) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value.to_string()])?;
     }
-    let ids = |v: Vec<u64>| serde_json::to_string(&v).unwrap();
-    // The audio graph. Upserts, not REPLACE: replacing a node row would
-    // delete it first and cascade to its state and edges.
+    Ok(())
+}
+
+/// The `mixer` setting (see `load_mixer`); tracks with nothing to say are left out.
+fn mixer_json(project: &Project) -> Value {
+    let tracks: serde_json::Map<String, Value> = project
+        .tracks
+        .iter()
+        .filter(|t| !t.inserts.is_empty() || !t.sends.is_empty() || t.program.is_some() || t.dynamics_cc.is_some() || !t.techniques.is_empty() || t.audio || t.color.is_some() || !t.folder.is_empty() || t.output_bus.is_some())
+        .map(|t| {
+            (
+                t.id.to_string(),
+                json!({
+                    "tech": t.techniques.iter().map(technique_json).collect::<Vec<_>>(),
+                    "dyn_cc": t.dynamics_cc,
+                    "inserts": t.inserts,
+                    "sends": t.sends.iter().map(|s| json!({"bus": s.bus, "db": s.gain_db, "pre": s.pre})).collect::<Vec<_>>(),
+                    "program": t.program,
+                    "bank": t.bank,
+                    "color": t.color,
+                    "folder": t.folder,
+                    "out": t.output_bus.filter(|b| project.bus(*b).is_some()),
+                    "audio": t.audio,
+                    "clips": t.clips.iter().map(clip_json).collect::<Vec<_>>(),
+                }),
+            )
+        })
+        .collect();
+    json!({
+        "tracks": tracks,
+        "buses": project.buses.iter().map(|b| json!({"id": b.id, "name": b.name, "inserts": b.inserts, "db": b.gain_db, "pan": b.pan, "mute": b.mute, "solo": b.solo, "out": b.output})).collect::<Vec<_>>(),
+        "master": {"inserts": project.master.inserts, "db": project.master.gain_db},
+    })
+}
+
+/// The audio graph. Upserts, not REPLACE: replacing a node row would
+/// delete it first and cascade to its state and edges.
+fn save_graph(tx: &rusqlite::Transaction, project: &Project) -> Result<()> {
     for n in &project.nodes {
         let kind = match n.kind {
             NodeKind::Plugin => "clap",
@@ -723,13 +845,10 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             params![n.id as i64, kind, n.name, opt(&n.bundle), opt(&n.plugin_id), n.bypassed as i64],
         )?;
     }
-    tx.execute("DELETE FROM audio_node WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.nodes.iter().map(|n| n.id).collect())])?;
+    tx.execute("DELETE FROM audio_node WHERE id NOT IN (SELECT value FROM json_each(?))", [id_list(project.nodes.iter().map(|n| n.id))])?;
     tx.execute("DELETE FROM audio_edge", [])?;
     for e in &project.edges {
-        tx.execute(
-            "INSERT OR IGNORE INTO audio_edge(from_node, from_port, to_node, to_port, gain) VALUES (?,?,?,?,?)",
-            params![e.from as i64, e.from_port, e.to as i64, e.to_port, e.gain],
-        )?;
+        tx.execute("INSERT OR IGNORE INTO audio_edge(from_node, from_port, to_node, to_port, gain) VALUES (?,?,?,?,?)", params![e.from as i64, e.from_port, e.to as i64, e.to_port, e.gain])?;
     }
     for (id, state) in &project.plugin_state {
         if project.node(*id).is_none() {
@@ -743,10 +862,14 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             params![*id as i64, state.as_slice(), hash],
         )?;
     }
-    tx.execute("DELETE FROM plugin_state WHERE node_id NOT IN (SELECT value FROM json_each(?))", [ids(project.plugin_state.keys().copied().collect())])?;
+    tx.execute("DELETE FROM plugin_state WHERE node_id NOT IN (SELECT value FROM json_each(?))", [id_list(project.plugin_state.keys().copied())])?;
+    Ok(())
+}
+
+fn save_tracks(tx: &rusqlite::Transaction, project: &Project) -> Result<()> {
     for (ord, t) in project.tracks.iter().enumerate() {
-        let node = t.instrument_node.filter(|n| node_exists(&tx, *n));
-        let bus = t.output_bus.filter(|n| node_exists(&tx, *n));
+        let node = t.instrument_node.filter(|n| node_exists(tx, *n));
+        let bus = t.output_bus.filter(|n| node_exists(tx, *n));
         tx.execute(
             "INSERT INTO track(id, ordinal, name, instrument_node_id, note_port, midi_channel, gain_db, pan, mute, solo, output_bus_id) \
              VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, name=excluded.name, \
@@ -755,12 +878,13 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             params![t.id as i64, ord as i64, t.name, node.map(|v| v as i64), t.note_port, t.midi_channel, t.gain_db, t.pan, t.mute as i64, t.solo as i64, bus.map(|v| v as i64)],
         )?;
     }
-    tx.execute("DELETE FROM track WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.tracks.iter().map(|t| t.id).collect())])?;
+    tx.execute("DELETE FROM track WHERE id NOT IN (SELECT value FROM json_each(?))", [id_list(project.tracks.iter().map(|t| t.id))])?;
+    Ok(())
+}
+
+fn save_players(tx: &rusqlite::Transaction, project: &Project) -> Result<()> {
     for (ord, pl) in project.players.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO player(id, ordinal, name) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, name=excluded.name",
-            params![pl.id as i64, ord as i64, pl.name],
-        )?;
+        tx.execute("INSERT INTO player(id, ordinal, name) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, name=excluded.name", params![pl.id as i64, ord as i64, pl.name])?;
         for (iord, iid) in pl.instruments.iter().enumerate() {
             let Some(i) = project.instrument(*iid) else { continue };
             tx.execute(
@@ -769,26 +893,22 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
                  ON CONFLICT(id) DO UPDATE SET player_id=excluded.player_id, ordinal=excluded.ordinal, name=excluded.name, \
                  engraver_name=excluded.engraver_name, transposition_steps=excluded.transposition_steps, \
                  transposition_semitones=excluded.transposition_semitones, clef=excluded.clef, track_id=excluded.track_id",
-                params![
-                    i.id as i64,
-                    pl.id as i64,
-                    iord as i64,
-                    i.name,
-                    i.engraver_name,
-                    i.transposition.steps,
-                    i.transposition.semitones,
-                    i.clef,
-                    i.track.map(|v| v as i64)
-                ],
+                params![i.id as i64, pl.id as i64, iord as i64, i.name, i.engraver_name, i.transposition.steps, i.transposition.semitones, i.clef, i.track.map(|v| v as i64)],
             )?;
         }
     }
-    tx.execute("DELETE FROM instrument WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.instruments.iter().map(|i| i.id).collect())])?;
-    tx.execute("DELETE FROM player WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.players.iter().map(|p| p.id).collect())])?;
+    tx.execute("DELETE FROM instrument WHERE id NOT IN (SELECT value FROM json_each(?))", [id_list(project.instruments.iter().map(|i| i.id))])?;
+    tx.execute("DELETE FROM player WHERE id NOT IN (SELECT value FROM json_each(?))", [id_list(project.players.iter().map(|p| p.id))])?;
+    Ok(())
+}
 
-    for m in &project.movements {
-        let arr = |items: Vec<Value>| Value::Array(items).to_string();
-        let tempo = arr(m.tempo.iter().map(|t| {
+/// A movement's row (tempo, meter, keys and the notation as JSON) and its lanes.
+fn save_movement(tx: &rusqlite::Transaction, m: &Movement) -> Result<()> {
+    let arr = |items: Vec<Value>| Value::Array(items).to_string();
+    let tempo = arr(m
+        .tempo
+        .iter()
+        .map(|t| {
             let mut o = json!({"at": jfrac(t.at), "bpm": t.bpm, "ramp": t.ramp});
             if !t.text.is_empty() {
                 o["text"] = json!(t.text);
@@ -797,111 +917,106 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
                 o["hidden"] = json!(true);
             }
             o
-        }).collect());
-        let meter = arr(m
-            .meter
-            .iter()
-            .map(|t| {
-                let mut j = json!({"at": jfrac(t.at), "num": t.num, "den": t.den, "pickup": t.pickup});
-                if t.beams[0] > 0 {
-                    j["beams"] = json!(t.beams.iter().take_while(|b| **b > 0).collect::<Vec<_>>());
-                }
-                j
-            })
-            .collect());
-        let keys = arr(m.keys.iter().map(|k| json!({"at": jfrac(k.at), "fifths": k.fifths, "minor": k.minor})).collect());
-        let mut clefs = Vec::new();
-        let mut texts = Vec::new();
-        let mut chords = Vec::new();
-        let mut lines = Vec::new();
-        for (li, l) in m.lanes.iter().enumerate() {
-            chords.extend(l.chords.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.text})));
-            clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.clef})));
-            texts.extend(l.texts.iter().map(|t| json!({
+        })
+        .collect());
+    let meter = arr(m
+        .meter
+        .iter()
+        .map(|t| {
+            let mut j = json!({"at": jfrac(t.at), "num": t.num, "den": t.den, "pickup": t.pickup});
+            if t.beams[0] > 0 {
+                j["beams"] = json!(t.beams.iter().take_while(|b| **b > 0).collect::<Vec<_>>());
+            }
+            j
+        })
+        .collect());
+    let keys = arr(m.keys.iter().map(|k| json!({"at": jfrac(k.at), "fifths": k.fifths, "minor": k.minor})).collect());
+    tx.execute(
+        "INSERT INTO movement(id, ordinal, title, length_num, length_den, revision, tempo, meter, keys, notation) \
+         VALUES (?,?,?,?,?,?,jsonb(?),jsonb(?),jsonb(?),jsonb(?)) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, \
+         title=excluded.title, length_num=excluded.length_num, length_den=excluded.length_den, revision=excluded.revision, \
+         tempo=excluded.tempo, meter=excluded.meter, keys=excluded.keys, notation=excluded.notation",
+        params![m.id as i64, m.ordinal, m.title, m.length.num, m.length.den, m.revision as i64, tempo, meter, keys, notation_json(m)],
+    )?;
+    save_lanes(tx, m)
+}
+
+/// A movement's `notation` JSON (see `load_notation`).
+fn notation_json(m: &Movement) -> String {
+    let mut clefs = Vec::new();
+    let mut texts = Vec::new();
+    let mut chords = Vec::new();
+    let mut lines = Vec::new();
+    for (li, l) in m.lanes.iter().enumerate() {
+        chords.extend(l.chords.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.text})));
+        clefs.extend(l.clefs.iter().map(|c| json!({"id": c.id, "li": li, "at": jfrac(c.at), "c": c.clef})));
+        texts.extend(l.texts.iter().map(|t| {
+            json!({
                 "id": t.id, "li": li, "at": jfrac(t.at), "t": t.text,
                 "k": if t.kind == TextKind::Technique { "t" } else { "x" },
                 "s": match t.shown { Shown::Both => "", Shown::Score => "s", Shown::Parts => "p" }
-            })));
-            lines.extend(l.lines.iter().map(|x| json!({"id": x.id, "li": li, "from": jfrac(x.from), "to": jfrac(x.to), "k": x.kind.code()})));
-        }
-        let notation = json!({
-            "barlines": m.barlines.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "k": b.kind.code()})).collect::<Vec<_>>(),
-            "marks": m.rehearsal.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at)})).collect::<Vec<_>>(),
-            "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
-            "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
-            "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
-            "automation": m.automation.iter().map(|a| {
-                let points: Vec<Value> = a.points.iter().map(|p| if p.hold { json!([p.at.num, p.at.den, p.value, true]) } else { json!([p.at.num, p.at.den, p.value]) }).collect();
-                match a.target {
-                    AutoTarget::Gain(t) => json!({"id": a.id, "t": "gain", "track": t, "points": points}),
-                    AutoTarget::Pan(t) => json!({"id": a.id, "t": "pan", "track": t, "points": points}),
-                    AutoTarget::Param { node, param } => json!({"id": a.id, "t": "param", "node": node, "param": param, "points": points}),
-                    AutoTarget::Send { track, bus } => json!({"id": a.id, "t": "send", "track": track, "bus": bus, "points": points}),
-                    AutoTarget::Cc { track, cc } => json!({"id": a.id, "t": "cc", "track": track, "cc": cc, "points": points}),
-                    AutoTarget::PitchBend(t) => json!({"id": a.id, "t": "bend", "track": t, "points": points}),
-                }
-            }).collect::<Vec<_>>(),
-            "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
-            "tweaks": m.tweaks.iter().filter(|t| !t.is_empty()).map(|t| json!({"h": t.head, "v": t.velocity, "s": t.shift, "l": t.length})).collect::<Vec<_>>(),
-            "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
-            "clefs": clefs,
-            "texts": texts,
-            "chords": chords,
-            "lines": lines,
-        })
-        .to_string();
+            })
+        }));
+        lines.extend(l.lines.iter().map(|x| json!({"id": x.id, "li": li, "from": jfrac(x.from), "to": jfrac(x.to), "k": x.kind.code()})));
+    }
+    json!({
+        "barlines": m.barlines.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "k": b.kind.code()})).collect::<Vec<_>>(),
+        "marks": m.rehearsal.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at)})).collect::<Vec<_>>(),
+        "nav": m.navigation.iter().map(|r| json!({"id": r.id, "at": jfrac(r.at), "k": r.kind.code()})).collect::<Vec<_>>(),
+        "endings": m.endings.iter().map(|e| json!({"id": e.id, "from": jfrac(e.from), "to": jfrac(e.to), "n": e.passes})).collect::<Vec<_>>(),
+        "slurs": m.slurs.iter().map(|s| json!({"id": s.id, "from": s.from, "to": s.to, "dir": s.dir})).collect::<Vec<_>>(),
+        "automation": m.automation.iter().map(automation_json).collect::<Vec<_>>(),
+        "cross": m.cross.iter().map(|c| json!({"e": c.0, "d": c.1})).collect::<Vec<_>>(),
+        "tweaks": m.tweaks.iter().filter(|t| !t.is_empty()).map(|t| json!({"h": t.head, "v": t.velocity, "s": t.shift, "l": t.length})).collect::<Vec<_>>(),
+        "breaks": m.breaks.iter().map(|b| json!({"id": b.id, "at": jfrac(b.at), "page": b.page, "part": b.part})).collect::<Vec<_>>(),
+        "clefs": clefs,
+        "texts": texts,
+        "chords": chords,
+        "lines": lines,
+    })
+    .to_string()
+}
+
+/// A movement's lanes, instrument changes and voices (events in chunks of
+/// `CHUNK_WHOLE_NOTES`). Voices that are gone (or moved lanes) go first,
+/// then the lanes past the end.
+fn save_lanes(tx: &rusqlite::Transaction, m: &Movement) -> Result<()> {
+    let all_voices = id_list(m.lanes.iter().flat_map(|l| l.voices.iter().map(|v| v.id)));
+    tx.execute("DELETE FROM voice WHERE movement_id = ? AND id NOT IN (SELECT value FROM json_each(?))", params![m.id as i64, all_voices])?;
+    tx.execute("DELETE FROM lane WHERE movement_id = ? AND lane_index >= ?", params![m.id as i64, m.lanes.len() as i64])?;
+    for (li, l) in m.lanes.iter().enumerate() {
         tx.execute(
-            "INSERT INTO movement(id, ordinal, title, length_num, length_den, revision, tempo, meter, keys, notation) \
-             VALUES (?,?,?,?,?,?,jsonb(?),jsonb(?),jsonb(?),jsonb(?)) ON CONFLICT(id) DO UPDATE SET ordinal=excluded.ordinal, \
-             title=excluded.title, length_num=excluded.length_num, length_den=excluded.length_den, revision=excluded.revision, \
-             tempo=excluded.tempo, meter=excluded.meter, keys=excluded.keys, notation=excluded.notation",
-            params![m.id as i64, m.ordinal, m.title, m.length.num, m.length.den, m.revision as i64, tempo, meter, keys, notation],
+            "INSERT INTO lane(movement_id, lane_index, player_id) VALUES (?,?,?) ON CONFLICT(movement_id, lane_index) DO UPDATE SET player_id=excluded.player_id",
+            params![m.id as i64, li as i64, l.player as i64],
         )?;
-        // Voices that are gone (or moved lanes) first, then the lanes past the end.
-        let all_voices = ids(m.lanes.iter().flat_map(|l| l.voices.iter().map(|v| v.id)).collect());
-        tx.execute("DELETE FROM voice WHERE movement_id = ? AND id NOT IN (SELECT value FROM json_each(?))", params![m.id as i64, all_voices])?;
-        tx.execute("DELETE FROM lane WHERE movement_id = ? AND lane_index >= ?", params![m.id as i64, m.lanes.len() as i64])?;
-        for (li, l) in m.lanes.iter().enumerate() {
+        tx.execute("DELETE FROM instrument_change WHERE movement_id = ? AND lane_index = ?", params![m.id as i64, li as i64])?;
+        for c in &l.changes {
             tx.execute(
-                "INSERT INTO lane(movement_id, lane_index, player_id) VALUES (?,?,?) ON CONFLICT(movement_id, lane_index) DO UPDATE SET player_id=excluded.player_id",
-                params![m.id as i64, li as i64, l.player as i64],
+                "INSERT INTO instrument_change(id, movement_id, lane_index, at_num, at_den, instrument_id) VALUES (?,?,?,?,?,?)",
+                params![c.id as i64, m.id as i64, li as i64, c.at.num, c.at.den, c.instrument as i64],
             )?;
-            tx.execute("DELETE FROM instrument_change WHERE movement_id = ? AND lane_index = ?", params![m.id as i64, li as i64])?;
-            for c in &l.changes {
-                tx.execute(
-                    "INSERT INTO instrument_change(id, movement_id, lane_index, at_num, at_den, instrument_id) VALUES (?,?,?,?,?,?)",
-                    params![c.id as i64, m.id as i64, li as i64, c.at.num, c.at.den, c.instrument as i64],
-                )?;
-            }
-            for v in &l.voices {
-                tx.execute(
-                    "INSERT INTO voice(id, movement_id, lane_index, voice_index, tuplets) VALUES (?,?,?,?,jsonb(?)) \
-                     ON CONFLICT(id) DO UPDATE SET lane_index=excluded.lane_index, voice_index=excluded.voice_index, tuplets=excluded.tuplets",
-                    params![
-                        v.id as i64,
-                        m.id as i64,
-                        li as i64,
-                        v.index,
-                        Value::Array(v.tuplets.iter().map(|t| json!({"s": jfrac(t.start), "l": jfrac(t.length), "a": t.actual, "n": t.normal})).collect()).to_string()
-                    ],
-                )?;
-                tx.execute("DELETE FROM voice_chunk WHERE voice_id = ?", [v.id as i64])?;
-                let mut i = 0;
-                while i < v.events.len() {
-                    let ci = chunk_of(v.events[i].start);
-                    let mut j = i;
-                    while j < v.events.len() && chunk_of(v.events[j].start) == ci {
-                        j += 1;
-                    }
-                    let chunk = Value::Array(v.events[i..j].iter().map(event_json).collect()).to_string();
-                    tx.execute("INSERT INTO voice_chunk(voice_id, chunk_index, events) VALUES (?,?,jsonb(?))", params![v.id as i64, ci, chunk])?;
-                    i = j;
+        }
+        for v in &l.voices {
+            let tuplets = Value::Array(v.tuplets.iter().map(|t| json!({"s": jfrac(t.start), "l": jfrac(t.length), "a": t.actual, "n": t.normal})).collect()).to_string();
+            tx.execute(
+                "INSERT INTO voice(id, movement_id, lane_index, voice_index, tuplets) VALUES (?,?,?,?,jsonb(?)) \
+                 ON CONFLICT(id) DO UPDATE SET lane_index=excluded.lane_index, voice_index=excluded.voice_index, tuplets=excluded.tuplets",
+                params![v.id as i64, m.id as i64, li as i64, v.index, tuplets],
+            )?;
+            tx.execute("DELETE FROM voice_chunk WHERE voice_id = ?", [v.id as i64])?;
+            let mut i = 0;
+            while i < v.events.len() {
+                let ci = chunk_of(v.events[i].start);
+                let mut j = i;
+                while j < v.events.len() && chunk_of(v.events[j].start) == ci {
+                    j += 1;
                 }
+                let chunk = Value::Array(v.events[i..j].iter().map(event_json).collect()).to_string();
+                tx.execute("INSERT INTO voice_chunk(voice_id, chunk_index, events) VALUES (?,?,jsonb(?))", params![v.id as i64, ci, chunk])?;
+                i = j;
             }
         }
     }
-    tx.execute("DELETE FROM movement WHERE id NOT IN (SELECT value FROM json_each(?))", [ids(project.movements.iter().map(|m| m.id).collect())])?;
-    tx.commit()?;
     Ok(())
 }
 

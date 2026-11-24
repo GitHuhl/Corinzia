@@ -47,6 +47,36 @@ fn rehearsal_letter(i: usize) -> String {
     std::iter::repeat_n(letter, round + 1).collect()
 }
 
+/// A navigation mark's direction: its sign or words, and its `<sound>`.
+fn navigation_xml(kind: Nav) -> String {
+    let (body, sound) = match kind {
+        Nav::Segno => ("<segno/>".to_string(), "<sound segno=\"segno\"/>"),
+        Nav::Coda => ("<coda/>".to_string(), "<sound coda=\"coda\"/>"),
+        k => (
+            format!("<words font-style=\"italic\">{}</words>", esc(k.text())),
+            match k {
+                Nav::ToCoda => "<sound tocoda=\"coda\"/>",
+                Nav::Fine => "<sound fine=\"yes\"/>",
+                Nav::DaCapo(_) => "<sound dacapo=\"yes\"/>",
+                _ => "<sound dalsegno=\"segno\"/>",
+            },
+        ),
+    };
+    format!("      <direction placement=\"above\"><direction-type>{body}</direction-type>{sound}</direction>")
+}
+
+/// An octave line's, pedal's or cue bracket's start and stop elements.
+fn line_xml(kind: LineKind) -> (String, String) {
+    match kind {
+        LineKind::Pedal => ("<pedal type=\"start\" line=\"no\" sign=\"yes\"/>".to_string(), "<pedal type=\"stop\" line=\"no\" sign=\"yes\"/>".to_string()),
+        LineKind::Cue => ("<bracket type=\"start\" line-end=\"none\" line-type=\"solid\"/>".to_string(), "<bracket type=\"stop\" line-end=\"down\" line-type=\"solid\"/>".to_string()),
+        LineKind::Octave(k) => {
+            let size = if k.abs() >= 2 { 15 } else { 8 };
+            (format!("<octave-shift type=\"{}\" size=\"{size}\"/>", if k > 0 { "down" } else { "up" }), format!("<octave-shift type=\"stop\" size=\"{size}\"/>"))
+        }
+    }
+}
+
 // ----------------------------------------------------------------- measures --
 #[derive(Clone, Copy, Debug)]
 struct Measure {
@@ -145,7 +175,7 @@ impl<'a> Writer<'a> {
     /// One MusicXML part: a player's staves (`group`, indices into the score's parts).
     fn part(&mut self, pi: usize, group: &[usize], ms: &[Measure]) {
         let s = self.score;
-        let staves: Vec<&Part> = group.iter().map(|&i| &s.parts[i]).collect();
+        let staves: Vec<&'a Part> = group.iter().map(|&i| &s.parts[i]).collect();
         let part = staves[0];
         self.staves = staves.len();
         self.percussion = part.clef == "percussion";
@@ -155,15 +185,10 @@ impl<'a> Writer<'a> {
         let _ = writeln!(self.out, "  <part id=\"P{}\">", pi + 1);
         let mut keys = s.keys.clone();
         keys.sort_by(|a, b| a.at.cmp(&b.at));
-        let mut tempo = s.tempo.clone();
-        tempo.sort_by(|a, b| a.at.cmp(&b.at));
-        let mut marks = s.marks.clone();
-        marks.sort();
         let mut wedge_open = false;
         let mut prev_meter = (0, 0);
+        let pickup = ms.first().is_some_and(|m| m.implicit) as usize;
         for (mi, m) in ms.iter().enumerate() {
-            let end = m.start + m.len;
-            let pickup = ms.first().is_some_and(|m| m.implicit) as usize;
             if m.implicit {
                 let _ = writeln!(self.out, "    <measure number=\"{}\" implicit=\"yes\">", mi + 1 - pickup);
             } else {
@@ -173,179 +198,165 @@ impl<'a> Writer<'a> {
             if let Some(&(_, page)) = s.breaks.iter().find(|b| b.0 == m.start && mi > 0) {
                 self.line(if page { "      <print new-page=\"yes\"/>" } else { "      <print new-system=\"yes\"/>" });
             }
-            // Left barline: start repeat and/or ending start.
-            let start_repeat = s
-                .barlines
-                .iter()
-                .any(|b| b.at == m.start && matches!(b.kind, BarKind::RepeatStart | BarKind::RepeatBoth) && mi > 0)
-                || (mi == 0 && s.barlines.iter().any(|b| b.at == Frac::ZERO && b.kind == BarKind::RepeatStart));
-            let ending_start = s.endings.iter().find(|e| e.from == m.start);
-            if start_repeat || ending_start.is_some() {
-                self.line("      <barline location=\"left\">");
-                if start_repeat {
-                    self.line("        <bar-style>heavy-light</bar-style>");
-                }
-                if let Some(e) = ending_start {
-                    let nums: Vec<String> = e.numbers.iter().map(|n| n.to_string()).collect();
-                    let label: Vec<String> = e.numbers.iter().map(|n| format!("{n}.")).collect();
-                    let _ = writeln!(
-                        self.out,
-                        "        <ending number=\"{}\" type=\"start\">{}</ending>",
-                        nums.join(","),
-                        esc(&label.join(" "))
-                    );
-                }
-                if start_repeat {
-                    self.line("        <repeat direction=\"forward\"/>");
-                }
-                self.line("      </barline>");
+            self.left_barline(mi, m);
+            self.bar_attributes(mi, ms, &staves, &keys, &mut prev_meter);
+            let mut per_staff = self.bar_directions(pi, m, &staves);
+            // Voices, staff by staff (MusicXML voices 1-4 on the first, 5-8 on the second…).
+            let mut cursor = Frac::ZERO; // position inside the measure after the last write
+            for (k, staff) in staves.iter().enumerate() {
+                let directions = std::mem::take(&mut per_staff[k]);
+                self.staff_voices(k, staff, m, directions, &mut cursor, &mut wedge_open);
             }
-            // Attributes.
-            let key_here = keys.iter().rev().find(|k| k.at <= m.start && (mi == 0 || k.at > ms[mi - 1].start));
-            let meter_changed = (m.num, m.den) != prev_meter && (m.len == Frac::new(m.num, m.den) || m.implicit) || mi == 0;
-            if mi == 0 || key_here.is_some() || meter_changed {
-                self.line("      <attributes>");
-                if mi == 0 {
-                    let _ = writeln!(self.out, "        <divisions>{}</divisions>", self.divisions);
-                }
-                if let Some(k) = key_here.or(if mi == 0 { keys.first() } else { None }) {
-                    // A transposing staff's written key.
-                    let mut fifths = k.fifths + part.key_shift;
-                    while fifths > 7 {
-                        fifths -= 12;
-                    }
-                    while fifths < -7 {
-                        fifths += 12;
-                    }
-                    let _ = writeln!(
-                        self.out,
-                        "        <key><fifths>{}</fifths><mode>{}</mode></key>",
-                        fifths,
-                        if k.minor { "minor" } else { "major" }
-                    );
-                }
-                if meter_changed {
-                    let groups: Vec<String> = m.beams.iter().take_while(|b| **b > 0).map(|b| b.to_string()).collect();
-                    let beats = if groups.len() > 1 { groups.join("+") } else { m.num.to_string() };
-                    let _ = writeln!(self.out, "        <time><beats>{beats}</beats><beat-type>{}</beat-type></time>", m.den);
-                    prev_meter = (m.num, m.den);
-                }
-                if mi == 0 && staves.len() > 1 {
-                    let _ = writeln!(self.out, "        <staves>{}</staves>", staves.len());
-                }
-                if mi == 0 {
-                    for (k, st) in staves.iter().enumerate() {
-                        // A staff's own clef from the start (a piano's left hand).
-                        let first = st.clefs.iter().find(|c| c.at == Frac::ZERO).map_or(&st.clef, |c| &c.clef);
-                        let clef = clef_xml(first);
-                        let clef = if staves.len() > 1 { clef.replacen("<clef>", &format!("<clef number=\"{}\">", k + 1), 1) } else { clef };
-                        let _ = writeln!(self.out, "        {clef}");
-                    }
-                    if let Some(t) = staves.iter().find(|st| !st.tab.is_empty()).map(|st| &st.tab) {
-                        // A fretted instrument's strings, highest first.
-                        let mut d = String::from("        <staff-details>");
-                        for (line, &key) in t.iter().enumerate() {
-                            let (step, alter, octave) = key_spelling(key as i32);
-                            let _ = write!(d, "<staff-tuning line=\"{}\"><tuning-step>{step}</tuning-step>{}<tuning-octave>{octave}</tuning-octave></staff-tuning>", line + 1, if alter != 0 { format!("<tuning-alter>{alter}</tuning-alter>") } else { String::new() });
-                        }
-                        d.push_str("</staff-details>");
-                        self.line(&d);
-                    }
-                    // From written to sounding: the transposition reversed.
-                    let (steps, semis) = part.transposition;
-                    if (steps, semis) != (0, 0) {
-                        // Whole octaves go in <octave-change> (a bass clarinet's ninth).
-                        let oct = semis / 12;
-                        let (d, c) = (-(steps - 7 * oct), -(semis - 12 * oct));
-                        let change = if oct != 0 { format!("<octave-change>{}</octave-change>", -oct) } else { String::new() };
-                        let _ = writeln!(self.out, "        <transpose><diatonic>{d}</diatonic><chromatic>{c}</chromatic>{change}</transpose>");
-                    }
-                }
-                self.line("      </attributes>");
-            }
+            self.right_barline(mi, m, ms.len());
+            self.line("    </measure>");
+        }
+        self.line("  </part>");
+    }
 
-            // Directions anchored in this bar (emitted before the first voice-1
-            // note at or after their position).
-            let mut directions: Vec<(Frac, String)> = Vec::new();
-            if pi == 0 {
-                for t in tempo.iter().filter(|t| t.at >= m.start && t.at < end) {
-                    let mut d = String::from("      <direction placement=\"above\">\n");
-                    if !t.text.is_empty() {
-                        let _ = writeln!(
-                            d,
-                            "        <direction-type><words font-weight=\"bold\">{}</words></direction-type>",
-                            esc(&t.text)
-                        );
-                    }
-                    let _ = writeln!(
-                        d,
-                        "        <direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>{}</per-minute></metronome></direction-type>",
-                        t.bpm.round()
-                    );
-                    let _ = writeln!(d, "        <sound tempo=\"{}\"/>", t.bpm);
-                    d.push_str("      </direction>");
-                    directions.push((t.at, d));
+    /// The left barline: a start repeat and/or an ending's start.
+    fn left_barline(&mut self, mi: usize, m: &Measure) {
+        let s = self.score;
+        let start_repeat = s.barlines.iter().any(|b| b.at == m.start && matches!(b.kind, BarKind::RepeatStart | BarKind::RepeatBoth) && mi > 0)
+            || (mi == 0 && s.barlines.iter().any(|b| b.at == Frac::ZERO && b.kind == BarKind::RepeatStart));
+        let ending_start = s.endings.iter().find(|e| e.from == m.start);
+        if !start_repeat && ending_start.is_none() {
+            return;
+        }
+        self.line("      <barline location=\"left\">");
+        if start_repeat {
+            self.line("        <bar-style>heavy-light</bar-style>");
+        }
+        if let Some(e) = ending_start {
+            let nums: Vec<String> = e.numbers.iter().map(|n| n.to_string()).collect();
+            let label: Vec<String> = e.numbers.iter().map(|n| format!("{n}.")).collect();
+            let _ = writeln!(self.out, "        <ending number=\"{}\" type=\"start\">{}</ending>", nums.join(","), esc(&label.join(" ")));
+        }
+        if start_repeat {
+            self.line("        <repeat direction=\"forward\"/>");
+        }
+        self.line("      </barline>");
+    }
+
+    /// `<attributes>` where something starts: divisions, key, time,
+    /// staves, clefs, a fretted instrument's strings and the transposition.
+    fn bar_attributes(&mut self, mi: usize, ms: &[Measure], staves: &[&Part], keys: &[crate::doc::Key], prev_meter: &mut (i64, i64)) {
+        let m = &ms[mi];
+        let part = staves[0];
+        let key_here = keys.iter().rev().find(|k| k.at <= m.start && (mi == 0 || k.at > ms[mi - 1].start));
+        let meter_changed = (m.num, m.den) != *prev_meter && (m.len == Frac::new(m.num, m.den) || m.implicit) || mi == 0;
+        if !(mi == 0 || key_here.is_some() || meter_changed) {
+            return;
+        }
+        self.line("      <attributes>");
+        if mi == 0 {
+            let _ = writeln!(self.out, "        <divisions>{}</divisions>", self.divisions);
+        }
+        if let Some(k) = key_here.or(if mi == 0 { keys.first() } else { None }) {
+            // A transposing staff's written key.
+            let mut fifths = k.fifths + part.key_shift;
+            while fifths > 7 {
+                fifths -= 12;
+            }
+            while fifths < -7 {
+                fifths += 12;
+            }
+            let _ = writeln!(self.out, "        <key><fifths>{}</fifths><mode>{}</mode></key>", fifths, if k.minor { "minor" } else { "major" });
+        }
+        if meter_changed {
+            let groups: Vec<String> = m.beams.iter().take_while(|b| **b > 0).map(|b| b.to_string()).collect();
+            let beats = if groups.len() > 1 { groups.join("+") } else { m.num.to_string() };
+            let _ = writeln!(self.out, "        <time><beats>{beats}</beats><beat-type>{}</beat-type></time>", m.den);
+            *prev_meter = (m.num, m.den);
+        }
+        if mi == 0 {
+            self.opening_attributes(staves);
+        }
+        self.line("      </attributes>");
+    }
+
+    /// The first bar's staves, clefs, strings and transposition.
+    fn opening_attributes(&mut self, staves: &[&Part]) {
+        let part = staves[0];
+        if staves.len() > 1 {
+            let _ = writeln!(self.out, "        <staves>{}</staves>", staves.len());
+        }
+        for (k, st) in staves.iter().enumerate() {
+            // A staff's own clef from the start (a piano's left hand).
+            let first = st.clefs.iter().find(|c| c.at == Frac::ZERO).map_or(&st.clef, |c| &c.clef);
+            let clef = clef_xml(first);
+            let clef = if staves.len() > 1 { clef.replacen("<clef>", &format!("<clef number=\"{}\">", k + 1), 1) } else { clef };
+            let _ = writeln!(self.out, "        {clef}");
+        }
+        if let Some(t) = staves.iter().find(|st| !st.tab.is_empty()).map(|st| &st.tab) {
+            // A fretted instrument's strings, highest first.
+            let mut d = String::from("        <staff-details>");
+            for (line, &key) in t.iter().enumerate() {
+                let (step, alter, octave) = key_spelling(key as i32);
+                let _ = write!(d, "<staff-tuning line=\"{}\"><tuning-step>{step}</tuning-step>{}<tuning-octave>{octave}</tuning-octave></staff-tuning>", line + 1, if alter != 0 { format!("<tuning-alter>{alter}</tuning-alter>") } else { String::new() });
+            }
+            d.push_str("</staff-details>");
+            self.line(&d);
+        }
+        // From written to sounding: the transposition reversed.
+        let (steps, semis) = part.transposition;
+        if (steps, semis) != (0, 0) {
+            // Whole octaves go in <octave-change> (a bass clarinet's ninth).
+            let oct = semis / 12;
+            let (d, c) = (-(steps - 7 * oct), -(semis - 12 * oct));
+            let change = if oct != 0 { format!("<octave-change>{}</octave-change>", -oct) } else { String::new() };
+            let _ = writeln!(self.out, "        <transpose><diatonic>{d}</diatonic><chromatic>{c}</chromatic>{change}</transpose>");
+        }
+    }
+
+    /// The directions anchored in a bar, per staff and in time order (each
+    /// written before the first voice-1 note at or after its position):
+    /// tempo, rehearsal marks and navigation (the first part's), words,
+    /// lines, chord symbols and clef changes.
+    fn bar_directions(&self, pi: usize, m: &Measure, staves: &[&Part]) -> Vec<Vec<(Frac, String)>> {
+        let s = self.score;
+        let end = m.start + m.len;
+        let mut per_staff: Vec<Vec<(Frac, String)>> = vec![Vec::new(); staves.len()];
+        let mut directions: Vec<(Frac, String)> = Vec::new();
+        if pi == 0 {
+            let mut tempo = s.tempo.clone();
+            tempo.sort_by(|a, b| a.at.cmp(&b.at));
+            for t in tempo.iter().filter(|t| t.at >= m.start && t.at < end) {
+                let mut d = String::from("      <direction placement=\"above\">\n");
+                if !t.text.is_empty() {
+                    let _ = writeln!(d, "        <direction-type><words font-weight=\"bold\">{}</words></direction-type>", esc(&t.text));
                 }
-                for (i, at) in marks.iter().enumerate() {
-                    if *at >= m.start && *at < end {
-                        directions.push((
-                            *at,
-                            format!(
-                                "      <direction placement=\"above\"><direction-type><rehearsal>{}</rehearsal></direction-type></direction>",
-                                rehearsal_letter(i)
-                            ),
-                        ));
-                    }
+                let _ = writeln!(d, "        <direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>{}</per-minute></metronome></direction-type>", t.bpm.round());
+                let _ = writeln!(d, "        <sound tempo=\"{}\"/>", t.bpm);
+                d.push_str("      </direction>");
+                directions.push((t.at, d));
+            }
+            let mut marks = s.marks.clone();
+            marks.sort();
+            for (i, at) in marks.iter().enumerate() {
+                if *at >= m.start && *at < end {
+                    directions.push((*at, format!("      <direction placement=\"above\"><direction-type><rehearsal>{}</rehearsal></direction-type></direction>", rehearsal_letter(i))));
                 }
             }
-            let mut per_staff: Vec<Vec<(Frac, String)>> = vec![Vec::new(); staves.len()];
-            for (k, part) in staves.iter().enumerate() {
-            let directions = &mut per_staff[k];
+        }
+        for (k, part) in staves.iter().enumerate() {
             for t in part.texts.iter().filter(|t| t.at >= m.start && t.at < end) {
                 let (place, style) = if t.technique { ("above", "") } else { ("below", " font-style=\"italic\"") };
-                directions.push((
-                    t.at,
-                    format!(
-                        "      <direction placement=\"{place}\"><direction-type><words{style}>{}</words></direction-type></direction>",
-                        esc(&t.text)
-                    ),
-                ));
+                per_staff[k].push((t.at, format!("      <direction placement=\"{place}\"><direction-type><words{style}>{}</words></direction-type></direction>", esc(&t.text))));
             }
-            }
-            if pi == 0 {
-                for n in s.navigation.iter() {
-                    let here = if n.kind.at_bar_start() { n.at == m.start } else { n.at == end };
-                    if !here {
-                        continue;
-                    }
-                    let (body, sound) = match n.kind {
-                        Nav::Segno => ("<segno/>".to_string(), "<sound segno=\"segno\"/>"),
-                        Nav::Coda => ("<coda/>".to_string(), "<sound coda=\"coda\"/>"),
-                        k => (
-                            format!("<words font-style=\"italic\">{}</words>", esc(k.text())),
-                            match k {
-                                Nav::ToCoda => "<sound tocoda=\"coda\"/>",
-                                Nav::Fine => "<sound fine=\"yes\"/>",
-                                Nav::DaCapo(_) => "<sound dacapo=\"yes\"/>",
-                                _ => "<sound dalsegno=\"segno\"/>",
-                            },
-                        ),
-                    };
-                    directions.push((n.at, format!("      <direction placement=\"above\"><direction-type>{body}</direction-type>{sound}</direction>")));
+        }
+        if pi == 0 {
+            for n in s.navigation.iter() {
+                let here = if n.kind.at_bar_start() { n.at == m.start } else { n.at == end };
+                if here {
+                    directions.push((n.at, navigation_xml(n.kind)));
                 }
             }
-            for (k, part) in staves.iter().enumerate() {
+        }
+        for (k, part) in staves.iter().enumerate() {
             let directions = &mut per_staff[k];
             // Octave lines and pedal: start in the bar of their start, stop at their end.
             for l in &part.lines {
-                let (start, stop) = match l.kind {
-                    LineKind::Pedal => ("<pedal type=\"start\" line=\"no\" sign=\"yes\"/>".to_string(), "<pedal type=\"stop\" line=\"no\" sign=\"yes\"/>".to_string()),
-                    LineKind::Cue => ("<bracket type=\"start\" line-end=\"none\" line-type=\"solid\"/>".to_string(), "<bracket type=\"stop\" line-end=\"down\" line-type=\"solid\"/>".to_string()),
-                    LineKind::Octave(k) => {
-                        let size = if k.abs() >= 2 { 15 } else { 8 };
-                        (format!("<octave-shift type=\"{}\" size=\"{size}\"/>", if k > 0 { "down" } else { "up" }), format!("<octave-shift type=\"stop\" size=\"{size}\"/>"))
-                    }
-                };
+                let (start, stop) = line_xml(l.kind);
                 let placement = if matches!(l.kind, LineKind::Octave(1..) | LineKind::Cue) { "above" } else { "below" };
                 if l.from >= m.start && l.from < end {
                     directions.push((l.from, format!("      <direction placement=\"{placement}\"><direction-type>{start}</direction-type></direction>")));
@@ -364,193 +375,205 @@ impl<'a> Writer<'a> {
                 let clef = if staves.len() > 1 { clef.replacen("<clef>", &format!("<clef number=\"{}\">", k + 1), 1) } else { clef };
                 directions.push((c.at, format!("      <attributes>{clef}</attributes>")));
             }
-            }
-            per_staff[0].append(&mut directions);
-            for (k, dirs) in per_staff.iter_mut().enumerate() {
-                if staves.len() > 1 {
-                    // Each staff's directions name it.
-                    let tag = format!("<staff>{}</staff>", k + 1);
-                    for (_, d) in dirs.iter_mut().filter(|d| !d.1.contains("<attributes>")) {
-                        for close in ["<sound", "</direction>", "</harmony>"] {
-                            if let Some(i) = d.rfind(close) {
-                                d.insert_str(i, &tag);
-                                break;
-                            }
+        }
+        per_staff[0].append(&mut directions);
+        for (k, dirs) in per_staff.iter_mut().enumerate() {
+            if staves.len() > 1 {
+                // Each staff's directions name it.
+                let tag = format!("<staff>{}</staff>", k + 1);
+                for (_, d) in dirs.iter_mut().filter(|d| !d.1.contains("<attributes>")) {
+                    for close in ["<sound", "</direction>", "</harmony>"] {
+                        if let Some(i) = d.rfind(close) {
+                            d.insert_str(i, &tag);
+                            break;
                         }
                     }
                 }
-                dirs.sort_by(|a, b| a.0.cmp(&b.0));
             }
+            dirs.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+        per_staff
+    }
 
-            // Voices, staff by staff (MusicXML voices 1-4 on the first, 5-8 on the second…).
-            let mut cursor = Frac::ZERO; // position inside the measure after the last write
-            for (k, part) in staves.iter().enumerate() {
-            self.staff = k + 1;
-            self.cross = part.cross.iter().copied().collect();
-            let mut directions = std::mem::take(&mut per_staff[k]);
-            let vbase = 4 * k as u8;
-            let mut voices: Vec<&crate::doc::Voice> = part.voices.iter().collect();
-            voices.sort_by_key(|v| v.index);
-            let has_v1 = voices.iter().any(|v| v.index == 1);
-            let mut written_v1 = false;
-            for v in voices.iter() {
-                let pieces = self.pieces(&v.events, m.start, end);
-                if v.index != 1 && pieces.is_empty() {
-                    continue;
-                }
-                if cursor > Frac::ZERO {
-                    let _ = writeln!(self.out, "      <backup><duration>{}</duration></backup>", self.dur(cursor));
-                }
-                self.beam_xml = self.beams_of(v, &pieces, m);
-                if v.index == 1 && pieces.is_empty() {
-                    self.emit_directions(&mut directions, end);
-                    self.measure_rest(m, 1 + vbase);
-                    cursor = m.len;
-                    written_v1 = true;
-                    continue;
-                }
-                let mut at = m.start;
-                let mut triplet_run = 0usize;
-                for (pi_idx, p) in pieces.iter().enumerate() {
-                    if p.from > at {
-                        let gap = p.from - at;
-                        if v.index == 1 {
-                            self.emit_directions(&mut directions, p.from);
-                            for nv in decompose(gap) {
-                                self.rest(nv, 1 + vbase);
-                            }
-                        } else {
-                            let _ = writeln!(self.out, "      <forward><duration>{}</duration></forward>", self.dur(gap));
-                        }
-                    }
-                    if v.index == 1 {
-                        self.emit_directions(&mut directions, p.from);
-                    }
-                    // Explicit tuplets around the piece (outermost first).
-                    let mut around: Vec<&crate::doc::Tuplet> = v.tuplets.iter().filter(|t| p.from >= t.start && p.from < t.start + t.length).collect();
-                    around.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
-                    if !around.is_empty() {
-                        let (actual, normal) = around.iter().fold((1, 1), |(a, n), t| (a * t.actual, n * t.normal));
-                        let values = decompose((p.to - p.from) * Frac::new(actual, normal));
-                        let mut t = p.from;
-                        for (k, nv) in values.iter().enumerate() {
-                            let (first, last) = (k == 0, k + 1 == values.len());
-                            let real = nv.length() * Frac::new(normal, actual);
-                            self.note_start = t;
-                            t = t + real;
-                            let mut marks = String::new();
-                            for (depth, t) in around.iter().enumerate() {
-                                let show = format!(
-                                    "<tuplet-actual><tuplet-number>{}</tuplet-number></tuplet-actual><tuplet-normal><tuplet-number>{}</tuplet-number></tuplet-normal>",
-                                    t.actual, t.normal
-                                );
-                                if first && p.from == t.start && p.event_first {
-                                    let _ = write!(marks, "<tuplet type=\"start\" number=\"{}\" bracket=\"yes\">{show}</tuplet>", depth + 1);
-                                }
-                                if last && p.to == t.start + t.length && p.event_last {
-                                    let _ = write!(marks, "<tuplet type=\"stop\" number=\"{}\"/>", depth + 1);
-                                }
-                            }
-                            let tm = Tm { actual, normal, marks, real };
-                            self.note(p, *nv, v.index + vbase, first && p.event_first, last, &tm, &mut wedge_open, first);
-                        }
-                        triplet_run = 0;
-                        at = p.to;
-                        continue;
-                    }
-                    let values = decompose(p.to - p.from);
-                    let next_is_triplet = |idx: usize| pieces.get(idx).is_some_and(|q| decompose(q.to - q.from).first().is_some_and(|x| x.triplet));
-                    let mut t = p.from;
-                    for (k, nv) in values.iter().enumerate() {
-                        self.note_start = t;
-                        t = t + nv.length();
-                        let first = k == 0;
-                        let last = k + 1 == values.len();
-                        // Tuplet brackets around runs of triplet values.
-                        let tuplet = if nv.triplet {
-                            triplet_run += 1;
-                            let more = !last && values[k + 1].triplet || last && next_is_triplet(pi_idx + 1);
-                            if triplet_run == 1 && more {
-                                Some("start")
-                            } else if !more && triplet_run > 1 {
-                                triplet_run = 0;
-                                Some("stop")
-                            } else {
-                                if !more {
-                                    triplet_run = 0;
-                                }
-                                None
-                            }
-                        } else {
-                            triplet_run = 0;
-                            None
-                        };
-                        let tm = Tm {
-                            actual: if nv.triplet { 3 } else { 1 },
-                            normal: if nv.triplet { 2 } else { 1 },
-                            marks: tuplet.map(|t| format!("<tuplet type=\"{t}\"/>")).unwrap_or_default(),
-                            real: nv.length(),
-                        };
-                        self.note(p, *nv, v.index + vbase, first && p.event_first, last, &tm, &mut wedge_open, first);
-                    }
-                    at = p.to;
-                }
-                if at < end && v.index == 1 {
-                    self.emit_directions(&mut directions, end);
-                    for nv in decompose(end - at) {
-                        self.rest(nv, 1 + vbase);
-                    }
-                    at = end;
-                }
-                cursor = at - m.start;
-                if v.index == 1 {
-                    written_v1 = true;
-                }
+    /// Staff `k`'s voices in bar `m`, each after a `<backup>` to the bar's
+    /// start; voice 1 (or, without it, a whole-bar rest) carries the
+    /// directions. `cursor`: where in the bar the last write ended.
+    fn staff_voices(&mut self, k: usize, part: &'a Part, m: &Measure, mut directions: Vec<(Frac, String)>, cursor: &mut Frac, wedge_open: &mut bool) {
+        let end = m.start + m.len;
+        self.staff = k + 1;
+        self.cross = part.cross.iter().copied().collect();
+        let vbase = 4 * k as u8;
+        let mut voices: Vec<&crate::doc::Voice> = part.voices.iter().collect();
+        voices.sort_by_key(|v| v.index);
+        let has_v1 = voices.iter().any(|v| v.index == 1);
+        let mut written_v1 = false;
+        for v in voices.iter() {
+            let pieces = self.pieces(&v.events, m.start, end);
+            if v.index != 1 && pieces.is_empty() {
+                continue;
             }
-            if !has_v1 && !written_v1 {
-                if cursor > Frac::ZERO {
-                    let _ = writeln!(self.out, "      <backup><duration>{}</duration></backup>", self.dur(cursor));
-                }
+            if *cursor > Frac::ZERO {
+                let _ = writeln!(self.out, "      <backup><duration>{}</duration></backup>", self.dur(*cursor));
+            }
+            self.beam_xml = self.beams_of(v, &pieces, m);
+            if v.index == 1 && pieces.is_empty() {
                 self.emit_directions(&mut directions, end);
                 self.measure_rest(m, 1 + vbase);
-                cursor = m.len;
+                *cursor = m.len;
+                written_v1 = true;
+                continue;
             }
-            self.emit_directions(&mut directions, end + Frac::int(1)); // anything left
+            let at = self.voice(v, &pieces, m, vbase, &mut directions, wedge_open);
+            *cursor = at - m.start;
+            if v.index == 1 {
+                written_v1 = true;
             }
-
-            // Right barline.
-            let bar = s.barlines.iter().find(|b| b.at == end);
-            let ending_end = s.endings.iter().find(|e| e.to == end);
-            let back_repeat = bar.is_some_and(|b| matches!(b.kind, BarKind::RepeatEnd | BarKind::RepeatBoth));
-            let style = match bar.map(|b| b.kind) {
-                Some(BarKind::Double) => Some("light-light"),
-                Some(BarKind::Final) | Some(BarKind::RepeatEnd) => Some("light-heavy"),
-                Some(BarKind::RepeatBoth) => Some("light-heavy"),
-                _ if mi + 1 == ms.len() => Some("light-heavy"),
-                _ => None,
-            };
-            if style.is_some() || ending_end.is_some() {
-                self.line("      <barline location=\"right\">");
-                if let Some(st) = style {
-                    let _ = writeln!(self.out, "        <bar-style>{st}</bar-style>");
-                }
-                if let Some(e) = ending_end {
-                    let nums: Vec<String> = e.numbers.iter().map(|n| n.to_string()).collect();
-                    let _ = writeln!(
-                        self.out,
-                        "        <ending number=\"{}\" type=\"{}\"/>",
-                        nums.join(","),
-                        if back_repeat { "stop" } else { "discontinue" }
-                    );
-                }
-                if back_repeat {
-                    self.line("        <repeat direction=\"backward\"/>");
-                }
-                self.line("      </barline>");
-            }
-            self.line("    </measure>");
         }
-        self.line("  </part>");
+        if !has_v1 && !written_v1 {
+            if *cursor > Frac::ZERO {
+                let _ = writeln!(self.out, "      <backup><duration>{}</duration></backup>", self.dur(*cursor));
+            }
+            self.emit_directions(&mut directions, end);
+            self.measure_rest(m, 1 + vbase);
+            *cursor = m.len;
+        }
+        self.emit_directions(&mut directions, end + Frac::int(1)); // anything left
+    }
+
+    /// One voice's pieces in bar `m`: its notes, the gaps between them
+    /// (rests in voice 1, `<forward>` in the others) and the triplet
+    /// brackets of runs of triplet values. Returns where it ended.
+    fn voice(&mut self, v: &crate::doc::Voice, pieces: &[Piece<'a>], m: &Measure, vbase: u8, directions: &mut Vec<(Frac, String)>, wedge_open: &mut bool) -> Frac {
+        let end = m.start + m.len;
+        let mut at = m.start;
+        let mut triplet_run = 0usize;
+        for (pi_idx, p) in pieces.iter().enumerate() {
+            if p.from > at {
+                let gap = p.from - at;
+                if v.index == 1 {
+                    self.emit_directions(directions, p.from);
+                    for nv in decompose(gap) {
+                        self.rest(nv, 1 + vbase);
+                    }
+                } else {
+                    let _ = writeln!(self.out, "      <forward><duration>{}</duration></forward>", self.dur(gap));
+                }
+            }
+            if v.index == 1 {
+                self.emit_directions(directions, p.from);
+            }
+            // Explicit tuplets around the piece (outermost first).
+            let mut around: Vec<&crate::doc::Tuplet> = v.tuplets.iter().filter(|t| p.from >= t.start && p.from < t.start + t.length).collect();
+            around.sort_by(|a, b| a.start.cmp(&b.start).then(b.length.cmp(&a.length)));
+            if !around.is_empty() {
+                self.tuplet_piece(p, &around, v.index + vbase, wedge_open);
+                triplet_run = 0;
+                at = p.to;
+                continue;
+            }
+            let values = decompose(p.to - p.from);
+            let next_is_triplet = |idx: usize| pieces.get(idx).is_some_and(|q| decompose(q.to - q.from).first().is_some_and(|x| x.triplet));
+            let mut t = p.from;
+            for (k, nv) in values.iter().enumerate() {
+                self.note_start = t;
+                t = t + nv.length();
+                let first = k == 0;
+                let last = k + 1 == values.len();
+                // Tuplet brackets around runs of triplet values.
+                let tuplet = if nv.triplet {
+                    triplet_run += 1;
+                    let more = !last && values[k + 1].triplet || last && next_is_triplet(pi_idx + 1);
+                    if triplet_run == 1 && more {
+                        Some("start")
+                    } else if !more && triplet_run > 1 {
+                        triplet_run = 0;
+                        Some("stop")
+                    } else {
+                        if !more {
+                            triplet_run = 0;
+                        }
+                        None
+                    }
+                } else {
+                    triplet_run = 0;
+                    None
+                };
+                let tm = Tm {
+                    actual: if nv.triplet { 3 } else { 1 },
+                    normal: if nv.triplet { 2 } else { 1 },
+                    marks: tuplet.map(|t| format!("<tuplet type=\"{t}\"/>")).unwrap_or_default(),
+                    real: nv.length(),
+                };
+                self.note(p, *nv, v.index + vbase, first && p.event_first, last, &tm, wedge_open, first);
+            }
+            at = p.to;
+        }
+        if at < end && v.index == 1 {
+            self.emit_directions(directions, end);
+            for nv in decompose(end - at) {
+                self.rest(nv, 1 + vbase);
+            }
+            at = end;
+        }
+        at
+    }
+
+    /// A piece inside explicit tuplets (`around`, outermost first): its
+    /// values under their combined ratio, with the brackets' starts and stops.
+    fn tuplet_piece(&mut self, p: &Piece<'a>, around: &[&crate::doc::Tuplet], voice: u8, wedge_open: &mut bool) {
+        let (actual, normal) = around.iter().fold((1, 1), |(a, n), t| (a * t.actual, n * t.normal));
+        let values = decompose((p.to - p.from) * Frac::new(actual, normal));
+        let mut t = p.from;
+        for (k, nv) in values.iter().enumerate() {
+            let (first, last) = (k == 0, k + 1 == values.len());
+            let real = nv.length() * Frac::new(normal, actual);
+            self.note_start = t;
+            t = t + real;
+            let mut marks = String::new();
+            for (depth, t) in around.iter().enumerate() {
+                let show = format!("<tuplet-actual><tuplet-number>{}</tuplet-number></tuplet-actual><tuplet-normal><tuplet-number>{}</tuplet-number></tuplet-normal>", t.actual, t.normal);
+                if first && p.from == t.start && p.event_first {
+                    let _ = write!(marks, "<tuplet type=\"start\" number=\"{}\" bracket=\"yes\">{show}</tuplet>", depth + 1);
+                }
+                if last && p.to == t.start + t.length && p.event_last {
+                    let _ = write!(marks, "<tuplet type=\"stop\" number=\"{}\"/>", depth + 1);
+                }
+            }
+            let tm = Tm { actual, normal, marks, real };
+            self.note(p, *nv, voice, first && p.event_first, last, &tm, wedge_open, first);
+        }
+    }
+
+    /// The right barline: its style (the last bar's final), an ending's
+    /// stop and a back repeat.
+    fn right_barline(&mut self, mi: usize, m: &Measure, bars: usize) {
+        let s = self.score;
+        let end = m.start + m.len;
+        let bar = s.barlines.iter().find(|b| b.at == end);
+        let ending_end = s.endings.iter().find(|e| e.to == end);
+        let back_repeat = bar.is_some_and(|b| matches!(b.kind, BarKind::RepeatEnd | BarKind::RepeatBoth));
+        let style = match bar.map(|b| b.kind) {
+            Some(BarKind::Double) => Some("light-light"),
+            Some(BarKind::Final) | Some(BarKind::RepeatEnd) => Some("light-heavy"),
+            Some(BarKind::RepeatBoth) => Some("light-heavy"),
+            _ if mi + 1 == bars => Some("light-heavy"),
+            _ => None,
+        };
+        if style.is_none() && ending_end.is_none() {
+            return;
+        }
+        self.line("      <barline location=\"right\">");
+        if let Some(st) = style {
+            let _ = writeln!(self.out, "        <bar-style>{st}</bar-style>");
+        }
+        if let Some(e) = ending_end {
+            let nums: Vec<String> = e.numbers.iter().map(|n| n.to_string()).collect();
+            let _ = writeln!(self.out, "        <ending number=\"{}\" type=\"{}\"/>", nums.join(","), if back_repeat { "stop" } else { "discontinue" });
+        }
+        if back_repeat {
+            self.line("        <repeat direction=\"backward\"/>");
+        }
+        self.line("      </barline>");
     }
 
     /// The `<beam>` elements of a voice's written notes in a bar, by start:
