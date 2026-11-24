@@ -318,6 +318,28 @@ fn part_list(root: Node) -> BTreeMap<String, PartInfo> {
     info
 }
 
+/// The longest a note, rest, `<backup>`, `<forward>` or direction offset
+/// is taken to be, in whole notes: a longer one is a damaged file's, and
+/// would make the movement endless.
+const LONGEST_WHOLE_NOTES: i64 = 16;
+/// The finest `<divisions>` (per quarter note) taken.
+const MAX_DIVISIONS: i64 = 1 << 20;
+
+/// The most staves a part has (`<staves>`, `<staff>`).
+const MAX_STAVES: usize = 8;
+
+/// A `<staff>` number (from 1) as an index (from 0), within [`MAX_STAVES`].
+fn staff_index(number: Option<usize>) -> usize {
+    number.unwrap_or(1).clamp(1, MAX_STAVES) - 1
+}
+
+/// An element's `<duration>`, at `divisions` per quarter note (see
+/// [`LONGEST_WHOLE_NOTES`]).
+fn duration(e: Node, divisions: i64) -> Frac {
+    let d = int(e, "duration").unwrap_or(0).clamp(0, divisions * 4 * LONGEST_WHOLE_NOTES);
+    Frac::new(d, divisions * 4)
+}
+
 /// Where the bars start (and the end), from the first part: each bar is as
 /// long as its longest voice (or its time signature when empty). A short
 /// first bar is a pickup.
@@ -343,10 +365,10 @@ impl Bars {
                 match e.tag_name().name() {
                     "attributes" => {
                         if let Some(d) = int(e, "divisions") {
-                            divisions = d.max(1);
+                            divisions = d.clamp(1, MAX_DIVISIONS);
                         }
                         if let Some(t) = child(e, "time") {
-                            if let (Some(b), Some(bt)) = (beats(t), int(t, "beat-type")) {
+                            if let (Some(b), Some(bt)) = (beats(t), beat_type(t)) {
                                 meter_len = Frac::new(b, bt.max(1));
                             }
                         }
@@ -355,15 +377,15 @@ impl Bars {
                         if child(e, "grace").is_some() {
                             continue;
                         }
-                        let d = Frac::new(int(e, "duration").unwrap_or(0), divisions * 4);
+                        let d = duration(e, divisions);
                         if child(e, "chord").is_some() {
                             cursor = cursor - last_dur;
                         }
                         cursor = cursor + d;
                         last_dur = d;
                     }
-                    "backup" => cursor = cursor - Frac::new(int(e, "duration").unwrap_or(0), divisions * 4),
-                    "forward" => cursor = cursor + Frac::new(int(e, "duration").unwrap_or(0), divisions * 4),
+                    "backup" => cursor = cursor - duration(e, divisions),
+                    "forward" => cursor = cursor + duration(e, divisions),
                     _ => {}
                 }
                 longest = longest.max(cursor);
@@ -409,7 +431,7 @@ impl PartReader {
         let mut counts: BTreeMap<(String, usize), usize> = BTreeMap::new();
         for n in children(part, "measure").flat_map(|m| children(m, "note")) {
             let voice = text_of(n, "voice").unwrap_or_else(|| "1".into());
-            *counts.entry((voice, num::<usize>(n, "staff").unwrap_or(1).max(1) - 1)).or_default() += 1;
+            *counts.entry((voice, staff_index(num::<usize>(n, "staff")))).or_default() += 1;
         }
         let mut r = PartReader {
             first,
@@ -436,15 +458,16 @@ impl PartReader {
                     "backup" => cursor = cursor - r.duration(e),
                     "forward" => cursor = cursor + r.duration(e),
                     "direction" => {
-                        let off = int(e, "offset").map(|o| Frac::new(o, r.divisions * 4)).unwrap_or(Frac::ZERO);
+                        let longest = r.divisions * 4 * LONGEST_WHOLE_NOTES;
+                        let off = int(e, "offset").map(|o| Frac::new(o.clamp(-longest, longest), r.divisions * 4)).unwrap_or(Frac::ZERO);
                         let at = (at + off).max(Frac::ZERO);
-                        let staff = r.staff(num::<usize>(e, "staff").unwrap_or(1).max(1) - 1);
+                        let staff = r.staff(staff_index(num::<usize>(e, "staff")));
                         direction(e, at, (bar, bar_end), first, staff, movement, p);
                     }
                     "harmony" => {
                         if let Some(t) = harmony_text(e) {
                             let t = if r.to_concert.is_zero() { t } else { corinzia_model::notation::transpose_chord_text(&t, r.to_concert) };
-                            r.staff(num::<usize>(e, "staff").unwrap_or(1).max(1) - 1).chords.push((at, t));
+                            r.staff(staff_index(num::<usize>(e, "staff"))).chords.push((at, t));
                         }
                     }
                     "print" if first && mi > 0 => {
@@ -470,7 +493,7 @@ impl PartReader {
 
     /// An element's `<duration>`.
     fn duration(&self, e: Node) -> Frac {
-        Frac::new(int(e, "duration").unwrap_or(0), self.divisions * 4)
+        duration(e, self.divisions)
     }
 
     /// Staff `i` (counting from 0), added if the part has not had it yet.
@@ -496,10 +519,10 @@ impl PartReader {
     /// tablature tunings; in the first part, keys and meters.
     fn attributes(&mut self, e: Node, mi: usize, at: Frac, bar: Frac, movement: &mut Movement) {
         if let Some(d) = int(e, "divisions") {
-            self.divisions = d.max(1);
+            self.divisions = d.clamp(1, MAX_DIVISIONS);
         }
         if let Some(n) = int(e, "staves") {
-            while self.staves.len() < n.clamp(1, 8) as usize {
+            while self.staves.len() < n.clamp(1, MAX_STAVES as i64) as usize {
                 self.staves.push(StaffMusic::default());
             }
         }
@@ -519,7 +542,7 @@ impl PartReader {
                 }
             }
             if let Some(t) = child(e, "time") {
-                if let (Some(b), Some(bt)) = (beats(t), int(t, "beat-type")) {
+                if let (Some(b), Some(bt)) = (beats(t), beat_type(t)) {
                     let at = if mi == 0 { Frac::ZERO } else { bar };
                     movement.meter.retain(|x| x.at != at);
                     movement.meter.push(Meter { at, num: b, den: bt.max(1), pickup: false, beams: beat_groups(t) });
@@ -527,7 +550,7 @@ impl PartReader {
             }
         }
         for sd in children(e, "staff-details") {
-            let staff = sd.attribute("number").and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
+            let staff = staff_index(sd.attribute("number").and_then(|n| n.parse::<usize>().ok()));
             let s = self.staff(staff);
             for st in children(sd, "staff-tuning") {
                 let step = text_of(st, "tuning-step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(0) as i8;
@@ -540,7 +563,7 @@ impl PartReader {
             }
         }
         for c in children(e, "clef") {
-            let staff = c.attribute("number").and_then(|n| n.parse::<usize>().ok()).unwrap_or(1).max(1) - 1;
+            let staff = staff_index(c.attribute("number").and_then(|n| n.parse::<usize>().ok()));
             let name = clef_name(c);
             let s = self.staff(staff);
             if s.clef.is_none() && at <= Frac::ZERO {
@@ -556,7 +579,7 @@ impl PartReader {
         if child(e, "grace").is_some() {
             let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
             let to_concert = self.to_concert;
-            grace_note(e, self.staff(num::<usize>(e, "staff").unwrap_or(1).max(1) - 1), voice, to_concert, p);
+            grace_note(e, self.staff(staff_index(num::<usize>(e, "staff"))), voice, to_concert, p);
             return;
         }
         let dur = self.duration(e);
@@ -569,7 +592,7 @@ impl PartReader {
         if dur <= Frac::ZERO {
             return;
         }
-        let written = num::<usize>(e, "staff").unwrap_or(1).max(1) - 1;
+        let written = staff_index(num::<usize>(e, "staff"));
         let voice = text_of(e, "voice").unwrap_or_else(|| "1".into());
         let staff = self.home(&voice, written);
         self.staff(staff.max(written));
@@ -839,7 +862,12 @@ fn hand_beams(st: &mut StaffMusic, bars: &[Frac], meters: &[Meter], pickup: bool
 /// `<beats>` may be "3+2": the sum.
 fn beats(t: Node) -> Option<i64> {
     let s = text_of(t, "beats")?;
-    s.split('+').map(|x| x.trim().parse::<i64>().ok()).sum()
+    s.split('+').map(|x| x.trim().parse::<i64>().ok()).sum::<Option<i64>>().map(|b| b.clamp(1, 64))
+}
+
+/// A `<time>`'s beat type, within what notation has (1 to 128).
+fn beat_type(t: Node) -> Option<i64> {
+    int(t, "beat-type").map(|b| b.clamp(1, 128))
 }
 
 /// A navigation mark from the first part (one per kind and position).
@@ -1052,14 +1080,14 @@ fn note_pitch(e: Node, to_concert: corinzia_model::Interval) -> Option<Pitch> {
     let pitch = child(e, "pitch").map(|pn| {
         let step = text_of(pn, "step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(0) as i8;
         let alter = text_of(pn, "alter").and_then(|a| a.parse::<f64>().ok()).map(|a| a.round() as i8).unwrap_or(0).clamp(-2, 2);
-        let octave = num::<i8>(pn, "octave").unwrap_or(4);
+        let octave = num::<i8>(pn, "octave").unwrap_or(4).clamp(-1, 9);
         Pitch { step, alter, octave }.transposed(to_concert)
     });
     pitch.or_else(|| {
         child(e, "unpitched").map(|u| Pitch {
             step: text_of(u, "display-step").and_then(|s| "CDEFGAB".find(&s)).unwrap_or(6) as i8,
             alter: 0,
-            octave: num::<i8>(u, "display-octave").unwrap_or(4),
+            octave: num::<i8>(u, "display-octave").unwrap_or(4).clamp(-1, 9),
         })
     })
 }

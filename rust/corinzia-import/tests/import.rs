@@ -448,3 +448,36 @@ fn a_tab_staff_gives_the_tuning_and_voice_one_on_both_staves_stays_put() {
     assert!(m.cross.is_empty());
     assert_eq!(names(&m.lanes[2].voices[0].events), ["C3"]);
 }
+
+/// One part, one bar of 4/4 holding `note` (a `<note>` element's contents).
+fn one_bar(attributes: &str, note: &str) -> Vec<u8> {
+    format!(
+        r#"<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="P1"><part-name>Flute</part-name></score-part></part-list>
+<part id="P1"><measure number="1"><attributes><divisions>1</divisions>{attributes}</attributes>
+<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>whole</type></note>
+<note>{note}</note></measure></part></score-partwise>"#
+    )
+    .into_bytes()
+}
+
+#[test]
+fn damaged_values_stay_within_bounds() {
+    // A duration of two billion quarters, a staff number of a million, a
+    // time signature of a million beats, an octave of 100: read as at most
+    // 16 whole notes, the eighth staff, 64 beats and octave 9, so the piece
+    // stays a size that can be shown.
+    let cases = [
+        ("<time><beats>4</beats><beat-type>4</beat-type></time>", "<pitch><step>D</step><octave>5</octave></pitch><duration>2147483648</duration><type>half</type>"),
+        ("<time><beats>4</beats><beat-type>4</beat-type></time>", "<pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><type>half</type><staff>999999</staff>"),
+        ("<time><beats>999999</beats><beat-type>4</beat-type></time>", "<pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><type>half</type>"),
+        ("<time><beats>4</beats><beat-type>4</beat-type></time>", "<pitch><step>D</step><octave>100</octave></pitch><duration>2</duration><type>half</type>"),
+    ];
+    for (attributes, note) in cases {
+        let p = musicxml(&one_bar(attributes, note)).expect("imports");
+        let m = &p.movements[0];
+        assert!(m.length <= f(32, 1), "{note}: {:?}", m.length);
+        assert!(m.lanes.len() <= 8, "{note}: {} staves", m.lanes.len());
+        let octaves = m.lanes.iter().flat_map(|l| l.voices.iter().flat_map(|v| v.events.iter().flat_map(|e| e.heads.iter().map(|h| h.pitch.octave))));
+        assert!(octaves.into_iter().all(|o| (-1..=9).contains(&o)), "{note}");
+    }
+}
