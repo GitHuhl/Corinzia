@@ -991,7 +991,7 @@ fn direction(e: Node, at: Frac, (bar, bar_end): (Frac, Frac), first: bool, staff
     match bpm {
         Some(b) if first => {
             movement.tempo.retain(|t| t.at != at);
-            movement.tempo.push(Tempo { at, bpm: b, ramp: false, text: words.join(" "), hidden: false });
+            movement.tempo.push(Tempo { at, bpm: corinzia_model::bounded_bpm(b), ramp: false, text: words.join(" "), hidden: false });
         }
         _ => {
             // Words above the staff are directions (technique text, set

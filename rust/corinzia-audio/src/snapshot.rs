@@ -657,8 +657,9 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             if n.slurred && builtin.contains(&track) {
                 off_sec += 0.012;
             }
-            let on = start + (on_sec * sample_rate).round() as i64;
-            let off = (start + (off_sec * sample_rate).round() as i64).max(on + 1);
+            // Saturating: a broken tempo map must not stop playback.
+            let on = start.saturating_add((on_sec * sample_rate).round() as i64);
+            let off = start.saturating_add((off_sec * sample_rate).round() as i64).max(on.saturating_add(1));
             let key = project.sounding_key(n.instrument, n.key).clamp(0, 127) as i16;
             let base = ScheduledNote { kind: Kind::Note, at: on, node, note_id, port, channel, key, on: true, velocity: n.velocity, element: n.element };
             notes.push(base);

@@ -246,7 +246,7 @@ pub fn parse_tempo(text: &str) -> Option<TempoSpec> {
     let bpm = match number {
         Some(n) => {
             let b: f64 = n.parse().ok()?;
-            if !(10.0..=400.0).contains(&b) {
+            if !corinzia_model::TEMPO_RANGE.contains(&b) {
                 return None;
             }
             b

@@ -48,6 +48,23 @@ impl Interval {
     }
 }
 
+/// The tempos a score can have, in quarter notes a minute.
+pub const TEMPO_RANGE: std::ops::RangeInclusive<f64> = 10.0..=400.0;
+
+/// A tempo from a file, within [`TEMPO_RANGE`] (a missing or broken one: 120).
+pub fn bounded_bpm(bpm: f64) -> f64 {
+    if bpm.is_finite() { bpm.clamp(*TEMPO_RANGE.start(), *TEMPO_RANGE.end()) } else { 120.0 }
+}
+
+/// A time signature from a file, within what notation has: 1 to 64 beats
+/// of a 1 to 128.
+pub fn bounded_meter(num: i64, den: i64) -> (i64, i64) {
+    (num.clamp(1, 64), den.clamp(1, 128))
+}
+
+/// The longest a movement read from a file can be, in whole notes (bars of 4/4).
+pub const MAX_MOVEMENT_WHOLE_NOTES: i64 = 10_000;
+
 /// A key moved along the circle of fifths, kept within seven accidentals
 /// (enharmonically: C# major up a M2 is E-flat major, not D# major).
 pub fn shift_key(fifths: i32, by: i32) -> i32 {

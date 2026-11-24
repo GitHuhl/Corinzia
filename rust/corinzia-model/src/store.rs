@@ -381,7 +381,7 @@ fn load_movements(db: &Connection, p: &mut Project) -> Result<()> {
             id: id as u64,
             ordinal,
             title,
-            length: Frac::new(ln, ld.max(1)),
+            length: Frac::new(ln, ld.max(1)).max(Frac::new(1, 64)).min(Frac::int(MAX_MOVEMENT_WHOLE_NOTES)),
             revision: rev as u64,
             tempo: vec![],
             meter: vec![],
@@ -396,7 +396,7 @@ fn load_movements(db: &Connection, p: &mut Project) -> Result<()> {
         for t in serde_json::from_str::<Vec<Value>>(&tempo)? {
             m.tempo.push(Tempo {
                 at: frac(&t["at"]),
-                bpm: t["bpm"].as_f64().unwrap_or(120.0),
+                bpm: bounded_bpm(t["bpm"].as_f64().unwrap_or(120.0)),
                 ramp: t["ramp"].as_bool().unwrap_or(false),
                 text: t["text"].as_str().unwrap_or("").to_string(),
                 hidden: t["hidden"].as_bool().unwrap_or(false),
@@ -407,10 +407,11 @@ fn load_movements(db: &Connection, p: &mut Project) -> Result<()> {
             for (d, v) in beams.iter_mut().zip(t["beams"].as_array().into_iter().flatten()) {
                 *d = v.as_u64().unwrap_or(0).min(64) as u8;
             }
-            m.meter.push(Meter { at: frac(&t["at"]), num: t["num"].as_i64().unwrap_or(4), den: t["den"].as_i64().unwrap_or(4), pickup: t["pickup"].as_bool().unwrap_or(false), beams });
+            let (num, den) = bounded_meter(t["num"].as_i64().unwrap_or(4), t["den"].as_i64().unwrap_or(4));
+            m.meter.push(Meter { at: frac(&t["at"]), num, den, pickup: t["pickup"].as_bool().unwrap_or(false), beams });
         }
         for t in serde_json::from_str::<Vec<Value>>(&keys)? {
-            m.keys.push(Key { at: frac(&t["at"]), fifths: t["fifths"].as_i64().unwrap_or(0) as i32, minor: t["minor"].as_bool().unwrap_or(false) });
+            m.keys.push(Key { at: frac(&t["at"]), fifths: t["fifths"].as_i64().unwrap_or(0).clamp(-7, 7) as i32, minor: t["minor"].as_bool().unwrap_or(false) });
         }
         m.lanes = load_lanes(db, id)?;
         if let Some(n) = notation {
