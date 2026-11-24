@@ -3,6 +3,62 @@
 use super::*;
 use iced::widget::column;
 
+/// A borderless toolbar button, disabled unless `enabled`.
+fn flat<'a>(label: &'static str, enabled: bool, m: Message) -> iced::widget::Button<'a, Message> {
+    button(text(label).size(13)).padding([5, 7]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m))
+}
+
+/// A card over the window, anchored at the top (its controls stay put as
+/// it grows).
+fn card_top<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(iced::widget::opaque(container(content).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center).into()
+}
+
+/// A card in the middle of the window.
+fn card_centred<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(iced::widget::opaque(container(content).padding(20).style(theme::card))).center(Length::Fill).into()
+}
+
+/// "Discard the changes to this score?"
+fn confirm_card() -> Element<'static, Message> {
+    let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+    column![
+        text("Discard the changes to this score?").size(16).font(bold),
+        text("They have not been saved.").size(12).style(theme::dim),
+        row![
+            panels::spacer(),
+            button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::ConfirmDiscard(false)),
+            button(text("Discard").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::ConfirmDiscard(true)),
+        ]
+        .spacing(8),
+    ]
+    .spacing(12)
+    .width(420)
+    .into()
+}
+
+/// The Export menu's formats.
+fn export_menu(transposed: bool) -> Element<'static, Message> {
+    let item = |label: &'static str, hint: &'static str, f: files::Format| {
+        button(column![text(label).size(13), text(hint).size(11).style(theme::dim)].spacing(1)).width(Length::Fill).padding([6, 10]).style(theme::flat(false)).on_press(Message::Export(f))
+    };
+    let what = if transposed { "as shown (transposed)" } else { "as shown (concert pitch)" };
+    container(
+        column![
+            item("PDF…", what, files::Format::Pdf),
+            item("Parts (PDF)…", "each player's part, as written", files::Format::Parts),
+            item("MIDI…", "the performance, track by track", files::Format::Midi),
+            item("MusicXML…", "for other notation programs", files::Format::MusicXml),
+            item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
+            item("Audio stems (WAV)…", "each track on its own, a file each", files::Format::Stems),
+        ]
+        .spacing(2)
+        .width(250),
+    )
+    .padding(6)
+    .style(theme::card)
+    .into()
+}
 
 /// The status bar's movement: its title between previous and next.
 pub(crate) fn movement_picker(ed: &editor::Editor, title: String) -> Element<'static, Message> {
@@ -84,9 +140,39 @@ impl App {
 
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let ed = &self.editor;
+        let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
+        let body: Element<'_, Message> = match self.tab {
+            Tab::Score => {
+                let vline = container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
+                row![self.side_panel(), vline, self.desk()].height(Length::Fill).into()
+            }
+            Tab::Explore => {
+                let mut layers = stack![crate::motif_view::explore(ed).map(Message::Act)];
+                if let Some(d) = &self.dialogs.motif {
+                    layers = layers.push(card_top(motif_card(d)));
+                }
+                layers.height(Length::Fill).into()
+            }
+            Tab::Mix => self.mix_body(),
+        };
+        let window = column![self.toolbar(), hline(), body, hline(), self.status_bar()];
+        // Files dragged over anywhere but the arrange view: the window
+        // outlined (they would go on new tracks at the caret, or open).
+        if self.drag_over.is_some_and(|p| self.drop_target(p).is_none()) {
+            let outline = container(iced::widget::Space::new()).width(Length::Fill).height(Length::Fill).style(|_| container::Style {
+                border: iced::Border { color: theme::palette().accent, width: 3.0, radius: 0.0.into() },
+                ..container::Style::default()
+            });
+            return iced::widget::stack![window, outline].into();
+        }
+        window.into()
+    }
+
+    /// The toolbar: tabs, transport, undo, the Score tab's view switches,
+    /// and the file and window buttons on the right.
+    fn toolbar(&self) -> Element<'_, Message> {
+        let ed = &self.editor;
         let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
-        // A segmented control: options side by side in a trough.
-        let flat = |label: &'static str, enabled: bool, m: Message| button(text(label).size(13)).padding([5, 7]).style(theme::flat(false)).on_press_maybe(enabled.then_some(m));
         let rule = || container(Space::new()).width(1).height(22).style(theme::rule);
         let mut toolbar = row![
             text("Corinzia").size(15).font(bold).style(theme::accent),
@@ -131,10 +217,8 @@ impl App {
                 .push(panels::tip(
                     button(text("Transposed").size(13)).padding([5, 10]).style(theme::tool(ed.transposed)).on_press(Message::Act(Action::Transposed)),
                     "Transposed score (Ctrl+T); off: concert pitch",
-                ))
-;
+                ));
         }
-        let title = ed.movement().map(|m| m.title.clone()).unwrap_or_default();
         let toolbar = toolbar
             .push(panels::spacer())
             .push(panels::tip(flat("?", true, Message::Act(Action::Help)), "Keyboard shortcuts (F1)"))
@@ -144,133 +228,112 @@ impl App {
             .push(panels::tip(flat("Open", true, Message::Act(Action::Open)), "Open a project or MusicXML file (Ctrl+O)"))
             .push(panels::tip(self.recent_picker(), "Scores opened or saved lately"))
             .push(panels::tip(flat("Import", true, Message::Import), "Import MusicXML (.musicxml, .xml, .mxl) as a new score"))
-            .push(panels::tip(
-                flat("Save", true, Message::Act(Action::Save)),
-                "Save (Ctrl+S)",
-            ))
+            .push(panels::tip(flat("Save", true, Message::Act(Action::Save)), "Save (Ctrl+S)"))
             .push(button(text("Export ▾").size(13)).padding([5, 7]).style(theme::flat(self.dialogs.export_menu)).on_press(Message::ExportMenu(!self.dialogs.export_menu)));
-        let toolbar = container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar);
+        container(toolbar.padding([0, 12])).height(46).center_y(46).width(Length::Fill).style(theme::bar).into()
+    }
 
-        let score = canvas(self.score_view())
-        .width(Length::Fill)
-        .height(Length::Fill);
-        let mut desk = stack![container(Element::from(score).map(Message::Canvas)).width(Length::Fill).height(Length::Fill)];
-        if let Some(p) = &self.score.popover {
-            let mut card = column![
-                row![
-                    text(match p.kind {
-                        PopoverKind::Lyrics => format!("Lyrics · verse {} · {}", ed.lyric_verse, ed.popover_position()),
-                        _ => format!("{} · {}", p.kind.title(), ed.popover_position()),
-                    })
-                    .size(13)
-                    .style(theme::dim),
-                    panels::spacer(), button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::Popover(PopoverMsg::Close))]
-                    .align_y(iced::Alignment::Center),
-                text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(|v| Message::Popover(PopoverMsg::Input(v))).on_submit(Message::Popover(PopoverMsg::Submit)).padding(6).size(15),
-            ]
-            .spacing(6)
-            .width(320);
-            if let Some(e) = &p.error {
-                card = card.push(text(e).size(12).style(theme::danger));
-            }
-            let card = iced::widget::opaque(container(card).padding(12).style(theme::card));
-            desk = desk.push(match p.anchor {
-                // Just below what it is about (above it near the bottom),
-                // kept inside the window.
-                Some(a) => {
-                    let (w, h) = (344.0, 130.0);
-                    let room = self.window.height - 46.0 - 60.0;
-                    let x = (a.x - 40.0).clamp(8.0, (self.window.width - w - 8.0).max(8.0));
-                    let y = if a.y + 14.0 + h < room { a.y + 14.0 } else { (a.y - h - 40.0).max(8.0) };
-                    container(card).padding(iced::Padding { top: y.max(8.0), left: x, right: 0.0, bottom: 0.0 }).width(Length::Fill).height(Length::Fill)
-                }
-                None => container(card).padding(16).width(Length::Fill).align_x(iced::Alignment::Center),
-            });
-        }
-
-        if let Some(n) = &self.dialogs.new_score {
-            desk = desk.push(container(iced::widget::opaque(container(new_score_card(n)).padding(20).style(theme::card))).center(Length::Fill));
-        }
-
-        if let Some(d) = &self.dialogs.motif {
-            desk = desk.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
-        }
-        if let Some(d) = &self.dialogs.prefs {
-            desk = desk.push(container(iced::widget::opaque(container(prefs_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
-        }
-        if let Some(d) = &self.dialogs.layout {
-            desk = desk.push(container(iced::widget::opaque(container(layout_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
-        }
-        if let Some(d) = &self.dialogs.players {
-            // Anchored at the top, so its controls stay put as the list grows.
-            desk = desk.push(container(iced::widget::opaque(container(players_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
-        }
-        if self.dialogs.help {
-            desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
-        }
-        if let Some(b) = &self.dialogs.browser {
-            let card = b.view().map(Message::Browser);
-            desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
-        }
-        if self.dialogs.confirm.is_some() {
-            let card = column![
-                text("Discard the changes to this score?").size(16).font(bold),
-                text("They have not been saved.").size(12).style(theme::dim),
-                row![
-                    panels::spacer(),
-                    button(text("Cancel").size(13)).padding([6, 14]).style(theme::tool(false)).on_press(Message::ConfirmDiscard(false)),
-                    button(text("Discard").size(13)).padding([6, 14]).style(theme::primary).on_press(Message::ConfirmDiscard(true)),
-                ]
-                .spacing(8),
-            ]
-            .spacing(12)
-            .width(420);
-            desk = desk.push(container(iced::widget::opaque(container(card).padding(20).style(theme::card))).center(Length::Fill));
-        }
-        if self.dialogs.export_menu {
-            let item = |label: &'static str, hint: &'static str, f: files::Format| {
-                button(column![text(label).size(13), text(hint).size(11).style(theme::dim)].spacing(1)).width(Length::Fill).padding([6, 10]).style(theme::flat(false)).on_press(Message::Export(f))
-            };
-            let what = if ed.transposed { "as shown (transposed)" } else { "as shown (concert pitch)" };
-            let menu = container(
-                column![
-                    item("PDF…", what, files::Format::Pdf),
-                    item("Parts (PDF)…", "each player's part, as written", files::Format::Parts),
-                    item("MIDI…", "the performance, track by track", files::Format::Midi),
-                    item("MusicXML…", "for other notation programs", files::Format::MusicXml),
-                    item("Audio (WAV)…", "the movement as it plays, mixed", files::Format::Audio),
-                    item("Audio stems (WAV)…", "each track on its own, a file each", files::Format::Stems),
-                ]
-                .spacing(2)
-                .width(250),
-            )
-            .padding(6)
-            .style(theme::card);
-            desk = desk.push(container(iced::widget::opaque(menu)).padding([6, 10]).width(Length::Fill).align_x(iced::Alignment::End));
-        }
-
+    /// The Score tab's side panel: its pages, and the one shown.
+    fn side_panel(&self) -> Element<'_, Message> {
         let tabs = container(segmented(vec![
             ("Notes", self.score.panel == Panel::Notes, Message::SetPanel(Panel::Notes)),
             ("Structure", self.score.panel == Panel::Structure, Message::SetPanel(Panel::Structure)),
             ("Motifs", self.score.panel == Panel::Motifs, Message::SetPanel(Panel::Motifs)),
         ]))
         .padding([10, 12]);
-        let side = container(column![tabs, panels::panel(ed, self.score.panel, self.score.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel);
-        let vline = || container(Space::new()).width(1).height(Length::Fill).style(theme::hairline);
-        let hline = || container(Space::new()).height(1).width(Length::Fill).style(theme::hairline);
+        container(column![tabs, panels::panel(&self.editor, self.score.panel, self.score.all_movements).map(Message::Act)]).width(panels::WIDTH).height(Length::Fill).style(theme::panel).into()
+    }
 
+    /// The score canvas, with the popover, the cards and the Export menu over it.
+    fn desk(&self) -> Element<'_, Message> {
+        let score = canvas(self.score_view()).width(Length::Fill).height(Length::Fill);
+        let mut desk = stack![container(Element::from(score).map(Message::Canvas)).width(Length::Fill).height(Length::Fill)];
+        if let Some(p) = &self.score.popover {
+            desk = desk.push(self.popover_card(p));
+        }
+        if let Some(n) = &self.dialogs.new_score {
+            desk = desk.push(container(iced::widget::opaque(container(new_score_card(n)).padding(20).style(theme::card))).center(Length::Fill));
+        }
+        // These are anchored at the top, so their controls stay put as they grow.
+        if let Some(d) = &self.dialogs.motif {
+            desk = desk.push(card_top(motif_card(d)));
+        }
+        if let Some(d) = &self.dialogs.prefs {
+            desk = desk.push(card_top(prefs_card(d)));
+        }
+        if let Some(d) = &self.dialogs.layout {
+            desk = desk.push(card_top(layout_card(d)));
+        }
+        if let Some(d) = &self.dialogs.players {
+            desk = desk.push(card_top(players_card(d)));
+        }
+        if self.dialogs.help {
+            desk = desk.push(container(iced::widget::opaque(help_card())).center(Length::Fill));
+        }
+        if let Some(b) = &self.dialogs.browser {
+            desk = desk.push(card_centred(b.view().map(Message::Browser)));
+        }
+        if self.dialogs.confirm.is_some() {
+            desk = desk.push(card_centred(confirm_card()));
+        }
+        if self.dialogs.export_menu {
+            desk = desk.push(container(iced::widget::opaque(export_menu(self.editor.transposed))).padding([6, 10]).width(Length::Fill).align_x(iced::Alignment::End));
+        }
+        desk.into()
+    }
+
+    /// The popover: what it types, by what it is about (just below it, or
+    /// above it near the bottom, kept inside the window).
+    fn popover_card<'a>(&'a self, p: &'a Popover) -> Element<'a, Message> {
+        let ed = &self.editor;
+        let mut card = column![
+            row![
+                text(match p.kind {
+                    PopoverKind::Lyrics => format!("Lyrics · verse {} · {}", ed.lyric_verse, ed.popover_position()),
+                    _ => format!("{} · {}", p.kind.title(), ed.popover_position()),
+                })
+                .size(13)
+                .style(theme::dim),
+                panels::spacer(),
+                button(text("✕").size(12)).padding([1, 6]).style(theme::flat(false)).on_press(Message::Popover(PopoverMsg::Close))
+            ]
+            .align_y(iced::Alignment::Center),
+            text_input(p.kind.placeholder(), &p.input).id(POPOVER_INPUT).on_input(|v| Message::Popover(PopoverMsg::Input(v))).on_submit(Message::Popover(PopoverMsg::Submit)).padding(6).size(15),
+        ]
+        .spacing(6)
+        .width(320);
+        if let Some(e) = &p.error {
+            card = card.push(text(e).size(12).style(theme::danger));
+        }
+        let card = iced::widget::opaque(container(card).padding(12).style(theme::card));
+        match p.anchor {
+            Some(a) => {
+                let (w, h) = (344.0, 130.0);
+                let room = self.window.height - 46.0 - 60.0;
+                let x = (a.x - 40.0).clamp(8.0, (self.window.width - w - 8.0).max(8.0));
+                let y = if a.y + 14.0 + h < room { a.y + 14.0 } else { (a.y - h - 40.0).max(8.0) };
+                container(card).padding(iced::Padding { top: y.max(8.0), left: x, right: 0.0, bottom: 0.0 }).width(Length::Fill).height(Length::Fill).into()
+            }
+            None => container(card).padding(16).width(Length::Fill).align_x(iced::Alignment::Center).into(),
+        }
+    }
+
+    /// The status bar: messages on the left; the grid, any audio problem,
+    /// the movement, the pages and the zoom on the right.
+    fn status_bar(&self) -> Element<'_, Message> {
+        let ed = &self.editor;
+        let title = ed.movement().map(|m| m.title.clone()).unwrap_or_default();
         let left = if !ed.status.is_empty() { ed.status.clone() } else { ed.selection_label() };
         let middle = if ed.input_mode { ed.caret_label() } else if ed.status.is_empty() { String::new() } else { ed.selection_label() };
-        let status = container(
+        let pages = self.score.pages.len();
+        container(
             row![
                 // The messages give way (clipped) to the controls on the right.
-                container(
-                    row![
-                        text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::palette().text) }),
-                        Space::new().width(24),
-                        text(middle).size(12).wrapping(text::Wrapping::None),
-                    ]
-                )
+                container(row![
+                    text(left).size(12).wrapping(text::Wrapping::None).style(|_: &Theme| text::Style { color: Some(theme::palette().text) }),
+                    Space::new().width(24),
+                    text(middle).size(12).wrapping(text::Wrapping::None),
+                ])
                 .width(Length::Fill)
                 .clip(true),
                 Space::new().width(12),
@@ -280,10 +343,7 @@ impl App {
                 Space::new().width(16),
                 movement_picker(ed, title),
                 Space::new().width(16),
-                panels::tip(
-                    text(format!("{} page{} · {:.0} ms", self.score.pages.len(), if self.score.pages.len() == 1 { "" } else { "s" }, self.score.engrave_ms)).size(12).style(theme::dim),
-                    "Pages, and how long engraving took",
-                ),
+                panels::tip(text(format!("{pages} page{} · {:.0} ms", if pages == 1 { "" } else { "s" }, self.score.engrave_ms)).size(12).style(theme::dim), "Pages, and how long engraving took"),
                 Space::new().width(12),
                 panels::tip(flat("−", true, Message::ZoomBy(1.0 / 1.25)), "Zoom out (Ctrl+−)"),
                 text(format!("{:.0}%", self.score.zoom * 100.0)).size(12).style(theme::dim).width(38).align_x(iced::Alignment::Center),
@@ -295,92 +355,86 @@ impl App {
         .height(26)
         .center_y(26)
         .width(Length::Fill)
-        .style(theme::status);
-        let body: Element<'_, Message> = match self.tab {
-            Tab::Score => row![side, vline(), desk].height(Length::Fill).into(),
-            Tab::Explore => {
-                let mut layers = stack![crate::motif_view::explore(ed).map(Message::Act)];
-                if let Some(d) = &self.dialogs.motif {
-                    layers = layers.push(container(iced::widget::opaque(container(motif_card(d)).padding(20).style(theme::card))).padding([40, 16]).width(Length::Fill).align_x(iced::Alignment::Center));
-                }
-                layers.height(Length::Fill).into()
-            }
-            Tab::Mix => {
-                let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
-                // The arrange headers' mute and solo buttons, per lane.
-                // Files dragged over: where they would land.
-                let drop_at = self.drag_over.and_then(|p| self.drop_target(p)).map(|(t, q)| (t.and_then(|t| self.mix.arrange.lanes.iter().position(|l| l.track == t)), q));
-                let mute_solo: Vec<(bool, bool)> = self.mix.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
-                let top: Element<'_, Message> = match &self.mix.roll {
-                    Some(r) => {
-                        let tweaks = ed.movement().map(|m| m.tweaks.as_slice()).unwrap_or(&[]);
-                        let view = canvas(roll::RollView { roll: &r.content, tweaks, selected: &r.selected, ppq: r.ppq, scroll_x: r.scroll_x, top_key: r.top_key, playhead }).width(Length::Fill).height(Length::Fill);
-                        let what = if r.selected.is_empty() { "all notes".to_string() } else { format!("{} selected", r.selected.len()) };
-                        column![
-                            row![
-                                text(format!("Piano roll · {}", r.content.name)).size(13).font(bold),
-                                text("drag a note: earlier or later (Shift: by sixteenths) · its right edge: longer or shorter · the lane below: velocity · pitch and rhythm stay the score's").size(11).style(theme::dim),
-                                panels::spacer(),
-                                panels::tip(button(text(format!("Reset {what}")).size(12)).padding([3, 8]).style(theme::tool(false)).on_press(Message::Roll(RollMsg::Reset)), "Play as written again (R)"),
-                                panels::tip(button(text("✕").size(12)).padding([3, 8]).style(theme::flat(false)).on_press(Message::Roll(RollMsg::Close)), "Back to the arrange view (Escape)"),
-                            ]
-                            .spacing(10)
-                            .padding([4, 10])
-                            .align_y(iced::Alignment::Center),
-                            Element::from(view).map(|v| Message::Roll(RollMsg::Event(v))),
-                        ]
-                        .height(Length::Fill)
-                        .into()
-                    }
-                    None => Element::from(canvas(arrange::ArrangeView {
-                    content: &self.mix.arrange,
-                    pixels_per_quarter: self.mix.arrange_ppq,
-                    scroll_x: self.mix.arrange_scroll,
-                    scroll_y: self.mix.arrange_scroll_y,
-                    header: self.prefs.layout.header_width,
-                    lane_height: self.prefs.layout.lane_height,
-                    selected: &self.score.selected,
-                    playhead,
-                    cache: &self.mix.arrange_cache,
-                    curves: &self.mix.arrange_curves,
-                    clips: &self.mix.arrange_clips,
-                    selected_clip: self.mix.selected_clip.map(|s| s.1),
-                    cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
-                    mute_solo,
-                    drop_at,
-                    selected_track: self.mix.strip,
-                    levels: self.mix.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
-                })
-                .width(Length::Fill)
-                .height(Length::Fill))
-                    .map(Message::Arrange),
-                };
-                let layout = self.prefs.layout;
-                // Ctrl+M hides the mixer: the arrange view takes it all.
-                if self.mix.mixer_hidden {
-                    top
-                } else {
-                column![
-                    top,
-                    crate::splitter::view(false, Message::SplitMixer),
-                    container(mix::view(&ed.project, &self.playback, self.mix.strip, self.mix.fx, mix::Presets { names: &self.mix.preset_names, name: &self.mix.preset_name }, &self.mix.auto_shown, self.mix.selected_clip, layout, self.mix.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
-                ]
-                .height(Length::Fill)
-                .into()
-                }
-            }
+        .style(theme::status)
+        .into()
+    }
+
+    /// The Mix tab: the arrange view (or the piano roll) over the mixer
+    /// (Ctrl+M hides the mixer: the arrange view takes it all).
+    fn mix_body(&self) -> Element<'_, Message> {
+        let ed = &self.editor;
+        let playhead = self.playback.playhead().filter(|(m, _)| Some(*m) == ed.movement().map(|m| m.id)).map(|(_, q)| q);
+        let top = match &self.mix.roll {
+            Some(r) => self.piano_roll(r, playhead),
+            None => self.arrange_view(playhead),
         };
-        let window = column![toolbar, hline(), body, hline(), status];
-        // Files dragged over anywhere but the arrange view: the window
-        // outlined (they would go on new tracks at the caret, or open).
-        if self.drag_over.is_some_and(|p| self.drop_target(p).is_none()) {
-            let outline = container(iced::widget::Space::new()).width(Length::Fill).height(Length::Fill).style(|_| container::Style {
-                border: iced::Border { color: theme::palette().accent, width: 3.0, radius: 0.0.into() },
-                ..container::Style::default()
-            });
-            return iced::widget::stack![window, outline].into();
+        if self.mix.mixer_hidden {
+            return top;
         }
-        window.into()
+        let layout = self.prefs.layout;
+        column![
+            top,
+            crate::splitter::view(false, Message::SplitMixer),
+            container(mix::view(&ed.project, &self.playback, self.mix.strip, self.mix.fx, mix::Presets { names: &self.mix.preset_names, name: &self.mix.preset_name }, &self.mix.auto_shown, self.mix.selected_clip, layout, self.mix.follow, ed.movement()).map(Message::Mix)).height(layout.mixer_height).width(Length::Fill).style(theme::panel),
+        ]
+        .height(Length::Fill)
+        .into()
+    }
+
+    /// The arrange view: lanes, clips, curves, the cycle and the playhead.
+    fn arrange_view(&self, playhead: Option<f64>) -> Element<'_, Message> {
+        let ed = &self.editor;
+        // Files dragged over: where they would land.
+        let drop_at = self.drag_over.and_then(|p| self.drop_target(p)).map(|(t, q)| (t.and_then(|t| self.mix.arrange.lanes.iter().position(|l| l.track == t)), q));
+        // The headers' mute and solo buttons, per lane.
+        let mute_solo: Vec<(bool, bool)> = self.mix.arrange.lanes.iter().map(|l| ed.project.track(l.track).map_or((false, false), |t| (t.mute, t.solo))).collect();
+        Element::from(
+            canvas(arrange::ArrangeView {
+                content: &self.mix.arrange,
+                pixels_per_quarter: self.mix.arrange_ppq,
+                scroll_x: self.mix.arrange_scroll,
+                scroll_y: self.mix.arrange_scroll_y,
+                header: self.prefs.layout.header_width,
+                lane_height: self.prefs.layout.lane_height,
+                selected: &self.score.selected,
+                playhead,
+                cache: &self.mix.arrange_cache,
+                curves: &self.mix.arrange_curves,
+                clips: &self.mix.arrange_clips,
+                selected_clip: self.mix.selected_clip.map(|s| s.1),
+                cycle: self.playback.cycle.filter(|c| Some(c.0) == ed.movement().map(|m| m.id)).map(|c| (c.1, c.2, self.playback.cycling)),
+                mute_solo,
+                drop_at,
+                selected_track: self.mix.strip,
+                levels: self.mix.arrange.lanes.iter().map(|l| self.playback.level(l.track)).collect(),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .map(Message::Arrange)
+    }
+
+    /// The piano roll open in the Mix tab, under its header.
+    fn piano_roll<'a>(&'a self, r: &'a RollState, playhead: Option<f64>) -> Element<'a, Message> {
+        let bold = iced::Font { weight: iced::font::Weight::Bold, ..iced::Font::DEFAULT };
+        let tweaks = self.editor.movement().map(|m| m.tweaks.as_slice()).unwrap_or(&[]);
+        let view = canvas(roll::RollView { roll: &r.content, tweaks, selected: &r.selected, ppq: r.ppq, scroll_x: r.scroll_x, top_key: r.top_key, playhead }).width(Length::Fill).height(Length::Fill);
+        let what = if r.selected.is_empty() { "all notes".to_string() } else { format!("{} selected", r.selected.len()) };
+        column![
+            row![
+                text(format!("Piano roll · {}", r.content.name)).size(13).font(bold),
+                text("drag a note: earlier or later (Shift: by sixteenths) · its right edge: longer or shorter · the lane below: velocity · pitch and rhythm stay the score's").size(11).style(theme::dim),
+                panels::spacer(),
+                panels::tip(button(text(format!("Reset {what}")).size(12)).padding([3, 8]).style(theme::tool(false)).on_press(Message::Roll(RollMsg::Reset)), "Play as written again (R)"),
+                panels::tip(button(text("✕").size(12)).padding([3, 8]).style(theme::flat(false)).on_press(Message::Roll(RollMsg::Close)), "Back to the arrange view (Escape)"),
+            ]
+            .spacing(10)
+            .padding([4, 10])
+            .align_y(iced::Alignment::Center),
+            Element::from(view).map(|v| Message::Roll(RollMsg::Event(v))),
+        ]
+        .height(Length::Fill)
+        .into()
     }
 
     /// Bar and beat, time into the movement, tempo: the playhead's while

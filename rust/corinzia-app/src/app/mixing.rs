@@ -22,6 +22,19 @@ impl App {
     pub(crate) fn mix_msg(&mut self, m: mix::MixMsg) {
         use mix::MixMsg::*;
         match m {
+            SplitSide(..) | Select(..) | Editor(..) | AddBus | AddAudioTrack | RemoveTrack(..) | RemoveBus(..) | Output(..) | BusOutput(..) | ToggleSend(..) | SendPre(..) | Color(..) | Folder(..) | Assign(..) | Rescan | Share(..) | AddAudio(..) => self.mix_strips(m),
+            Gain(..) | Pan(..) | Mute(..) | Solo(..) | SendLevel(..) | Released => self.mix_levels(m),
+            AddEffect(..) | SelectEffect(..) | EffectEditor(..) | RemoveEffect(..) | MoveEffect(..) | Bypass(..) | Param(..) => self.mix_effects(m),
+            ClipName(..) | ClipGain(..) | ClipMute | ClipCue(..) | ClipCueLine | ClearClip(..) | FollowClip | FadeInShape(..) | FadeOutShape(..) | StripSilence | FollowUnit(..) | FollowBars(..) | ForgetFollowed | ClipSplit | ClipRemove => self.mix_clips(m),
+            PresetName(..) | SavePreset(..) | LoadPreset(..) | DeletePreset(..) => self.mix_presets(m),
+            AutoShow(..) | DynamicsCc(..) | TechAdd(..) | TechRemove(..) | TechEdit(..) | Program(..) => self.mix_midi(m),
+        }
+    }
+
+    /// Strips, buses and routing: selection, adding and removing, outputs, sends, colour, folder, the instrument plugin.
+    fn mix_strips(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             SplitSide(Some(d)) => {
                 // Dragged left: the side panel gets wider.
                 let l = &mut self.prefs.layout;
@@ -33,6 +46,53 @@ impl App {
                 self.mix.strip = Some(t);
                 self.toggle_editor(t);
             }
+            AddBus => {
+                let id = self.editor.add_bus("");
+                self.mix.strip = Some(id);
+            }
+            AddAudioTrack => self.new_audio_track(),
+            RemoveTrack(t) => {
+                self.editor.remove_audio_track(t);
+                if self.mix.strip == Some(t) {
+                    self.mix.strip = None;
+                }
+            }
+            AddAudio(_) => {} // a file picker: in `update`
+            Share(t, host) => {
+                self.editor.share_instrument(t, host);
+            }
+            RemoveBus(b) => self.editor.remove_bus(b),
+            Output(t, label) => {
+                let bus = self.editor.project.buses.iter().find(|b| b.name == label).map(|b| b.id);
+                self.editor.set_output(t, bus);
+            }
+            ToggleSend(t, b) => self.editor.toggle_send(t, b),
+            SendPre(t, i) => self.editor.toggle_send_pre(t, i),
+            BusOutput(b, label) => {
+                let to = self.editor.project.buses.iter().find(|x| x.name == label && x.id != b).map(|x| x.id);
+                self.editor.set_bus_output(b, to);
+            }
+            Color(t, c) => self.editor.set_track(t, "Track colour", false, |x| x.color = c),
+            Folder(t, f) => self.editor.set_track(t, "Folder", true, |x| x.folder = f.trim_start().to_string()),
+            Assign(t, i) => {
+                let Some(info) = self.playback.plugins.get(i).cloned() else { return };
+                if info.bundle.as_os_str() == corinzia_audio::host::BUILTIN {
+                    self.editor.set_track_plugin(t, None);
+                } else {
+                    let bundle = info.bundle.to_string_lossy().into_owned();
+                    self.editor.set_track_plugin(t, Some((&info.name, &bundle, &info.id)));
+                }
+            }
+            Rescan => self.playback.rescan(),
+
+            _ => {}
+        }
+    }
+
+    /// Faders, pans, mute, solo and send levels (heard at once), and the end of a gesture.
+    fn mix_levels(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             Gain(t, db) if t == editor::MASTER => {
                 if self.editor.project.master.gain_db != db {
                     self.editor.set_master_gain(db);
@@ -64,6 +124,31 @@ impl App {
                     self.playback.live_mix(&self.editor.project, t);
                 }
             }
+            SendLevel(t, i, db) => {
+                if self.editor.project.track(t).and_then(|x| x.sends.get(i)).is_some_and(|s| s.gain_db != db) {
+                    self.editor.set_send(t, i, db);
+                    self.playback.live_levels(&self.editor.project);
+                }
+            }
+            // The gesture is over: the next one is its own undo step.
+            Released => {
+                self.editor.end_gesture();
+                // A clip's gain or name changed live: playback catches up.
+                if std::mem::take(&mut self.mix.clip_dragged) {
+                    self.editor.music_changed();
+                }
+            }
+            Solo(t) if self.editor.project.bus(t).is_some() => self.editor.set_bus(t, "Solo", false, |b| b.solo = !b.solo),
+            Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
+            Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
+            _ => {}
+        }
+    }
+
+    /// Insert effects: adding, choosing, their editors, order, bypass and parameters.
+    fn mix_effects(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             AddEffect(owner, i) => {
                 let Some(info) = self.playback.plugins.get(i).cloned() else { return };
                 let bundle = info.bundle.to_string_lossy().into_owned();
@@ -104,18 +189,14 @@ impl App {
                     self.editor.modified = true;
                 }
             }
-            AddBus => {
-                let id = self.editor.add_bus("");
-                self.mix.strip = Some(id);
-            }
-            AddAudioTrack => self.new_audio_track(),
-            RemoveTrack(t) => {
-                self.editor.remove_audio_track(t);
-                if self.mix.strip == Some(t) {
-                    self.mix.strip = None;
-                }
-            }
-            AddAudio(_) => {} // a file picker: in `update`
+            _ => {}
+        }
+    }
+
+    /// The selected audio clip, and following a recording's tempo.
+    fn mix_clips(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             ClipName(n) => self.edit_selected_clip("Rename audio", true, move |c| c.name = n),
             ClipGain(db) => self.edit_selected_clip("Audio gain", true, move |c| c.gain_db = db),
             ClipMute => self.edit_selected_clip("Mute audio", false, |c| c.mute = !c.mute),
@@ -125,9 +206,6 @@ impl App {
             }
             ClipCueLine => self.edit_selected_clip("Audio cue line", false, |c| c.cue_line = !c.cue_line),
             ClearClip(id) => self.playback.clear_clip(id),
-            Share(t, host) => {
-                self.editor.share_instrument(t, host);
-            }
             FollowClip => self.follow_clip(),
             FadeInShape(n) => {
                 let s = corinzia_model::FadeShape::ALL.into_iter().find(|s| s.name() == n).unwrap_or_default();
@@ -152,12 +230,14 @@ impl App {
                     self.editor.delete_clip(t, c);
                 }
             }
-            RemoveBus(b) => self.editor.remove_bus(b),
-            Output(t, label) => {
-                let bus = self.editor.project.buses.iter().find(|b| b.name == label).map(|b| b.id);
-                self.editor.set_output(t, bus);
-            }
-            ToggleSend(t, b) => self.editor.toggle_send(t, b),
+            _ => {}
+        }
+    }
+
+    /// Plugin presets: naming, saving, loading and deleting.
+    fn mix_presets(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             PresetName(n) => self.mix.preset_name = n,
             SavePreset(target) => {
                 let (Some((pl, _)), Some(base)) = (self.preset_plugin(target), Self::preset_base()) else { return };
@@ -193,6 +273,14 @@ impl App {
                     self.editor.status = e;
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// What a track sends its instrument (dynamics controller, program, playing techniques) and the automation shown on its lane.
+    fn mix_midi(&mut self, m: mix::MixMsg) {
+        use mix::MixMsg::*;
+        match m {
             AutoShow(t, label) => {
                 match mix::auto_options(&self.editor.project, &self.playback, t).into_iter().find(|o| o.0 == label).and_then(|o| o.1) {
                     Some(target) => {
@@ -221,72 +309,15 @@ impl App {
                 }
             }),
             TechEdit(t, i, field, v) => self.editor.set_track(t, "Playing technique", false, |x| {
-                use corinzia_model::SwitchAction::*;
-                let Some(line) = x.techniques.get_mut(i) else { return };
-                let num = |s: &str| s.trim_start_matches("CC").split_whitespace().next().and_then(|n| n.parse::<u8>().ok());
-                match field {
-                    mix::TechField::Technique => line.technique = v,
-                    mix::TechField::Kind => {
-                        line.action = match v.as_str() {
-                            "Program" => Program(0),
-                            "Controller" => Cc(32, 0),
-                            "Channel" => Channel(0),
-                            _ => Keyswitch(24),
-                        }
-                    }
-                    mix::TechField::Value => {
-                        line.action = match line.action {
-                            Keyswitch(k) => Keyswitch((0..128u8).find(|&n| mix::key_name(n) == v).unwrap_or(k)),
-                            Program(p) => Program(presets::program_of(&v).unwrap_or(p)),
-                            Cc(c, w) => Cc(num(&v).unwrap_or(c).min(127), w),
-                            Channel(c) => Channel(num(&v).map(|n| n.clamp(1, 16) - 1).unwrap_or(c)),
-                        }
-                    }
-                    mix::TechField::Value2 => {
-                        if let Cc(c, w) = line.action {
-                            line.action = Cc(c, num(&v).unwrap_or(w).min(127));
-                        }
-                    }
+                if let Some(line) = x.techniques.get_mut(i) {
+                    edit_technique(line, field, v);
                 }
             }),
             Program(t, label) => {
                 let program = presets::program_of(&label);
                 self.editor.set_track(t, "MIDI program", false, |x| x.program = program);
             }
-            SendLevel(t, i, db) => {
-                if self.editor.project.track(t).and_then(|x| x.sends.get(i)).is_some_and(|s| s.gain_db != db) {
-                    self.editor.set_send(t, i, db);
-                    self.playback.live_levels(&self.editor.project);
-                }
-            }
-            // The gesture is over: the next one is its own undo step.
-            Released => {
-                self.editor.end_gesture();
-                // A clip's gain or name changed live: playback catches up.
-                if std::mem::take(&mut self.mix.clip_dragged) {
-                    self.editor.music_changed();
-                }
-            }
-            Solo(t) if self.editor.project.bus(t).is_some() => self.editor.set_bus(t, "Solo", false, |b| b.solo = !b.solo),
-            Mute(t) => self.editor.set_track(t, "Mute", false, |x| x.mute = !x.mute),
-            Solo(t) => self.editor.set_track(t, "Solo", false, |x| x.solo = !x.solo),
-            SendPre(t, i) => self.editor.toggle_send_pre(t, i),
-            BusOutput(b, label) => {
-                let to = self.editor.project.buses.iter().find(|x| x.name == label && x.id != b).map(|x| x.id);
-                self.editor.set_bus_output(b, to);
-            }
-            Color(t, c) => self.editor.set_track(t, "Track colour", false, |x| x.color = c),
-            Folder(t, f) => self.editor.set_track(t, "Folder", true, |x| x.folder = f.trim_start().to_string()),
-            Assign(t, i) => {
-                let Some(info) = self.playback.plugins.get(i).cloned() else { return };
-                if info.bundle.as_os_str() == corinzia_audio::host::BUILTIN {
-                    self.editor.set_track_plugin(t, None);
-                } else {
-                    let bundle = info.bundle.to_string_lossy().into_owned();
-                    self.editor.set_track_plugin(t, Some((&info.name, &bundle, &info.id)));
-                }
-            }
-            Rescan => self.playback.rescan(),
+            _ => {}
         }
     }
 
@@ -742,6 +773,37 @@ impl App {
                 self.editor.toggle_auto_hold(t, index);
             }
         }
+        }
+    }
+}
+
+/// A playing-technique line edited in the Mix tab: its name, how it is
+/// switched (keyswitch, program, controller, channel) and the values.
+fn edit_technique(line: &mut corinzia_model::TechniqueSwitch, field: mix::TechField, v: String) {
+    use corinzia_model::SwitchAction::*;
+    let num = |s: &str| s.trim_start_matches("CC").split_whitespace().next().and_then(|n| n.parse::<u8>().ok());
+    match field {
+        mix::TechField::Technique => line.technique = v,
+        mix::TechField::Kind => {
+            line.action = match v.as_str() {
+                "Program" => Program(0),
+                "Controller" => Cc(32, 0),
+                "Channel" => Channel(0),
+                _ => Keyswitch(24),
+            }
+        }
+        mix::TechField::Value => {
+            line.action = match line.action {
+                Keyswitch(k) => Keyswitch((0..128u8).find(|&n| mix::key_name(n) == v).unwrap_or(k)),
+                Program(p) => Program(presets::program_of(&v).unwrap_or(p)),
+                Cc(c, w) => Cc(num(&v).unwrap_or(c).min(127), w),
+                Channel(c) => Channel(num(&v).map(|n| n.clamp(1, 16) - 1).unwrap_or(c)),
+            }
+        }
+        mix::TechField::Value2 => {
+            if let Cc(c, w) = line.action {
+                line.action = Cc(c, num(&v).unwrap_or(w).min(127));
+            }
         }
     }
 }
