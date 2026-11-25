@@ -40,12 +40,14 @@ plays in real time on an ordinary four-core computer.
   bass is a physical model of the real instrument: four strings, a bow that
   grips the string and lets it slip, and a body that resonates, with the
   open strings ringing along. Attacks catch, a slur carries on the moving
-  string, and sul ponticello, sul tasto and con sordino change how the
-  string is played. (The earlier string sound is a choice in Preferences.)
+  string, pizzicato plucks it and col legno taps it with the wood, a
+  tremolo strokes it back and forth, and sul ponticello, sul tasto and con
+  sordino change how it is played.
 * **Sections, not single instruments.** A section is as many players as you
   say: fourteen first violins are fourteen players, each with their own
-  instrument, tuning, vibrato and entry, so the section sounds as large as it
-  is. Set the number in the Players card; chamber music gets soloists.
+  instrument, tuning, vibrato speed and entry, each finger sliding into a
+  slur in its own time, so the section sounds as large as it is. Set the
+  number in the Players card; chamber music gets soloists.
 * **Balanced like a real orchestra.** With every fader at 0 dB, the brass can
   drown the flutes at fortissimo, a solo violin sits under the section, and
   a pianissimo clarinet fades to almost nothing.
