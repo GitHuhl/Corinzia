@@ -39,7 +39,7 @@ pub mod body;
 pub mod bowed;
 pub mod lanes;
 mod bowed_tuning;
-mod bowed_levels;
+pub mod bowed_levels;
 pub mod voice;
 
 use voice::Voice;

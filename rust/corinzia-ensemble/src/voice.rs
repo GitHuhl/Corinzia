@@ -115,6 +115,9 @@ static LOG2: [f32; MAX_HARMONICS + 1] = {
     // log2(n) for n in 0..=40 (0 for n = 0), to four decimals.
     [0.0, 0.0, 1.0, 1.585, 2.0, 2.3219, 2.585, 2.8074, 3.0, 3.1699, 3.3219, 3.4594, 3.585, 3.7004, 3.8074, 3.9069, 4.0, 4.0875, 4.1699, 4.2479, 4.3219, 4.3923, 4.4594, 4.5236, 4.585, 4.6439, 4.7004, 4.7549, 4.8074, 4.858, 4.9069, 4.9542, 5.0, 5.0444, 5.0875, 5.1293, 5.1699, 5.2095, 5.2479, 5.2854, 5.3219]
 };
+/// How far (dB) a pluck's first tenth of a second is over a bowed note at
+/// the same dynamic.
+const PLUCK_OVER_DB: f32 = 2.0;
 /// Players of a string section, each played in full.
 const PLAYERS: usize = 6;
 const MAX_MODES: usize = 16;
@@ -922,7 +925,9 @@ impl Voice {
                 inst.configure(self.ph_kind);
             }
             inst.pluck(&width[range.clone()], &strength[range.clone()], &wait[range.clone()]);
-            inst.note(&freq[range], self.key as i32, pluck, self.vel);
+            // A pluck as hard as the dynamic (its gain is the dynamic's, see
+            // `bowed_levels::PLUCK`), accents included.
+            inst.note(&freq[range], self.key as i32, pluck, if pluck { self.dynamic } else { self.vel });
         }
         self.ph_key_changed = false;
     }
@@ -1025,10 +1030,16 @@ impl Voice {
                 // players give here (see `bowed_levels`); a section's
                 // players add up against the sound's own size.
                 let _ = trims;
-                // (A pluck goes through the same gain: how loud it is
-                // against a bowed note at its dynamic is the instrument's.)
                 let target = crate::patches::REFERENCE_RMS * db(p.level_db + p.range_db * (d - 0.62) / 0.84);
-                self.ph_gain = target / (crate::bowed_levels::level(self.ph_kind, self.key as i32, d) * self.ph_ref);
+                // A pluck by its own table: its first tenth of a second
+                // a little over the bowed note's level, as a pizzicato's
+                // attack is (it then dies away).
+                let level = if self.ph_pluck {
+                    crate::bowed_levels::pluck_level(self.ph_kind, self.key as i32, d) / db(PLUCK_OVER_DB)
+                } else {
+                    crate::bowed_levels::level(self.ph_kind, self.key as i32, d)
+                };
+                self.ph_gain = target / (level * self.ph_ref);
             }
             self.ctl -= 1;
             self.envelope_step();
@@ -1967,7 +1978,7 @@ pub fn measure_at(patch: usize, sample_rate: f64, pool: Option<&mut PlayerPool>,
         None => &mut empty,
     };
     let sr = sample_rate as f32;
-    let (from, to) = if v.sustained { (0.3, 0.8) } else { (0.0, 0.1) };
+    let (from, to) = if v.sustained && !v.ph_pluck { (0.3, 0.8) } else { (0.0, 0.1) };
     let n = (to * sr) as usize;
     let mut buf = vec![0.0f32; n];
     let ones = [1.0f32; crate::patches::COUNT];
@@ -1996,13 +2007,13 @@ mod levels {
 
     /// A soloist's level (dB, as `measure` hears it) for a note at a
     /// dynamic, as a voice plays it (the table's levels set to 1).
-    fn raw(instrument: usize, key: i32, d: f32) -> f32 {
+    fn raw(instrument: usize, key: i32, d: f32, technique: u8) -> f32 {
         let patch = (0..PATCHES.len()).find(|&i| PATCHES[i].unison == 1 && crate::patches::bowed_instrument(i) == Some(instrument)).unwrap();
         let p = &PATCHES[patch];
         let mut pool = PlayerPool::for_players(48000.0, 1);
-        let measured = measure_at(patch, 48000.0, Some(&mut pool), tech::ORD, key as i16, d);
+        let measured = measure_at(patch, 48000.0, Some(&mut pool), technique, key as i16, d);
         // What the voice's gain was (`render_physical`), taken out.
-        let gain = crate::patches::REFERENCE_RMS * db(p.level_db + p.range_db * (d - 0.62) / 0.84);
+        let gain = crate::patches::REFERENCE_RMS * db(p.level_db + p.range_db * (d - 0.62) / 0.84) * if technique == tech::PIZZ { db(PLUCK_OVER_DB) } else { 1.0 };
         20.0 * (measured / gain).max(1e-10).log10()
     }
 
@@ -2016,22 +2027,29 @@ mod levels {
         let src = std::fs::read_to_string(path).unwrap();
         // (Alone: other tests in this process would hear raw levels.)
         crate::bowed_levels::RAW.store(true, std::sync::atomic::Ordering::Relaxed);
-        let mut table = String::from("pub static DB: [&[[f32; 5]]; 4] = [\n");
-        for instrument in bowed::VIOLIN..=bowed::BASS {
-            table += "    &[\n";
-            for key in LOWEST[instrument]..=HIGHEST[instrument] {
-                let row: Vec<String> = DYNAMICS.iter().map(|&d| format!("{:.1}", raw(instrument, key, d))).collect();
-                table += &format!("        [{}],\n", row.join(", "));
+        let mut src = src;
+        for (name, technique) in [("DB", tech::ORD), ("PLUCK", tech::PIZZ)] {
+            let mut table = format!("pub static {name}: [&[[f32; 5]]; 4] = [\n");
+            for instrument in bowed::VIOLIN..=bowed::BASS {
+                table += "    &[\n";
+                for key in LOWEST[instrument]..=HIGHEST[instrument] {
+                    let row: Vec<String> = DYNAMICS.iter().map(|&d| format!("{:.1}", raw(instrument, key, if technique == tech::PIZZ { d.max(0.05) } else { d }, technique))).collect();
+                    table += &format!("        [{}],\n", row.join(", "));
+                }
+                table += "    ],\n";
             }
-            table += "    ],\n";
+            table += "];";
+            // (A pluck's loudness goes with the dynamic, to nothing at 0:
+            // its softest row is measured just above, so the gain between
+            // stays finite.)
+            // From the declaration to the end of its initialiser (past the type's own `];`).
+            let start = src.find(&format!("pub static {name}:")).unwrap();
+            let init = start + src[start..].find("= [").unwrap();
+            let end = init + src[init..].find("];").unwrap() + 2;
+            src = format!("{}{}{}", &src[..start], table, &src[end..]);
         }
-        table += "];";
-        // From the declaration to the end of its initialiser (past the type's own `];`).
-        let start = src.find("pub static DB:").unwrap();
-        let init = start + src[start..].find("= [").unwrap();
-        let end = init + src[init..].find("];").unwrap() + 2;
         crate::bowed_levels::RAW.store(false, std::sync::atomic::Ordering::Relaxed);
-        std::fs::write(path, format!("{}{}{}", &src[..start], table, &src[end..])).unwrap();
+        std::fs::write(path, src).unwrap();
     }
 }
 
