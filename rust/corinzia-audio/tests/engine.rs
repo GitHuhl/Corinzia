@@ -967,3 +967,41 @@ fn instrument_names_choose_their_sounds() {
     assert_eq!(sound("Double Bass", true), "Basses");
     assert_eq!(patches::PATCHES[patches::patch_for(0, patches::DRUM_BANK)].name, "Drum kit");
 }
+
+/// A violin's part, as the score says: plain quarters are parted (a bow
+/// change's break), each stroke's bow and each note's vibrato sent before
+/// it; a slurred pair is one stroke (a slower bow) and its shift's slide
+/// is sent before the second note.
+#[test]
+fn the_builtin_strings_are_told_how_each_note_is_played() {
+    use corinzia_ensemble::{pace_of, slide_seconds, BOW_CC, SLIDE_CC, VIBRATO_CC};
+    let violin = |p: &mut Project| p.instruments[0].kind = corinzia_model::catalog::kind("violin");
+    let mut p = project();
+    violin(&mut p);
+    let mut pool = PluginPool::new(SR, 256);
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let cc = |s: &snapshot::Snapshot, n: u8| s.notes.iter().filter(|e| e.kind == snapshot::Kind::Cc(n)).map(|e| (e.at, (e.velocity * 127.0).round() as u8)).collect::<Vec<_>>();
+    // Quarters at 120 (half a second): the bow at its usual pace, full
+    // vibrato, no slides; and parted: c'' lets go about a quarter early.
+    assert!(cc(&snap, BOW_CC).iter().all(|&(_, v)| (pace_of(v) - 1.0).abs() < 0.03), "{:?}", cc(&snap, BOW_CC));
+    assert!(cc(&snap, VIBRATO_CC).iter().all(|&(_, v)| v == 127));
+    assert!(cc(&snap, SLIDE_CC).is_empty());
+    let off = snap.notes.iter().find(|e| e.kind == snapshot::Kind::Note && !e.on && e.key == 72).unwrap().at as f64 / SR;
+    assert!(off > 0.35 && off < 0.42, "c'' sounds {off:.3} s of 0.5");
+    // c'' held three beats, slurred into a'': one stroke of two seconds
+    // (a slower bow, sent once), and a shift's slide before a''.
+    let mut evs = (*p.movements[0].lanes[0].voices[0].events).clone();
+    evs[0].duration = Frac::new(3, 4);
+    evs.remove(1);
+    let (a, b) = (evs[0].id, evs[1].id);
+    p.movements[0].lanes[0].voices[0].events = Arc::new(evs);
+    p.movements[0].slurs.push(corinzia_score::score::Slur { id: 99, from: a, to: b, dir: 0 });
+    let snap = snapshot::build_from_pool(&p, SR, 1, &[0], &mut pool);
+    let bow = cc(&snap, BOW_CC);
+    assert!(bow.len() == 1 && pace_of(bow[0].1) < 0.85, "{bow:?}");
+    let slide = cc(&snap, SLIDE_CC);
+    let beat = (SR * 0.5) as i64;
+    assert!(slide.len() == 1 && slide[0].0 < 3 * beat && slide[0].0 > 2 * beat, "{slide:?}");
+    let t = slide_seconds(slide[0].1).unwrap();
+    assert!(t > 0.05 && t < 0.15, "a shift of a sixth: {t:.3} s");
+}

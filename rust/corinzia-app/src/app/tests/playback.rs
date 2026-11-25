@@ -177,40 +177,73 @@ fn shift_click_on_another_staff_selects_across_the_staves() {
 }
 
 #[test]
-fn play_sounds_only_the_selected_passage_and_stops_at_its_end() {
+fn a_part_shown_plays_only_its_player() {
     let mut a = app(View::Page);
     a.sync();
     let (low_lane, _, high_lane, _, at) = two_staves_together(&a);
-    let (mid, m) = (a.editor.movement().unwrap().id, a.editor.movement().unwrap().clone());
+    let m = a.editor.movement().unwrap().clone();
+    let track_of = |a: &App, lane: usize| a.editor.project.instrument(m.lanes[lane].instrument_at(at).unwrap()).unwrap().track.unwrap();
+    let (low_track, high_track) = (track_of(&a, low_lane), track_of(&a, high_lane));
+    // The upper staff's player's part, the caret on it.
+    let _ = a.update(Message::SetPart(Some(m.lanes[high_lane].player)));
+    a.editor.range = None;
+    a.editor.select(Some(m.lanes[high_lane].voices[0].events.iter().find(|e| e.start == at).unwrap().heads[0].id));
+    let _ = a.update(Message::Act(Action::PlayStop));
+    assert!(a.playback.playing_only());
+    for _ in 0..20 {
+        render(&mut a, 2400);
+        a.playback.tick();
+    }
+    assert!(a.playback.level(high_track).0 > 0.0, "the part's player sounds");
+    assert_eq!(a.playback.level(low_track), (0.0, 0.0), "the others are silent");
+    let _ = a.update(Message::Act(Action::PlayStop));
+    // Off in the preferences: everything.
+    render(&mut a, 9600);
+    a.prefs.play_part_only = false;
+    let _ = a.update(Message::Act(Action::PlayStop));
+    render(&mut a, 256);
+    assert!(a.playback.is_playing() && !a.playback.playing_only());
+}
+
+#[test]
+fn play_sounds_only_the_selected_passage_and_plays_on_until_stopped() {
+    let mut a = app(View::Page);
+    a.sync();
+    let (low_lane, _, high_lane, _, at) = two_staves_together(&a);
+    let m = a.editor.movement().unwrap().clone();
     let track_of = |a: &App, lane: usize| a.editor.project.instrument(m.lanes[lane].instrument_at(at).unwrap()).unwrap().track.unwrap();
     let (low_track, high_track) = (track_of(&a, low_lane), track_of(&a, high_lane));
     // The bar on the upper staff only.
     a.editor.select_bar(high_lane, at, false);
     let r = a.editor.range.unwrap();
     let _ = a.update(Message::Act(Action::PlayStop));
-    assert!(a.playback.playing_only() && a.playback.until == Some((mid, quarters(r.to))));
+    assert!(a.playback.playing_only());
     for _ in 0..20 {
         render(&mut a, 2400);
         a.playback.tick();
     }
     assert!(a.playback.level(high_track).0 > 0.0, "the selected staff sounds");
     assert_eq!(a.playback.level(low_track), (0.0, 0.0), "the other is silent");
-    // At the passage's end it stops, and every track sounds again.
+    // Past the passage's end it plays on (still those staves) until stopped;
+    // then every track sounds again.
     let mut frames = 0.0;
-    while a.playback.is_playing() && frames < 10.0 * a.playback.sample_rate {
+    let end = quarters(r.to);
+    while a.playback.playhead().is_some_and(|(_, q)| q < end + 1.0) && frames < 10.0 * a.playback.sample_rate {
         render(&mut a, 2400);
         let _ = a.update(Message::Frame);
         frames += 2400.0;
     }
-    assert!(!a.playback.is_playing(), "stopped at the end of the bar: {:?} until {:?}", a.playback.playhead(), a.playback.until);
-    // (a bar of 4/4 at the demo's tempo is well under ten seconds)
-    assert!(!a.playback.playing_only());
+    assert!(a.playback.is_playing() && a.playback.playing_only(), "playing on past the passage: {:?}", a.playback.playhead());
+    let _ = a.update(Message::Act(Action::PlayStop));
+    render(&mut a, 256);
+    let _ = a.update(Message::Frame);
+    assert!(!a.playback.is_playing() && !a.playback.playing_only());
     // Off in the preferences: everything plays from the passage on.
     render(&mut a, 9600); // the release
     a.prefs.play_selection_only = false;
     let _ = a.update(Message::Act(Action::PlayStop));
     render(&mut a, 256);
-    assert!(a.playback.is_playing() && !a.playback.playing_only() && a.playback.until.is_none());
+    assert!(a.playback.is_playing() && !a.playback.playing_only());
     let _ = a.update(Message::Act(Action::PlayStop));
     render(&mut a, 9600);
     // A single note selected: from it, everything.

@@ -391,3 +391,28 @@ fn articulations_change_how_notes_speak() {
 fn short_held(patch: usize, key: i16) -> Vec<f32> {
     articulated(patch, key, 0.62, 0.62, voice::articulation::STACCATO, 0.5)
 }
+
+/// A pizzicato's first tenth of a second is a little over a bowed note at
+/// the same dynamic (`bowed_levels::PLUCK`), across each instrument's range
+/// and soft or loud: a pluck is heard in the orchestra.
+#[test]
+fn plucks_speak_over_a_bowed_note() {
+    use corinzia_ensemble::bowed_levels::{HIGHEST, LOWEST};
+    for (k, name) in ["Violin", "Viola", "Cello", "Double bass"].iter().enumerate() {
+        let i = PATCHES.iter().position(|p| p.name == *name).unwrap();
+        let mut over = vec![];
+        for key in (LOWEST[k]..HIGHEST[k] - 12).step_by(7) {
+            for d in [0.3f32, 0.7] {
+                let level = |t| {
+                    let mut pool = voice::PlayerPool::for_players(SR, 1);
+                    20.0 * voice::measure_at(i, SR, Some(&mut pool), t, key as i16, d).log10()
+                };
+                over.push(level(tech::PIZZ) - level(tech::ORD));
+            }
+        }
+        let mean = over.iter().sum::<f32>() / over.len() as f32;
+        assert!((mean - 2.0).abs() < 1.5, "{name}: a pluck {mean:+.1} dB against a bowed note ({over:?})");
+        // (A bowed note now and then speaks louder than its table: a margin.)
+        assert!(over.iter().all(|&x| x > -8.0), "{name}: a pluck lost ({over:?})");
+    }
+}

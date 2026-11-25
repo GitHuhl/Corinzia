@@ -39,7 +39,7 @@ pub mod body;
 pub mod bowed;
 pub mod lanes;
 mod bowed_tuning;
-mod bowed_levels;
+pub mod bowed_levels;
 pub mod voice;
 
 use voice::Voice;
@@ -48,6 +48,36 @@ pub const PLUGIN_ID: &CStr = c"org.corinzia.ensemble";
 /// The controller giving how many players play a channel's part (a string
 /// section's size, 1 to 32; 0: the sound's own).
 pub const PLAYERS_CC: u8 = 86;
+/// How long the next slurred note's move takes (`slide_value`), sent
+/// before it by a player that knows the score; 0: the sound's own.
+pub const SLIDE_CC: u8 = 88;
+
+/// A slide's time (seconds) as [`SLIDE_CC`]'s value: 1 ms to about 245 ms
+/// by sixteenths of an octave (1 and up; 0 is "the sound's own").
+pub fn slide_value(seconds: f64) -> u8 {
+    ((seconds.max(0.001) / 0.001).log2() * 16.0).round().clamp(1.0, 127.0) as u8
+}
+
+/// The next stroke's bow speed and pressure against the usual
+/// (`pace_value`: 64 the usual, half to twice), sent at a stroke's first
+/// note; and the next note's share of its vibrato (0..127).
+pub const BOW_CC: u8 = 90;
+pub const VIBRATO_CC: u8 = 91;
+
+/// A bow's pace (0.5..2) as [`BOW_CC`]'s value.
+pub fn pace_value(pace: f64) -> u8 {
+    (64.0 + 32.0 * pace.clamp(0.5, 2.0).log2()).round().clamp(0.0, 127.0) as u8
+}
+
+/// [`BOW_CC`]'s value as a pace.
+pub fn pace_of(value: u8) -> f32 {
+    ((value as f32 - 64.0) / 32.0).exp2()
+}
+
+/// [`SLIDE_CC`]'s value as seconds (`None`: the sound's own).
+pub fn slide_seconds(value: u8) -> Option<f32> {
+    (value > 0).then(|| 0.001 * (value as f32 / 16.0).exp2())
+}
 
 /// The id of the instrument this one replaced; projects that name it get this.
 pub const OLD_PLUGIN_ID: &CStr = c"org.corinzia.sine";
@@ -95,11 +125,17 @@ struct Channel {
     bend: f32,
     /// How many play its part (0: the sound's own).
     players: u8,
+    /// The next slurred note's move (`SLIDE_CC`), if the player said.
+    slide: Option<f32>,
+    /// The next stroke's bow pace (`BOW_CC`, taken by the stroke's first
+    /// note) and the next note's vibrato (`VIBRATO_CC`).
+    bow: f32,
+    vibrato: f32,
 }
 
 impl Default for Channel {
     fn default() -> Self {
-        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0, players: 0 }
+        Channel { program: 0, bank_msb: 0, bank_lsb: 0, patch: patches::patch_for(0, 0), dynamic: None, technique: 0, articulation: 0, down_bow: true, legato: false, expression: 1.0, volume: 1.0, bend: 0.0, players: 0, slide: None, bow: 1.0, vibrato: 1.0 }
     }
 }
 
@@ -138,6 +174,11 @@ impl Synth {
             if let Some(v) = self.voices.iter_mut().filter(|v| v.active && !v.releasing && v.sustained && v.channel as usize == ch && v.patch == c.patch && v.key != key).max_by_key(|v| v.age) {
                 if patches::PATCHES[c.patch].legato {
                     v.legato_to(note_id, key, velocity, self.clock);
+                    if let Some(t) = c.slide {
+                        v.slide_in(t);
+                    }
+                    // (The stroke goes on: its bow as it was.)
+                    v.express(None, c.vibrato);
                     return;
                 }
             }
@@ -158,6 +199,7 @@ impl Synth {
         // bow change or a new breath, not a start from silence.
         let follows = self.voices.iter().any(|v| v.is_ringing() && v.channel as usize == ch && v.patch == c.patch);
         self.voices[i].start(c.patch, c.technique, note_id, port, channel, key, velocity, c.dynamic, self.clock, seed);
+        self.voices[i].express(Some(c.bow), c.vibrato);
         // The stroke: as written, else down and up by turns.
         use voice::articulation as a;
         let down = if c.articulation & a::DOWN_BOW != 0 {
@@ -233,6 +275,9 @@ impl Synth {
             9 => c.articulation = value,
             68 => c.legato = value >= 64,
             PLAYERS_CC => c.players = value.min(voice::MAX_SECTION as u8),
+            SLIDE_CC => c.slide = slide_seconds(value),
+            BOW_CC => c.bow = pace_of(value),
+            VIBRATO_CC => c.vibrato = value as f32 / 127.0,
             120 | 123 => {
                 for v in self.voices.iter_mut().filter(|v| v.active && v.channel as usize == ch) {
                     if cc == 120 {
@@ -248,6 +293,8 @@ impl Synth {
                 c.articulation = 0;
                 c.down_bow = true;
                 c.legato = false;
+                c.slide = None;
+                (c.bow, c.vibrato) = (1.0, 1.0);
                 c.expression = 1.0;
                 c.bend = 0.0;
             }
@@ -662,6 +709,7 @@ mod tests {
         l
     }
 
+
     fn db(x: &[f32]) -> f32 {
         10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).max(1e-20).log10()
     }
@@ -735,6 +783,27 @@ mod techniques {
             s.render(lc, rc, ptr::null(), 0);
         }
         l
+    }
+
+    /// What the player says of a note (bow, vibrato, a slur's move) is
+    /// what the voice plays; a slurred note keeps its stroke's bow.
+    #[test]
+    fn the_players_word_reaches_the_voice() {
+        let s = synth();
+        section(s);
+        s.control(0, BOW_CC, pace_value(0.8));
+        s.control(0, VIBRATO_CC, 0);
+        s.note_on(1, 0, 0, 69, 0.6);
+        let v = s.voices.iter().find(|v| v.active).unwrap();
+        assert!((v.bow_pace() - 0.8).abs() < 0.02 && v.vib_share() == 0.0);
+        s.control(0, 68, 127);
+        s.control(0, BOW_CC, pace_value(1.25));
+        s.control(0, VIBRATO_CC, 127);
+        s.control(0, SLIDE_CC, slide_value(0.09));
+        s.note_on(2, 0, 0, 78, 0.6);
+        let v = s.voices.iter().find(|v| v.active && v.key == 78).unwrap();
+        assert!((v.bow_pace() - 0.8).abs() < 0.02, "the stroke goes on");
+        assert!(v.vib_share() == 1.0 && (v.glide_seconds() - 0.09).abs() < 0.005);
     }
 
     fn rms(x: &[f32]) -> f32 {

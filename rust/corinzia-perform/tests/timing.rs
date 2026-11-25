@@ -52,7 +52,7 @@ fn movement(bars: i64, lanes: Vec<(Id, Vec<Vec<Pitch>>, Frac)>) -> Movement {
 }
 
 fn style(feels: &[(Id, PlayerFeel)]) -> Style {
-    Style { phrasing: true, feels: feels.iter().cloned().collect() }
+    Style { phrasing: true, feels: feels.iter().cloned().collect(), ..Style::default() }
 }
 
 fn offsets(perf: &Performance, inst: Id) -> Vec<f64> {
