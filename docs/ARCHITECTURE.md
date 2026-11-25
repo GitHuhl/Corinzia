@@ -435,7 +435,8 @@ Every example score in the W3C MusicXML repository imports and engraves
   * ties are merged;
   * ornaments are written out (trills in the key, turns, mordents,
     tremolos);
-  * articulations become gate times;
+  * articulations become gate times, as the instrument articulates (see
+    below);
   * dynamics become velocities, with hairpins interpolated in time and
     legato inside slurs;
   * arpeggios roll from the bottom up;
@@ -455,6 +456,21 @@ Every example score in the W3C MusicXML repository imports and engraves
   from the instrument and the note's time, so playback and exports repeat
   and an edit moves no other note. A note's `on_sec`/`off_sec` apply it
   (with the arpeggio roll) for playback and MIDI export alike.
+* **Articulation** (`articulation`, a `Profile` per instrument by its kind,
+  chosen in `Style::of`): how much of an unmarked note sounds, the
+  staccatos' lengths, and a slur's move. An unmarked note is parted from
+  the next by a break that grows with its length (measured articulation
+  leaves more room at slower tempi), within a share of the note: bowed
+  strings 50 to 150 ms (a quarter at 120 sounds about three quarters of
+  its length), winds 40 to 150, brass 40 to 160, voices 40 to 120,
+  keyboards 20 to 150, plucked and struck 20 to 60. A slur's move by the
+  leap and the note's length: a string player's finger within reach 3 to
+  12 ms, a shift (past a fifth) 30 to 200 ms; keyed woodwinds 3 to 8 ms
+  (their keys: no slide); brass lips 10 to 40, longer on a wide leap;
+  voices 20 to 80; never more than 30 % of the note. The playback sends
+  the move to the built-in instruments before each slurred note (CC88,
+  `corinzia_ensemble::slide_value`); a host without it gets each sound's
+  own.
 * `document` builds the export document: the notation plus one MIDI track
   per sounding DAW track, with gate and roll applied in time as in
   playback.

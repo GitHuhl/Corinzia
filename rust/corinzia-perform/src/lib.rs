@@ -6,6 +6,7 @@
 //! It feeds both MIDI export (`document`) and the audio engine
 //! (`corinzia-audio`'s snapshots).
 
+pub mod articulation;
 pub mod follow;
 pub mod phrasing;
 pub mod tempo;
@@ -21,10 +22,6 @@ use tempo::{MeterPoint, TempoMap, TempoPoint};
 fn q(f: Frac) -> f64 {
     f.num as f64 * 4.0 / f.den as f64
 }
-
-/// The break players leave after an unmarked note (seconds, at most): a
-/// bow change or a tonguing, not a silence.
-pub const NOTE_BREAK: f64 = 0.03;
 
 /// How long short notes sound, in seconds, whatever the tempo (players
 /// keep a staccato short on a slow quarter too): at most, and at least.
@@ -502,6 +499,9 @@ pub struct Style {
     /// Each instrument's timing feel (see [`timing`]); one missing plays
     /// with [`timing::Feel::DEFAULT`].
     pub feels: timing::Feels,
+    /// Each instrument's articulation (see [`articulation`]); one missing
+    /// articulates as [`articulation::Profile::DEFAULT`].
+    pub profiles: articulation::Profiles,
 }
 
 impl Style {
@@ -514,7 +514,8 @@ impl Style {
                 (i.id, timing::PlayerFeel::for_instrument(i.kind, &drums))
             })
             .collect();
-        Style { phrasing: project.phrasing, feels }
+        let profiles = project.instruments.iter().map(|i| (i.id, articulation::Profile::for_instrument(i.kind))).collect();
+        Style { phrasing: project.phrasing, feels, profiles }
     }
 
     /// The phrasing rules on or off, with every instrument's default feel.
@@ -651,12 +652,16 @@ pub fn perform_with(m: &Movement, style: Style) -> Performance {
                         // 170 ms): at most 30 ms, at most a tenth.
                         let secs = tempo.seconds_at(to_q(end)) - tempo.seconds_at(to_q(ev.start));
                         if secs > 0.0 {
+                            // As the instrument articulates.
+                            let profile = style.profiles.get(&inst).unwrap_or(&articulation::Profile::DEFAULT);
                             if gate == gate_factor(0) {
-                                gate = 1.0 - (1.0 - gate_factor(0)).min(NOTE_BREAK / secs);
+                                gate = profile.detached_gate(secs);
                             } else if last_art & art::STACCATISSIMO != 0 {
-                                gate = gate.min(STACCATISSIMO_SECONDS.0 / secs).max(STACCATISSIMO_SECONDS.1 / secs).min(gate_factor(art::STACCATISSIMO));
+                                let (most, least) = profile.staccatissimo;
+                                gate = gate.min(most / secs).max(least / secs).min(gate_factor(art::STACCATISSIMO));
                             } else if last_art & art::STACCATO != 0 && !(shape[ei].legato && gate == 1.0) {
-                                gate = gate.min(STACCATO_SECONDS.0 / secs).max(STACCATO_SECONDS.1 / secs).min(gate_factor(art::STACCATO));
+                                let (most, least) = profile.staccato;
+                                gate = gate.min(most / secs).max(least / secs).min(gate_factor(art::STACCATO));
                             }
                         }
                         let vel = if h.velocity > 0 {

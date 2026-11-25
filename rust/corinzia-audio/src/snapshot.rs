@@ -690,6 +690,7 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let cc = |notes: &mut Vec<ScheduledNote>, at: i64, cc: u8, v: f32| notes.push(ScheduledNote { kind: Kind::Cc(cc), at: at.max(0), node, note_id: -1, port: 0, channel, key: 0, on: false, velocity: v.clamp(0.0, 1.0), element: 0 });
             let (mut technique, mut legato, mut last_on, mut articulation) = (None::<u8>, false, f64::NAN, None::<u8>);
             let mut level: Option<f32> = None;
+            let (mut slide, mut last_key) = (None::<u8>, None::<i32>);
             for (ni, n) in list {
                 let tremolo = merged.contains_key(&ni);
                 let last = end_of(ni);
@@ -701,7 +702,21 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                 // sfz is in the velocity, the attack.
                 let (d0, d1) = (n.sustain, last.end_velocity);
                 if !chord {
-                    let code = articulation_code(n, perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(n.on_q));
+                    let written = perf.tempo.seconds_at(last.full_off_q) - perf.tempo.seconds_at(n.on_q);
+                    // Slurred into from the last note: its move, as the
+                    // instrument's articulation has it (by the leap and the
+                    // tempo); the sound's own where it says nothing.
+                    if legato {
+                        let kind = project.instrument(n.instrument).and_then(|i| i.kind);
+                        let leap = last_key.map_or(0.0, |k| (n.key - k) as f64);
+                        let value = corinzia_perform::articulation::Profile::for_instrument(kind).slide_seconds(leap, written).map_or(0, corinzia_ensemble::slide_value);
+                        if slide != Some(value) {
+                            slide = Some(value);
+                            cc(&mut notes, on - 5, corinzia_ensemble::SLIDE_CC, value as f32 / 127.0);
+                        }
+                    }
+                    last_key = Some(n.key);
+                    let code = articulation_code(n, written);
                     if articulation != Some(code) {
                         articulation = Some(code);
                         cc(&mut notes, on - 3, 9, code as f32 / 127.0);

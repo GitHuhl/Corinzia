@@ -772,6 +772,13 @@ impl Voice {
         self.ph_key_changed = true;
     }
 
+    /// A slur's move as the player says (seconds), for the one just begun
+    /// (`legato_to`), in place of the sound's own.
+    pub fn slide_in(&mut self, seconds: f32) {
+        self.glide = dsp::smoothing(seconds, self.sr);
+        self.glide_time = seconds;
+    }
+
     /// How the note speaks ([`articulation`]): its attack, its bite and its
     /// release; `down_bow`: a bowed note's stroke (a little heavier).
     pub fn articulate(&mut self, code: u8, down_bow: bool) {
