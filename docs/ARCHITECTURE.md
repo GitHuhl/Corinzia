@@ -561,15 +561,27 @@ output), automation, VST3 state in the project.
   technique goes through it, so a pluck against a bowed note is the
   instrument's own. A section's players add up against the sound's own
   size, so more players are louder.
-* **Players** (`voice::PlayerPool`): 128 instruments allocated with the
-  voices; a note takes as many as its channel's part has (CC86, sent with
-  the program) and gives them back when it ends; with every one busy, the
-  oldest notes already ending give theirs up. In a section each has their
-  own tuning and its slow wander, vibrato rate (4.8 to 6.8 a second) and
-  start, entry (together on an accent), and in a slur their own moment and
-  pace of sliding. One player costs about 11 ms of computing a second of
-  sound. Bowed strings have no other engine (the earlier spectral one is
+* **Players** (`voice::PlayerPool`): 32 soloists and 16 groups of eight
+  allocated with the voices; a note takes as many players as its channel's
+  part has (CC86, sent with the program): one alone takes a soloist (a group
+  when none is free), a section whole groups, and gives
+  them back when it ends; with every one busy, the oldest notes already
+  ending give theirs up. In a section each has their own tuning and its
+  slow wander, vibrato rate (4.8 to 6.8 a second) and start, entry
+  (together on an accent), and in a slur their own moment and pace of
+  sliding. Bowed strings have no other engine (the earlier spectral one is
   in the history before 0def168).
+* **Side by side** (`lanes.rs`, `bowed::Instrument<N>`): one code path for
+  a soloist (`Instrument<1>`, `Player`) and a group of eight; every value
+  that differs between players is an `Fx<N>`/`Dx<N>` (plain arrays with
+  arithmetic, which the compiler turns into vector instructions; no
+  intrinsics). The delay lines interleave the players' samples, and a read
+  loads the few rows the players' lengths span; the friction's bisection
+  runs on all of them at once. `tick` is compiled twice, plain and for
+  AVX2, chosen at run time. The arithmetic is each player's own, so a
+  player in a group sounds exactly as alone (the `side_by_side` test).
+  A soloist costs about 12 ms of computing a second of sound, each player
+  of a group about 7 ms (`cost_of_a_group`, ignored).
 * The two tables are made by ignored tests (`make_tuning_table`,
   `make_level_table`); run them when the model or the bowing changes.
 

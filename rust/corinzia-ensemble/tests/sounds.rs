@@ -9,14 +9,13 @@ const SR: f64 = 48000.0;
 /// from `pool` (never another voice's: `id` is this voice's).
 fn with_players(v: &mut Voice, pool: &mut voice::PlayerPool, id: u32) {
     if v.wants_players() {
-        let mut slots = [0u16; voice::MAX_SECTION];
-        let k = pool.take(id, PATCHES[v.patch].unison.max(1) as usize, |o, _| o != id, &mut slots);
-        v.attach_players(&slots[..k], pool, true);
+        let seats = pool.take(id, PATCHES[v.patch].unison.max(1) as usize, |o, _| o != id);
+        v.attach_players(seats, pool, true);
     }
 }
 
 fn pool() -> voice::PlayerPool {
-    voice::PlayerPool::new(SR, 16)
+    voice::PlayerPool::new(SR, 2, 2)
 }
 
 fn note(patch: usize, key: i16, vel: f32, secs: f32, hold: f32) -> Vec<f32> {

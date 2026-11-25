@@ -37,6 +37,7 @@ pub mod effects;
 pub mod patches;
 pub mod body;
 pub mod bowed;
+pub mod lanes;
 mod bowed_tuning;
 mod bowed_levels;
 pub mod voice;
@@ -123,7 +124,7 @@ impl Synth {
 
     fn new_voices(&mut self) {
         self.voices = (0..VOICES).map(|_| Voice::new(self.sample_rate)).collect();
-        self.pool = voice::PlayerPool::new(self.sample_rate, voice::POOL);
+        self.pool = voice::PlayerPool::new(self.sample_rate, voice::SOLOS, voice::GROUPS);
         self.scratch = vec![0.0; 1024];
     }
 
@@ -173,31 +174,30 @@ impl Synth {
         // notes already ending give theirs up, then the oldest held.
         if self.voices[i].wants_players() {
             let n = if c.players > 0 { c.players as usize } else { patches::PATCHES[c.patch].unison.max(1) as usize };
-            let mut slots = [0u16; voice::MAX_SECTION];
-            let mut k = self.take_players(i, n, &mut slots);
-            if k == 0 {
-                let mut order: Vec<usize> = (0..self.voices.len()).filter(|&o| o != i && !self.voices[o].players().is_empty()).collect();
+            let mut seats = self.take_players(i, n);
+            if seats.is_empty() {
+                let mut order: Vec<usize> = (0..self.voices.len()).filter(|&o| o != i && self.voices[o].players() > 0).collect();
                 order.sort_by_key(|&o| (!self.voices[o].releasing, self.voices[o].age));
                 for o in order {
                     // Silenced, its players free.
                     self.voices[o].active = false;
-                    k = self.take_players(i, n, &mut slots);
-                    if k > 0 {
+                    seats = self.take_players(i, n);
+                    if !seats.is_empty() {
                         break;
                     }
                 }
             }
-            self.voices[i].attach_players(&slots[..k], &mut self.pool, down);
+            self.voices[i].attach_players(seats, &mut self.pool, down);
         }
         if follows && self.voices[i].sustained {
             self.voices[i].connect();
         }
     }
 
-    /// Up to `n` free players for voice `i`.
-    fn take_players(&mut self, i: usize, n: usize, slots: &mut [u16; voice::MAX_SECTION]) -> usize {
+    /// Seats for up to `n` players for voice `i`.
+    fn take_players(&mut self, i: usize, n: usize) -> voice::Seats {
         let voices = &self.voices;
-        self.pool.take(i as u32, n, |o, slot| voices.get(o as usize).is_some_and(|v| v.players().contains(&slot)), slots)
+        self.pool.take(i as u32, n, |o, seat| voices.get(o as usize).is_some_and(|v| v.holds(seat)))
     }
 
     fn note_off(&mut self, note_id: i32, channel: i16, key: i16) {
@@ -678,7 +678,7 @@ mod tests {
                 violins(s, true, players);
                 s.note_on(1, 0, 0, key, 0.6);
                 let v = s.voices.iter().find(|v| v.active).unwrap();
-                assert_eq!(v.players().len(), players as usize, "physically modelled players");
+                assert_eq!(v.players(), players as usize, "physically modelled players");
                 let x = render(s, 0.8);
                 power += 10f32.powf(db(&x[x.len() / 2..]) / 10.0);
             }
@@ -704,7 +704,7 @@ mod tests {
         // A fifth: the oldest ending note gives way, the held ones sound on.
         s.note_on(4, 0, 0, 76, 0.6);
         let playing: Vec<&Voice> = s.voices.iter().filter(|v| v.active).collect();
-        assert!(playing.iter().all(|v| v.physical && !v.players().is_empty()), "every note on its players");
+        assert!(playing.iter().all(|v| v.physical && v.players() > 0), "every note on its players");
         assert!(playing.iter().any(|v| v.key == 76) && playing.iter().any(|v| v.key == 67) && playing.iter().any(|v| v.key == 71));
         assert!(!playing.iter().any(|v| v.key == 57), "the oldest ending note gave way");
         assert!(db(&render(s, 0.3)) > -80.0);
@@ -755,7 +755,7 @@ mod techniques {
             s.control(0, 3, t);
             s.note_on(i as i32, 0, 0, 69, 0.62);
             let v = s.voices.iter().filter(|v| v.active && !v.releasing).max_by_key(|v| v.age).unwrap();
-            assert!(v.physical && v.players().len() == 8, "{name}: on its players");
+            assert!(v.physical && v.players() == 8, "{name}: on its players");
             assert_eq!(v.technique(), t, "{name}");
             assert_eq!(v.plucked(), matches!(t, tech::PIZZ | tech::COL_LEGNO), "{name}: plucked or bowed");
             let x = render(s, 0.6);
@@ -880,16 +880,11 @@ mod demo {
         let peak = all.iter().fold(0.0f32, |m, x| m.max(x.abs())).max(1e-6);
         let mut bytes = Vec::new();
         let data = (all.len() * 2) as u32;
-        for (tag, v) in [(b"RIFF", 36 + data), (b"WAVE", 0)] {
-            bytes.extend_from_slice(tag);
-            if &tag[..] == b"RIFF" {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        bytes.extend_from_slice(b"fmt ");
-        for v in [16u32] {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        // Size, PCM, mono, rate, bytes a second, block, bits.
+        bytes.extend_from_slice(&16u32.to_le_bytes());
         for v in [1u16, 1] {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
