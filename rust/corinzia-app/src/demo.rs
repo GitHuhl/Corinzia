@@ -151,4 +151,3 @@ mod tests {
         assert!(p.tracks.iter().any(|t| t.pan < 0.0) && p.tracks.iter().any(|t| t.pan > 0.0));
     }
 }
-

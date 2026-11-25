@@ -66,6 +66,30 @@ pub struct Profile {
     /// `None`: the sound's own.
     pub near: Option<Slide>,
     pub far: Option<(f64, Slide)>,
+    /// A bow's speed by its stroke's length (`None`: no bow).
+    pub bow: Option<Bow>,
+    /// Vibrato by the note's length (`None`: the sound's own).
+    pub vibrato: Option<Vibrato>,
+}
+
+/// A bow's speed over a stroke: the bow's length shared over the stroke
+/// (a note, or the notes of a slur), so a short stroke is quicker and a
+/// long one slower, about the `neutral` stroke's (seconds) speed, as
+/// `(neutral / stroke) ^ exponent` within `range`; the pressure goes with
+/// it, so the string stays in its playable range.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bow {
+    pub neutral: f64,
+    pub exponent: f64,
+    pub range: (f64, f64),
+}
+
+/// Vibrato on a note: none on one shorter than `none` (seconds), full on
+/// one `full` long or longer (there is no time to vibrate on a quick note).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vibrato {
+    pub none: f64,
+    pub full: f64,
 }
 
 const fn scaled(base: f64, per_second: f64, min: f64, max: f64, share: f64) -> Scaled {
@@ -89,6 +113,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: Some(slide(0.003, 0.008, 0.012, 1.0, 0.0)),
         far: Some((7.0, slide(0.03, 0.12, 0.2, 0.7, 0.3))),
+        bow: Some(Bow { neutral: 0.5, exponent: 0.25, range: (0.8, 1.25) }),
+        vibrato: Some(Vibrato { none: 0.1, full: 0.35 }),
     };
 
     /// Woodwinds: tongued apart; slurred, the keys change the note at once.
@@ -98,6 +124,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: Some(slide(0.003, 0.005, 0.008, 1.0, 0.0)),
         far: None,
+        bow: None,
+        vibrato: Some(Vibrato { none: 0.15, full: 0.45 }),
     };
 
     /// Brass: tongued apart; slurred, the lips move a little longer, wider
@@ -108,6 +136,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: Some(slide(0.01, 0.025, 0.04, 0.6, 1.0)),
         far: None,
+        bow: None,
+        vibrato: Some(Vibrato { none: 0.2, full: 0.6 }),
     };
 
     /// Voices: a consonant's break; slurred, the voice carries the pitch.
@@ -117,6 +147,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: Some(slide(0.02, 0.05, 0.08, 1.0, 0.0)),
         far: None,
+        bow: None,
+        vibrato: Some(Vibrato { none: 0.12, full: 0.4 }),
     };
 
     /// Keyboards: the key lifts before the next goes down.
@@ -126,6 +158,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: None,
         far: None,
+        bow: None,
+        vibrato: None,
     };
 
     /// Plucked and struck: they ring and are damped; a short lift.
@@ -135,6 +169,8 @@ impl Profile {
         staccatissimo: crate::STACCATISSIMO_SECONDS,
         near: None,
         far: None,
+        bow: None,
+        vibrato: None,
     };
 
     pub fn for_instrument(kind: Option<&Kind>) -> Profile {
@@ -155,6 +191,18 @@ impl Profile {
             return 1.0;
         }
         1.0 - self.detached.seconds(length) / length
+    }
+
+    /// The bow's speed (and pressure) over a stroke of this length
+    /// (seconds), against its usual: `None` without a bow.
+    pub fn bow_pace(&self, stroke: f64) -> Option<f64> {
+        self.bow.map(|b| (b.neutral / stroke.max(0.02)).powf(b.exponent).clamp(b.range.0, b.range.1))
+    }
+
+    /// How much of its vibrato a note of this length (seconds) has, 0..=1;
+    /// `None`: the sound's own.
+    pub fn vibrato_share(&self, length: f64) -> Option<f64> {
+        self.vibrato.map(|v| ((length - v.none) / (v.full - v.none)).clamp(0.0, 1.0))
     }
 
     /// How long a slurred note's move from the last takes (seconds), by the
@@ -200,5 +248,18 @@ mod tests {
         assert!(Profile::WOODWINDS.slide_seconds(7.0, 1.0).unwrap() <= 0.008, "keys, not a slide");
         assert!(Profile::BRASS.slide_seconds(12.0, 1.0).unwrap() > Profile::BRASS.slide_seconds(2.0, 1.0).unwrap());
         assert_eq!(Profile::KEYBOARD.slide_seconds(2.0, 1.0), None);
+    }
+
+    #[test]
+    fn the_bow_is_shared_over_its_stroke_and_quick_notes_hardly_vibrate() {
+        let s = Profile::STRINGS;
+        assert_eq!(s.bow_pace(0.5), Some(1.0));
+        assert!(s.bow_pace(0.12).unwrap() > 1.2, "a quick stroke");
+        assert!(s.bow_pace(2.0).unwrap() < 0.75 + 0.06, "a long one (or a long slur)");
+        assert_eq!(Profile::WOODWINDS.bow_pace(0.5), None);
+        assert_eq!(s.vibrato_share(0.08), Some(0.0));
+        assert_eq!(s.vibrato_share(1.0), Some(1.0));
+        assert!(Profile::BRASS.vibrato_share(0.3).unwrap() < s.vibrato_share(0.3).unwrap());
+        assert_eq!(Profile::KEYBOARD.vibrato_share(1.0), None);
     }
 }

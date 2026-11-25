@@ -384,6 +384,10 @@ pub struct Voice {
     /// 1, or less for a note taken up from a still-ringing one (a bow
     /// change, a new breath): its attack is quicker.
     attack_scale: f32,
+    /// As the player says (`express`): the bow's speed and pressure
+    /// against the usual, and the share of the vibrato.
+    bow_pace: f32,
+    vib_share: f32,
     /// The articulation's bite (a bright, noisy start, 0..1) and how much
     /// shorter the release is (short notes: the bow lifts, the tongue stops).
     bite: f32,
@@ -548,6 +552,8 @@ impl Voice {
             accent: 0.0,
             join: 0.0,
             attack_scale: 1.0,
+            bow_pace: 1.0,
+            vib_share: 1.0,
             bite: 0.0,
             release_scale: 1.0,
             phys_g: 0.0,
@@ -666,6 +672,7 @@ impl Voice {
         self.t = 0.0;
         self.join = 0.0;
         self.attack_scale = 1.0;
+        (self.bow_pace, self.vib_share) = (1.0, 1.0);
         self.bite = 0.0;
         self.release_scale = 1.0;
         self.phys_g = 0.0;
@@ -770,6 +777,28 @@ impl Voice {
         // The players' fingers move too (on the next block: the players
         // are in the pool).
         self.ph_key_changed = true;
+    }
+
+    /// How the player plays the note (sent from the score): the bow's speed
+    /// and pressure against the usual (a stroke's, kept through its slur:
+    /// `None` leaves it), and the share of the vibrato.
+    pub fn express(&mut self, bow: Option<f32>, vibrato: f32) {
+        if let Some(b) = bow {
+            self.bow_pace = b;
+        }
+        self.vib_share = vibrato;
+    }
+
+    /// The bow's pace and the vibrato's share the player said.
+    pub fn bow_pace(&self) -> f32 {
+        self.bow_pace
+    }
+    pub fn vib_share(&self) -> f32 {
+        self.vib_share
+    }
+    /// The slur's move (seconds).
+    pub fn glide_seconds(&self) -> f32 {
+        self.glide_time
     }
 
     /// A slur's move as the player says (seconds), for the one just begun
@@ -994,10 +1023,12 @@ impl Voice {
                 self.scoop *= dsp::decay(0.08, sr / CONTROL as f32);
                 let d = self.dynamic;
                 let bite = (1.0 - self.t / (p.attack * 3.0 + 0.03)).max(0.0) * self.bite + self.accent * (-self.t / 0.09).exp() + self.join;
-                let controls = bowing(d, self.tech, bite, self.ph_dir);
+                let mut controls = bowing(d, self.tech, bite, self.ph_dir);
+                controls.speed *= self.bow_pace;
+                controls.force *= self.bow_pace;
                 self.join *= dsp::decay(0.12, sr / CONTROL as f32);
                 // Vibrato: after the attack, wider when louder.
-                let depth = if self.ph_pluck || self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * (0.6 + 0.7 * d) };
+                let depth = if self.ph_pluck || self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * (0.6 + 0.7 * d) * self.vib_share };
                 let scoop = 2f32.powf((bend + self.scoop) / 12.0);
                 let mut freq = [0.0f32; MAX_SECTION];
                 for (q, freq) in freq.iter_mut().enumerate().take(n) {
@@ -1355,7 +1386,7 @@ impl Voice {
         }
         // Starts after the attack, wider when louder and on long notes.
         let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
-        let depth = p.vibrato * fade * (0.6 + 0.7 * self.dynamic);
+        let depth = p.vibrato * fade * (0.6 + 0.7 * self.dynamic) * self.vib_share;
         self.vib_phase = (self.vib_phase + self.vib_rate * CONTROL as f32 / self.sr).fract();
         depth * (self.vib_phase * TAU).sin()
     }
@@ -1603,7 +1634,7 @@ impl Voice {
                 };
                 // Vibrato: after the attack, wider when louder.
                 let fade = ((self.t - 0.15) / 0.4).clamp(0.0, 1.0);
-                let depth = if self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) };
+                let depth = if self.tech == tech::HARMONICS { 0.0 } else { p.vibrato * fade * (0.6 + 0.7 * d) * self.vib_share };
                 // The measured strings lie 35 dB and more under their 1 kHz region
                 // past 10 kHz: harmonics up to there (a soloist to 12 kHz).
                 let limit = (sr * 0.45).min(14000.0);

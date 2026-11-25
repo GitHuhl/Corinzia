@@ -691,6 +691,26 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
             let (mut technique, mut legato, mut last_on, mut articulation) = (None::<u8>, false, f64::NAN, None::<u8>);
             let mut level: Option<f32> = None;
             let (mut slide, mut last_key) = (None::<u8>, None::<i32>);
+            let (mut bow, mut vibrato) = (None::<u8>, None::<u8>);
+            // Each bow stroke's length (seconds), by its first note's onset:
+            // a note alone, or the notes of a slur through to its last.
+            let mut strokes: std::collections::HashMap<u64, f64> = Default::default();
+            {
+                let mut first: Option<f64> = None;
+                let mut prev = f64::NAN;
+                for &(ni, n) in &list {
+                    if (n.on_q - prev).abs() < 1e-9 {
+                        continue; // a chord's other notes
+                    }
+                    prev = n.on_q;
+                    let from = *first.get_or_insert(n.on_q);
+                    if !n.slurred {
+                        let end = perf.tempo.seconds_at(end_of(ni).full_off_q);
+                        strokes.insert(from.to_bits(), end - perf.tempo.seconds_at(from));
+                        first = None;
+                    }
+                }
+            }
             for (ni, n) in list {
                 let tremolo = merged.contains_key(&ni);
                 let last = end_of(ni);
@@ -706,16 +726,31 @@ fn build_with(project: &Project, sample_rate: f64, generation: u64, movements: &
                     // Slurred into from the last note: its move, as the
                     // instrument's articulation has it (by the leap and the
                     // tempo); the sound's own where it says nothing.
+                    let profile = corinzia_perform::articulation::Profile::for_instrument(project.instrument(n.instrument).and_then(|i| i.kind));
                     if legato {
-                        let kind = project.instrument(n.instrument).and_then(|i| i.kind);
                         let leap = last_key.map_or(0.0, |k| (n.key - k) as f64);
-                        let value = corinzia_perform::articulation::Profile::for_instrument(kind).slide_seconds(leap, written).map_or(0, corinzia_ensemble::slide_value);
+                        let value = profile.slide_seconds(leap, written).map_or(0, corinzia_ensemble::slide_value);
                         if slide != Some(value) {
                             slide = Some(value);
                             cc(&mut notes, on - 5, corinzia_ensemble::SLIDE_CC, value as f32 / 127.0);
                         }
                     }
                     last_key = Some(n.key);
+                    // How the player plays it: a stroke's bow shared over
+                    // its length (at its first note), the note's vibrato by
+                    // its length.
+                    if let Some(pace) = strokes.get(&n.on_q.to_bits()).and_then(|&s| profile.bow_pace(s)) {
+                        let value = corinzia_ensemble::pace_value(pace);
+                        if bow != Some(value) {
+                            bow = Some(value);
+                            cc(&mut notes, on - 5, corinzia_ensemble::BOW_CC, value as f32 / 127.0);
+                        }
+                    }
+                    let share = profile.vibrato_share(written).map_or(127, |v| (v * 127.0).round() as u8);
+                    if vibrato != Some(share) {
+                        vibrato = Some(share);
+                        cc(&mut notes, on - 5, corinzia_ensemble::VIBRATO_CC, share as f32 / 127.0);
+                    }
                     let code = articulation_code(n, written);
                     if articulation != Some(code) {
                         articulation = Some(code);

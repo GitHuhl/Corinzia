@@ -467,10 +467,17 @@ Every example score in the W3C MusicXML repository imports and engraves
   leap and the note's length: a string player's finger within reach 3 to
   12 ms, a shift (past a fifth) 30 to 200 ms; keyed woodwinds 3 to 8 ms
   (their keys: no slide); brass lips 10 to 40, longer on a wide leap;
-  voices 20 to 80; never more than 30 % of the note. The playback sends
-  the move to the built-in instruments before each slurred note (CC88,
-  `corinzia_ensemble::slide_value`); a host without it gets each sound's
-  own.
+  voices 20 to 80; never more than 30 % of the note. A bow's speed over
+  its stroke (a note, or a slur's notes together): the bow's length shared
+  over it, quicker on a short stroke and slower on a long one (0.8 to 1.25
+  times the usual, the pressure in proportion). Vibrato by the note's
+  length: none on a quick note, full on a long one (strings from 0.1 to
+  0.35 s, winds 0.15 to 0.45, brass 0.2 to 0.6, voices 0.12 to 0.4).
+* The playback tells the built-in instruments what the profile says,
+  before each note: a slurred note's move (CC88, `slide_value`), a
+  stroke's bow at its first note (CC90, `pace_value`), the note's vibrato
+  (CC91). The instruments play as told; a host that sends none gets each
+  sound's own.
 * `document` builds the export document: the notation plus one MIDI track
   per sounding DAW track, with gate and roll applied in time as in
   playback.
