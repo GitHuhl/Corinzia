@@ -52,11 +52,9 @@ pub struct Playback {
     pub sample_rate: f64,
     /// Where plugins are looked for (from the preferences).
     pub search_paths: Vec<std::path::PathBuf>,
-    /// Playing the selection only: the tracks that sound (the rest are
-    /// silenced in the engine for this run, the project untouched), and
-    /// where to stop (movement, written quarter).
+    /// Playing the selection or a part only: the tracks that sound (the
+    /// rest are silenced in the engine for this run, the project untouched).
     only: Option<std::collections::HashSet<Id>>,
-    pub until: Option<(Id, f64)>,
 }
 
 impl Playback {
@@ -113,7 +111,6 @@ impl Playback {
             sample_rate: rate,
             search_paths: prefs.plugin_search_paths(),
             only: None,
-            until: None,
         }
     }
 
@@ -171,24 +168,21 @@ impl Playback {
         }
     }
 
-    /// Plays only these tracks from a written position, stopping at `until`
-    /// (the selection's end) if given.
-    pub fn play_only(&mut self, project: &Project, tracks: std::collections::HashSet<Id>, movement: Id, from: f64, until: Option<f64>) {
+    /// Plays only these tracks from a written position (until stopped).
+    pub fn play_only(&mut self, project: &Project, tracks: std::collections::HashSet<Id>, movement: Id, from: f64) {
         self.only = Some(tracks);
-        self.until = until.map(|q| (movement, q));
         self.send_mix(project);
         self.play_from(movement, from);
     }
 
-    /// After playing the selection: every track sounds again.
+    /// After playing the selection or a part: every track sounds again.
     pub fn release_only(&mut self, project: &Project) {
-        self.until = None;
         if self.only.take().is_some() {
             self.send_mix(project);
         }
     }
 
-    /// Playing the selection alone.
+    /// Playing the selection or a part alone.
     pub fn playing_only(&self) -> bool {
         self.only.is_some()
     }

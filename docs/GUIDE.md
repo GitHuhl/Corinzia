@@ -304,10 +304,11 @@ the output), automation playback and saving plugin settings.
 * **Playback:** Space plays from the selection or caret with a playhead in
   the score; repeats, endings, ties, ornaments, dynamics and hairpins are
   performed. With a passage selected, only its staves play, from its start
-  to its end, as in other score editors (with the cycle on, it loops);
-  turn this off in Preferences ("Play only the selected passage") to play
-  everything from the passage on. A single selected note plays everything
-  from there. Tracks without a plugin play through **Corinzia Ensemble**,
+  on until you stop (with the cycle on, the passage loops); turn this off
+  in Preferences ("Play only the selected passage's staves") to play
+  everything from the passage on. In a player's part, only that player
+  plays ("Play only the part shown"). A single selected note plays
+  everything from there. Tracks without a plugin play through **Corinzia Ensemble**,
   the built-in instruments (also installed as
   `lib/clap/Corinzia Ensemble.clap` for other hosts). Entered notes are
   auditioned. If the computer cannot render a block in time (a click or a

@@ -366,45 +366,46 @@ impl App {
             return;
         }
         // A passage selected in the score: only its staves, from its start
-        // to its end (the preference, on by default, as in other score
-        // editors). Otherwise from the selection, else the caret, everything.
+        // on (the preference, on by default); in a player's part, only that
+        // player (another, also on by default). Either plays until stopped
+        // or the music ends. Otherwise from the selection, else the caret,
+        // everything.
         let ed = &self.editor;
         let (Some(m), Some((_, at))) = (ed.movement(), ed.structure_target()) else { return };
-        if let (true, Tab::Score, Some(r)) = (self.prefs.play_selection_only, self.tab, ed.range) {
-            let tracks: std::collections::HashSet<corinzia_model::Id> = m
-                .lanes
-                .iter()
-                .enumerate()
-                .filter(|(li, _)| (r.lane_from..=r.lane_to).contains(li))
-                .flat_map(|(_, l)| l.changes.iter().filter(|c| c.at < r.to).map(|c| c.instrument))
-                .filter_map(|i| ed.project.instrument(i).and_then(|i| i.track))
-                .collect();
+        if self.tab == Tab::Score {
+            let track_of = |i| ed.project.instrument(i).and_then(|i| i.track);
+            let mut tracks: std::collections::HashSet<corinzia_model::Id> = Default::default();
+            let mut from = quarters(at);
+            if let (true, Some(r)) = (self.prefs.play_selection_only, ed.range) {
+                tracks = m
+                    .lanes
+                    .iter()
+                    .enumerate()
+                    .filter(|(li, _)| (r.lane_from..=r.lane_to).contains(li))
+                    .flat_map(|(_, l)| l.changes.iter().filter(|c| c.at < r.to).map(|c| c.instrument))
+                    .filter_map(track_of)
+                    .collect();
+                from = quarters(r.from);
+            }
+            if tracks.is_empty() && self.prefs.play_part_only {
+                if let Some(player) = self.score.part.and_then(|p| ed.project.players.iter().find(|x| x.id == p)) {
+                    tracks = player.instruments.iter().filter_map(|&i| track_of(i)).collect();
+                }
+            }
             if !tracks.is_empty() {
-                // With the cycle on, it loops instead of stopping at the end.
-                let until = (!self.playback.cycling).then_some(quarters(r.to));
                 let id = m.id;
-                self.playback.play_only(&self.editor.project, tracks, id, quarters(r.from), until);
+                self.playback.play_only(&self.editor.project, tracks, id, from);
                 return;
             }
         }
         self.playback.play_from(m.id, quarters(at));
     }
 
-    /// Playing a selected passage alone: stops at its end, and every track
-    /// sounds again once playback stops.
+    /// Playing some tracks alone: every track sounds again once playback
+    /// stops.
     pub(crate) fn watch_selection_play(&mut self) {
-        if !self.playback.playing_only() {
-            return;
-        }
-        if !self.playback.is_playing() {
+        if self.playback.playing_only() && !self.playback.is_playing() {
             self.playback.release_only(&self.editor.project);
-            return;
-        }
-        if let (Some((m, end)), Some((pm, q))) = (self.playback.until, self.playback.playhead()) {
-            if m == pm && q >= end - 1e-6 {
-                self.playback.stop();
-                self.playback.release_only(&self.editor.project);
-            }
         }
     }
 
